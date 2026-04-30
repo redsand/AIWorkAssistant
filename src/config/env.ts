@@ -56,6 +56,13 @@ const envSchema = z.object({
   SIGNAL_PHONE_NUMBER: z.string().default(''),
   SIGNAL_DATA_PATH: z.string().default('~/.config/Signal'),
   SIGNAL_WEBHOOK_PORT: z.string().transform(Number).default('3001'),
+
+  // Google Calendar
+  GOOGLE_CALENDAR_API_KEY: z.string().default(''),
+  GOOGLE_CALENDAR_CLIENT_ID: z.string().default(''),
+  GOOGLE_CALENDAR_CLIENT_SECRET: z.string().default(''),
+  GOOGLE_CALENDAR_REDIRECT_URI: z.string().url().default('http://localhost:3050/auth/google/callback'),
+  GOOGLE_CALENDAR_CALENDAR_ID: z.string().default('primary'),
 });
 
 export type Env = z.infer<typeof envSchema>;

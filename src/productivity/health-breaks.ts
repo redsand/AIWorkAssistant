@@ -3,7 +3,7 @@
  * TODO: Implement actual health break logic
  */
 
-import { calendarService } from '../integrations/microsoft/calendar-service';
+import { calendarService } from '../integrations/google/calendar-service';
 
 class HealthBreaks {
   /**

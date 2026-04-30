@@ -5,7 +5,7 @@
 
 import { jiraService } from '../integrations/jira/jira-service';
 import { gitlabClient } from '../integrations/gitlab/gitlab-client';
-import { calendarService } from '../integrations/microsoft/calendar-service';
+import { calendarService } from '../integrations/google/calendar-service';
 
 interface DailyPlan {
   date: string;

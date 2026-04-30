@@ -17,6 +17,7 @@
     "test:roadmap": "tsx scripts/test-roadmap.ts",
     "test:memory": "tsx scripts/test-memory.ts",
     "test:guardrails": "tsx scripts/test-guardrails.ts",
+    "test:google-calendar": "tsx scripts/test-google-calendar.ts",
     "test:production": "tsx scripts/test-production.ts",
     "init:roadmap": "tsx scripts/init-roadmap.ts",
     "deploy": "bash scripts/deploy.sh",
@@ -52,6 +53,7 @@
     "discord.js": "^14.26.3",
     "dotenv": "^16.4.7",
     "fastify": "^5.2.0",
+    "googleapis": "^171.4.0",
     "uuid": "^14.0.0",
     "zod": "^3.23.8"
   },

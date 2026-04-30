@@ -13,6 +13,7 @@ import { gitlabWebhookRoutes } from './routes/webhooks-gitlab';
 import { roadmapRoutes } from './roadmap/api';
 import { initializeTemplates } from './roadmap/templates';
 import { guardrailsRoutes } from './guardrails/api';
+import { googleOAuthRoutes } from './routes/google-oauth';
 import path from 'path';
 
 async function buildServer() {
@@ -35,6 +36,7 @@ async function buildServer() {
   await server.register(gitlabWebhookRoutes);
   await server.register(roadmapRoutes, { prefix: '/api' });
   await server.register(guardrailsRoutes, { prefix: '/api' });
+  await server.register(googleOAuthRoutes);
 
   // Serve static web files
   await server.register(fastifyStatic, {

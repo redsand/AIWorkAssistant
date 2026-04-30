@@ -8,7 +8,7 @@
 
 import axios from 'axios';
 import { spawn } from 'child_process';
-import { writeFile, unlink } from 'fs/promises';
+import { writeFile } from 'fs/promises';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 
@@ -29,7 +29,6 @@ interface SignalConfig {
 
 class SignalAgentBot {
   private config: SignalConfig;
-  private messageQueue: Map<string, SignalMessage[]> = new Map();
 
   constructor(config: SignalConfig) {
     this.config = config;
@@ -123,7 +122,7 @@ class SignalAgentBot {
    */
   private async executeSignalCli(args: string[]): Promise<{ success: boolean; error?: string }> {
     return new Promise((resolve) => {
-      const process = spawn('signal-cli', args, {
+      const signalProcess = spawn('signal-cli', args, {
         stdio: 'pipe',
         env: {
           ...process.env,
@@ -134,15 +133,15 @@ class SignalAgentBot {
       let stdout = '';
       let stderr = '';
 
-      process.stdout.on('data', (data) => {
+      signalProcess.stdout.on('data', (data: Buffer) => {
         stdout += data.toString();
       });
 
-      process.stderr.on('data', (data) => {
+      signalProcess.stderr.on('data', (data: Buffer) => {
         stderr += data.toString();
       });
 
-      process.on('close', (code) => {
+      signalProcess.on('close', (code: number | null) => {
         if (code === 0) {
           resolve({ success: true });
         } else {
@@ -150,13 +149,13 @@ class SignalAgentBot {
         }
       });
 
-      process.on('error', (error) => {
+      signalProcess.on('error', (error: Error) => {
         resolve({ success: false, error: error.message });
       });
 
       // Timeout after 30 seconds
       setTimeout(() => {
-        process.kill();
+        signalProcess.kill();
         resolve({ success: false, error: 'Command timed out' });
       }, 30000);
     });
@@ -279,7 +278,7 @@ class SignalWebhookHandler {
   /**
    * Verify webhook signature
    */
-  verifySignature(signature: string, payload: string): boolean {
+  verifySignature(_signature: string, _payload: string): boolean {
     // TODO: Implement webhook signature verification if Signal provides it
     return true;
   }
@@ -293,9 +292,9 @@ class SignalHTTPBridge {
   private apiBase: string;
   private phoneNumber: string;
 
-  constructor(apiBase: string, phoneNumber: string) {
+  constructor(apiBase: string, configuredPhoneNumber: string) {
     this.apiBase = apiBase;
-    this.phoneNumber = phoneNumber;
+    this.phoneNumber = configuredPhoneNumber;
   }
 
   /**
