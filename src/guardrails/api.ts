@@ -64,7 +64,7 @@ export async function guardrailsRoutes(fastify: FastifyInstance) {
    */
   fastify.get('/guardrails/actions', async (request, reply) => {
     try {
-      const { category, riskLevel } = request.query as {
+      const { category: _category, riskLevel: _riskLevel } = request.query as {
         category?: string;
         riskLevel?: string;
       };

@@ -6,6 +6,7 @@
 import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import type { ChatMessage } from '../agent/opencode-client';
 
 export interface Message {
   role: 'system' | 'user' | 'assistant';
@@ -141,13 +142,13 @@ export class ConversationManager {
   /**
    * Get messages in OpenCode API format
    */
-  getSessionMessages(sessionId: string, includeSummaries = true): Array<{ role: string; content: string }> {
+  getSessionMessages(sessionId: string, includeSummaries = true): ChatMessage[] {
     const session = this.sessions.get(sessionId);
     if (!session) {
       return [];
     }
 
-    const messages: Array<{ role: string; content: string }> = [];
+    const messages: ChatMessage[] = [];
 
     // Add system prompt
     messages.push({

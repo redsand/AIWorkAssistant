@@ -124,7 +124,7 @@
 ### Configuration Verified
 ```bash
 OPENCODE_API_URL=https://opencode.ai/zen/go/v1
-OPENCODE_API_KEY=sk-ircnOYu6y9urHMvGcArYGIlbgbFT83XntreWPnpKpW6MJGw6QMwupTin9hT3Nw7Z
+OPENCODE_API_KEY=[REDACTED]
 ```
 
 ### API Performance

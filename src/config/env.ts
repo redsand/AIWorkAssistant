@@ -6,7 +6,7 @@ config();
 
 const envSchema = z.object({
   // Server
-  PORT: z.string().transform(Number).default('6000'),
+  PORT: z.string().transform(Number).default('3050'),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
 
   // OpenCode API

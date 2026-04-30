@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { getSystemPrompt, opencodeClient } from '../agent';
 import { getTools } from '../agent/tool-registry';
 import { AGENT_MODES } from '../config/constants';
-import type { Tool } from '../agent/opencode-client';
+import type { Tool, ChatMessage } from '../agent/opencode-client';
 import { conversationManager } from '../memory/conversation-manager';
 
 const chatRequestSchema = z.object({
@@ -46,7 +46,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       }
 
       let sessionId = body.sessionId;
-      let messages: Array<{ role: string; content: string }>;
+      let messages: ChatMessage[];
 
       // Use session if provided, otherwise create new one
       if (sessionId) {
@@ -184,6 +184,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       reply.raw.write('data: [DONE]\n\n');
       reply.raw.end();
+      return reply;
 
     } catch (error) {
       fastify.log.error(error);

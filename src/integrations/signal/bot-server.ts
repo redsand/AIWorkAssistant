@@ -6,8 +6,8 @@
 
 import { SignalAgentBot, SignalWebhookHandler } from './signal-bot';
 import { loadEnv } from '../../config/env';
-import { Fastify } from 'fastify';
-import { cors } from '@fastify/cors';
+import fastify from 'fastify';
+import cors from '@fastify/cors';
 
 async function main() {
   console.log('📱 Starting OpenClaw Agent Signal Integration...');
@@ -64,7 +64,7 @@ async function main() {
   console.log(`🔗 Status: ${status.connected ? 'Connected' : 'Disconnected'}`);
 
   // Create webhook server for receiving messages
-  const server = Fastify();
+  const server = fastify();
   await server.register(cors, {
     origin: true,
   });

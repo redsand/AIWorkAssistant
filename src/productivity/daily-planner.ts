@@ -39,7 +39,7 @@ class DailyPlanner {
     // Fetch data
     const assignedIssues = await jiraService.getAssignedIssues(userId);
     const calendarEvents = await calendarService.listEvents(date, date, userId);
-    const mergeRequests = await gitlabClient.listMergeRequests();
+    // const mergeRequests = await gitlabClient.getMergeRequests(projectId); // TODO: Need project context
 
     // Analyze and generate plan
     return {

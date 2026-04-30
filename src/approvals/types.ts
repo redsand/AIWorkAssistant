@@ -4,6 +4,8 @@
 
 import { ApprovalRequest } from '../policy/types';
 
+export type { ApprovalRequest };
+
 /**
  * Filter options for listing approvals
  */

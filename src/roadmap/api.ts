@@ -578,9 +578,9 @@ export async function roadmapRoutes(fastify: FastifyInstance) {
         success: true,
         roadmap: {
           ...roadmap,
-          milestones: createdMilestones.map(m => ({
+          milestones: createdMilestones.map((m: any) => ({
             ...m,
-            items: createdItems.filter(i => i.milestoneId === m.id),
+            items: createdItems.filter((i: any) => i.milestoneId === m.id),
           })),
         },
       };

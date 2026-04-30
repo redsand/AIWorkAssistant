@@ -134,7 +134,7 @@ class OpenCodeClient {
       console.log('[OpenCode API] Response received:', {
         contentLength: result.content.length,
         toolCallCount: result.toolCalls?.length || 0,
-        tokensUsed: result.usage.totalTokens,
+        tokensUsed: result.usage?.totalTokens || 0,
       });
 
       return result;

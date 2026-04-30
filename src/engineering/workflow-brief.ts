@@ -5,7 +5,7 @@
 
 import { opencodeClient } from '../agent/opencode-client';
 
-interface WorkflowBrief {
+export interface WorkflowBrief {
   problem: string;
   users: string[];
   jobsToBeDone: string[];

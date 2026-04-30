@@ -5,7 +5,7 @@
 
 import { WorkflowBrief } from './workflow-brief';
 
-interface ArchitectureProposal {
+export interface ArchitectureProposal {
   recommendedStack: {
     backend?: string;
     frontend?: string;

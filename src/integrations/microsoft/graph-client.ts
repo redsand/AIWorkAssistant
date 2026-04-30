@@ -3,7 +3,7 @@
  * TODO: Implement OAuth flow and actual Graph API calls
  */
 
-import { env } from '../config/env';
+import { env } from '../../config/env';
 
 export interface MicrosoftEvent {
   id: string;

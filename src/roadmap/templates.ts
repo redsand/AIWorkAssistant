@@ -597,9 +597,9 @@ export function initializeTemplates() {
 
   templates.forEach(({ template, type, category }) => {
     // Check if template already exists
-    const existing = roadmapDatabase.listTemplates({ name: template.name });
+    const existing = roadmapDatabase.listTemplates().find(t => t.name === template.name);
 
-    if (existing.length === 0) {
+    if (!existing) {
       roadmapDatabase.createTemplate({
         name: template.name,
         description: template.description,

@@ -463,8 +463,10 @@ Just start chatting with me! 🚀
    */
   private async processUserMessage(message: Message, content: string, session: ConversationSession): Promise<void> {
     try {
-      // Show typing indicator
-      await message.channel.sendTyping();
+      // Show typing indicator if supported by channel type
+      if ('sendTyping' in message.channel && typeof message.channel.sendTyping === 'function') {
+        await message.channel.sendTyping();
+      }
 
       // Send to agent
       const response = await this.sendToAgent(content, message.author.id, session.mode);

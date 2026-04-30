@@ -50,11 +50,13 @@ async function buildServer() {
   }
 
   // Error handler
-  server.setErrorHandler((error, request, reply) => {
+  server.setErrorHandler((error, _request, reply) => {
     server.log.error(error);
-    reply.code(error.statusCode || 500).send({
+    const statusCode = (error as any).statusCode || 500;
+    const message = env.NODE_ENV === 'development' ? (error as any).message : undefined;
+    reply.code(statusCode).send({
       error: 'Internal Server Error',
-      message: env.NODE_ENV === 'development' ? error.message : undefined,
+      message,
     });
   });
 

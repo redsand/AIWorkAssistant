@@ -30,10 +30,10 @@ export function findApplicablePolicy(actionType: string) {
 
   // Apply mode overrides
   const mode = env.POLICY_APPROVAL_MODE;
-  const overrides = MODE_OVERRIDES[mode] || [];
+  const overrides = MODE_OVERRIDES[mode as keyof typeof MODE_OVERRIDES] || [];
 
   for (const override of overrides) {
-    if (matchPattern(override.pattern, actionType) && policy) {
+    if (override.pattern && matchPattern(override.pattern, actionType) && policy) {
       policy = { ...policy, ...override };
     }
   }

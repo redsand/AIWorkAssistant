@@ -47,7 +47,7 @@ class HealthBreaks {
     title: string;
     startTime: Date;
     duration: number;
-    type: 'fitness' | 'meal' | 'mental_health';
+    type: 'FITNESS' | 'MEAL' | 'MENTAL_HEALTH';
   }, userId: string) {
     return calendarService.createHealthBlock(params, userId);
   }
