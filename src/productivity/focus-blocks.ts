@@ -3,7 +3,7 @@
  * TODO: Implement actual focus block logic
  */
 
-import { calendarService } from '../integrations/google/calendar-service';
+import { fileCalendarService } from '../integrations/file/calendar-service';
 
 class FocusBlocks {
   /**
@@ -43,7 +43,7 @@ class FocusBlocks {
     duration: number;
     description?: string;
   }, userId: string) {
-    return calendarService.createFocusBlock(params, userId);
+    return fileCalendarService.createFocusBlock(params);
   }
 }
 

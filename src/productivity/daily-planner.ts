@@ -5,7 +5,7 @@
 
 import { jiraService } from '../integrations/jira/jira-service';
 import { gitlabClient } from '../integrations/gitlab/gitlab-client';
-import { calendarService } from '../integrations/google/calendar-service';
+import { fileCalendarService } from '../integrations/file/calendar-service';
 
 interface DailyPlan {
   date: string;
@@ -38,7 +38,7 @@ class DailyPlanner {
 
     // Fetch data
     const assignedIssues = await jiraService.getAssignedIssues(userId);
-    const calendarEvents = await calendarService.listEvents(date, date, userId);
+    const calendarEvents = fileCalendarService.listEvents(date, date);
     // const mergeRequests = await gitlabClient.getMergeRequests(projectId); // TODO: Need project context
 
     // Analyze and generate plan

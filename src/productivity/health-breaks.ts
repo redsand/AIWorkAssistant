@@ -3,7 +3,7 @@
  * TODO: Implement actual health break logic
  */
 
-import { calendarService } from '../integrations/google/calendar-service';
+import { fileCalendarService } from '../integrations/file/calendar-service';
 
 class HealthBreaks {
   /**
@@ -49,7 +49,7 @@ class HealthBreaks {
     duration: number;
     type: 'FITNESS' | 'MEAL' | 'MENTAL_HEALTH';
   }, userId: string) {
-    return calendarService.createHealthBlock(params, userId);
+    return fileCalendarService.createHealthBlock(params);
   }
 }
 

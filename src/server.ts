@@ -14,6 +14,7 @@ import { roadmapRoutes } from './roadmap/api';
 import { initializeTemplates } from './roadmap/templates';
 import { guardrailsRoutes } from './guardrails/api';
 import { googleOAuthRoutes } from './routes/google-oauth';
+import { fileCalendarRoutes } from './routes/file-calendar';
 import path from 'path';
 
 async function buildServer() {
