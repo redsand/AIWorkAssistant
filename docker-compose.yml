@@ -1,0 +1,189 @@
+version: '3.8'
+
+services:
+  # Main application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: openclaw-agent
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - PORT=${PORT:-3000}
+      - OPENCODE_API_KEY=${OPENCODE_API_KEY}
+      - OPENCODE_API_URL=${OPENCODE_API_URL:-https://opencode.ai/zen/go/v1}
+      - JIRA_BASE_URL=${JIRA_BASE_URL}
+      - JIRA_EMAIL=${JIRA_EMAIL}
+      - JIRA_API_TOKEN=${JIRA_API_TOKEN}
+      - GITLAB_BASE_URL=${GITLAB_BASE_URL}
+      - GITLAB_TOKEN=${GITLAB_TOKEN}
+      - MICROSOFT_CLIENT_ID=${MICROSOFT_CLIENT_ID}
+      - MICROSOFT_CLIENT_SECRET=${MICROSOFT_CLIENT_SECRET}
+      - MICROSOFT_TENANT_ID=${MICROSOFT_TENANT_ID}
+      - POLICY_APPROVAL_MODE=${POLICY_APPROVAL_MODE:-strict}
+    volumes:
+      # Persist data and logs
+      - ./data:/app/data
+      - ./logs:/app/logs
+      # Backup directory
+      - ./backups:/app/backups
+    networks:
+      - openclaw-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    # Read-only root filesystem (except for data directories)
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  # Nginx reverse proxy (for production)
+  nginx:
+    image: nginx:alpine
+    container_name: openclaw-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+      - ./logs/nginx:/var/log/nginx
+    networks:
+      - openclaw-network
+    depends_on:
+      - app
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+    profiles:
+      - production
+
+  # PostgreSQL (optional - for production database)
+  postgres:
+    image: postgres:15-alpine
+    container_name: openclaw-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-openclaw}
+      - POSTGRES_USER=${POSTGRES_USER:-openclaw}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backups/postgres:/backups
+    networks:
+      - openclaw-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-openclaw}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+    profiles:
+      - production
+
+  # Redis (optional - for caching and sessions)
+  redis:
+    image: redis:7-alpine
+    container_name: openclaw-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-changeme}
+    volumes:
+      - redis_data:/data
+    networks:
+      - openclaw-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    profiles:
+      - production
+
+  # Monitoring - Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: openclaw-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - openclaw-network
+    profiles:
+      - monitoring
+
+  # Monitoring - Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: openclaw-grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - openclaw-network
+    depends_on:
+      - prometheus
+    profiles:
+      - monitoring
+
+networks:
+  openclaw-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local

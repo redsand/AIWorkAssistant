@@ -1,0 +1,119 @@
+{
+  "name": "openclaw-agent",
+  "description": "Personal productivity and engineering copilot with workflow-first design and strong guardrails",
+  "version": "0.1.0",
+  "author": "Tim Shelton",
+  "license": "MIT",
+  "endpoint": "http://localhost:3000/chat",
+  "modes": {
+    "productivity": {
+      "description": "Personal productivity mode: daily planning, Jira management, GitLab integration, health and focus blocks",
+      "systemPrompt": "You are a personal productivity assistant...",
+      "tools": [
+        {
+          "name": "calendar.list_events",
+          "description": "List calendar events for a date range",
+          "params": {
+            "startDate": "string (ISO 8601)",
+            "endDate": "string (ISO 8601)"
+          }
+        },
+        {
+          "name": "calendar.create_focus_block",
+          "description": "Create a focus block for deep work",
+          "params": {
+            "title": "string",
+            "startTime": "string (ISO 8601)",
+            "duration": "number (minutes)",
+            "description": "string (optional)"
+          }
+        },
+        {
+          "name": "jira.list_assigned",
+          "description": "List Jira issues assigned to user",
+          "params": {
+            "status": "string (optional)",
+            "limit": "number (optional)"
+          }
+        },
+        {
+          "name": "jira.add_comment",
+          "description": "Add comment to Jira issue",
+          "params": {
+            "key": "string (JIRA-123)",
+            "body": "string"
+          }
+        },
+        {
+          "name": "productivity.generate_daily_plan",
+          "description": "Generate daily productivity plan",
+          "params": {
+            "date": "string (ISO 8601)",
+            "includeJira": "boolean (optional)",
+            "includeGitLab": "boolean (optional)"
+          }
+        }
+      ]
+    },
+    "engineering": {
+      "description": "Engineering strategy mode: workflow-first design, architecture, scaffolding, and implementation planning",
+      "systemPrompt": "You are an engineering strategist who helps build better software by focusing on WORKFLOWS, not features...",
+      "tools": [
+        {
+          "name": "engineering.workflow_brief",
+          "description": "Generate workflow brief for project idea",
+          "params": {
+            "idea": "string (project idea description)"
+          }
+        },
+        {
+          "name": "engineering.architecture_proposal",
+          "description": "Generate architecture proposal",
+          "params": {
+            "workflowBrief": "string (workflow brief JSON)"
+          }
+        },
+        {
+          "name": "engineering.scaffolding_plan",
+          "description": "Generate scaffolding plan",
+          "params": {
+            "architecture": "string (architecture proposal JSON)"
+          }
+        }
+      ]
+    }
+  },
+  "guardrails": {
+    "policyEngine": true,
+    "approvalQueue": true,
+    "auditLogging": true,
+    "riskLevels": ["low", "medium", "high"],
+    "defaultPolicy": "approval_required"
+  },
+  "integrations": {
+    "jira": {
+      "status": "stubbed",
+      "description": "Jira Cloud REST API for issue management"
+    },
+    "gitlab": {
+      "status": "stubbed",
+      "description": "GitLab API and webhooks for commit/MR tracking"
+    },
+    "microsoft": {
+      "status": "stubbed",
+      "description": "Microsoft Graph API for calendar integration"
+    },
+    "opencode": {
+      "status": "stubbed",
+      "description": "OpenCode API for AI reasoning"
+    }
+  },
+  "endpoints": {
+    "chat": "POST /chat",
+    "health": "GET /health",
+    "approvals": "GET /approvals",
+    "approve": "POST /approvals/:id/approve",
+    "reject": "POST /approvals/:id/reject",
+    "gitlabWebhook": "POST /webhooks/gitlab"
+  }
+}
