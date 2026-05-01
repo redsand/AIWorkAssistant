@@ -44,6 +44,7 @@ export class OpenCodeProvider extends AIProvider {
 
       const result: ChatResponse = {
         content: message.content || "",
+        thinking: message.reasoning_content || undefined,
         toolCalls: message.tool_calls
           ? this.parseToolCalls(message.tool_calls)
           : undefined,

@@ -31,8 +31,9 @@ export class ZaiProvider extends AIProvider {
     }
 
     let lastError: Error | null = null;
+    const maxAttempts = this.config.maxRetries + 1;
 
-    for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const requestBody = this.buildRequestBody(request);
 
@@ -40,13 +41,8 @@ export class ZaiProvider extends AIProvider {
           model: requestBody.model,
           messageCount: (requestBody.messages as any[]).length,
           hasTools: !!request.tools,
-          attempt: attempt + 1,
+          attempt: `${attempt}/${maxAttempts}`,
         });
-
-        console.log(
-          "[Z.ai API] Full request body:",
-          JSON.stringify(requestBody, null, 2),
-        );
 
         const response = await this.client.post(
           "/chat/completions",
@@ -58,6 +54,7 @@ export class ZaiProvider extends AIProvider {
 
         const result: ChatResponse = {
           content: message.content || "",
+          thinking: message.reasoning_content || undefined,
           toolCalls: message.tool_calls
             ? this.parseToolCalls(message.tool_calls)
             : undefined,
@@ -72,6 +69,7 @@ export class ZaiProvider extends AIProvider {
 
         console.log("[Z.ai API] Response received:", {
           contentLength: result.content.length,
+          thinkingLength: result.thinking?.length || 0,
           toolCallCount: result.toolCalls?.length || 0,
           tokensUsed: result.usage?.totalTokens || 0,
         });
@@ -92,20 +90,31 @@ export class ZaiProvider extends AIProvider {
             throw this.mapError(error);
           }
 
-          if (status === 429 || (status && status >= 500)) {
+          if (status === 429) {
+            if (attempt >= maxAttempts) break;
+            const delay = this.getRateLimitDelay(error, attempt);
+            console.warn(
+              `[Z.ai API] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`,
+            );
+            await this.sleep(delay);
+            continue;
+          }
+
+          if (status && status >= 500) {
+            if (attempt >= maxAttempts) break;
             const delay = this.getRetryDelay(attempt);
             console.warn(
-              `[Z.ai API] Retryable error (${status}), waiting ${delay}ms before retry ${attempt + 1}/${this.config.maxRetries}`,
+              `[Z.ai API] Server error (${status}), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`,
             );
             await this.sleep(delay);
             continue;
           }
         }
 
-        if (attempt < this.config.maxRetries) {
+        if (attempt < maxAttempts) {
           const delay = this.getRetryDelay(attempt);
           console.warn(
-            `[Z.ai API] Network error, waiting ${delay}ms before retry ${attempt + 1}/${this.config.maxRetries}`,
+            `[Z.ai API] Network error, waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`,
           );
           await this.sleep(delay);
           continue;
@@ -162,13 +171,32 @@ export class ZaiProvider extends AIProvider {
   }
 
   private getRetryDelay(attempt: number): number {
-    const baseDelay = 2000;
+    const baseDelay = 1000;
     const maxDelay = 30000;
     const exponentialDelay = Math.min(
-      baseDelay * Math.pow(2, attempt),
+      baseDelay * Math.pow(2, attempt - 1),
       maxDelay,
     );
     const jitter = Math.random() * 1000;
+    return exponentialDelay + jitter;
+  }
+
+  private getRateLimitDelay(error: AxiosError, attempt: number): number {
+    const retryAfter = error.response?.headers?.["retry-after"];
+    if (retryAfter) {
+      const seconds = Number(retryAfter);
+      if (!isNaN(seconds) && seconds > 0) {
+        return seconds * 1000 + Math.random() * 500;
+      }
+    }
+
+    const baseDelay = 4000;
+    const maxDelay = 60000;
+    const exponentialDelay = Math.min(
+      baseDelay * Math.pow(2, attempt - 1),
+      maxDelay,
+    );
+    const jitter = Math.random() * 2000;
     return exponentialDelay + jitter;
   }
 

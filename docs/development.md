@@ -47,7 +47,7 @@ ai-assistant/
 │   └── storage/               # Database (future)
 ├── tests/                     # Tests
 ├── docs/                      # Documentation
-└── openclaw-tools/            # AI Assistant tool definitions
+└── ai-assistant-tools/            # AI Assistant tool definitions
 ```
 
 ## Development Workflow

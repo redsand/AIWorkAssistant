@@ -57,6 +57,22 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
     }
   });
 
+  fastify.post("/calendar/rollover", async (_request, reply) => {
+    try {
+      const result = fileCalendarService.rescheduleIncompleteEvents();
+      return {
+        success: true,
+        ...result,
+      };
+    } catch (error) {
+      reply.code(500);
+      return {
+        success: false,
+        error: "Failed to run calendar rollover",
+      };
+    }
+  });
+
   /**
    * Create a new event
    */
@@ -92,10 +108,14 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
         message: "Event created successfully",
       };
     } catch (error) {
-      reply.code(500);
+      const msg =
+        error instanceof Error ? error.message : "Failed to create event";
+      const isBusinessHoursError =
+        msg.includes("business hours") || msg.includes("conflicts with");
+      reply.code(isBusinessHoursError ? 400 : 500);
       return {
         success: false,
-        error: "Failed to create event",
+        error: msg,
       };
     }
   });

@@ -36,6 +36,7 @@ export interface ChatRequest {
 
 export interface ChatResponse {
   content: string;
+  thinking?: string;
   toolCalls?: ToolCall[];
   usage?: {
     promptTokens: number;
@@ -54,6 +55,7 @@ export interface ProviderConfig {
   topP: number;
   maxRetries: number;
   timeout: number;
+  maxContextTokens?: number;
 }
 
 export interface ProviderCapabilities {
@@ -65,6 +67,10 @@ export interface ProviderCapabilities {
 }
 
 export type OpenCodeConfig = ProviderConfig;
+
+const DEFAULT_MAX_CONTEXT_TOKENS = 64000;
+const MAX_TOOL_RESULT_CHARS = 3000;
+const CHARS_PER_TOKEN = 4;
 
 export abstract class AIProvider {
   abstract readonly name: string;
@@ -99,9 +105,11 @@ export abstract class AIProvider {
   abstract validateConfig(): Promise<boolean>;
 
   protected buildRequestBody(request: ChatRequest): Record<string, unknown> {
+    const messages = this.pruneToContextWindow(request.messages);
+
     const body: Record<string, unknown> = {
       model: request.model || this.config.model,
-      messages: request.messages,
+      messages,
       temperature: request.temperature ?? this.config.temperature,
       top_p: request.top_p ?? this.config.topP,
     };
@@ -119,6 +127,65 @@ export abstract class AIProvider {
     }
 
     return body;
+  }
+
+  protected pruneToContextWindow(messages: ChatMessage[]): ChatMessage[] {
+    const maxTokens =
+      this.config.maxContextTokens || DEFAULT_MAX_CONTEXT_TOKENS;
+    let estimated = this.estimateTokens(messages);
+
+    if (estimated <= maxTokens) return messages;
+
+    console.warn(
+      `[${this.name}] Prompt ${estimated} tokens exceeds ${maxTokens} limit, pruning...`,
+    );
+
+    const pruned = messages.map((m) => {
+      if (m.role === "tool" && m.content.length > MAX_TOOL_RESULT_CHARS) {
+        return {
+          ...m,
+          content:
+            m.content.substring(0, MAX_TOOL_RESULT_CHARS) + "\n...[truncated]",
+        };
+      }
+      if (m.role === "assistant" && m.content.length > MAX_TOOL_RESULT_CHARS) {
+        return {
+          ...m,
+          content:
+            m.content.substring(0, MAX_TOOL_RESULT_CHARS) + "\n...[truncated]",
+        };
+      }
+      return m;
+    });
+
+    estimated = this.estimateTokens(pruned);
+    if (estimated <= maxTokens) return pruned;
+
+    if (pruned.length <= 4) return pruned;
+
+    const system = pruned[0];
+    const userMsg = pruned[pruned.length - 1];
+    const recentCount = Math.min(pruned.length - 2, 6);
+    const recent = pruned.slice(
+      pruned.length - 1 - recentCount,
+      pruned.length - 1,
+    );
+
+    const kept: ChatMessage[] = [
+      system,
+      {
+        role: "system",
+        content: `[Earlier conversation truncated — ${pruned.length - recentCount - 2} messages removed to fit context window of ${maxTokens} tokens]`,
+      },
+      ...recent,
+      userMsg,
+    ];
+
+    console.warn(
+      `[${this.name}] Pruned ${pruned.length} messages to ${kept.length}`,
+    );
+
+    return kept;
   }
 
   protected parseToolCalls(toolCalls: any[]): ToolCall[] {
@@ -144,6 +211,6 @@ export abstract class AIProvider {
       }
     }
 
-    return Math.max(1, Math.floor(totalChars / 4));
+    return Math.max(1, Math.floor(totalChars / CHARS_PER_TOKEN));
   }
 }

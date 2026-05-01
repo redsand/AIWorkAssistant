@@ -163,7 +163,6 @@ export class JiraClient {
   async searchIssues(
     jql: string,
     maxResults: number = 50,
-    useApiV2: boolean = false,
   ): Promise<JiraIssue[]> {
     if (!this.isConfigured()) {
       throw new Error("Jira client not configured");
@@ -172,31 +171,23 @@ export class JiraClient {
     try {
       console.log(`[Jira] Searching issues: ${jql}`);
 
-      // Try API v2 first if specified, fallback to v3
-      const apiVersion = useApiV2 ? "2" : "3";
-      const endpoint = `/rest/api/${apiVersion}/search`;
-
-      const response = await this.client.get(endpoint, {
-        params: {
-          jql,
-          maxResults,
-          fields: [
-            "summary",
-            "status",
-            "assignee",
-            "priority",
-            "issuetype",
-            "created",
-            "updated",
-            "project",
-          ],
-        },
+      const response = await this.client.post("/rest/api/3/search/jql", {
+        jql,
+        maxResults,
+        fields: [
+          "summary",
+          "status",
+          "assignee",
+          "priority",
+          "issuetype",
+          "created",
+          "updated",
+          "project",
+        ],
       });
 
       const issues = response.data.issues || [];
-      console.log(
-        `[Jira] Found ${issues.length} issues using API v${apiVersion}`,
-      );
+      console.log(`[Jira] Found ${issues.length} issues`);
       return issues;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -213,10 +204,6 @@ export class JiraClient {
           throw new Error(
             "Jira authentication failed. Check your credentials.",
           );
-        } else if (status === 410 && !useApiV2) {
-          // Try API v2 if v3 returns 410
-          console.log("[Jira] API v3 returned 410, trying API v2...");
-          return await this.searchIssues(jql, maxResults, true);
         }
       }
       throw new Error(

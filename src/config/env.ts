@@ -29,11 +29,14 @@ const envSchema = z.object({
   ZAI_MODEL: z.string().default("GLM-5"),
   ZAI_TEMPERATURE: z.string().transform(Number).default("0.95"),
   ZAI_TOP_P: z.string().transform(Number).default("0.9"),
+  ZAI_MAX_CONTEXT_TOKENS: z.coerce.number().default(64000),
 
-  // Ollama (local models)
+  // Ollama (local and cloud models)
   OLLAMA_API_URL: z.string().url().default("http://localhost:11434"),
+  OLLAMA_API_KEY: z.string().default(""),
   OLLAMA_MODEL: z.string().default("llama3"),
   OLLAMA_TEMPERATURE: z.string().transform(Number).default("0.7"),
+  OLLAMA_MAX_CONTEXT_TOKENS: z.coerce.number().default(128000),
 
   // Microsoft 365
   MICROSOFT_TENANT_ID: z.string().default(""),
@@ -57,6 +60,13 @@ const envSchema = z.object({
   GITLAB_BASE_URL: z.string().url().default("https://gitlab.com"),
   GITLAB_TOKEN: z.string().default(""),
   GITLAB_WEBHOOK_SECRET: z.string().default(""),
+  GITLAB_DEFAULT_PROJECT: z.string().default(""),
+
+  // GitHub
+  GITHUB_TOKEN: z.string().default(""),
+  GITHUB_DEFAULT_OWNER: z.string().default(""),
+  GITHUB_DEFAULT_REPO: z.string().default(""),
+  GITHUB_BASE_URL: z.string().url().default("https://api.github.com"),
 
   // Policy
   POLICY_APPROVAL_MODE: z

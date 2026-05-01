@@ -237,9 +237,9 @@ What would you like to do?
 Set in AI Assistant configuration:
 
 ```bash
-OPENCLAW_AGENT_URL=http://localhost:3000
-OPENCLAW_AGENT_MODE=productivity  # or engineering
-OPENCLAW_AGENT_USER_ID=user-123
+AI_ASSISTANT_URL=http://localhost:3000
+AI_ASSISTANT_MODE=productivity  # or engineering
+AI_ASSISTANT_USER_ID=user-123
 ```
 
 ### Tool Permissions

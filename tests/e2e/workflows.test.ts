@@ -150,6 +150,14 @@ describe("E2E: Calendar CRUD + ICS Export", () => {
   let createdEventId: string;
 
   beforeAll(async () => {
+    const calDir = path.join(process.cwd(), "data", "calendar");
+    if (fs.existsSync(calDir)) {
+      for (const f of fs
+        .readdirSync(calDir)
+        .filter((f) => f.endsWith(".json"))) {
+        fs.unlinkSync(path.join(calDir, f));
+      }
+    }
     server = await buildTestServer();
     await server.ready();
     authToken = createSessionToken("e2e-test-user");
@@ -160,8 +168,15 @@ describe("E2E: Calendar CRUD + ICS Export", () => {
   });
 
   it("should create a calendar event", async () => {
-    const startTime = new Date(Date.now() + 3600000).toISOString();
-    const endTime = new Date(Date.now() + 7200000).toISOString();
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    if (tomorrow.getDay() === 0) tomorrow.setDate(tomorrow.getDate() + 1);
+    if (tomorrow.getDay() === 6) tomorrow.setDate(tomorrow.getDate() + 2);
+    tomorrow.setHours(10, 0, 0, 0);
+    const endTimeDate = new Date(tomorrow);
+    endTimeDate.setHours(11, 0, 0, 0);
+    const startTime = tomorrow.toISOString();
+    const endTime = endTimeDate.toISOString();
 
     const response = await server.inject({
       method: "POST",

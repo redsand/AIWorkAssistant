@@ -5,7 +5,7 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getSystemPrompt, opencodeClient } from "../agent";
-import { getTools } from "../agent/tool-registry";
+import { getTools, getToolsByCategory, getAllToolsForMode } from "../agent/tool-registry";
 import { dispatchToolCall } from "../agent/tool-dispatcher";
 import { AGENT_MODES } from "../config/constants";
 import type { Tool, ChatMessage } from "../agent/opencode-client";
@@ -39,7 +39,6 @@ export async function chatRoutes(fastify: FastifyInstance) {
     try {
       const body = chatRequestSchema.parse(request.body);
 
-      // Check if OpenCode API is configured
       if (!opencodeClient.isConfigured()) {
         reply.code(503);
         return {
@@ -51,7 +50,6 @@ export async function chatRoutes(fastify: FastifyInstance) {
       let sessionId = body.sessionId;
       let messages: ChatMessage[];
 
-      // Use session if provided and still exists, otherwise create new one
       const existingSession = sessionId
         ? conversationManager.getSession(sessionId)
         : null;
@@ -89,7 +87,6 @@ export async function chatRoutes(fastify: FastifyInstance) {
         );
       }
 
-      // Get tools for mode if enabled
       let tools: Tool[] | undefined = undefined;
       if (body.includeTools) {
         const modeTools = getTools(body.mode);
@@ -116,9 +113,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
         });
       }
 
-      // Call AI provider
       let response = await opencodeClient.chat({
-        messages,
+        messages: messages,
         tools,
         temperature: 0.7,
         top_p: 0.95,
@@ -127,9 +123,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
       let allToolCalls: Array<{ id: string; name: string; params: any }> = [];
       let allToolResults: Record<string, unknown> = {};
 
-      // Tool call loop: dispatch tools, feed results back, repeat until AI gives text
       let loopCount = 0;
-      const maxLoops = 5;
+      const maxLoops = 10;
 
       while (
         response.toolCalls &&
@@ -138,7 +133,6 @@ export async function chatRoutes(fastify: FastifyInstance) {
       ) {
         loopCount++;
 
-        // Add assistant response to session
         if (sessionId) {
           conversationManager.addMessage(sessionId, {
             role: "assistant",
@@ -159,7 +153,6 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
         allToolCalls = allToolCalls.concat(toolCalls);
 
-        // Dispatch tool calls and collect results
         for (const tc of toolCalls) {
           const result = await dispatchToolCall(
             tc.name,
@@ -177,7 +170,6 @@ export async function chatRoutes(fastify: FastifyInstance) {
           }
         }
 
-        // Feed tool results back to AI for a text response
         const followupMessages: ChatMessage[] = [
           ...messages,
           {
@@ -200,7 +192,6 @@ export async function chatRoutes(fastify: FastifyInstance) {
         });
       }
 
-      // Add final assistant response to session
       if (sessionId) {
         conversationManager.addMessage(sessionId, {
           role: "assistant",
@@ -208,10 +199,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
         });
       }
 
-      // Return response
       return {
         sessionId,
         content: response.content,
+        thinking: response.thinking,
         toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
         toolResults:
           Object.keys(allToolResults).length > 0 ? allToolResults : undefined,
@@ -233,52 +224,184 @@ export async function chatRoutes(fastify: FastifyInstance) {
    * Stream chat endpoint
    */
   fastify.post("/chat/stream", async (request, reply) => {
-    try {
-      const body = chatRequestSchema.parse(request.body);
+    const body = chatRequestSchema.parse(request.body);
 
-      // Check if OpenCode API is configured
-      if (!opencodeClient.isConfigured()) {
-        reply.code(503);
-        return {
-          error: "OpenCode API not configured",
-          message: "Please set OPENCODE_API_KEY environment variable",
-        };
-      }
-
-      // Set headers for streaming
-      reply.raw.setHeader("Content-Type", "text/event-stream");
-      reply.raw.setHeader("Cache-Control", "no-cache");
-      reply.raw.setHeader("Connection", "keep-alive");
-
-      // Get system prompt for mode
-      const systemPrompt = getSystemPrompt(body.mode);
-
-      // Build messages array
-      const messages = [
-        { role: "system" as const, content: systemPrompt },
-        { role: "user" as const, content: body.message },
-      ];
-
-      // Stream response
-      for await (const chunk of opencodeClient.chatStream({
-        messages,
-        temperature: 0.7,
-        top_p: 0.95,
-      })) {
-        reply.raw.write(`data: ${JSON.stringify({ content: chunk })}\n\n`);
-      }
-
-      reply.raw.write("data: [DONE]\n\n");
-      reply.raw.end();
-      return reply;
-    } catch (error) {
-      fastify.log.error(error);
-      reply.code(500);
+    if (!opencodeClient.isConfigured()) {
+      reply.code(503);
       return {
-        error: "Failed to process chat stream",
-        message: error instanceof Error ? error.message : "Unknown error",
+        error: "AI provider not configured",
+        message: "Please set the appropriate API key environment variable",
       };
     }
+
+    reply.raw.setHeader("Content-Type", "text/event-stream");
+    reply.raw.setHeader("Cache-Control", "no-cache");
+    reply.raw.setHeader("Connection", "keep-alive");
+    reply.raw.setHeader("X-Accel-Buffering", "no");
+
+    const sendEvent = (event: string, data: unknown) => {
+      reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    try {
+      const systemPrompt = getSystemPrompt(body.mode);
+      let sessionId = body.sessionId;
+
+      const existingSession = sessionId
+        ? conversationManager.getSession(sessionId)
+        : null;
+
+      let messages: ChatMessage[];
+
+      if (existingSession) {
+        messages = conversationManager.getSessionMessages(sessionId!);
+        messages.push({ role: "user", content: body.message });
+      } else {
+        sessionId = conversationManager.startSession(body.userId, body.mode);
+        messages = [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: body.message },
+        ];
+      }
+
+      conversationManager.addMessage(sessionId!, {
+        role: "user",
+        content: body.message,
+      });
+
+      sendEvent("session", { sessionId });
+
+      let tools: Tool[] | undefined = undefined;
+      if (body.includeTools) {
+        const modeTools = getTools(body.mode);
+        tools = modeTools.map((tool) => {
+          const properties: Record<string, unknown> = {};
+          for (const [key, param] of Object.entries(tool.params)) {
+            const { required: _, ...rest } = param as any;
+            properties[key] = rest;
+          }
+          return {
+            type: "function" as const,
+            function: {
+              name: tool.name,
+              description: tool.description,
+              parameters: {
+                type: "object",
+                properties,
+                required: Object.entries(tool.params)
+                  .filter(([_, param]) => (param as any).required)
+                  .map(([name]) => name),
+              },
+            },
+          };
+        });
+      }
+
+      let response = await opencodeClient.chat({
+        messages: messages,
+        tools,
+        temperature: 0.7,
+        top_p: 0.95,
+      });
+
+      let allToolResults: Record<string, unknown> = {};
+      let loopCount = 0;
+      const maxLoops = 10;
+
+      while (
+        response.toolCalls &&
+        response.toolCalls.length > 0 &&
+        loopCount < maxLoops
+      ) {
+        loopCount++;
+
+        if (sessionId) {
+          conversationManager.addMessage(sessionId, {
+            role: "assistant",
+            content: response.content,
+            toolCalls: response.toolCalls.map((tc) => ({
+              id: tc.id,
+              name: tc.function.name,
+              params: JSON.parse(tc.function.arguments),
+            })),
+          });
+        }
+
+        const toolCalls = response.toolCalls.map((tc) => ({
+          id: tc.id,
+          name: tc.function.name,
+          params: JSON.parse(tc.function.arguments),
+        }));
+
+        for (const tc of toolCalls) {
+          sendEvent("tool_start", {
+            id: tc.id,
+            name: tc.name,
+            params: tc.params,
+          });
+
+          const result = await dispatchToolCall(
+            tc.name,
+            tc.params,
+            body.userId,
+          );
+          allToolResults[tc.id] = result;
+
+          sendEvent("tool_result", { id: tc.id, result });
+
+          if (sessionId) {
+            conversationManager.addMessage(sessionId, {
+              role: "tool",
+              content: JSON.stringify(result),
+              tool_call_id: tc.id,
+            });
+          }
+        }
+
+        const followupMessages: ChatMessage[] = [
+          ...messages,
+          {
+            role: "assistant",
+            content: response.content,
+            tool_calls: response.toolCalls,
+          },
+          ...toolCalls.map((tc) => ({
+            role: "tool" as const,
+            content: JSON.stringify(allToolResults[tc.id]),
+            tool_call_id: tc.id,
+          })),
+        ];
+
+        response = await opencodeClient.chat({
+          messages: followupMessages,
+          tools,
+          temperature: 0.7,
+          top_p: 0.95,
+        });
+      }
+
+      if (sessionId) {
+        conversationManager.addMessage(sessionId, {
+          role: "assistant",
+          content: response.content,
+        });
+      }
+
+      if (response.thinking) {
+        sendEvent("thinking", { thinking: response.thinking });
+      }
+      sendEvent("content", { content: response.content });
+      sendEvent("done", { usage: response.usage, model: response.model });
+    } catch (error) {
+      fastify.log.error(error);
+      sendEvent("error", {
+        error: "Failed to process stream request",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+
+    reply.raw.end();
+    return reply;
   });
 
   /**

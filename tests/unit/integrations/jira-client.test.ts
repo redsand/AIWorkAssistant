@@ -92,24 +92,14 @@ describe("Jira Client", () => {
         return;
       }
 
-      try {
-        const jql = "updated >= -24h ORDER BY updated DESC";
-        const issues = await jiraClient.searchIssues(jql, 10);
+      const jql = "updated >= -24h ORDER BY updated DESC";
+      const issues = await jiraClient.searchIssues(jql, 10);
 
-        expect(Array.isArray(issues)).toBe(true);
-        console.log(`Found ${issues.length} issues updated in last 24h`);
+      expect(Array.isArray(issues)).toBe(true);
+      console.log(`Found ${issues.length} issues updated in last 24h`);
 
-        if (issues.length > 0) {
-          console.log("Sample:", issues[0].key, issues[0].fields.summary);
-        }
-      } catch (error) {
-        if (error instanceof Error && error.message.includes("410")) {
-          console.warn(
-            "Jira JQL search returned 410 (Gone) - API version deprecated, skipping",
-          );
-          return;
-        }
-        throw error;
+      if (issues.length > 0) {
+        console.log("Sample:", issues[0].key, issues[0].fields.summary);
       }
     }, 30000);
   });

@@ -522,6 +522,56 @@
         font-size: 0.85em;
       }
 
+      .message.assistant .message-bubble .thinking-section {
+        background: #f8f9fc;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin: 0.5em 0;
+        font-size: 0.9em;
+        color: #555;
+      }
+
+      .message.assistant .message-bubble .thinking-header {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-weight: 600;
+        font-size: 0.85em;
+        color: #667eea;
+        cursor: pointer;
+        user-select: none;
+        margin-bottom: 6px;
+      }
+
+      .message.assistant .message-bubble .thinking-header:hover {
+        color: #5568d3;
+      }
+
+      .message.assistant .message-bubble .thinking-toggle {
+        font-size: 10px;
+        transition: transform 0.2s;
+      }
+
+      .message.assistant .message-bubble .thinking-toggle.expanded {
+        transform: rotate(90deg);
+      }
+
+      .message.assistant .message-bubble .thinking-body {
+        display: none;
+        white-space: pre-wrap;
+        word-break: break-word;
+        line-height: 1.5;
+        max-height: 300px;
+        overflow-y: auto;
+        padding-top: 6px;
+        border-top: 1px solid #e5e7eb;
+      }
+
+      .message.assistant .message-bubble .thinking-body.expanded {
+        display: block;
+      }
+
       .message.assistant .message-bubble blockquote {
         border-left: 3px solid #667eea;
         margin: 0.5em 0;
@@ -741,6 +791,136 @@
 
       .typing-indicator.active {
         display: block;
+      }
+
+      .tool-progress {
+        margin-bottom: 8px;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        overflow: hidden;
+        background: #f9fafb;
+      }
+
+      .tool-progress-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 12px;
+        cursor: pointer;
+        user-select: none;
+        font-size: 12px;
+        color: #555;
+        transition: background 0.15s;
+      }
+
+      .tool-progress-header:hover {
+        background: #f0f1f3;
+      }
+
+      .tool-progress-header-left {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-weight: 500;
+      }
+
+      .tool-progress-toggle {
+        font-size: 10px;
+        transition: transform 0.2s;
+        color: #999;
+      }
+
+      .tool-progress-toggle.expanded {
+        transform: rotate(90deg);
+      }
+
+      .tool-progress-count {
+        font-size: 11px;
+        color: #999;
+      }
+
+      .tool-progress-body {
+        display: none;
+        border-top: 1px solid #e5e7eb;
+        background: white;
+      }
+
+      .tool-progress-body.expanded {
+        display: block;
+      }
+
+      .tool-call-item {
+        padding: 8px 12px;
+        border-bottom: 1px solid #f3f4f6;
+        font-size: 12px;
+      }
+
+      .tool-call-item:last-child {
+        border-bottom: none;
+      }
+
+      .tool-call-name {
+        font-weight: 600;
+        color: #333;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .tool-call-status {
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+
+      .tool-call-status.running {
+        background: #f59e0b;
+        animation: pulse 1s infinite;
+      }
+
+      .tool-call-status.done {
+        background: #4ade80;
+      }
+
+      .tool-call-status.error {
+        background: #f87171;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.4;
+        }
+      }
+
+      .tool-call-params {
+        margin-top: 4px;
+        color: #666;
+        font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+        font-size: 11px;
+        max-height: 60px;
+        overflow: hidden;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+
+      .tool-call-result {
+        margin-top: 4px;
+        padding: 4px 6px;
+        background: #f9fafb;
+        border-radius: 4px;
+        color: #555;
+        font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+        font-size: 11px;
+        max-height: 80px;
+        overflow: hidden;
+        white-space: pre-wrap;
+        word-break: break-all;
       }
 
       @media (max-width: 768px) {
@@ -1135,6 +1315,11 @@
 
           for (const msg of data.messages) {
             if (msg.role === "system" || msg.role === "tool") continue;
+            if (
+              msg.role === "assistant" &&
+              (!msg.content || msg.content.trim() === "")
+            )
+              continue;
             addMessage(msg.content, msg.role);
           }
         } catch {
@@ -1175,12 +1360,15 @@
         if (!message) return;
 
         input.value = "";
-        showTyping(true);
-
         addMessage(message, "user");
 
+        const { statusDiv, progressEl } = createToolProgress();
+        document.getElementById("chatMessages").appendChild(progressEl);
+        document.getElementById("chatMessages").scrollTop =
+          document.getElementById("chatMessages").scrollHeight;
+
         try {
-          const response = await fetch(`${API_BASE}/chat`, {
+          const response = await fetch(`${API_BASE}/chat/stream`, {
             method: "POST",
             headers: authHeaders(),
             body: JSON.stringify({
@@ -1189,35 +1377,224 @@
               userId: "web-user",
               sessionId: currentSessionId,
               includeMemory: true,
+              includeTools: true,
             }),
           });
 
           if (response.status === 401 || response.status === 403) {
+            progressEl.remove();
             showLoginOverlay();
             return;
           }
 
-          const data = await response.json();
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let contentReceived = "";
+          let thinkingReceived = "";
+          let eventType = "";
 
-          if (response.ok) {
-            currentSessionId = data.sessionId || currentSessionId;
-            localStorage.setItem("currentSessionId", currentSessionId);
-            addMessage(data.content, "assistant");
-          } else {
-            addMessage(
-              "Sorry, I encountered an error. Please try again.",
-              "assistant",
-            );
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+              if (line.startsWith("event: ")) {
+                eventType = line.slice(7).trim();
+                continue;
+              }
+              if (line.startsWith("data: ")) {
+                const dataStr = line.slice(6).trim();
+                if (dataStr === "[DONE]") continue;
+
+                try {
+                  const data = JSON.parse(dataStr);
+
+                  if (data.sessionId) {
+                    currentSessionId = data.sessionId;
+                    localStorage.setItem("currentSessionId", currentSessionId);
+                  }
+
+                  if (eventType === "tool_start") {
+                    addToolCall(data.id, data.name, data.params);
+                  }
+
+                  if (eventType === "tool_result") {
+                    completeToolCall(data.id, data.result);
+                  }
+
+                  if (eventType === "thinking" && data.thinking) {
+                    thinkingReceived += data.thinking;
+                  }
+
+                  if (data.content) {
+                    contentReceived += data.content;
+                  }
+
+                  if (data.message) {
+                    progressEl.remove();
+                    addMessage(
+                      "Sorry, I encountered an error: " + data.message,
+                      "assistant",
+                    );
+                    return;
+                  }
+                } catch {}
+              }
+            }
+          }
+
+          progressEl.remove();
+
+          if (contentReceived && contentReceived.trim()) {
+            addMessage(contentReceived, "assistant", thinkingReceived || undefined);
           }
         } catch (error) {
+          progressEl.remove();
           console.error("Failed to send message:", error);
           addMessage(
             "Failed to connect to the agent. Please check your connection.",
             "assistant",
           );
-        } finally {
-          showTyping(false);
         }
+      }
+
+      function createToolProgress() {
+        const progressEl = document.createElement("div");
+        progressEl.className = "tool-progress";
+
+        const header = document.createElement("div");
+        header.className = "tool-progress-header";
+        header.innerHTML = `
+          <span class="tool-progress-header-left">
+            <span class="tool-call-status running"></span>
+            AI Assistant is working...
+          </span>
+          <span style="display:flex;align-items:center;gap:6px;">
+            <span class="tool-progress-count" data-count="0"></span>
+            <span class="tool-progress-toggle">&#9654;</span>
+          </span>
+        `;
+
+        const body = document.createElement("div");
+        body.className = "tool-progress-body";
+
+        header.addEventListener("click", () => {
+          body.classList.toggle("expanded");
+          header
+            .querySelector(".tool-progress-toggle")
+            .classList.toggle("expanded");
+        });
+
+        progressEl.appendChild(header);
+        progressEl.appendChild(body);
+
+        return { statusDiv: null, progressEl };
+      }
+
+      let activeToolCalls = {};
+
+      function addToolCall(id, name, params) {
+        activeToolCalls[id] = { name, params };
+
+        const progressEl = document.querySelector(
+          ".tool-progress:last-of-type",
+        );
+        if (!progressEl) return;
+
+        const body = progressEl.querySelector(".tool-progress-body");
+        const item = document.createElement("div");
+        item.className = "tool-call-item";
+        item.dataset.toolId = id;
+
+        const paramsStr =
+          typeof params === "object"
+            ? JSON.stringify(params, null, 2)
+            : String(params);
+        const shortParams =
+          paramsStr.length > 200 ? paramsStr.slice(0, 200) + "..." : paramsStr;
+
+        item.innerHTML = `
+          <div class="tool-call-name">
+            <span class="tool-call-status running"></span>
+            ${escapeHtml(name)}
+          </div>
+          <div class="tool-call-params">${escapeHtml(shortParams)}</div>
+        `;
+
+        body.appendChild(item);
+
+        const countEl = progressEl.querySelector(".tool-progress-count");
+        const count = body.querySelectorAll(".tool-call-item").length;
+        countEl.textContent = `${count} tool${count !== 1 ? "s" : ""}`;
+
+        body.classList.add("expanded");
+        progressEl
+          .querySelector(".tool-progress-toggle")
+          .classList.add("expanded");
+
+        const chatMessages = document.getElementById("chatMessages");
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+      }
+
+      function completeToolCall(id, result) {
+        const progressEl = document.querySelector(
+          ".tool-progress:last-of-type",
+        );
+        if (!progressEl) return;
+
+        const item = progressEl.querySelector(`[data-tool-id="${id}"]`);
+        if (!item) return;
+
+        const statusDot = item.querySelector(".tool-call-status");
+        statusDot.classList.remove("running");
+        statusDot.classList.add("done");
+
+        const resultStr =
+          typeof result === "object"
+            ? JSON.stringify(result, null, 2)
+            : String(result);
+        const shortResult =
+          resultStr.length > 300 ? resultStr.slice(0, 300) + "..." : resultStr;
+
+        const resultDiv = document.createElement("div");
+        resultDiv.className = "tool-call-result";
+        resultDiv.textContent = shortResult;
+        item.appendChild(resultDiv);
+
+        const chatMessages = document.getElementById("chatMessages");
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+
+        const body = progressEl.querySelector(".tool-progress-body");
+        const running = body.querySelectorAll(".tool-call-status.running");
+        if (running.length === 0) {
+          const headerStatus = progressEl.querySelector(
+            ".tool-progress-header-left .tool-call-status",
+          );
+          if (headerStatus) {
+            headerStatus.classList.remove("running");
+            headerStatus.classList.add("done");
+          }
+          const headerText = progressEl.querySelector(
+            ".tool-progress-header-left",
+          );
+          if (headerText) {
+            headerText.innerHTML = `
+              <span class="tool-call-status done"></span>
+              Finished processing
+            `;
+          }
+        }
+      }
+
+      function escapeHtml(str) {
+        const div = document.createElement("div");
+        div.textContent = str;
+        return div.innerHTML;
       }
 
       async function resendMessage(message) {
@@ -1235,10 +1612,13 @@
           lastUserMsg.remove();
         }
 
-        showTyping(true);
+        const { progressEl } = createToolProgress();
+        document.getElementById("chatMessages").appendChild(progressEl);
+        document.getElementById("chatMessages").scrollTop =
+          document.getElementById("chatMessages").scrollHeight;
 
         try {
-          const response = await fetch(`${API_BASE}/chat`, {
+          const response = await fetch(`${API_BASE}/chat/stream`, {
             method: "POST",
             headers: authHeaders(),
             body: JSON.stringify({
@@ -1247,41 +1627,95 @@
               userId: "web-user",
               sessionId: currentSessionId,
               includeMemory: true,
+              includeTools: true,
             }),
           });
 
           if (response.status === 401 || response.status === 403) {
+            progressEl.remove();
             showLoginOverlay();
             return;
           }
 
-          const data = await response.json();
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let contentReceived = "";
+          let thinkingReceived = "";
+          let eventType = "";
 
-          if (response.ok) {
-            currentSessionId = data.sessionId || currentSessionId;
-            localStorage.setItem("currentSessionId", currentSessionId);
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+              if (line.startsWith("event: ")) {
+                eventType = line.slice(7).trim();
+                continue;
+              }
+              if (line.startsWith("data: ")) {
+                const dataStr = line.slice(6).trim();
+                if (dataStr === "[DONE]") continue;
+
+                try {
+                  const data = JSON.parse(dataStr);
+
+                  if (data.sessionId) {
+                    currentSessionId = data.sessionId;
+                    localStorage.setItem("currentSessionId", currentSessionId);
+                  }
+
+                  if (eventType === "tool_start") {
+                    addToolCall(data.id, data.name, data.params);
+                  }
+
+                  if (eventType === "tool_result") {
+                    completeToolCall(data.id, data.result);
+                  }
+
+                  if (eventType === "thinking" && data.thinking) {
+                    thinkingReceived += data.thinking;
+                  }
+
+                  if (data.content) {
+                    contentReceived += data.content;
+                  }
+
+                  if (data.message) {
+                    progressEl.remove();
+                    addMessage(
+                      "Sorry, I encountered an error: " + data.message,
+                      "assistant",
+                    );
+                    return;
+                  }
+                } catch {}
+              }
+            }
+          }
+
+          progressEl.remove();
+
+          if (contentReceived && contentReceived.trim()) {
             addMessage(message, "user");
-            addMessage(data.content, "assistant");
-          } else {
-            addMessage(message, "user");
-            addMessage(
-              "Sorry, I encountered an error. Please try again.",
-              "assistant",
-            );
+            addMessage(contentReceived, "assistant", thinkingReceived || undefined);
           }
         } catch (error) {
           console.error("Failed to send message:", error);
+          progressEl.remove();
           addMessage(message, "user");
           addMessage(
             "Failed to connect to the agent. Please check your connection.",
             "assistant",
           );
-        } finally {
-          showTyping(false);
         }
       }
 
-      function addMessage(content, type) {
+      function addMessage(content, type, thinking) {
         const messagesDiv = document.getElementById("chatMessages");
         const messageDiv = document.createElement("div");
         messageDiv.className = `message ${type}`;
@@ -1294,7 +1728,20 @@
         bubble.className = "message-bubble";
 
         if (type === "assistant") {
-          bubble.innerHTML = renderMarkdown(content);
+          let html = "";
+
+          if (thinking && thinking.trim()) {
+            const thinkingId = "think-" + Date.now();
+            html += `<div class="thinking-section">`;
+            html += `<div class="thinking-header" onclick="document.getElementById('${thinkingId}').classList.toggle('expanded'); document.getElementById('${thinkingId}-toggle').classList.toggle('expanded');">`;
+            html += `<span class="thinking-toggle" id="${thinkingId}-toggle">&#9654;</span> Thinking`;
+            html += `</div>`;
+            html += `<div class="thinking-body" id="${thinkingId}">${escapeHtml(thinking)}</div>`;
+            html += `</div>`;
+          }
+
+          html += renderMarkdown(content);
+          bubble.innerHTML = html;
         } else {
           bubble.textContent = content;
         }

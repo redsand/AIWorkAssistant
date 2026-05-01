@@ -24,6 +24,7 @@ import {
   getOpenCodeApiKey,
 } from "./middleware/auth";
 import { startTunnel } from "./integrations/file/tunnel";
+import { startCalendarScheduler } from "./scheduler/calendar-midnight";
 import path from "path";
 
 export async function buildServer() {
@@ -31,6 +32,8 @@ export async function buildServer() {
     logger: {
       level: env.NODE_ENV === "development" ? "debug" : "info",
     },
+    requestTimeout: 0,
+    keepAliveTimeout: 120000,
   });
 
   // Enable CORS
@@ -177,6 +180,7 @@ async function start() {
     console.log("");
 
     const tunnelUrl = await startTunnel();
+    startCalendarScheduler();
     if (tunnelUrl) {
       const webcalUrl = tunnelUrl.replace(/^https?/, "webcal");
       console.log("");

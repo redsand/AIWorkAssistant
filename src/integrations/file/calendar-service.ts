@@ -36,6 +36,9 @@ export interface CreateEventParams {
   type?: CalendarEvent["type"];
 }
 
+const BUSINESS_HOUR_START = 9;
+const BUSINESS_HOUR_END = 17;
+
 class FileCalendarService {
   private calendarDir: string;
 
@@ -44,26 +47,119 @@ class FileCalendarService {
     this.ensureDirectory();
   }
 
-  /**
-   * Ensure calendar directory exists
-   */
   private ensureDirectory() {
     if (!existsSync(this.calendarDir)) {
       mkdirSync(this.calendarDir, { recursive: true });
     }
   }
 
-  /**
-   * Get file path for an event
-   */
   private getEventPath(eventId: string): string {
     return join(this.calendarDir, `${eventId}.json`);
   }
 
-  /**
-   * Create a new event
-   */
+  isWithinBusinessHours(start: Date, end: Date): boolean {
+    const day = start.getDay();
+    if (day === 0 || day === 6) return false;
+    const sHour = start.getHours() + start.getMinutes() / 60;
+    const eHour = end.getHours() + end.getMinutes() / 60;
+    if (sHour < BUSINESS_HOUR_START || eHour > BUSINESS_HOUR_END) return false;
+    if (start.toDateString() !== end.toDateString()) return false;
+    return true;
+  }
+
+  findOverlaps(start: Date, end: Date, excludeId?: string): CalendarEvent[] {
+    const dayStart = new Date(start);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(start);
+    dayEnd.setHours(23, 59, 59, 999);
+    const existing = this.listEvents(dayStart, dayEnd);
+    return existing.filter((e) => {
+      if (excludeId && e.id === excludeId) return false;
+      return start < e.endTime && end > e.startTime;
+    });
+  }
+
+  findNextAvailableSlot(
+    date: Date,
+    durationMinutes: number,
+    afterTime?: Date,
+  ): Date | null {
+    let d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+
+    if (afterTime) {
+      const afterDate = new Date(afterTime);
+      afterDate.setHours(0, 0, 0, 0);
+      if (afterDate > d) d = afterDate;
+    }
+
+    for (let attempt = 0; attempt < 14; attempt++) {
+      const day = d.getDay();
+      if (day === 0) {
+        d.setDate(d.getDate() + 1);
+        continue;
+      }
+      if (day === 6) {
+        d.setDate(d.getDate() + 2);
+        continue;
+      }
+
+      const dayStart = new Date(d);
+      dayStart.setHours(BUSINESS_HOUR_START, 0, 0, 0);
+      const dayEnd = new Date(d);
+      dayEnd.setHours(BUSINESS_HOUR_END, 0, 0, 0);
+
+      const slotStart =
+        afterTime && afterTime > dayStart
+          ? new Date(afterTime)
+          : new Date(dayStart);
+      if (slotStart < dayStart) slotStart.setTime(dayStart.getTime());
+
+      const slotEnd = new Date(slotStart.getTime() + durationMinutes * 60000);
+      if (slotEnd > dayEnd) {
+        d.setDate(d.getDate() + 1);
+        afterTime = undefined;
+        continue;
+      }
+
+      const overlaps = this.findOverlaps(slotStart, slotEnd);
+      if (overlaps.length === 0) return slotStart;
+
+      const sorted = overlaps.sort(
+        (a, b) => a.endTime.getTime() - b.endTime.getTime(),
+      );
+      for (const existing of sorted) {
+        const candidate = new Date(existing.endTime.getTime());
+        const candidateEnd = new Date(
+          candidate.getTime() + durationMinutes * 60000,
+        );
+        if (candidateEnd > dayEnd) break;
+        const candidateOverlaps = this.findOverlaps(candidate, candidateEnd);
+        if (candidateOverlaps.length === 0) return candidate;
+      }
+
+      d.setDate(d.getDate() + 1);
+      afterTime = undefined;
+    }
+
+    return null;
+  }
+
   async createEvent(params: CreateEventParams): Promise<CalendarEvent> {
+    if (!this.isWithinBusinessHours(params.startTime, params.endTime)) {
+      throw new Error(
+        `Events must be scheduled within business hours (Mon-Fri, ${BUSINESS_HOUR_START}:00-${BUSINESS_HOUR_END}:00). ` +
+          `Requested: ${params.startTime.toISOString()} - ${params.endTime.toISOString()}`,
+      );
+    }
+
+    const overlaps = this.findOverlaps(params.startTime, params.endTime);
+    if (overlaps.length > 0) {
+      throw new Error(
+        `Time slot conflicts with existing event(s): ${overlaps.map((e) => `"${e.summary}" (${e.startTime.toISOString()}-${e.endTime.toISOString()})`).join(", ")}`,
+      );
+    }
+
     const event: CalendarEvent = {
       id: uuidv4(),
       summary: params.summary,
@@ -186,41 +282,69 @@ class FileCalendarService {
     return events.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
   }
 
-  /**
-   * Create focus block
-   */
   async createFocusBlock(params: {
     title: string;
     startTime: Date;
     duration: number;
     description?: string;
+    autoSchedule?: boolean;
   }): Promise<CalendarEvent> {
-    const endTime = new Date(
-      params.startTime.getTime() + params.duration * 60000,
-    );
+    let start = params.startTime;
+
+    if (
+      params.autoSchedule ||
+      !this.isWithinBusinessHours(
+        start,
+        new Date(start.getTime() + params.duration * 60000),
+      )
+    ) {
+      const slot = this.findNextAvailableSlot(start, params.duration);
+      if (!slot) {
+        throw new Error(
+          `No available ${params.duration}-minute slot within business hours (Mon-Fri ${BUSINESS_HOUR_START}-${BUSINESS_HOUR_END}) for ${start.toDateString()}`,
+        );
+      }
+      start = slot;
+    }
+
+    const endTime = new Date(start.getTime() + params.duration * 60000);
 
     return this.createEvent({
       summary: `🎯 Focus: ${params.title}`,
       description:
         params.description || "Deep work session - minimize interruptions",
-      startTime: params.startTime,
+      startTime: start,
       endTime: endTime,
       type: "focus",
     });
   }
 
-  /**
-   * Create health block
-   */
   async createHealthBlock(params: {
     title: string;
     startTime: Date;
     duration: number;
     type: "fitness" | "meal" | "mental_health";
+    autoSchedule?: boolean;
   }): Promise<CalendarEvent> {
-    const endTime = new Date(
-      params.startTime.getTime() + params.duration * 60000,
-    );
+    let start = params.startTime;
+
+    if (
+      params.autoSchedule ||
+      !this.isWithinBusinessHours(
+        start,
+        new Date(start.getTime() + params.duration * 60000),
+      )
+    ) {
+      const slot = this.findNextAvailableSlot(start, params.duration);
+      if (!slot) {
+        throw new Error(
+          `No available ${params.duration}-minute slot within business hours for ${start.toDateString()}`,
+        );
+      }
+      start = slot;
+    }
+
+    const endTime = new Date(start.getTime() + params.duration * 60000);
 
     const emoji =
       params.type === "fitness"
@@ -243,7 +367,7 @@ class FileCalendarService {
     return this.createEvent({
       summary: `${emoji} ${params.title}`,
       description: description,
-      startTime: params.startTime,
+      startTime: start,
       endTime: endTime,
       type: params.type,
     });
@@ -378,6 +502,71 @@ class FileCalendarService {
       latest:
         events.length > 0 ? events[events.length - 1].summary : "No events",
     };
+  }
+
+  rescheduleIncompleteEvents(): {
+    rescheduled: number;
+    deleted: number;
+    details: string[];
+  } {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const events = this.listEvents();
+    const result = { rescheduled: 0, deleted: 0, details: [] as string[] };
+
+    for (const event of events) {
+      const isPast = event.endTime < now;
+      if (!isPast) continue;
+
+      const isMeeting = event.type === "meeting";
+      const durationMinutes = Math.round(
+        (event.endTime.getTime() - event.startTime.getTime()) / 60000,
+      );
+
+      if (isMeeting) {
+        this.deleteEvent(event.id);
+        result.deleted++;
+        result.details.push(
+          `Deleted past meeting: "${event.summary}" (${event.startTime.toISOString()})`,
+        );
+        continue;
+      }
+
+      const slot = this.findNextAvailableSlot(today, durationMinutes);
+      if (!slot) {
+        this.deleteEvent(event.id);
+        result.deleted++;
+        result.details.push(
+          `Deleted (no slot found): "${event.summary}" (${durationMinutes}min)`,
+        );
+        continue;
+      }
+
+      const newEnd = new Date(slot.getTime() + durationMinutes * 60000);
+      this.deleteEvent(event.id);
+
+      try {
+        this.createEvent({
+          summary: event.summary,
+          description: `[Rescheduled from ${event.startTime.toLocaleDateString()}] ${event.description || ""}`,
+          startTime: slot,
+          endTime: newEnd,
+          location: event.location,
+          type: event.type,
+        });
+        result.rescheduled++;
+        result.details.push(
+          `Rescheduled: "${event.summary}" ${event.startTime.toLocaleDateString()} -> ${slot.toLocaleDateString()} ${slot.toLocaleTimeString()}`,
+        );
+      } catch {
+        result.deleted++;
+        result.details.push(
+          `Failed to reschedule: "${event.summary}" (${durationMinutes}min)`,
+        );
+      }
+    }
+
+    return result;
   }
 
   /**

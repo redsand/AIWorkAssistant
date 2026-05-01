@@ -53,9 +53,10 @@ export class ConversationManager {
   private memoryBasePath: string;
 
   // Configuration thresholds
-  private readonly MAX_MESSAGES_BEFORE_COMPACT = 50;
-  private readonly MAX_TOKENS_BEFORE_COMPACT = 8000; // Approximate
-  private readonly MIN_RECENT_MESSAGES = 10;
+  private readonly MAX_MESSAGES_BEFORE_COMPACT = 60;
+  private readonly MAX_TOKENS_BEFORE_COMPACT = 50000;
+  private readonly MIN_RECENT_MESSAGES = 8;
+  private readonly MAX_TOOL_RESULT_LENGTH = 3000;
   private readonly SESSION_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
 
   constructor() {
@@ -125,15 +126,22 @@ export class ConversationManager {
       throw new Error(`Session ${sessionId} not found`);
     }
 
+    const truncatedContent =
+      message.role === "tool" &&
+      message.content.length > this.MAX_TOOL_RESULT_LENGTH
+        ? message.content.substring(0, this.MAX_TOOL_RESULT_LENGTH) +
+          "\n...[truncated]"
+        : message.content;
+
     const messageWithTimestamp: Message = {
       ...message,
+      content: truncatedContent,
       timestamp: new Date(),
     };
 
     session.messages.push(messageWithTimestamp);
     session.updatedAt = new Date();
 
-    // Check if we need to compact
     if (this.shouldCompact(session)) {
       this.compactSession(sessionId);
     }

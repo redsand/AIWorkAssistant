@@ -17,17 +17,19 @@ export function createProvider(): AIProvider {
         topP: env.ZAI_TOP_P,
         maxRetries: 5,
         timeout: 300000,
+        maxContextTokens: env.ZAI_MAX_CONTEXT_TOKENS,
       });
 
     case "ollama":
       return new OllamaProvider({
-        apiKey: "",
+        apiKey: env.OLLAMA_API_KEY,
         baseUrl: env.OLLAMA_API_URL,
         model: env.OLLAMA_MODEL,
         temperature: env.OLLAMA_TEMPERATURE,
         topP: 0.9,
-        maxRetries: 2,
+        maxRetries: env.OLLAMA_API_KEY ? 5 : 2,
         timeout: 300000,
+        maxContextTokens: env.OLLAMA_MAX_CONTEXT_TOKENS,
       });
 
     default:
@@ -39,6 +41,7 @@ export function createProvider(): AIProvider {
         topP: 0.95,
         maxRetries: 3,
         timeout: 120000,
+        maxContextTokens: 64000,
       });
   }
 }
