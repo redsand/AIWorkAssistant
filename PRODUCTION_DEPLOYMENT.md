@@ -1,6 +1,6 @@
-# 🚀 OpenClaw Agent - Production Deployment Guide
+# 🚀 AI Assistant - Production Deployment Guide
 
-Complete guide for deploying OpenClaw Agent to production with Docker, monitoring, and security hardening.
+Complete guide for deploying AI Assistant to production with Docker, monitoring, and security hardening.
 
 ## 📋 Prerequisites
 
@@ -26,12 +26,14 @@ nano .env
 ### 2. SSL Certificates
 
 **For Development:**
+
 ```bash
 # Generate self-signed certificates
 npm run ssl:generate
 ```
 
 **For Production (Let's Encrypt):**
+
 ```bash
 # Install certbot
 sudo apt-get install certbot
@@ -114,10 +116,12 @@ docker-compose --profile production --profile monitoring up -d
 ### Access Monitoring Dashboards
 
 **Grafana:** http://localhost:3001
+
 - Default credentials: admin / (check .env)
 - Pre-configured dashboards for application metrics
 
 **Prometheus:** http://localhost:9090
+
 - Raw metrics and query interface
 - Alert management
 
@@ -219,15 +223,17 @@ npm run test:production
 ### Resource Allocation
 
 **Default Limits (docker-compose.yml):**
+
 - CPU: 2 cores (max), 0.5 cores (reserved)
 - Memory: 2GB (max), 512MB (reserved)
 
 **For High Traffic:**
+
 ```yaml
 deploy:
   resources:
     limits:
-      cpus: '4'
+      cpus: "4"
       memory: 4G
 ```
 
@@ -243,6 +249,7 @@ deploy:
 ### Common Issues
 
 **Port Already in Use:**
+
 ```bash
 # Find process on port 3000
 netstat -ano | findstr :3000
@@ -252,6 +259,7 @@ taskkill //PID <process_id> //F
 ```
 
 **Database Lock Issues:**
+
 ```bash
 # Check SQLite locks
 ls -la data/*.db-lock
@@ -261,6 +269,7 @@ docker-compose restart app
 ```
 
 **Memory Issues:**
+
 ```bash
 # Check memory usage
 docker stats
@@ -269,6 +278,7 @@ docker stats
 ```
 
 **SSL Certificate Issues:**
+
 ```bash
 # Regenerate certificates
 npm run ssl:generate
@@ -354,9 +364,10 @@ tail -f logs/nginx/error.log
 
 **Production Deployment Status**: ✅ READY
 
-The OpenClaw Agent is production-ready with comprehensive security, monitoring, and backup systems in place.
+The AI Assistant is production-ready with comprehensive security, monitoring, and backup systems in place.
 
 **Next Steps:**
+
 1. Complete environment configuration
 2. Set up SSL certificates
 3. Run production tests

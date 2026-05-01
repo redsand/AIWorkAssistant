@@ -283,12 +283,12 @@ class FileCalendarService {
     const lines: string[] = [
       "BEGIN:VCALENDAR",
       "VERSION:2.0",
-      "PRODID:-//OpenClaw Agent//EN",
+      "PRODID:-//AI Assistant//EN",
       "CALSCALE:GREGORIAN",
       "METHOD:PUBLISH",
-      "X-WR-CALNAME:OpenClaw Calendar",
+      "X-WR-CALNAME:AI Assistant Calendar",
       "X-WR-TIMEZONE:America/New_York",
-      "X-WR-CALDESC:OpenClaw Agent Calendar",
+      "X-WR-CALDESC:AI Assistant Calendar",
       "X-PUBLISHED-TTL:PT15M",
       "REFRESH-INTERVAL;VALUE=PT15M",
       "BEGIN:VTIMEZONE",
@@ -319,7 +319,7 @@ class FileCalendarService {
       lines.push(`DTSTAMP:${now}`);
       lines.push(`CREATED:${now}`);
       lines.push(`LAST-MODIFIED:${now}`);
-      lines.push(`UID:${event.id}@openclaw.agent`);
+      lines.push(`UID:${event.id}@ai-assistant`);
       lines.push(this.foldLine(`SUMMARY:${this.escapeICS(event.summary)}`));
       if (event.description) {
         lines.push(
@@ -341,7 +341,7 @@ class FileCalendarService {
   /**
    * Save ICS file to disk
    */
-  saveICSFile(filename: string = "openclaw-calendar.ics"): string {
+  saveICSFile(filename: string = "ai-assistant-calendar.ics"): string {
     const icsContent = this.exportToICS();
     const icsPath = join(process.cwd(), "data", filename);
 

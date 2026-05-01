@@ -1,4 +1,4 @@
-# Smoke Test Report - OpenClaw Agent
+# Smoke Test Report - AI Assistant
 
 **Test Date:** 2026-04-30 (Updated)
 **Server:** http://localhost:3050

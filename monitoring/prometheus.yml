@@ -1,11 +1,11 @@
-# Prometheus configuration for OpenClaw Agent monitoring
+# Prometheus configuration for AI Assistant monitoring
 
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
   external_labels:
-    cluster: 'openclaw-agent'
-    environment: 'production'
+    cluster: "ai-assistant"
+    environment: "production"
 
 # Alertmanager configuration (optional)
 # alerting:
@@ -21,38 +21,38 @@ global:
 # Scrape configurations
 scrape_configs:
   # Prometheus self-monitoring
-  - job_name: 'prometheus'
+  - job_name: "prometheus"
     static_configs:
-      - targets: ['localhost:9090']
+      - targets: ["localhost:9090"]
 
-  # OpenClaw Agent application
-  - job_name: 'openclaw-agent'
+  # AI Assistant application
+  - job_name: "ai-assistant"
     static_configs:
-      - targets: ['app:3000']
-    metrics_path: '/metrics'
+      - targets: ["app:3000"]
+    metrics_path: "/metrics"
     scrape_interval: 30s
     scrape_timeout: 10s
 
   # Nginx monitoring (if nginx-prometheus-exporter is available)
-  - job_name: 'nginx'
+  - job_name: "nginx"
     static_configs:
-      - targets: ['nginx:9113']
+      - targets: ["nginx:9113"]
     scrape_interval: 30s
 
   # PostgreSQL monitoring (if postgres-exporter is available)
-  - job_name: 'postgres'
+  - job_name: "postgres"
     static_configs:
-      - targets: ['postgres-exporter:9187']
+      - targets: ["postgres-exporter:9187"]
     scrape_interval: 30s
 
   # Redis monitoring (if redis-exporter is available)
-  - job_name: 'redis'
+  - job_name: "redis"
     static_configs:
-      - targets: ['redis-exporter:9121']
+      - targets: ["redis-exporter:9121"]
     scrape_interval: 30s
 
   # Node exporter (system metrics)
-  - job_name: 'node'
+  - job_name: "node"
     static_configs:
-      - targets: ['node-exporter:9100']
+      - targets: ["node-exporter:9100"]
     scrape_interval: 30s

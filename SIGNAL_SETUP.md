@@ -1,6 +1,6 @@
 # 📱 Signal Integration Setup Guide
 
-Complete guide to integrate OpenClaw Agent with Signal for secure, encrypted messaging.
+Complete guide to integrate AI Assistant with Signal for secure, encrypted messaging.
 
 ## 🎯 What You'll Be Able To Do
 
@@ -33,6 +33,7 @@ Complete guide to integrate OpenClaw Agent with Signal for secure, encrypted mes
 #### Step 1: Install Signal CLI
 
 **Using Cargo (Rust Package Manager):**
+
 ```bash
 # Install Rust/Cargo if not already installed
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -43,6 +44,7 @@ cargo install signal-cli
 ```
 
 **Or download pre-built binary:**
+
 ```bash
 # Download from GitHub releases
 wget https://github.com/AsamK/signal-cli/releases/download/v0.10.0/signal-cli-0.10.0-linux-x64.tar.gz
@@ -63,6 +65,7 @@ signal-cli link
 ```
 
 **On your phone:**
+
 1. Open Signal
 2. Go to Settings → Linked Devices
 3. Tap "Link Device (Desktop)"
@@ -78,12 +81,13 @@ signal-cli --version
 signal-cli listIds
 
 # Send a test message
-signal-cli send +1234567890 -m "Test from OpenClaw Agent"
+signal-cli send +1234567890 -m "Test from AI Assistant"
 ```
 
 #### Step 4: Configure Environment Variables
 
 Add to your `.env` file:
+
 ```bash
 # Signal Configuration
 SIGNAL_PHONE_NUMBER=+1234567890
@@ -110,6 +114,7 @@ If Signal CLI doesn't work for you, use a community HTTP bridge:
 #### Step 1: Choose an HTTP Bridge Service
 
 Popular options:
+
 - **signal-http-api** (https://github.com FormerLabs/signal-http-api)
 - **signald** (https://github.com/signald/signald)
 - **signal-rest-api** (https://github.com-mfietz/signal-rest-api)
@@ -117,6 +122,7 @@ Popular options:
 #### Step 2: Install and Configure
 
 **Example using signal-http-api:**
+
 ```bash
 # Clone the repository
 git clone https://github.com/FormerLabs/signal-http-api.git
@@ -166,18 +172,21 @@ Once the bot is running, simply send a message to your linked Signal number:
 ### Advanced Features
 
 **Memory Integration:**
+
 ```
 You: "What did we discuss about the security project?"
 Bot: [Searches memory and provides relevant conversations]
 ```
 
 **Roadmap Management:**
+
 ```
 You: "Show me my roadmaps"
 Bot: [Lists all your roadmaps with details]
 ```
 
 **Daily Planning:**
+
 ```
 You: "Plan tomorrow"
 Bot: [Creates detailed day plan]
@@ -200,6 +209,7 @@ SIGNAL_HTTP_BRIDGE_URL=http://...       # If using HTTP bridge
 ### Bot Behavior
 
 The Signal bot includes:
+
 - ✅ **Auto-reply** - Responds to all incoming messages
 - ✅ **Memory** - Remembers conversations across sessions
 - ✅ **Context** - Knows about your roadmaps and projects
@@ -217,6 +227,7 @@ The Signal bot includes:
 ## 🐛 Troubleshooting
 
 **Signal CLI not working:**
+
 ```bash
 # Check installation
 signal-cli --version
@@ -229,6 +240,7 @@ signal-cli send +1234567890 -m "Test message"
 ```
 
 **Bot not responding:**
+
 ```bash
 # Check if bot is running
 ps aux | grep bot-server
@@ -238,6 +250,7 @@ ps aux | grep bot-server
 ```
 
 **Messages not being received:**
+
 - Verify Signal phone number format
 - Check phone is linked to Signal CLI
 - Ensure webhook server is accessible
@@ -245,25 +258,27 @@ ps aux | grep bot-server
 
 ## 📊 Comparison: Signal vs Discord
 
-| Feature | Signal | Discord |
-|---------|--------|--------|
-| Security | ✅ E2E Encryption | ✅ Server-side encryption |
-| Setup Complexity | 🔴 High | 🟢 Low |
-| Reliability | 🟡 Medium | 🟢 High |
-| Features | 🟡 Basic | 🟢 Advanced |
-| User Experience | ✅ Native app | ✅ Rich interface |
-| Slash Commands | ❌ No | ✅ Yes |
-| Webhooks | 🟡 Limited | 🟢 Full support |
+| Feature          | Signal            | Discord                   |
+| ---------------- | ----------------- | ------------------------- |
+| Security         | ✅ E2E Encryption | ✅ Server-side encryption |
+| Setup Complexity | 🔴 High           | 🟢 Low                    |
+| Reliability      | 🟡 Medium         | 🟢 High                   |
+| Features         | 🟡 Basic          | 🟢 Advanced               |
+| User Experience  | ✅ Native app     | ✅ Rich interface         |
+| Slash Commands   | ❌ No             | ✅ Yes                    |
+| Webhooks         | 🟡 Limited        | 🟢 Full support           |
 
 ## 🎯 Recommendations
 
 **When to Use Signal:**
+
 - Secure, sensitive discussions
 - Personal productivity
 - Encrypted team communication
 - When privacy is critical
 
 **When to Use Discord:**
+
 - Team collaboration
 - Rich features needed
 - Slash command interface

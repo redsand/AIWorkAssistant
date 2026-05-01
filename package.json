@@ -1,7 +1,7 @@
 {
-  "name": "openclaw-agent",
+  "name": "ai-assistant",
   "version": "0.1.0",
-  "description": "Guarded productivity and engineering agent with OpenClaw integration",
+  "description": "Guarded productivity and engineering agent with AI Assistant integration",
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
@@ -39,7 +39,7 @@
     "productivity",
     "jira",
     "gitlab",
-    "openclaw",
+    "ai-assistant",
     "engineering"
   ],
   "author": "",

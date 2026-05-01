@@ -176,7 +176,7 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
       reply.header("Content-Type", "text/calendar; charset=utf-8");
       reply.header(
         "Content-Disposition",
-        'inline; filename="openclaw-calendar.ics"',
+        'inline; filename="ai-assistant-calendar.ics"',
       );
       reply.header("Cache-Control", "no-cache, must-revalidate");
       reply.header("X-Published-TTL", "PT15M");

@@ -1,4 +1,4 @@
-# OpenClaw Agent
+# AI Assistant
 
 A guarded productivity and engineering agent with local-first calendar, Jira, and GitLab integration.
 
@@ -6,7 +6,7 @@ A guarded productivity and engineering agent with local-first calendar, Jira, an
 
 ## Overview
 
-OpenClaw Agent is a personal productivity and engineering copilot that helps you:
+AI Assistant is a personal productivity and engineering copilot that helps you:
 
 - **Personal Productivity**: Plan your day, protect focus/fitness/mental-health time, manage Jira tickets, and connect GitLab activity to Jira work
 - **Engineering Strategy**: Convert vague app ideas into workflow-first designs with thoughtful architecture, scaffolding, and implementation plans
@@ -55,7 +55,7 @@ OpenClaw Agent is a personal productivity and engineering copilot that helps you
 
 ```bash
 git clone <repo-url>
-cd openclaw-agent
+cd ai-assistant
 npm install
 cp .env.example .env
 # Edit .env with your credentials

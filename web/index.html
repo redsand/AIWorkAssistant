@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>OpenClaw Agent - Productivity & Engineering Copilot</title>
+    <title>AI Assistant - Productivity & Engineering Copilot</title>
     <style>
       * {
         margin: 0;
@@ -765,7 +765,7 @@
     <div class="login-overlay" id="loginOverlay">
       <div class="login-card">
         <span class="logo-emoji">🤖</span>
-        <h2>OpenClaw Agent</h2>
+        <h2>AI Assistant</h2>
         <p>Sign in to continue</p>
         <div class="login-error" id="loginError"></div>
         <div class="login-field">
@@ -797,7 +797,7 @@
         <div class="header-left">
           <div class="logo">
             <span class="logo-emoji">🤖</span>
-            OpenClaw Agent
+            AI Assistant
           </div>
         </div>
         <div class="status">
@@ -869,7 +869,7 @@
           <div class="chat-messages" id="chatMessages">
             <div class="message assistant">
               <div class="message-bubble">
-                Hello! I'm your OpenClaw Agent. I can help you with productivity
+                Hello! I'm your AI Assistant. I can help you with productivity
                 planning, engineering tasks, roadmap management, and much more.
                 How can I assist you today?
               </div>
@@ -877,7 +877,7 @@
           </div>
 
           <div class="typing-indicator" id="typingIndicator">
-            OpenClaw is thinking...
+            AI Assistant is thinking...
           </div>
 
           <div class="message-input">
@@ -1082,14 +1082,14 @@
           const data = await response.json();
 
           if (data.status === "ok") {
-            console.log("Connected to OpenClaw Agent");
+            console.log("Connected to AI Assistant");
           } else {
-            showError("Failed to connect to OpenClaw Agent");
+            showError("Failed to connect to AI Assistant");
           }
         } catch (error) {
           console.error("Health check failed:", error);
           showError(
-            "Unable to connect to OpenClaw Agent. Please ensure the server is running.",
+            "Unable to connect to AI Assistant. Please ensure the server is running.",
           );
         }
 
@@ -1160,7 +1160,7 @@
         chatMessages.innerHTML = `
           <div class="message assistant">
             <div class="message-bubble">
-              Hello! I'm your OpenClaw Agent. I can help you with productivity
+              Hello! I'm your AI Assistant. I can help you with productivity
               tasks, Jira, GitLab, calendar management, and engineering strategy.
               How can I help you today?
             </div>

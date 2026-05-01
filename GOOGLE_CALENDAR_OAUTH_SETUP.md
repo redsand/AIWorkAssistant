@@ -9,6 +9,7 @@ Google Calendar OAuth2 authentication has been **fully implemented** and is read
 ## 🎯 **What's Been Implemented**
 
 ### OAuth2 System ✅
+
 - ✅ OAuth2 client with token management
 - ✅ Authorization flow endpoints
 - ✅ Token storage and automatic refresh
@@ -18,12 +19,14 @@ Google Calendar OAuth2 authentication has been **fully implemented** and is read
 - ✅ Callback handler for OAuth completion
 
 ### New Endpoints ✅
+
 - `GET /auth/google/status` - Check authorization status
 - `GET /auth/google` - Get authorization URL
 - `GET /auth/google/callback` - OAuth callback handler
 - `POST /auth/google/logout` - Clear authorization
 
 ### Features Ready ✅
+
 - ✅ View calendar events
 - ✅ Create events
 - ✅ Create focus blocks
@@ -44,7 +47,7 @@ Google Calendar OAuth2 authentication has been **fully implemented** and is read
 
 2. **Create/Select Project**
    - Click "Select a project" → "New Project"
-   - Name: "OpenClaw Agent" (or any name you prefer)
+   - Name: "AI Assistant" (or any name you prefer)
    - Click "Create"
 
 3. **Enable Calendar API**
@@ -55,7 +58,7 @@ Google Calendar OAuth2 authentication has been **fully implemented** and is read
    - Go to "Credentials" (left sidebar)
    - Click "Create Credentials" → "OAuth client ID"
    - Application type: "Web application"
-   - Name: "OpenClaw Agent"
+   - Name: "AI Assistant"
 
 5. **Configure OAuth2 Client**
    - **Authorized JavaScript origins:** (leave empty for now)
@@ -83,6 +86,7 @@ GOOGLE_CALENDAR_CALENDAR_ID=primary
 ### Step 3: Authorize the Application
 
 **Method 1: Web Interface** ⭐ RECOMMENDED
+
 ```bash
 # Open in browser
 http://localhost:3050/auth/google
@@ -95,6 +99,7 @@ http://localhost:3050/auth/google
 ```
 
 **Method 2: Command Line**
+
 ```bash
 # Run the test script
 npm run test:google-calendar
@@ -110,6 +115,7 @@ npm run test:google-calendar
 Once authorized, you can:
 
 ### ✅ **Use Calendar Features**
+
 ```bash
 # List events
 curl "http://localhost:3050/api/roadmaps"
@@ -123,12 +129,14 @@ curl -X POST http://localhost:3050/chat \
 ```
 
 ### 📱 **iPhone Integration**
+
 - ✅ All events appear in your iPhone Calendar app
 - ✅ Focus blocks sync automatically
 - ✅ Health breaks appear in your calendar
 - ✅ Real-time sync with Google Calendar
 
 ### 🛠️ **Test Your Integration**
+
 ```bash
 # Run comprehensive tests
 npm run test:google-calendar
@@ -146,12 +154,14 @@ npm run test:google-calendar
 ## 🔐 **SECURITY & TOKENS**
 
 ### Token Storage
+
 - **Location:** `data/google-tokens.json`
 - **Encrypted:** No (stored locally on your server)
 - **Refresh:** Automatic when tokens expire
 - **Access:** Only your application can access
 
 ### Token Management
+
 ```bash
 # Check authorization status
 curl http://localhost:3050/auth/google/status
@@ -186,24 +196,28 @@ curl -X POST http://localhost:3050/auth/google/logout
 After authorization, you'll have:
 
 ### ✅ **Calendar Management**
+
 - View upcoming events
 - Create events with descriptions
 - Update existing events
 - Delete events
 
 ### ✅ **Productivity Features**
+
 - Create focus blocks for deep work
 - Schedule health breaks (fitness, meals, mental health)
 - Generate daily plans with calendar integration
 - AI-powered scheduling suggestions
 
 ### ✅ **iPhone Integration**
+
 - Perfect sync with iPhone Calendar app
 - Real-time updates
 - No manual configuration needed on iPhone
 - Works with all your existing calendars
 
 ### ✅ **AI Assistant Capabilities**
+
 - "What does my day look like?"
 - "Schedule a 2-hour focus block for this afternoon"
 - "Add a 30-minute lunch break"
@@ -233,19 +247,25 @@ npm run test:google-calendar
 ## 🔧 **TROUBLESHOOTING**
 
 ### Issue: "Authorization failed"
+
 **Solution:**
+
 - Verify Client ID and Client Secret are correct
 - Check redirect URI matches exactly: `http://localhost:3050/auth/google/callback`
 - Make sure Calendar API is enabled in Google Cloud Console
 
 ### Issue: "Token refresh failed"
+
 **Solution:**
+
 - Delete `data/google-tokens.json`
 - Re-authorize using `/auth/google`
 - Check internet connection
 
 ### Issue: "Events not appearing in iPhone"
+
 **Solution:**
+
 - Open iPhone Calendar app
 - Pull to refresh
 - Check that the correct Google account is synced
@@ -258,12 +278,14 @@ npm run test:google-calendar
 Your Google Calendar OAuth2 integration is **fully implemented and ready to use**!
 
 **All you need to do:**
+
 1. Create OAuth2 credentials in Google Cloud Console
 2. Add them to your `.env` file
 3. Authorize the application
 4. Enjoy complete calendar integration with your iPhone!
 
 **The implementation handles everything else automatically:**
+
 - ✅ Token management
 - ✅ Automatic refresh
 - ✅ Error handling
@@ -271,4 +293,3 @@ Your Google Calendar OAuth2 integration is **fully implemented and ready to use*
 - ✅ iPhone sync
 
 **Ready to authorize?** Start with Step 1 above! 🚀
-

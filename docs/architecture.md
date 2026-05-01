@@ -2,11 +2,11 @@
 
 ## System Design
 
-OpenClaw Agent follows a **guarded agent architecture** with three core layers:
+AI Assistant follows a **guarded agent architecture** with three core layers:
 
 ### 1. Interface Layer
 
-- **OpenClaw**: Chat runtime and user interface (web, CLI, Discord, Signal)
+- **AI Assistant**: Chat runtime and user interface (web, CLI, Discord, Signal)
 - **Fastify Server**: HTTP API with `/chat`, `/approvals`, `/webhooks`, `/calendar`, `/productivity`, `/engineering` endpoints
 - **Auth Middleware**: API key authentication with public path whitelist (Bearer token, X-API-Key header, or ?apiKey query param)
 - **Tool Registry**: 15+ tools for each agent mode, dispatched via Tool Dispatcher
@@ -33,7 +33,7 @@ OpenClaw Agent follows a **guarded agent architecture** with three core layers:
 ### Chat Request Flow
 
 ```
-OpenClaw → Fastify (/chat) → Orchestrator → OpenCode API
+AI Assistant → Fastify (/chat) → Orchestrator → OpenCode API
                                     ↓
                               Policy Engine
                                     ↓

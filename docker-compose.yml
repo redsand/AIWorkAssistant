@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   # Main application
@@ -7,7 +7,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: production
-    container_name: openclaw-agent
+    container_name: ai-assistant
     restart: unless-stopped
     ports:
       - "${PORT:-3000}:3000"
@@ -32,7 +32,7 @@ services:
       # Backup directory
       - ./backups:/app/backups
     networks:
-      - openclaw-network
+      - ai-assistant-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
@@ -43,10 +43,10 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2'
+          cpus: "2"
           memory: 2G
         reservations:
-          cpus: '0.5'
+          cpus: "0.5"
           memory: 512M
     # Security options
     security_opt:
@@ -59,7 +59,7 @@ services:
   # Nginx reverse proxy (for production)
   nginx:
     image: nginx:alpine
-    container_name: openclaw-nginx
+    container_name: ai-assistant-nginx
     restart: unless-stopped
     ports:
       - "80:80"
@@ -69,13 +69,13 @@ services:
       - ./ssl:/etc/nginx/ssl:ro
       - ./logs/nginx:/var/log/nginx
     networks:
-      - openclaw-network
+      - ai-assistant-network
     depends_on:
       - app
     deploy:
       resources:
         limits:
-          cpus: '1'
+          cpus: "1"
           memory: 512M
     profiles:
       - production
@@ -83,26 +83,26 @@ services:
   # PostgreSQL (optional - for production database)
   postgres:
     image: postgres:15-alpine
-    container_name: openclaw-postgres
+    container_name: ai-assistant-postgres
     restart: unless-stopped
     environment:
-      - POSTGRES_DB=${POSTGRES_DB:-openclaw}
-      - POSTGRES_USER=${POSTGRES_USER:-openclaw}
+      - POSTGRES_DB=${POSTGRES_DB:-ai_assistant}
+      - POSTGRES_USER=${POSTGRES_USER:-ai_assistant}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backups/postgres:/backups
     networks:
-      - openclaw-network
+      - ai-assistant-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-openclaw}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ai_assistant}"]
       interval: 10s
       timeout: 5s
       retries: 5
     deploy:
       resources:
         limits:
-          cpus: '1'
+          cpus: "1"
           memory: 1G
     profiles:
       - production
@@ -110,13 +110,13 @@ services:
   # Redis (optional - for caching and sessions)
   redis:
     image: redis:7-alpine
-    container_name: openclaw-redis
+    container_name: ai-assistant-redis
     restart: unless-stopped
     command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-changeme}
     volumes:
       - redis_data:/data
     networks:
-      - openclaw-network
+      - ai-assistant-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -125,7 +125,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.5'
+          cpus: "0.5"
           memory: 512M
     profiles:
       - production
@@ -133,7 +133,7 @@ services:
   # Monitoring - Prometheus
   prometheus:
     image: prom/prometheus:latest
-    container_name: openclaw-prometheus
+    container_name: ai-assistant-prometheus
     restart: unless-stopped
     ports:
       - "9090:9090"
@@ -141,19 +141,19 @@ services:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
     networks:
-      - openclaw-network
+      - ai-assistant-network
     profiles:
       - monitoring
 
   # Monitoring - Grafana
   grafana:
     image: grafana/grafana:latest
-    container_name: openclaw-grafana
+    container_name: ai-assistant-grafana
     restart: unless-stopped
     ports:
       - "3001:3000"
@@ -165,14 +165,14 @@ services:
       - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
     networks:
-      - openclaw-network
+      - ai-assistant-network
     depends_on:
       - prometheus
     profiles:
       - monitoring
 
 networks:
-  openclaw-network:
+  ai-assistant-network:
     driver: bridge
     ipam:
       config:

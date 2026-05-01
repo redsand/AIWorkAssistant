@@ -1,5 +1,5 @@
 /**
- * OpenClaw Agent - Main server
+ * AI Assistant - Main server
  */
 
 import Fastify from "fastify";
@@ -97,7 +97,7 @@ async function start() {
     console.log(`
 ╔════════════════════════════════════════════════════════════╗
 ║                                                            ║
-║  🤖 OpenClaw Agent v${process.env.npm_package_version || "0.1.0"}                    ║
+║  🤖 AI Assistant v${process.env.npm_package_version || "0.1.0"}                    ║
 ║                                                            ║
 ║  Productivity & Engineering Copilot                        ║
 ║                                                            ║

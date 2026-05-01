@@ -1,4 +1,4 @@
-# Test Coverage Report - OpenClaw Agent
+# Test Coverage Report - AI Assistant
 
 **Date:** 2026-04-30 (Updated)
 **Test Framework:** Vitest

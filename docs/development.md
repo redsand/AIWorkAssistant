@@ -14,7 +14,7 @@
 ```bash
 # Clone repository
 git clone <repo-url>
-cd openclaw-agent
+cd ai-assistant
 
 # Install dependencies
 npm install
@@ -32,7 +32,7 @@ npm run dev
 ## Project Structure
 
 ```
-openclaw-agent/
+ai-assistant/
 ├── src/
 │   ├── server.ts              # Main server entry point
 │   ├── config/                # Configuration
@@ -47,7 +47,7 @@ openclaw-agent/
 │   └── storage/               # Database (future)
 ├── tests/                     # Tests
 ├── docs/                      # Documentation
-└── openclaw-tools/            # OpenClaw tool definitions
+└── openclaw-tools/            # AI Assistant tool definitions
 ```
 
 ## Development Workflow
@@ -111,20 +111,20 @@ npm run test:coverage
 ### Writing Tests
 
 ```typescript
-import { describe, it, expect } from 'vitest';
-import { extractJiraKeys } from '../src/integrations/gitlab/jira-key-extractor';
+import { describe, it, expect } from "vitest";
+import { extractJiraKeys } from "../src/integrations/gitlab/jira-key-extractor";
 
-describe('Jira Key Extraction', () => {
-  it('should extract Jira keys from commit message', () => {
-    const message = 'PROJ-123: Fix authentication bug';
+describe("Jira Key Extraction", () => {
+  it("should extract Jira keys from commit message", () => {
+    const message = "PROJ-123: Fix authentication bug";
     const keys = extractJiraKeys(message);
-    expect(keys).toEqual(['PROJ-123']);
+    expect(keys).toEqual(["PROJ-123"]);
   });
 
-  it('should handle multiple Jira keys', () => {
-    const message = 'PROJ-123: Fix. Related to PROJ-456';
+  it("should handle multiple Jira keys", () => {
+    const message = "PROJ-123: Fix. Related to PROJ-456";
     const keys = extractJiraKeys(message);
-    expect(keys).toEqual(['PROJ-123', 'PROJ-456']);
+    expect(keys).toEqual(["PROJ-123", "PROJ-456"]);
   });
 });
 ```
@@ -307,9 +307,9 @@ const MY_MODE_TOOLS: Tool[] = [ ... ];
 
 ```typescript
 export const AGENT_MODES = {
-  PRODUCTIVITY: 'productivity',
-  ENGINEERING: 'engineering',
-  MY_MODE: 'my_mode',
+  PRODUCTIVITY: "productivity",
+  ENGINEERING: "engineering",
+  MY_MODE: "my_mode",
 } as const;
 ```
 
@@ -318,6 +318,7 @@ export const AGENT_MODES = {
 ### Common Issues
 
 **Port already in use:**
+
 ```bash
 # Kill process on port 3000
 npx kill-port 3000
@@ -327,6 +328,7 @@ PORT=3001 npm run dev
 ```
 
 **TypeScript errors:**
+
 ```bash
 # Clean build
 rm -rf dist/
@@ -337,6 +339,7 @@ npx tsc --declaration
 ```
 
 **Test failures:**
+
 ```bash
 # Clear cache
 npm test -- --clearCache
@@ -346,6 +349,7 @@ npm test -- testName
 ```
 
 **Environment variables not loading:**
+
 ```bash
 # Verify .env file exists
 ls -la .env
@@ -401,21 +405,22 @@ NODE_ENV=production npm start
 
 ```bash
 # Build image
-docker build -t openclaw-agent .
+docker build -t ai-assistant .
 
 # Test image
-docker run -p 3000:3000 --env-file .env openclaw-agent
+docker run -p 3000:3000 --env-file .env ai-assistant
 
 # Tag image
-docker tag openclaw-agent openclaw-agent:0.1.0
+docker tag ai-assistant ai-assistant:0.1.0
 
 # Push to registry
-docker push openclaw-agent:0.1.0
+docker push ai-assistant:0.1.0
 ```
 
 ### Environment Checklist
 
 Before deploying:
+
 - [ ] Set `NODE_ENV=production`
 - [ ] Configure all API keys and tokens
 - [ ] Set appropriate `POLICY_APPROVAL_MODE`

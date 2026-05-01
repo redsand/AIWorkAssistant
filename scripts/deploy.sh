@@ -1,5 +1,5 @@
 #!/bin/bash
-# Production deployment script for OpenClaw Agent
+# Production deployment script for AI Assistant
 
 set -e  # Exit on error
 set -o pipefail  # Exit on pipe failure

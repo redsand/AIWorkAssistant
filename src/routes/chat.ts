@@ -1,5 +1,5 @@
 /**
- * Chat route for OpenClaw integration
+ * Chat route for AI Assistant integration
  */
 
 import { FastifyInstance } from "fastify";

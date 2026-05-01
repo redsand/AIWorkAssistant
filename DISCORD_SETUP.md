@@ -1,6 +1,6 @@
 # 🤖 Discord Bot Setup Guide
 
-Complete guide to set up OpenClaw Agent as a Discord bot so you can chat with it through Discord.
+Complete guide to set up AI Assistant as a Discord bot so you can chat with it through Discord.
 
 ## 🎯 What You'll Be Able To Do
 
@@ -16,7 +16,7 @@ Complete guide to set up OpenClaw Agent as a Discord bot so you can chat with it
 
 - Discord account
 - Discord server where you have admin permissions
-- OpenClaw Agent server running
+- AI Assistant server running
 
 ## 🚀 Setup Process
 
@@ -24,7 +24,7 @@ Complete guide to set up OpenClaw Agent as a Discord bot so you can chat with it
 
 1. Go to https://discord.com/developers/applications
 2. Click "New Application"
-3. Name it "OpenClaw Agent"
+3. Name it "AI Assistant"
 4. Click "Create"
 
 ### 2. Configure Bot
@@ -69,6 +69,7 @@ DISCORD_GUILD_ID=your_server_id_here  # Optional: for faster command registratio
 ```
 
 **To get your Server ID:**
+
 1. Enable Developer Mode in Discord (Settings -> Advanced)
 2. Right-click your server name
 3. Select "Copy ID"
@@ -104,43 +105,53 @@ In Discord, try these commands:
 ### Chat Commands
 
 **`/chat [message] [mode]`**
+
 - Chat directly with the AI agent
 - Modes: `productivity` or `engineering`
 - Example: `/chat "Help me design a REST API" engineering`
 
 **`/plan [date]`**
+
 - Plan your day for a specific date
 - Example: `/plan 2026-05-01` or `/plan today`
 
 ### Roadmap Commands
 
 **`/roadmap list`**
+
 - List all existing roadmaps
 
 **`/roadmap create`**
+
 - Create a new roadmap (interactive)
 
 **`/roadmap templates`**
+
 - Show available roadmap templates
 
 ### Session Commands
 
 **`/session start`**
+
 - Start a new conversation session
 
 **`/session end`**
+
 - End current session and save to memory
 
 **`/session info`**
+
 - Show current session information
 
 ### Memory Commands
 
 **`/memory [query]`**
+
 - Search your conversation memory
 - Example: `/memory "security discussions"`
 
 **`/help`**
+
 - Show help message and all commands
 
 ## 💬 Direct Messaging
@@ -156,13 +167,15 @@ The bot also works in direct messages!
 ### Custom Prefixes
 
 You can mention the bot instead of using commands:
+
 ```
-@OpenClaw Help me plan my week
+@AI Assistant Help me plan my week
 ```
 
 ### Server-Specific Behavior
 
 The bot can be configured differently per server:
+
 - Different default modes
 - Custom roadmaps per server
 - Server-specific memory
@@ -170,29 +183,34 @@ The bot can be configured differently per server:
 ### Rate Limiting
 
 The bot respects Discord's rate limits:
+
 - 50 commands per second per server
 - Per-user rate limiting for abuse prevention
 
 ## 🎯 Use Cases
 
 ### **For Personal Productivity**
+
 - Daily planning with `/plan today`
 - Task management and prioritization
 - Meeting preparation and follow-ups
 
 ### **For Engineering Teams**
+
 - Code review assistance
 - Architecture discussions
 - Technical documentation
 - Bug triage and planning
 
 ### **For Project Management**
+
 - Roadmap creation and management
 - Project timeline planning
 - Stakeholder communication
 - Progress tracking
 
 ### **For Knowledge Management**
+
 - Search past conversations with `/memory`
 - Team knowledge base
 - Documentation assistance
@@ -201,12 +219,14 @@ The bot respects Discord's rate limits:
 ## 🔒 Security Considerations
 
 ✅ **Implemented Security:**
+
 - Bot token stored in environment variables
 - User-specific conversation memory
 - Guardrails for dangerous operations
 - Audit logging of all bot interactions
 
 ⚠️ **Best Practices:**
+
 - Don't share your bot token publicly
 - Use server-specific channels for sensitive topics
 - Regular security audits of bot permissions
@@ -215,6 +235,7 @@ The bot respects Discord's rate limits:
 ## 🐛 Troubleshooting
 
 **Bot not responding:**
+
 ```bash
 # Check if the bot is running
 ps aux | grep bot-server
@@ -224,16 +245,19 @@ ps aux | grep bot-server
 ```
 
 **Commands not appearing:**
+
 - Wait up to 1 hour for global commands to propagate
 - Use guild ID for instant registration during development
 - Check that you've enabled "Message Content Intent"
 
 **Bot can't read messages:**
+
 - Verify "Message Content Intent" is enabled
 - Check bot permissions in the server
 - Ensure bot has access to the channel
 
 **Memory not working:**
+
 - Make sure the main server is running
 - Check API_BASE_URL points to correct server
 - Verify user ID consistency
@@ -241,6 +265,7 @@ ps aux | grep bot-server
 ## 🚀 Next Steps
 
 After Discord is working, you can add:
+
 - Mattermost integration (for internal team chat)
 - Signal integration (for secure messaging)
 - WhatsApp integration (for personal/quick communication)

@@ -1,5 +1,5 @@
 /**
- * Signal Integration for OpenClaw Agent
+ * Signal Integration for AI Assistant
  * Provides secure, encrypted messaging through Signal
  *
  * Note: Signal doesn't have a traditional bot API, so this uses a webhook-based
@@ -81,7 +81,7 @@ class SignalAgentBot {
     try {
       console.log(`[SignalBot] Processing message from ${phoneNumber}`);
 
-      // Send to OpenClaw Agent
+      // Send to AI Assistant
       const response = await axios.post(`${API_BASE}/chat`, {
         message,
         mode: "productivity",

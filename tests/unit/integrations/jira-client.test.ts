@@ -164,7 +164,7 @@ describe("Jira Client", () => {
       }
 
       const testIssue = issues[0];
-      const commentBody = `Test comment from OpenClaw Agent integration test - ${new Date().toISOString()}`;
+      const commentBody = `Test comment from AI Assistant integration test - ${new Date().toISOString()}`;
 
       try {
         const comment = await jiraClient.addComment(testIssue.key, commentBody);

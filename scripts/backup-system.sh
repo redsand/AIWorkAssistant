@@ -1,5 +1,5 @@
 #!/bin/bash
-# Automated Backup System for OpenClaw Agent
+# Automated Backup System for AI Assistant
 
 set -e
 
@@ -102,7 +102,7 @@ create_manifest() {
     log_info "Creating backup manifest..."
 
     cat > "$BACKUP_DIR/manifest_${TIMESTAMP}.txt" << EOF
-OpenClaw Agent Backup Manifest
+AI Assistant Backup Manifest
 =============================
 Backup ID: $BACKUP_NAME
 Timestamp: $TIMESTAMP
@@ -181,7 +181,7 @@ calculate_size() {
 # Send notification (if configured)
 send_notification() {
     local status=$1
-    local message="OpenClaw Agent Backup ${status}: ${BACKUP_NAME}"
+    local message="AI Assistant Backup ${status}: ${BACKUP_NAME}"
 
     # Add webhook or email notification here if desired
     # Example: curl -X POST "$WEBHOOK_URL" -d "text=$message"

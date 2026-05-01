@@ -1,14 +1,14 @@
-# OpenClaw Integration Guide
+# AI Assistant Integration Guide
 
-This agent is designed to work with OpenClaw as the chat runtime interface.
+This agent is designed to work with AI Assistant as the chat runtime interface.
 
 ## Tool/Skill Registration
 
-Register the agent with OpenClaw using the tool definition in `openclaw-tools/agent-tool.json`:
+Register the agent with AI Assistant using the tool definition in `ai-assistant-tools/agent-tool.json`:
 
 ```json
 {
-  "name": "openclaw-agent",
+  "name": "ai-assistant-agent",
   "description": "Personal productivity and engineering copilot",
   "endpoint": "http://localhost:3000/chat",
   "modes": {
@@ -140,7 +140,7 @@ The agent can invoke tools based on user requests:
 When an action requires approval:
 
 1. Agent proposes action with risk level
-2. OpenClaw prompts user for approval
+2. AI Assistant prompts user for approval
 3. User approves or rejects
 4. Agent executes or cancels action
 5. Result logged to audit trail
@@ -173,6 +173,7 @@ Rollback: Comment can be deleted, but notification sent
 ### GitLab Webhooks
 
 Configure GitLab webhook:
+
 ```
 URL: http://your-domain.com/webhooks/gitlab
 Secret: your_webhook_secret
@@ -180,6 +181,7 @@ Events: Push events, Merge request events
 ```
 
 When events occur:
+
 1. GitLab sends webhook to agent
 2. Agent extracts Jira keys from commit/MR data
 3. Agent evaluates policy
@@ -232,7 +234,7 @@ What would you like to do?
 
 ### Environment Variables
 
-Set in OpenClaw configuration:
+Set in AI Assistant configuration:
 
 ```bash
 OPENCLAW_AGENT_URL=http://localhost:3000
@@ -242,7 +244,7 @@ OPENCLAW_AGENT_USER_ID=user-123
 
 ### Tool Permissions
 
-OpenClaw can restrict which tools are available:
+AI Assistant can restrict which tools are available:
 
 ```json
 {
@@ -251,10 +253,7 @@ OpenClaw can restrict which tools are available:
     "jira.list_assigned",
     "productivity.generate_daily_plan"
   ],
-  "blockedTools": [
-    "calendar.event.delete",
-    "jira.issue.close"
-  ]
+  "blockedTools": ["calendar.event.delete", "jira.issue.close"]
 }
 ```
 
@@ -262,13 +261,14 @@ OpenClaw can restrict which tools are available:
 
 ### Health Checks
 
-OpenClaw should ping `/health` endpoint:
+AI Assistant should ping `/health` endpoint:
 
 ```bash
 curl http://localhost:3000/health
 ```
 
 Response:
+
 ```json
 {
   "status": "ok",
@@ -279,7 +279,7 @@ Response:
 
 ### Approval Queue
 
-OpenClaw can poll for pending approvals:
+AI Assistant can poll for pending approvals:
 
 ```bash
 curl http://localhost:3000/approvals?status=pending
@@ -299,7 +299,8 @@ curl http://localhost:3000/approvals?status=pending
 
 ### Connection Issues
 
-If OpenClaw can't reach the agent:
+If AI Assistant can't reach the agent:
+
 1. Check agent is running: `curl http://localhost:3000/health`
 2. Verify CORS configuration
 3. Check firewall rules
@@ -308,6 +309,7 @@ If OpenClaw can't reach the agent:
 ### Approval Timeouts
 
 If approvals timeout:
+
 1. Check approval queue: `GET /approvals`
 2. Verify approval IDs match
 3. Review audit logs for failures
@@ -316,8 +318,9 @@ If approvals timeout:
 ### Missing Tool Responses
 
 If tools don't respond:
+
 1. Check OpenCode API configuration
-2. Verify tool registration in OpenClaw
+2. Verify tool registration in AI Assistant
 3. Review agent logs for errors
 4. Test tool directly via API
 
@@ -325,7 +328,7 @@ If tools don't respond:
 
 ### Authentication
 
-Future: Implement authentication between OpenClaw and agent:
+Future: Implement authentication between AI Assistant and agent:
 
 ```bash
 # JWT token in headers
@@ -340,7 +343,7 @@ Authorization: Bearer <token>
 Future: Implement rate limiting:
 
 ```bash
-# OpenClaw should respect rate limits
+# AI Assistant should respect rate limits
 X-RateLimit-Limit: 100
 X-RateLimit-Remaining: 95
 X-RateLimit-Reset: 1714450000
@@ -349,8 +352,9 @@ X-RateLimit-Reset: 1714450000
 ### Webhook Security
 
 Always verify webhook signatures:
+
 ```typescript
-const signature = request.headers['x-gitlab-token'];
+const signature = request.headers["x-gitlab-token"];
 if (!webhookHandler.verifyWebhook(signature, body)) {
   return 401;
 }

@@ -482,7 +482,7 @@ export function getTool(name: string, mode: string): Tool | undefined {
 }
 
 /**
- * Get all tools (for OpenClaw registration)
+ * Get all tools (for AI Assistant registration)
  */
 export function getAllTools(): Tool[] {
   return [...PRODUCTIVITY_TOOLS, ...ENGINEERING_TOOLS];

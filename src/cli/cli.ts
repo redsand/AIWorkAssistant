@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * OpenClaw Agent CLI
+ * AI Assistant CLI
  * Command-line interface for direct agent communication
  */
 
@@ -295,9 +295,9 @@ Include:
 const program = new Command();
 
 program
-  .name("openclaw-agent")
+  .name("ai-assistant")
   .description(
-    "OpenClaw Agent CLI - Personal productivity and engineering copilot",
+    "AI Assistant CLI - Personal productivity and engineering copilot",
   )
   .version("0.1.0");
 

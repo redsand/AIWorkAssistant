@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 /**
  * Signal Bot Server
- * Runs the Signal integration for OpenClaw Agent
+ * Runs the Signal integration for AI Assistant
  */
 
 import { SignalAgentBot, SignalWebhookHandler } from "./signal-bot";
@@ -10,7 +10,7 @@ import fastify from "fastify";
 import cors from "@fastify/cors";
 
 async function main() {
-  console.log("📱 Starting OpenClaw Agent Signal Integration...");
+  console.log("📱 Starting AI Assistant Signal Integration...");
 
   // Load environment variables
   const env = loadEnv();

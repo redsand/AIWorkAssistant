@@ -2,7 +2,7 @@
 
 **Audit Date:** 2026-04-30 (Updated)
 **Original Audit:** 2026-04-30
-**Project:** OpenClaw Agent v0.1.0
+**Project:** AI Assistant v0.1.0
 
 ---
 
@@ -38,7 +38,7 @@ Previous audit identified 5 critical bugs. **3 of 5 have been fixed.** The proje
 
 - **File:** `package.json` has no `bin` entry
 - **Impact:** CLI is only reachable via `npm run cli`, not as a system command
-- **Fix:** Add `"bin": { "openclaw": "./dist/cli/cli.js" }` and `"cli"` script
+- **Fix:** Add `"bin": { "ai-assistant": "./dist/cli/cli.js" }` and `"cli"` script
 
 ### 5. Audit Logger query returns empty array 🔴 STILL OPEN
 

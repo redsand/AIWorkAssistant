@@ -1,4 +1,4 @@
-# OpenClaw Agent - Project Status
+# AI Assistant - Project Status
 
 **Last Updated:** 2026-04-30
 **Version:** 0.1.0
