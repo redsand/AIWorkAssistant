@@ -1,260 +1,197 @@
 # Roadmap
 
-## Version 0.1.0 (Current MVP)
+> **Last updated:** 2026-04-30. See [`GAP_AUDIT.md`](./GAP_AUDIT.md) for honest status of each module.
 
-### ✅ Completed
-- Project scaffold and architecture
-- Policy engine with risk classification
-- Approval queue with approve/reject
-- Audit logging system
-- Jira key extraction from GitLab data
-- Chat endpoint (stubbed OpenCode integration)
-- Health check endpoint
-- Comprehensive documentation
+## Version 0.1.0 (Current — Late Alpha)
 
-### 🚧 TODO (Stubbed)
-- OpenCode API integration
-- Jira REST API client
-- GitLab API client
-- Microsoft Graph / Calendar integration
-- OAuth flow for Microsoft 365
-- Actual daily planning logic
-- Engineering strategy generation
+### ✅ Completed (Genuinely Working)
 
-## Version 0.2.0 - Core Integrations
+- [x] Project scaffold and Fastify HTTP server
+- [x] Zod-validated environment configuration
+- [x] Policy engine with pattern matching and 3-tier modes
+- [x] Approval queue with SQLite persistence and action execution via tool dispatcher
+- [x] Audit logging (write path only; `query()` returns empty)
+- [x] OpenCode API client with chat, streaming, tool calling (321 lines)
+- [x] Conversation memory with auto-compaction and file persistence (743 lines)
+- [x] Tool registry with 15+ tools for productivity and engineering modes
+- [x] Tool dispatcher with 10 real handlers (Jira, GitLab, Calendar, Daily Planner)
+- [x] Guardrails system with 15 critical actions, rate limiting, REST API (752 lines)
+- [x] Jira REST API client — full CRUD, v2/v3 fallback (529 lines)
+- [x] GitLab REST API client and webhook handler (346 + 202 lines)
+- [x] Roadmap management — SQLite CRUD, templates, milestones (579 + 597 lines)
+- [x] Google Calendar OAuth2 flow and Calendar API integration
+- [x] File-based calendar service with RFC 5545 ICS export (305 lines)
+- [x] Calendar routes mounted with full CRUD + ICS + subscription endpoints
+- [x] Cloudflare tunnel and localtunnel support for iPhone ICS subscription
+- [x] Discord bot with slash commands (577 lines)
+- [x] API key authentication middleware with public path whitelist
+- [x] Health check endpoint
+- [x] Web UI — chat interface, roadmap listing, memory search (580 lines)
+- [x] CLI tool using Commander.js (482 lines)
+- [x] Jira key extraction from GitLab data
+- [x] Docker and docker-compose configuration
+- [x] SSL/TLS and nginx reverse proxy configs
+- [x] Productivity routes mounted (daily-plan, focus-blocks, health-breaks, calendar-summary)
+- [x] Engineering routes mounted (workflow-brief, architecture, scaffolding, jira-tickets)
 
-### Jira Integration
-- [ ] Complete Jira REST API client
-- [ ] Issue search and filtering
-- [ ] Add comments to tickets
-- [ ] Transition workflow states
-- [ ] Create new tickets
-- [ ] Update ticket fields
-- [ ] Webhook integration for ticket updates
+### ⚠️ Partially Complete (Needs Work)
 
-### GitLab Integration
-- [ ] Complete GitLab API client
-- [ ] Commit retrieval and analysis
-- [ ] Merge request listing
-- [ ] Pipeline status checking
-- [ ] Webhook processing
-- [ ] Auto-link to Jira tickets
-- [ ] Auto-transition suggestions
+- [ ] Guardrails persistence — `database.ts` exists (205 lines) but is dead code; `action-registry.ts` uses in-memory Maps; state lost on restart
+- [ ] Audit logger query — `query()` returns empty array (TODO)
+- [ ] Productivity "recommend" endpoints — return hardcoded stubs; "create" endpoints delegate to real calendar
+- [ ] Engineering module fallbacks — AI-first routing works, but `.generate()` stubs return hardcoded data
+- [ ] Daily planner — calls real Jira for assigned issue count but fills most fields with hardcoded values
+- [ ] Signal bot — spawns `signal-cli` but polling doesn't actually work; depends on external binary
+- [ ] CLI — exists but not wired as executable in `package.json`
+- [ ] Auth middleware — works but uses `!==` instead of `crypto.timingSafeEqual` (timing attack vulnerability)
 
-### Policy Engine Enhancements
-- [ ] Per-project policy overrides
-- [ ] Policy templates
-- [ ] Policy testing framework
-- [ ] Policy documentation generator
+### 🔴 Known Bugs / Security Issues
 
-### Testing
-- [ ] Unit tests for Jira client
-- [ ] Unit tests for GitLab client
-- [ ] Integration tests for webhooks
-- [ ] Policy engine tests
-- [ ] End-to-end tests
+- [ ] GitLab webhook signature verification uses `===` instead of `crypto.timingSafeEqual` (timing attack + no payload verification)
+- [ ] Auth middleware key comparison uses `!==` instead of `crypto.timingSafeEqual` (timing attack)
+- [ ] Guardrails `database.ts` is dead code — never imported, state lost on restart
+- [ ] Audit logger `query()` returns `[]` — no read-back capability
+- [ ] `jira-ticket-generator.createTickets()` uses `Math.random()` for keys instead of calling Jira API
+- [ ] Microsoft Graph client — all methods throw "Not implemented" (dead code)
 
-## Version 0.3.0 - Calendar Integration
+### 🔴 Stub / Placeholder (Returns Hardcoded Data)
 
-### Microsoft 365 Integration
-- [ ] OAuth 2.0 flow implementation
-- [ ] Microsoft Graph API client
-- [ ] Calendar event listing
-- [ ] Focus block creation
-- [ ] Health block creation
-- [ ] Meeting rescheduling
-- [ ] Calendar analysis (meeting density, gaps)
+- [ ] Focus blocks `recommendFocusBlocks()` — returns hardcoded stub items
+- [ ] Health breaks `recommendBreakes()` — returns hardcoded stub items
+- [ ] Workflow brief `.generate()` — returns static object
+- [ ] Architecture planner `.generate()` — returns static tech stack
+- [ ] Scaffold planner `.generate()` — returns static directory structure
+- [ ] Jira ticket generator `.generate()` — returns plan as-is
 
-### Daily Planning
-- [ ] Generate daily schedules
-- [ ] Prioritize Jira tickets
-- [ ] Recommend focus blocks
-- [ ] Suggest health breaks
-- [ ] Detect meeting-heavy days
-- [ ] Suggest recovery time
+---
 
-### Productivity Features
-- [ ] Weekly planning
-- [ ] Workload analysis
-- [ ] Energy management
-- [ ] Deadline tracking
+## Version 0.2.0 — Security & Persistence (Target: 1 week)
 
-## Version 0.4.0 - AI Integration
+### Security Fixes
 
-### OpenCode API Integration
-- [ ] Complete OpenCode API client
-- [ ] Chat completion integration
-- [ ] Streaming responses
-- [ ] Tool calling support
-- [ ] Context management
-- [ ] Prompt optimization
+- [ ] Implement `crypto.timingSafeEqual` for GitLab webhook HMAC verification
+- [ ] Implement `crypto.timingSafeEqual` for auth middleware key comparison
+- [ ] Add payload verification to GitLab webhook handler (currently ignores body)
 
-### Engineering Mode
-- [ ] Workflow brief generation
-- [ ] Architecture proposal generation
-- [ ] Scaffolding plan generation
-- [ ] Jira ticket generation
-- [ ] Implementation planning
+### Persistence
 
-### Agent Capabilities
-- [ ] Conversational context
-- [ ] Multi-turn planning
-- [ ] Clarification questions
-- [ ] Recommendation scoring
-- [ ] Trade-off analysis
+- [ ] Wire `guardrails/database.ts` into `action-registry.ts` (replace in-memory Maps)
+- [ ] Implement audit logger `query()` method against SQLite
 
-## Version 0.5.0 - Database and Persistence
+### Cleanup
 
-### Database Integration
-- [ ] PostgreSQL schema
-- [ ] Database migrations
-- [ ] Approval queue persistence
-- [ ] Audit log storage
-- [ ] User preferences storage
-- [ ] Project configuration storage
+- [ ] Wire CLI as executable (`bin` field in package.json)
+- [ ] Remove or clearly deprecate Microsoft integration stubs
+- [ ] Replace `Math.random()` in `jira-ticket-generator.createTickets()` with real Jira API calls
 
-### Approval Queue
-- [ ] Persistent storage
-- [ ] Distributed locking
-- [ ] Approval history
-- [ ] Bulk approval actions
-- [ ] Delegation support
+### Test Coverage (Critical)
 
-### Audit Logging
-- [ ] Database storage
-- [ ] Query interface
-- [ ] Log aggregation
-- [ ] Export functionality
-- [ ] Retention policies
+- [ ] Write workflow tests for approval lifecycle (create → guard → approve → execute → audit)
+- [ ] Write workflow tests for calendar CRUD + ICS export
+- [ ] Write workflow tests for auth middleware (public bypass, key required, timing-safe)
+- [ ] Write workflow tests for GitLab webhook (signature verification)
+- [ ] Write unit tests for guardrails, memory, roadmap, tool dispatcher
+- [ ] Run `vitest --coverage` and establish baseline
 
-## Version 0.6.0 - User Interface
+---
 
-### Web Dashboard
-- [ ] Approval queue UI
-- [ ] Audit log viewer
-- [ ] Policy management UI
-- [ ] Integration status dashboard
-- [ ] Configuration interface
+## Version 0.3.0 — Real Productivity (Target: 2-3 weeks after v0.2)
 
-### Notifications
-- [ ] Email notifications
-- [ ] Slack integration
-- [ ] In-app notifications
-- [ ] Notification preferences
+### Productivity Features (Replace Stubs with AI)
 
-### Reporting
-- [ ] Activity reports
-- [ ] Policy compliance reports
-- [ ] Integration usage reports
-- [ ] Custom report builder
+- [ ] Replace `recommendFocusBlocks()` with OpenCode API-generated recommendations
+- [ ] Replace `recommendBreakes()` with OpenCode API-generated recommendations
+- [ ] Replace daily planner hardcoded values with real Jira + GitLab + Calendar aggregation
+- [ ] Daily planner should use actual GitLab activity, not `commits: 5`
 
-## Version 1.0.0 - Production Ready
+### Engineering Features (Replace Stubs with AI)
 
-### Performance
-- [ ] Response time optimization
-- [ ] Caching layer (Redis)
-- [ ] Database query optimization
-- [ ] Rate limiting
-- [ ] Load balancing
+- [ ] Workflow brief `.generate()` already has AI-first routing in routes; remove fallback stubs
+- [ ] Architecture planner `.generate()` already has AI-first routing; remove fallback stubs
+- [ ] Scaffold planner `.generate()` already has AI-first routing; remove fallback stubs
+- [ ] Jira ticket generator — wire `createTickets()` to real Jira API
+
+### Calendar
+
+- [ ] Complete Google Calendar OAuth2 credential setup
+- [ ] Verify iPhone Calendar sync end-to-end via ICS subscription
+- [ ] Test focus block and health break creation via calendar
+
+---
+
+## Version 0.4.0 — Observability & Polish (Target: 2-3 weeks after v0.3)
+
+### Monitoring
+
+- [ ] Health check endpoint with dependency status (Jira, GitLab, OpenCode connectivity)
+- [ ] Prometheus metrics endpoint
+- [ ] Structured logging (JSON format)
 
 ### Security
-- [ ] Authentication system
-- [ ] Authorization model
-- [ ] API key management
-- [ ] Webhook security enhancements
-- [ ] Security audit
 
-### Operations
-- [ ] Monitoring and alerting
-- [ ] Health checks
-- [ ] Metrics collection
-- [ ] Log aggregation
-- [ ] Deployment automation
+- [ ] Rate limiting per user/IP on all endpoints
+- [ ] Request validation middleware (JSON schema)
+- [ ] Content Security Policy headers
 
-### Documentation
-- [ ] API documentation
-- [ ] Deployment guide
-- [ ] Operations runbook
-- [ ] Troubleshooting guide
-- [ ] User guide
+### Web UI
 
-## Future Enhancements
+- [ ] Markdown rendering in chat responses
+- [ ] Approval queue management page
+- [ ] Roadmap detail view with milestones
+- [ ] Memory browser with search
+- [ ] Mobile responsive improvements
+
+---
+
+## Version 0.5.0 — Communication & Scale (Target: After v0.4)
+
+### Communication
+
+- [ ] Fix or remove Signal bot polling mechanism
+- [ ] Evaluate Mattermost integration (if needed)
+
+### Performance
+
+- [ ] Redis caching layer
+- [ ] Database query optimization
+- [ ] Horizontal scaling considerations
 
 ### Advanced Features
+
 - [ ] Multi-user support
-- [ ] Team workflows
-- [ ] Custom integrations
-- [ ] Plugin system
-- [ ] Workflow automation
+- [ ] Per-project policy overrides
+- [ ] Scheduled / recurring tasks
+- [ ] Notification system (email, push)
 
-### Analytics
-- [ ] Productivity metrics
-- [ ] Time tracking
-- [ ] Workload forecasting
-- [ ] Pattern recognition
-- [ ] Recommendations engine
+---
 
-### Integrations
-- [ ] GitHub support
-- [ ] Linear support
-- [ ] Notion integration
-- [ ] Slack/Teams integration
-- [ ] Email integration
-- [ ] Calendar providers (Google, CalDAV)
-- [ ] Health/fitness apps
-- [ ] Habit trackers
+## Version 1.0.0 — Production Ready
 
-### AI/ML
-- [ ] Natural language processing
-- [ ] Sentiment analysis
-- [ ] Priority prediction
-- [ ] Anomaly detection
-- [ ] Smart recommendations
+- [ ] Load testing and performance benchmarks
+- [ ] Security audit (especially auth + webhook verification)
+- [ ] API documentation (OpenAPI/Swagger)
+- [ ] Deployment runbook
+- [ ] Incident response procedures
+- [ ] 90%+ workflow test coverage
 
-## Timeline Estimates
+---
 
-- **v0.2.0**: 2-3 months
-- **v0.3.0**: 1-2 months
-- **v0.4.0**: 2-3 months
-- **v0.5.0**: 1-2 months
-- **v0.6.0**: 2-3 months
-- **v1.0.0**: 2-3 months
+## Completed Items from Previous Roadmap
 
-**Total to v1.0.0**: ~12-18 months
-
-## Dependencies
-
-### External Dependencies
-- OpenCode API availability and pricing
-- Jira Cloud API stability
-- GitLab API consistency
-- Microsoft Graph API support
-
-### Technical Risks
-- API rate limits
-- Breaking changes in external APIs
-- OAuth complexity
-- Scaling challenges
-- Performance bottlenecks
-
-## Contribution Guidelines
-
-Contributions welcome! Please:
-
-1. Check existing issues and roadmap
-2. Open issue to discuss major changes
-3. Follow coding standards
-4. Add tests for new features
-5. Update documentation
-6. Submit pull request
-
-## Release Notes
-
-Each release will include:
-- New features
-- Bug fixes
-- Breaking changes
-- Migration guide (if needed)
-- Known issues
-
-Follow this project for updates!
+| Previous Item                   | Status     | Notes                                                        |
+| ------------------------------- | ---------- | ------------------------------------------------------------ |
+| OpenCode API integration        | ✅ Done    | 321-line client with streaming + tool dispatcher             |
+| Jira REST API client            | ✅ Done    | 529-line client with v2/v3 fallback                          |
+| GitLab API client               | ✅ Done    | 346-line client + webhook handler                            |
+| Google Calendar integration     | ✅ Done    | OAuth2 + Calendar API                                        |
+| File Calendar + ICS             | ✅ Done    | RFC 5545, iPhone subscription, Cloudflare tunnel             |
+| Tool dispatcher                 | ✅ Done    | 10 real handlers to Jira, GitLab, Calendar, Daily Planner    |
+| Approval execution              | ✅ Done    | SQLite-persisted, dispatches via tool dispatcher             |
+| API key authentication          | ✅ Done    | Bearer / X-API-Key / query param, public path whitelist      |
+| Streaming responses             | ✅ Done    | SSE chat streaming                                           |
+| Tool calling support            | ✅ Done    | 15+ tools registered                                         |
+| Context management              | ✅ Done    | Session + memory system                                      |
+| Database persistence            | ⚠️ Partial | Roadmap and approvals use SQLite; guardrails still in-memory |
+| Microsoft Graph / Calendar      | 🔴 Dead    | All methods throw; project pivoted to Google Calendar        |
+| Daily planning logic            | ⚠️ Partial | Routes mounted, Jira data + stub fill                        |
+| Engineering strategy generation | ⚠️ Partial | Routes mounted, AI-first with stub fallbacks                 |

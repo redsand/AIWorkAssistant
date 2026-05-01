@@ -24,7 +24,7 @@ class ScaffoldPlanner {
   /**
    * Generate scaffolding plan from architecture proposal
    */
-  async generate(architecture: ArchitectureProposal): Promise<ScaffoldingPlan> {
+  async generate(_architecture: ArchitectureProposal): Promise<ScaffoldingPlan> {
     // TODO: Use OpenCode API to generate scaffolding plan
     console.log('[Scaffold Planner] Generating from architecture');
 

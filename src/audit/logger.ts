@@ -2,7 +2,6 @@
  * Audit logger: records all actions, decisions, approvals, and executions
  */
 
-import { createWriteStream } from 'fs';
 import { appendFile } from 'fs/promises';
 import { AuditEntry } from '../policy/types';
 import { env } from '../config/env';

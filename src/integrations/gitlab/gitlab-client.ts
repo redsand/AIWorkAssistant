@@ -3,7 +3,7 @@
  * Production implementation for GitLab operations
  */
 
-import axios, { AxiosInstance, AxiosError } from 'axios';
+import axios, { AxiosInstance } from 'axios';
 import * as https from 'https';
 import { env } from '../../config/env';
 

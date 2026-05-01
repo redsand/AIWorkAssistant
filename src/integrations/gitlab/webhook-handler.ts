@@ -3,27 +3,57 @@
  * Processes push and merge request events from GitLab
  */
 
-import { env } from '../../config/env';
-import { extractFromCommit, extractFromMergeRequest } from './jira-key-extractor';
-import { jiraService } from '../jira/jira-service';
-import { policyEngine } from '../../policy/engine';
-import { Action } from '../../policy/types';
-import { v4 as uuidv4 } from 'uuid';
+import crypto from "crypto";
+import { env } from "../../config/env";
+import {
+  extractFromCommit,
+  extractFromMergeRequest,
+} from "./jira-key-extractor";
+import { jiraService } from "../jira/jira-service";
+import { policyEngine } from "../../policy/engine";
+import { Action } from "../../policy/types";
+import { v4 as uuidv4 } from "uuid";
 
 class WebhookHandler {
   /**
    * Verify GitLab webhook signature
-   * TODO: Implement proper webhook signature verification
+   * Supports both token-based (X-Gitlab-Token header) and
+   * HMAC-SHA256 (X-Gitlab-Signature header) verification.
    */
-  verifyWebhook(signature: string, body: string): boolean {
-    if (!env.GITLAB_WEBHOOK_SECRET) {
-      console.warn('[GitLab] No webhook secret configured - skipping verification');
+  verifyWebhook(
+    signature: string,
+    body: string,
+    secretOverride?: string,
+  ): boolean {
+    const secret =
+      secretOverride !== undefined ? secretOverride : env.GITLAB_WEBHOOK_SECRET;
+    if (!secret) {
+      console.warn(
+        "[GitLab] No webhook secret configured - skipping verification",
+      );
       return true;
     }
 
-    // TODO: Implement HMAC verification
-    // GitLab uses X-Gitlab-Token header
-    return signature === env.GITLAB_WEBHOOK_SECRET;
+    // GitLab sends the token in X-Gitlab-Token header for token-based verification.
+    // For HMAC verification, it sends the signature in X-Gitlab-Signature header.
+    // We check both: if the signature looks like an HMAC hex digest (64 chars for SHA256),
+    // verify via HMAC; otherwise, do a timing-safe token comparison.
+    if (signature.length === 64 && /^[a-f0-9]{64}$/i.test(signature)) {
+      const expected = crypto
+        .createHmac("sha256", secret)
+        .update(body)
+        .digest("hex");
+      const sigBuf = Buffer.from(signature, "utf-8");
+      const expBuf = Buffer.from(expected, "utf-8");
+      if (sigBuf.length !== expBuf.length) return false;
+      return crypto.timingSafeEqual(sigBuf, expBuf);
+    }
+
+    // Token-based verification (X-Gitlab-Token)
+    const tokenBuf = Buffer.from(signature, "utf-8");
+    const secretBuf = Buffer.from(secret, "utf-8");
+    if (tokenBuf.length !== secretBuf.length) return false;
+    return crypto.timingSafeEqual(tokenBuf, secretBuf);
   }
 
   /**
@@ -92,9 +122,10 @@ class WebhookHandler {
   private async processCommitJiraLink(
     jiraKey: string,
     commit: { id: string; message: string; title: string },
-    event: { project_name: string; user_name: string }
+    event: { project_name: string; user_name: string },
   ): Promise<void> {
-    const comment = `GitLab commit linked to this ticket:\n` +
+    const comment =
+      `GitLab commit linked to this ticket:\n` +
       `- Project: ${event.project_name}\n` +
       `- Commit: ${commit.id.substring(0, 8)}\n` +
       `- Author: ${event.user_name}\n` +
@@ -103,19 +134,21 @@ class WebhookHandler {
 
     const action: Action = {
       id: uuidv4(),
-      type: 'gitlab.jira_link.auto_comment',
+      type: "gitlab.jira_link.auto_comment",
       description: `Auto-post comment to ${jiraKey} from GitLab commit`,
       params: { key: jiraKey, comment },
-      userId: 'gitlab-webhook',
+      userId: "gitlab-webhook",
       timestamp: new Date(),
     };
 
     const decision = await policyEngine.evaluate(action);
 
     if (policyEngine.canProceed(decision)) {
-      await jiraService.addComment(jiraKey, comment, 'gitlab-webhook');
+      await jiraService.addComment(jiraKey, comment, "gitlab-webhook");
     } else {
-      console.log(`[GitLab] Skipping auto-comment to ${jiraKey}: ${decision.reason}`);
+      console.log(
+        `[GitLab] Skipping auto-comment to ${jiraKey}: ${decision.reason}`,
+      );
     }
   }
 
@@ -131,9 +164,10 @@ class WebhookHandler {
       action: string;
       web_url: string;
     },
-    event: { project: { name: string } }
+    event: { project: { name: string } },
   ): Promise<void> {
-    const comment = `GitLab merge request linked to this ticket:\n` +
+    const comment =
+      `GitLab merge request linked to this ticket:\n` +
       `- Project: ${event.project.name}\n` +
       `- MR: !${mr.iid}\n` +
       `- Title: ${mr.title}\n` +
@@ -143,23 +177,25 @@ class WebhookHandler {
 
     const action: Action = {
       id: uuidv4(),
-      type: 'gitlab.jira_link.auto_comment',
+      type: "gitlab.jira_link.auto_comment",
       description: `Auto-post comment to ${jiraKey} from GitLab MR`,
       params: { key: jiraKey, comment },
-      userId: 'gitlab-webhook',
+      userId: "gitlab-webhook",
       timestamp: new Date(),
     };
 
     const decision = await policyEngine.evaluate(action);
 
     if (policyEngine.canProceed(decision)) {
-      await jiraService.addComment(jiraKey, comment, 'gitlab-webhook');
+      await jiraService.addComment(jiraKey, comment, "gitlab-webhook");
     } else {
-      console.log(`[GitLab] Skipping auto-comment to ${jiraKey}: ${decision.reason}`);
+      console.log(
+        `[GitLab] Skipping auto-comment to ${jiraKey}: ${decision.reason}`,
+      );
     }
 
     // Suggest transition if MR was merged
-    if (mr.action === 'merge' && mr.state === 'merged') {
+    if (mr.action === "merge" && mr.state === "merged") {
       await this.suggestTransitionOnMerge(jiraKey, mr);
     }
   }
@@ -169,18 +205,18 @@ class WebhookHandler {
    */
   private async suggestTransitionOnMerge(
     jiraKey: string,
-    mr: { iid: number; web_url: string }
+    mr: { iid: number; web_url: string },
   ): Promise<void> {
     const action: Action = {
       id: uuidv4(),
-      type: 'gitlab.jira_link.auto_transition',
+      type: "gitlab.jira_link.auto_transition",
       description: `Auto-transition ${jiraKey} after MR merge`,
       params: {
         key: jiraKey,
-        transition: 'In Review',
+        transition: "In Review",
         comment: `Merge request !${mr.iid} was merged. Ready for review: ${mr.web_url}`,
       },
-      userId: 'gitlab-webhook',
+      userId: "gitlab-webhook",
       timestamp: new Date(),
     };
 
@@ -189,12 +225,18 @@ class WebhookHandler {
     if (policyEngine.canProceed(decision)) {
       // Auto-transition if allowed
       try {
-        await jiraService.transitionIssue(jiraKey, 'In Review', 'gitlab-webhook');
+        await jiraService.transitionIssue(
+          jiraKey,
+          "In Review",
+          "gitlab-webhook",
+        );
       } catch (error) {
         console.error(`[GitLab] Failed to auto-transition ${jiraKey}:`, error);
       }
     } else {
-      console.log(`[GitLab] Skipping auto-transition for ${jiraKey}: ${decision.reason}`);
+      console.log(
+        `[GitLab] Skipping auto-transition for ${jiraKey}: ${decision.reason}`,
+      );
     }
   }
 }

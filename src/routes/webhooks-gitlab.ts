@@ -4,7 +4,6 @@
 
 import { FastifyInstance } from 'fastify';
 import { webhookHandler } from '../integrations/gitlab/webhook-handler';
-import { env } from '../config/env';
 
 export async function gitlabWebhookRoutes(fastify: FastifyInstance) {
   /**

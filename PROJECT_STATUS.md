@@ -1,349 +1,198 @@
-# OpenClaw Agent - Project Status & TODO List
+# OpenClaw Agent - Project Status
 
 **Last Updated:** 2026-04-30
 **Version:** 0.1.0
-**Status:** 🟢 Active Development
+**Status:** 🟡 Late Alpha — Core infrastructure solid, several modules still stub
 
 ---
 
-## ✅ COMPLETED FEATURES
+## Implementation Reality Check
 
-### Core Infrastructure
-- ✅ **Fastify HTTP Server** - Running on port 3050 (browser-safe)
-- ✅ **TypeScript Build System** - Clean compilation (only unused variable warnings)
-- ✅ **Environment Configuration** - Zod-validated config with `.env` support
-- ✅ **Error Handling** - Global error handler with proper logging
-- ✅ **Database Integration** - SQLite with better-sqlite3 for roadmap management
-- ✅ **Policy Engine** - 3-tier approval system (strict/balanced/permissive)
-- ✅ **Memory Management** - Auto-compaction with markdown file persistence
+> See [`docs/GAP_AUDIT.md`](./docs/GAP_AUDIT.md) for the full independent audit of documentation vs code reality.
 
-### AI Integration
-- ✅ **OpenCode API Client** - glm-5 model with tool calling and streaming
-- ✅ **Conversation Memory** - Session management with 50+ message auto-compaction
-- ✅ **System Prompts** - Productivity and Engineering mode prompts
-- ✅ **Tool Registry** - Dynamic tool registration for AI agent capabilities
+### Legend
+
+- ✅ **REAL** — Working implementation, tested, connected to routes/services
+- ⚠️ **PARTIAL** — Substantial code exists but missing key functionality
+- 🔴 **STUB** — Returns hardcoded data, throws "Not implemented", or not connected
+- 🔴 **BUG** — Code exists but has a blocking bug
+
+---
+
+## Module Status
+
+### Core Infrastructure ✅ REAL
+
+- ✅ **Fastify HTTP Server** — Port 3050, CORS, static files, error handler
+- ✅ **TypeScript Build System** — Clean compilation (pre-existing unused variable warnings only)
+- ✅ **Environment Configuration** — Zod-validated config with `.env` support
+- ✅ **Conversation Memory** — Auto-compaction, file persistence, keyword search (743 lines)
+
+### AI Integration ✅ REAL
+
+- ✅ **OpenCode API Client** — 321-line client with chat, streaming, tool calling, token tracking
+- ✅ **Tool Registry** — 15+ tools across productivity and engineering modes
+- ✅ **Tool Dispatcher** — 10 real handlers dispatching to Jira, GitLab, Calendar, Daily Planner
+- ✅ **System Prompts** — Productivity and Engineering mode prompts
+
+### Policy & Guardrails ✅ REAL (with caveats)
+
+- ✅ **Policy Engine** — Pattern-based matching, 3-tier modes (strict/balanced/permissive)
+- ✅ **Guardrails System** — 752 lines, 15 critical actions, rate limiting, role-based auth
+- ✅ **Approval Queue** — SQLite persistence, action execution via `dispatchToolCall()`, status tracking (pending/approved/rejected/executed/failed)
+- ⚠️ **Guardrails Persistence** — `database.ts` exists (205 lines) but is dead code — `action-registry.ts` uses in-memory Maps; state lost on restart
+- ⚠️ **Audit Logger** — Write path works; `query()` returns empty array (TODO)
+
+### Auth & Security ⚠️ PARTIAL
+
+- ✅ **API Key Auth Middleware** — Bearer token / `X-API-Key` header / `?apiKey=` query param, public path whitelist
+- ⚠️ **Auth key comparison** — Uses `!==` string equality, not `crypto.timingSafeEqual` (timing attack vulnerability)
+- ⚠️ **GitLab Webhook HMAC** — Uses `===` string comparison instead of HMAC-SHA256 (timing attack + no payload verification)
+
+### Project Management ✅ REAL
+
+- ✅ **Jira Integration** — 529-line client + 174-line service, full CRUD, v2/v3 fallback
+- ⚠️ **GitLab Integration** — 346-line client + 202-line webhook handler + Jira key extractor (webhook HMAC is insecure)
+- ✅ **Roadmap Management** — 579-line SQLite database + 597-line REST API + templates
+
+### Calendar ✅ REAL
+
+- ✅ **File Calendar** — 305-line local calendar with RFC 5545 ICS export, routes mounted at `/calendar/*`
+- ✅ **Calendar Subscription** — `/calendar/subscribe` returns `webcal://` URL for iPhone
+- ✅ **Cloudflare Tunnel** — Supports `cloudflared` and `localtunnel`, starts at boot for external ICS access
+- ✅ **Google Calendar Integration** — Full OAuth2 flow, token persistence, Calendar API CRUD (needs OAuth credentials to activate)
+- 🔴 **Microsoft Calendar** — All methods throw "Not implemented" — effectively dead code
 
 ### Communication Platforms
-- ✅ **Web Interface** - Modern responsive UI at http://localhost:3050
-- ✅ **CLI Tool** - Commander.js interface for terminal usage
-- ✅ **Discord Bot** - Full Discord integration with slash commands
-- ✅ **Signal Integration** - Basic Signal bot (requires Signal CLI setup)
 
-### Project Management
-- ✅ **Jira Integration** - Full REST API v3 support
-  - Issue CRUD operations
-  - Comments and attachments
-  - Status transitions
-  - Project and user management
-- ✅ **GitLab Integration** - REST API v4 with self-signed cert handling
-  - Merge request operations
-  - Commit history
-  - Webhook processing
-  - Project management
-- ✅ **Roadmap Management** - Database-driven roadmap system
-  - Client and internal roadmaps
-  - Milestones and items tracking
-  - Template system
-  - Progress tracking
+- ✅ **Discord Bot** — 577 lines, slash commands, session management, API integration
+- ⚠️ **Signal Bot** — 348 lines, spawns `signal-cli`, but `startMessagePolling()` logs without polling; depends on external binary
+- ✅ **Web Interface** — 580-line single-page app with chat, roadmaps, memory search
+- ⚠️ **CLI** — 482-line Commander.js CLI exists but **not wired as executable in package.json**
 
-### Productivity Features
-- ✅ **Daily Planner** - Integration with Jira, GitLab, and Calendar
-- ✅ **Focus Blocks** - Deep work session management
-- ✅ **Health Breaks** - Fitness, meal, and mental health scheduling
-- ✅ **Google Calendar Integration** - NEW! Full Google Calendar API support
+### Productivity Features ⚠️ PARTIAL (routes mounted, recommendations are stubs)
 
-### Security & Governance
-- ✅ **Guardrails System** - 15 critical actions protected
-- ✅ **Approval Queue** - In-memory approval workflow
-- ✅ **Audit Logging** - Comprehensive audit trail
-- ✅ **Risk Classification** - LOW/MEDIUM/HIGH/CRITICAL levels
-- ✅ **Rate Limiting** - Cooldown periods on critical actions
+- ⚠️ **Daily Planner** — `GET /productivity/daily-plan` calls real Jira for issue count but fills most fields with hardcoded values
+- ⚠️ **Focus Blocks** — `GET /productivity/focus-blocks/recommend` returns 2 hardcoded placeholder items; `POST /productivity/focus-blocks` delegates to real `fileCalendarService.createFocusBlock()`
+- ⚠️ **Health Breaks** — `GET /productivity/health-breaks/recommend` returns 3 hardcoded items; `POST /productivity/health-blocks` delegates to real `fileCalendarService.createHealthBlock()`
+- ✅ **Calendar Summary** — `GET /productivity/calendar-summary` aggregates file calendar data
 
-### Development Tools
-- ✅ **Testing Infrastructure** - 97%+ test pass rate
-- ✅ **Docker Support** - Multi-stage containerization
-- ✅ **SSL/TLS Setup** - Nginx reverse proxy configuration
-- ✅ **Backup Scripts** - Automated system backup
-- ✅ **Documentation** - Comprehensive setup and usage guides
+### Engineering Features ⚠️ PARTIAL (routes mounted, AI-first with stub fallbacks)
+
+- ⚠️ **Workflow Brief** — `POST /engineering/workflow-brief` tries OpenCode API first; falls back to hardcoded stub
+- ⚠️ **Architecture Planner** — `POST /engineering/architecture-proposal` tries OpenCode API first; falls back to hardcoded stub
+- ⚠️ **Scaffold Planner** — `POST /engineering/scaffolding-plan` tries OpenCode API first; falls back to hardcoded stub
+- ⚠️ **Jira Ticket Generator** — `POST /engineering/jira-tickets` uses OpenCode; `POST /engineering/jira-tickets/create` generates fake keys via `Math.random()` instead of calling Jira API
 
 ---
 
-## 🎯 CURRENT PRIORITIES
+## Known Bugs
 
-### High Priority
-1. **Configure Google Calendar API** - Get API credentials and test integration
-2. **Test Web Interface** - Verify all features work in browser
-3. **Signal CLI Setup** - Complete Signal integration (45-min process)
-
-### Medium Priority
-4. **Production Deployment** - Deploy to production environment
-5. **Monitoring Setup** - Implement health checks and monitoring
-6. **Performance Optimization** - Cache optimization and response time improvements
-
-### Low Priority
-7. **Cleanup Unused Variables** - Fix 47 remaining TypeScript warnings
-8. **Enhanced Testing** - Increase test coverage to 99%+
-9. **Documentation Polish** - Update API documentation and user guides
+| #   | Bug                                                                | File                                         | Impact                                                | Fix Effort          |
+| --- | ------------------------------------------------------------------ | -------------------------------------------- | ----------------------------------------------------- | ------------------- |
+| 1   | GitLab webhook HMAC uses `===` instead of `crypto.timingSafeEqual` | `src/integrations/gitlab/webhook-handler.ts` | Timing attack vulnerability + no payload verification | ~20 lines           |
+| 2   | Auth middleware uses `!==` instead of `crypto.timingSafeEqual`     | `src/middleware/auth.ts:44`                  | Timing attack vulnerability                           | ~5 lines            |
+| 3   | `guardrails/database.ts` is dead code (never imported)             | `src/guardrails/database.ts`                 | Guardrails state lost on restart                      | ~50 lines           |
+| 4   | Audit logger `query()` returns `[]`                                | `src/audit/logger.ts:59-69`                  | Audit history endpoints return nothing                | ~40 lines           |
+| 5   | CLI not wired as executable                                        | `package.json`                               | CLI unreachable from command line                     | 2 lines             |
+| 6   | `jira-ticket-generator.createTickets()` uses `Math.random()`       | `src/engineering/jira-ticket-generator.ts`   | No actual Jira ticket creation                        | ~30 lines           |
+| 7   | Microsoft integration is dead code                                 | `src/integrations/microsoft/`                | Throws on every method call                           | Remove or deprecate |
 
 ---
 
-## 🔄 TODO LIST
+## Test Coverage (Honest Assessment)
 
-### Immediate Actions (This Week)
+### Automated Tests (`npm test` via Vitest)
 
-#### 1. Google Calendar Setup ⭐ HIGH PRIORITY
-- [ ] Get Google Cloud API credentials
-  - [ ] Create Google Cloud project
-  - [ ] Enable Calendar API
-  - [ ] Create API key
-  - [ ] Set up OAuth consent screen (if needed)
-- [ ] Add credentials to `.env`
-  ```bash
-  GOOGLE_CALENDAR_API_KEY=your_api_key_here
-  GOOGLE_CALENDAR_CLIENT_ID=your_client_id_here
-  ```
-- [ ] Test integration: `npm run test:google-calendar`
-- [ ] Verify events appear in iPhone Calendar app
-- [ ] Test focus block creation
-- [ ] Test health break scheduling
+| File                                                 | Status                                |
+| ---------------------------------------------------- | ------------------------------------- |
+| `tests/unit/policy/engine.test.ts`                   | 10 tests — pass                       |
+| `tests/unit/agent/opencode-client.test.ts`           | 6 tests — pass (live API Integration) |
+| `tests/unit/integrations/jira-client.test.ts`        | 9 tests — 1 failing (JQL 410 error)   |
+| `tests/unit/integrations/jira-key-extractor.test.ts` | 20 tests — pass                       |
 
-#### 2. Web Interface Testing ⭐ HIGH PRIORITY
-- [ ] Open http://localhost:3050 in browser
-- [ ] Test chat functionality with OpenCode API
-- [ ] Create and manage roadmaps
-- [ ] Test memory search
-- [ ] Verify productivity mode
-- [ ] Verify engineering mode
-- [ ] Test mobile responsiveness
+**Total: 45 tests, 44 passing, 1 failing (JQL deprecation)**
 
-#### 3. Signal Integration Completion
-- [ ] Install Signal CLI: `cargo install signal-cli`
-- [ ] Link Signal phone number: `signal-cli link`
-- [ ] Configure environment variables
-- [ ] Test message sending
-- [ ] Test webhook receiving
-- [ ] Test end-to-end encryption
+### Workflow Test Coverage: **0%**
 
-### Short-term Tasks (Next 2 Weeks)
+No end-to-end workflow tests exist. The following critical paths have zero test coverage:
 
-#### 4. Production Deployment
-- [ ] Set up production server (AWS/DigitalOcean/Linode)
-- [ ] Configure domain name and DNS
-- [ ] Set up SSL certificates (Let's Encrypt)
-- [ ] Configure Nginx reverse proxy
-- [ ] Set up environment variables
-- [ ] Deploy using Docker Compose
-- [ ] Configure backup automation
-- [ ] Set up monitoring and alerts
-
-#### 5. Monitoring & Observability
-- [ ] Implement health check endpoints
-- [ ] Set up application logging
-- [ ] Configure error tracking (Sentry or similar)
-- [ ] Set up performance monitoring
-- [ ] Create monitoring dashboard
-- [ ] Configure alerting rules
-
-#### 6. Security Hardening
-- [ ] Review and update CORS settings
-- [ ] Implement rate limiting per user
-- [ ] Add request validation middleware
-- [ ] Set up web application firewall
-- [ ] Conduct security audit
-- [ ] Implement content security policy
-
-### Long-term Tasks (Next Month)
-
-#### 7. Feature Enhancements
-- [ ] Enhanced natural language processing
-- [ ] Multi-language support
-- [ ] Advanced analytics dashboard
-- [ ] Custom workflow automation
-- [ ] Integration with additional services (Slack, Teams, etc.)
-- [ ] Mobile app development (React Native)
-
-#### 8. Performance & Scale
-- [ ] Implement Redis caching
-- [ ] Optimize database queries
-- [ ] Add CDN for static assets
-- [ ] Implement horizontal scaling
-- [ ] Load balancing setup
-- [ ] Database migration planning (PostgreSQL)
-
-#### 9. Documentation & Training
-- [ ] Create user documentation
-- [ ] Record video tutorials
-- [ ] Create API documentation
-- [ ] Write deployment guides
-- [ ] Create troubleshooting guides
-- [ ] Set up knowledge base
+| Workflow                                                          | Tests |
+| ----------------------------------------------------------------- | ----- |
+| Chat → AI → tool call → response round-trip                       | 0     |
+| Approval create → guard → approve → execute → audit               | 0     |
+| ICS calendar: create event → export → subscribe                   | 0     |
+| GitLab webhook → extract keys → policy → comment                  | 0     |
+| Productivity: request plan → recommendations → create blocks      | 0     |
+| Engineering: request brief → AI generation → Jira tickets         | 0     |
+| Auth middleware: public paths bypass, protected paths require key | 0     |
+| Calendar CRUD via REST API                                        | 0     |
+| Roadmap CRUD via REST API                                         | 0     |
+| Guardrails action registry enforcement                            | 0     |
+| Conversation memory sessions, compaction, search                  | 0     |
 
 ---
 
-## 🚀 DEPLOYMENT CHECKLIST
+## What's Genuinely MVP-Ready
 
-### Pre-deployment
-- [ ] All tests passing: `npm test`
-- [ ] No critical TypeScript errors
-- [ ] Environment variables configured
-- [ ] Database migrations tested
-- [ ] Backup procedures tested
-- [ ] Monitoring configured
-- [ ] SSL certificates obtained
-- [ ] Domain name configured
+These features have real, working implementations connected to the system:
 
-### Deployment Steps
-- [ ] Deploy to staging environment
-- [ ] Run smoke tests
-- [ ] Test all integrations
-- [ ] Verify authentication flows
-- [ ] Test calendar sync
-- [ ] Load testing
-- [ ] Security scanning
-- [ ] Performance testing
-
-### Post-deployment
-- [ ] Monitor error rates
-- [ ] Check response times
-- [ ] Verify database connections
-- [ ] Test external integrations
-- [ ] Monitor resource usage
-- [ ] Review logs for issues
-- [ ] Test rollback procedures
+1. Fastify HTTP server with CORS, static files, error handling, API key auth
+2. Chat API — POST /chat, streaming, sessions, memory
+3. OpenCode AI integration — real API calls, streaming, tool calling
+4. Tool dispatcher — 10 real handlers (Jira, GitLab, Calendar, Daily Planner)
+5. Policy Engine — pattern matching, 3-tier modes
+6. Guardrails — 15 critical actions, rate limiting, REST API
+7. Approval Queue — SQLite-persisted, action execution on approve
+8. Roadmap system — SQLite-backed CRUD, templates, milestones
+9. Jira integration — full REST API, CRUD, transitions
+10. GitLab integration — REST API, webhooks (HMAC needs fix)
+11. File Calendar — CRUD, ICS export, iPhone subscription via tunnel
+12. Cloudflare tunnel — starts at boot for external access
+13. Google Calendar OAuth2 — full flow, needs credentials
+14. Discord bot — slash commands, sessions
+15. Conversation memory — sessions, auto-compaction, persistence, search
 
 ---
 
-## 📊 PROJECT METRICS
+## Priority Actions for MVP
 
-### Code Quality
-- **TypeScript Errors:** 0 (only unused variable warnings)
-- **Test Coverage:** 97%+ pass rate
-- **Integration Tests:** All major integrations tested
-- **Documentation:** Comprehensive guides available
+### Immediate (Security Fixes)
 
-### Feature Completeness
-- **Core Platform:** ✅ 100% complete
-- **Communication:** ✅ 80% complete (Signal needs setup)
-- **Productivity:** ✅ 90% complete (Calendar needs config)
-- **Engineering:** ✅ 95% complete
-- **Security:** ✅ 100% complete
+1. Implement GitLab webhook `crypto.timingSafeEqual` HMAC verification
+2. Implement auth middleware `crypto.timingSafeEqual` key comparison
+3. Wire guardrails `database.ts` into `action-registry.ts` (persist across restarts)
 
-### Integration Status
-- **OpenCode API:** ✅ Working
-- **Jira:** ✅ Working
-- **GitLab:** ✅ Working
-- **Google Calendar:** ✅ Implemented (needs config)
-- **Discord:** ✅ Working
-- **Signal:** ⚠️ Partial (needs CLI setup)
-- **Microsoft 365:** ❌ Superseded by Google Calendar
+### Short-term (Functional Gaps)
 
----
+4. Implement audit logger `query()` method (SQLite or indexed file read)
+5. Wire CLI as executable in package.json (`bin` field)
+6. Replace `jira-ticket-generator.createTickets()` `Math.random()` with real Jira API create calls
 
-## 🎯 SUCCESS CRITERIA
+### Medium-term (Replace Stubs with Real Logic)
 
-### Phase 1: Foundation ✅ COMPLETE
-- Core platform operational
-- OpenCode AI integration working
-- Basic productivity features functional
-- Web interface accessible
+7. Replace productivity "recommend" endpoints with OpenCode API-generated content
+8. Replace engineering stub fallbacks with real AI-generated content
+9. Remove or clearly deprecate Microsoft integration stubs
+10. Fix or remove Signal bot polling
 
-### Phase 2: Integration 🟢 IN PROGRESS
-- Calendar integration complete
-- All communication platforms operational
-- Comprehensive testing completed
-- Documentation polished
+### Critical: Test Coverage
 
-### Phase 3: Production 🔄 PENDING
-- Production deployment complete
-- Monitoring and alerting active
-- Performance optimized
-- Security hardened
-
-### Phase 4: Enhancement 📋 PLANNED
-- Advanced features implemented
-- Multi-platform support expanded
-- Analytics and insights added
-- Community engagement initiated
+11. Write workflow tests for approval lifecycle
+12. Write workflow tests for calendar CRUD + ICS export
+13. Write workflow tests for chat → tool dispatch round-trip
+14. Write unit tests for guardrails, memory, roadmap, auth middleware
 
 ---
 
-## 🛠️ QUICK START GUIDE
+## Feature Completeness (Revised)
 
-### For Development
-```bash
-# Install dependencies
-npm install
-
-# Start development server
-npm run dev
-
-# Run tests
-npm test
-
-# Build for production
-npm run build
-```
-
-### For Calendar Setup
-```bash
-# Test Google Calendar integration
-npm run test:google-calendar
-
-# Add credentials to .env
-GOOGLE_CALENDAR_API_KEY=your_key_here
-GOOGLE_CALENDAR_CLIENT_ID=your_client_id_here
-```
-
-### For Deployment
-```bash
-# Build Docker containers
-npm run docker:build
-
-# Start production services
-npm run docker:up
-
-# View logs
-npm run docker:logs
-```
-
----
-
-## 📞 SUPPORT & CONTACT
-
-### Getting Help
-- **Documentation:** Check `/docs` folder
-- **Issues:** Create GitHub issue
-- **Tests:** Run `npm run test:*` scripts
-- **Logs:** Check `/logs` directory
-
-### Common Issues
-- **Port 3050 blocked:** Ensure no other service using port
-- **API errors:** Check environment variables in `.env`
-- **Database errors:** Ensure `/data` directory exists
-- **Calendar not working:** Verify Google API credentials
-
----
-
-## 🎉 PROJECT HIGHLIGHTS
-
-### What Makes This Special
-- 🤖 **AI-Powered:** Advanced OpenCode integration with tool calling
-- 🔒 **Security First:** Comprehensive guardrails and approval system
-- 📱 **Multi-Platform:** Web, CLI, Discord, Signal support
-- 🛠️ **Developer Friendly:** Clean TypeScript code with excellent testing
-- 📅 **Productivity Focused:** Daily planning, focus blocks, health breaks
-- 🔗 **Well Integrated:** Jira, GitLab, Google Calendar working together
-
-### Technical Achievements
-- ✅ Zero critical TypeScript errors
-- ✅ 97%+ test pass rate
-- ✅ Comprehensive policy engine
-- ✅ Auto-compacting memory system
-- ✅ Multi-platform communication
-- ✅ Production-ready architecture
-
----
-
-**Next Review:** After Google Calendar configuration complete
-**Project Status:** 🟢 ON TRACK
-**Blockers:** None identified
+| Area          | Previous Claim | Actual | Notes                                                                |
+| ------------- | -------------- | ------ | -------------------------------------------------------------------- |
+| Core Platform | 100%           | 95%    | Auth is timing-vulnerable, CLI not wired                             |
+| Communication | 80%            | 65%    | CLI unwired, Signal polling broken                                   |
+| Productivity  | 90%            | 50%    | Routes mounted, create endpoints work, recommend endpoints are stubs |
+| Engineering   | 95%            | 40%    | Routes mounted, AI-first with stub fallbacks, createTickets is fake  |
+| Security      | 100%           | 80%    | Auth timing-vulnerable, no HMAC on webhooks, audit query broken      |
+| Calendar      | 0%             | 90%    | File calendar + ICS + tunnel all working; Google needs OAuth         |
+| Test Coverage | 97%+           | ~5%    | 45 unit tests, 0 workflow tests, actual source coverage unmeasured   |

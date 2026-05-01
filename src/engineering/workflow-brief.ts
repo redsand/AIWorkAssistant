@@ -3,8 +3,6 @@
  * TODO: Implement actual workflow brief generation with OpenCode API
  */
 
-import { opencodeClient } from '../agent/opencode-client';
-
 export interface WorkflowBrief {
   problem: string;
   users: string[];

@@ -3,13 +3,13 @@
  * Handles conversation history, auto-compaction, and long-term memory storage
  */
 
-import fs from 'fs';
-import path from 'path';
-import { v4 as uuidv4 } from 'uuid';
-import type { ChatMessage } from '../agent/opencode-client';
+import fs from "fs";
+import path from "path";
+import { v4 as uuidv4 } from "uuid";
+import type { ChatMessage } from "../agent/opencode-client";
 
 export interface Message {
-  role: 'system' | 'user' | 'assistant';
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
   timestamp: Date;
   toolCalls?: Array<{
@@ -17,12 +17,13 @@ export interface Message {
     name: string;
     params: Record<string, unknown>;
   }>;
+  tool_call_id?: string;
 }
 
 export interface ConversationSession {
   id: string;
   userId: string;
-  mode: 'productivity' | 'engineering';
+  mode: "productivity" | "engineering";
   messages: Message[];
   createdAt: Date;
   updatedAt: Date;
@@ -58,32 +59,36 @@ export class ConversationManager {
   private readonly SESSION_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
 
   constructor() {
-    this.memoryBasePath = path.join(process.cwd(), 'data', 'memories');
+    this.memoryBasePath = path.join(process.cwd(), "data", "memories");
     this.initializeStorage();
     this.startCleanupTask();
   }
 
   private initializeStorage() {
     const dirs = [
-      path.join(this.memoryBasePath, 'users'),
-      path.join(this.memoryBasePath, 'sessions'),
-      path.join(this.memoryBasePath, 'summaries'),
-      path.join(this.memoryBasePath, 'active'),
+      path.join(this.memoryBasePath, "users"),
+      path.join(this.memoryBasePath, "sessions"),
+      path.join(this.memoryBasePath, "summaries"),
+      path.join(this.memoryBasePath, "active"),
     ];
 
-    dirs.forEach(dir => {
+    dirs.forEach((dir) => {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
     });
 
-    console.log('[MemoryManager] Storage initialized');
+    console.log("[MemoryManager] Storage initialized");
   }
 
   /**
    * Start or continue a conversation session
    */
-  startSession(userId: string, mode: 'productivity' | 'engineering', metadata?: Record<string, unknown>): string {
+  startSession(
+    userId: string,
+    mode: "productivity" | "engineering",
+    metadata?: Record<string, unknown>,
+  ): string {
     const sessionId = uuidv4();
 
     const session: ConversationSession = {
@@ -94,23 +99,27 @@ export class ConversationManager {
       createdAt: new Date(),
       updatedAt: new Date(),
       metadata: {
-        title: metadata?.title as string || `Session ${new Date().toLocaleDateString()}`,
-        tags: metadata?.tags as string[] || [],
-        context: metadata?.context as Record<string, unknown> || {},
+        title:
+          (metadata?.title as string) ||
+          `Session ${new Date().toLocaleDateString()}`,
+        tags: (metadata?.tags as string[]) || [],
+        context: (metadata?.context as Record<string, unknown>) || {},
       },
     };
 
     this.sessions.set(sessionId, session);
     this.saveActiveSession(session);
 
-    console.log(`[MemoryManager] Started session ${sessionId} for user ${userId}`);
+    console.log(
+      `[MemoryManager] Started session ${sessionId} for user ${userId}`,
+    );
     return sessionId;
   }
 
   /**
    * Add a message to a session
    */
-  addMessage(sessionId: string, message: Omit<Message, 'timestamp'>): void {
+  addMessage(sessionId: string, message: Omit<Message, "timestamp">): void {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new Error(`Session ${sessionId} not found`);
@@ -142,7 +151,10 @@ export class ConversationManager {
   /**
    * Get messages in OpenCode API format
    */
-  getSessionMessages(sessionId: string, includeSummaries = true): ChatMessage[] {
+  getSessionMessages(
+    sessionId: string,
+    includeSummaries = true,
+  ): ChatMessage[] {
     const session = this.sessions.get(sessionId);
     if (!session) {
       return [];
@@ -152,7 +164,7 @@ export class ConversationManager {
 
     // Add system prompt
     messages.push({
-      role: 'system',
+      role: "system",
       content: this.getSystemPrompt(session.mode, session.metadata),
     });
 
@@ -161,14 +173,14 @@ export class ConversationManager {
       const summary = this.loadSessionSummary(sessionId);
       if (summary) {
         messages.push({
-          role: 'system',
-          content: `Previous conversation summary:\n${summary.summary}\n\nKey topics discussed: ${summary.keyTopics.join(', ')}`,
+          role: "system",
+          content: `Previous conversation summary:\n${summary.summary}\n\nKey topics discussed: ${summary.keyTopics.join(", ")}`,
         });
       }
     }
 
     // Add recent messages
-    session.messages.forEach(msg => {
+    session.messages.forEach((msg) => {
       messages.push({
         role: msg.role,
         content: msg.content,
@@ -197,21 +209,24 @@ export class ConversationManager {
     this.sessions.delete(sessionId);
     this.removeActiveSession(sessionId);
 
-    console.log(`[MemoryManager] Ended session ${sessionId}, saved to long-term memory`);
+    console.log(
+      `[MemoryManager] Ended session ${sessionId}, saved to long-term memory`,
+    );
   }
 
   /**
    * Search long-term memory
    */
   searchMemories(userId: string, query: string, limit = 10): MemorySummary[] {
-    const summaryPath = path.join(this.memoryBasePath, 'summaries', userId);
+    const summaryPath = path.join(this.memoryBasePath, "summaries", userId);
 
     if (!fs.existsSync(summaryPath)) {
       return [];
     }
 
-    const files = fs.readdirSync(summaryPath)
-      .filter(f => f.endsWith('.md'))
+    const files = fs
+      .readdirSync(summaryPath)
+      .filter((f) => f.endsWith(".md"))
       .sort((a, b) => {
         const statA = fs.statSync(path.join(summaryPath, a));
         const statB = fs.statSync(path.join(summaryPath, b));
@@ -223,11 +238,12 @@ export class ConversationManager {
 
     for (const file of files) {
       try {
-        const content = fs.readFileSync(path.join(summaryPath, file), 'utf-8');
+        const content = fs.readFileSync(path.join(summaryPath, file), "utf-8");
         const summary = this.parseMarkdownSummary(content);
 
         // Simple text search
-        const searchText = `${summary.title} ${summary.summary} ${summary.keyTopics.join(' ')}`.toLowerCase();
+        const searchText =
+          `${summary.title} ${summary.summary} ${summary.keyTopics.join(" ")}`.toLowerCase();
         if (searchText.includes(query.toLowerCase())) {
           results.push(summary);
         }
@@ -236,7 +252,10 @@ export class ConversationManager {
           break;
         }
       } catch (error) {
-        console.error(`[MemoryManager] Error reading memory file ${file}:`, error);
+        console.error(
+          `[MemoryManager] Error reading memory file ${file}:`,
+          error,
+        );
       }
     }
 
@@ -246,19 +265,26 @@ export class ConversationManager {
   /**
    * Get relevant memories for context
    */
-  getRelevantMemories(userId: string, currentContext: string, limit = 3): string[] {
-    const recentMemories = this.searchMemories(userId, '', 20);
+  getRelevantMemories(
+    userId: string,
+    currentContext: string,
+    limit = 3,
+  ): string[] {
+    const recentMemories = this.searchMemories(userId, "", 20);
 
     // Score memories by relevance to current context
-    const scoredMemories = recentMemories.map(memory => ({
-      memory,
-      score: this.calculateRelevance(memory, currentContext),
-    }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-    .map(item => item.memory);
+    const scoredMemories = recentMemories
+      .map((memory) => ({
+        memory,
+        score: this.calculateRelevance(memory, currentContext),
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map((item) => item.memory);
 
-    return scoredMemories.map(m => `- ${m.title}: ${m.summary.substring(0, 200)}...`);
+    return scoredMemories.map(
+      (m) => `- ${m.title}: ${m.summary.substring(0, 200)}...`,
+    );
   }
 
   /**
@@ -268,8 +294,10 @@ export class ConversationManager {
     const messageCount = session.messages.length;
     const estimatedTokens = this.estimateTokens(session.messages);
 
-    return messageCount > this.MAX_MESSAGES_BEFORE_COMPACT ||
-           estimatedTokens > this.MAX_TOKENS_BEFORE_COMPACT;
+    return (
+      messageCount > this.MAX_MESSAGES_BEFORE_COMPACT ||
+      estimatedTokens > this.MAX_TOKENS_BEFORE_COMPACT
+    );
   }
 
   /**
@@ -292,14 +320,18 @@ export class ConversationManager {
     const summary = await this.generateMessagesSummary(oldMessages);
 
     // Save summary
-    const summaryPath = path.join(this.memoryBasePath, 'sessions', `${sessionId}.summary.md`);
+    const summaryPath = path.join(
+      this.memoryBasePath,
+      "sessions",
+      `${sessionId}.summary.md`,
+    );
     const summaryContent = this.formatSessionSummary(oldMessages, summary);
-    fs.writeFileSync(summaryPath, summaryContent, 'utf-8');
+    fs.writeFileSync(summaryPath, summaryContent, "utf-8");
 
     // Replace old messages with summary
     session.messages = [
       {
-        role: 'system',
+        role: "system",
         content: `[Previous conversation summary]\n${summary}`,
         timestamp: new Date(),
       },
@@ -314,33 +346,42 @@ export class ConversationManager {
    */
   private async generateMessagesSummary(messages: Message[]): Promise<string> {
     // Simple summarization logic - can be enhanced with AI
-    const userMessages = messages.filter(m => m.role === 'user').length;
-    const assistantMessages = messages.filter(m => m.role === 'assistant').length;
+    const userMessages = messages.filter((m) => m.role === "user").length;
+    const assistantMessages = messages.filter(
+      (m) => m.role === "assistant",
+    ).length;
 
     const topics = this.extractTopics(messages);
     const timeRange = this.getTimeRange(messages);
 
-    return `Conversation spanned ${timeRange}. ` +
-           `Discussed ${userMessages} user messages and ${assistantMessages} assistant responses. ` +
-           `Key topics: ${topics.join(', ')}.`;
+    return (
+      `Conversation spanned ${timeRange}. ` +
+      `Discussed ${userMessages} user messages and ${assistantMessages} assistant responses. ` +
+      `Key topics: ${topics.join(", ")}.`
+    );
   }
 
   /**
    * Generate session summary for long-term storage
    */
-  private async generateSessionSummary(session: ConversationSession): Promise<MemorySummary> {
+  private async generateSessionSummary(
+    session: ConversationSession,
+  ): Promise<MemorySummary> {
     const summary = await this.generateMessagesSummary(session.messages);
     const topics = this.extractTopics(session.messages);
     const timeRange = {
       start: session.messages[0]?.timestamp || session.createdAt,
-      end: session.messages[session.messages.length - 1]?.timestamp || session.updatedAt,
+      end:
+        session.messages[session.messages.length - 1]?.timestamp ||
+        session.updatedAt,
     };
 
     return {
       id: uuidv4(),
       userId: session.userId,
       sessionId: session.id,
-      title: session.metadata.title || `Session ${new Date().toLocaleDateString()}`,
+      title:
+        session.metadata.title || `Session ${new Date().toLocaleDateString()}`,
       summary,
       keyTopics: topics,
       startDate: timeRange.start,
@@ -357,8 +398,11 @@ export class ConversationManager {
   /**
    * Save summary to long-term storage
    */
-  private async saveLongTermSummary(session: ConversationSession, summary: MemorySummary): Promise<void> {
-    const userDir = path.join(this.memoryBasePath, 'summaries', session.userId);
+  private async saveLongTermSummary(
+    session: ConversationSession,
+    summary: MemorySummary,
+  ): Promise<void> {
+    const userDir = path.join(this.memoryBasePath, "summaries", session.userId);
     if (!fs.existsSync(userDir)) {
       fs.mkdirSync(userDir, { recursive: true });
     }
@@ -367,7 +411,7 @@ export class ConversationManager {
     const filepath = path.join(userDir, filename);
 
     const content = this.formatLongTermSummary(summary);
-    fs.writeFileSync(filepath, content, 'utf-8');
+    fs.writeFileSync(filepath, content, "utf-8");
 
     console.log(`[MemoryManager] Saved long-term summary to ${filepath}`);
   }
@@ -382,7 +426,7 @@ export class ConversationManager {
 **Date:** ${summary.startDate.toLocaleDateString()} - ${summary.endDate.toLocaleDateString()}
 **Messages:** ${summary.messageCount}
 **Mode:** ${summary.metadata.mode}
-**Tags:** ${(summary.metadata.tags as string[] || []).join(', ')}
+**Tags:** ${((summary.metadata.tags as string[]) || []).join(", ")}
 
 ## Summary
 
@@ -390,7 +434,7 @@ ${summary.summary}
 
 ## Key Topics
 
-${summary.keyTopics.map(topic => `- ${topic}`).join('\n')}
+${summary.keyTopics.map((topic) => `- ${topic}`).join("\n")}
 
 ## Metadata
 
@@ -414,7 +458,7 @@ ${summary.keyTopics.map(topic => `- ${topic}`).join('\n')}
 
 **Time Range:** ${timeRange}
 **Messages:** ${messages.length}
-**Key Topics:** ${topics.join(', ')}
+**Key Topics:** ${topics.join(", ")}
 
 ## Summary
 
@@ -422,13 +466,17 @@ ${summary}
 
 ## Message Details
 
-${messages.map(m => `
+${messages
+  .map(
+    (m) => `
 ### ${m.role} - ${m.timestamp.toLocaleTimeString()}
 
 ${m.content}
 
-${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map(tc => tc.name).join(', ')}` : ''}
-`).join('\n')}
+${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map((tc) => tc.name).join(", ")}` : ""}
+`,
+  )
+  .join("\n")}
 
 ---
 *Compacted by OpenClaw Agent Memory Manager*
@@ -440,25 +488,29 @@ ${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map(tc => tc.name).join(', ')}` :
    */
   private parseMarkdownSummary(content: string): MemorySummary {
     // Simple parsing - can be enhanced with proper markdown parser
-    const lines = content.split('\n');
+    const lines = content.split("\n");
     const summary: Partial<MemorySummary> = {};
 
-    let currentSection = '';
-    let summaryText = '';
+    let currentSection = "";
+    let summaryText = "";
 
-    lines.forEach(line => {
-      if (line.startsWith('**Session ID:**')) {
-        summary.sessionId = line.split('**Session ID:**')[1].trim();
-      } else if (line.startsWith('**Date:**')) {
+    lines.forEach((line) => {
+      if (line.startsWith("**Session ID:**")) {
+        summary.sessionId = line.split("**Session ID:**")[1].trim();
+      } else if (line.startsWith("**Date:**")) {
         // Parse date range
-      } else if (line.startsWith('# ')) {
-        summary.title = line.replace('# ', '').trim();
-      } else if (line.startsWith('## Summary')) {
-        currentSection = 'summary';
-      } else if (line.startsWith('## Key Topics')) {
-        currentSection = 'topics';
-      } else if (currentSection === 'summary' && line.trim() && !line.startsWith('##')) {
-        summaryText += line + '\n';
+      } else if (line.startsWith("# ")) {
+        summary.title = line.replace("# ", "").trim();
+      } else if (line.startsWith("## Summary")) {
+        currentSection = "summary";
+      } else if (line.startsWith("## Key Topics")) {
+        currentSection = "topics";
+      } else if (
+        currentSection === "summary" &&
+        line.trim() &&
+        !line.startsWith("##")
+      ) {
+        summaryText += line + "\n";
       }
     });
 
@@ -466,10 +518,10 @@ ${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map(tc => tc.name).join(', ')}` :
     summary.keyTopics = [];
     summary.id = uuidv4();
     summary.createdAt = new Date();
-    summary.userId = 'unknown';
-    summary.sessionId = summary.sessionId || 'unknown';
-    summary.title = summary.title || 'Untitled Session';
-    summary.summary = summary.summary || '';
+    summary.userId = "unknown";
+    summary.sessionId = summary.sessionId || "unknown";
+    summary.title = summary.title || "Untitled Session";
+    summary.summary = summary.summary || "";
     summary.keyTopics = summary.keyTopics || [];
     summary.startDate = new Date();
     summary.endDate = new Date();
@@ -484,25 +536,46 @@ ${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map(tc => tc.name).join(', ')}` :
    */
   private extractTopics(messages: Message[]): string[] {
     // Simple keyword extraction - can be enhanced with NLP
-    const allText = messages.map(m => m.content).join(' ').toLowerCase();
+    const allText = messages
+      .map((m) => m.content)
+      .join(" ")
+      .toLowerCase();
 
     // Common tech and business topics
     const topicPatterns = [
-      'security', 'network', 'development', 'testing', 'deployment',
-      'api', 'database', 'frontend', 'backend', 'infrastructure',
-      'jira', 'gitlab', 'roadmap', 'project', 'planning',
-      'incident', 'response', 'monitoring', 'performance',
-      'automation', 'script', 'integration', 'configuration'
+      "security",
+      "network",
+      "development",
+      "testing",
+      "deployment",
+      "api",
+      "database",
+      "frontend",
+      "backend",
+      "infrastructure",
+      "jira",
+      "gitlab",
+      "roadmap",
+      "project",
+      "planning",
+      "incident",
+      "response",
+      "monitoring",
+      "performance",
+      "automation",
+      "script",
+      "integration",
+      "configuration",
     ];
 
-    return topicPatterns.filter(topic => allText.includes(topic));
+    return topicPatterns.filter((topic) => allText.includes(topic));
   }
 
   /**
    * Get time range of messages
    */
   private getTimeRange(messages: Message[]): string {
-    if (messages.length === 0) return 'No messages';
+    if (messages.length === 0) return "No messages";
 
     const start = messages[0].timestamp;
     const end = messages[messages.length - 1].timestamp;
@@ -532,28 +605,30 @@ ${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map(tc => tc.name).join(', ')}` :
    * Calculate relevance score for memory
    */
   private calculateRelevance(memory: MemorySummary, context: string): number {
-    const memoryText = `${memory.title} ${memory.summary} ${memory.keyTopics.join(' ')}`.toLowerCase();
+    const memoryText =
+      `${memory.title} ${memory.summary} ${memory.keyTopics.join(" ")}`.toLowerCase();
     const contextLower = context.toLowerCase();
 
     let score = 0;
 
     // Exact phrase matches
     const contextWords = contextLower.split(/\s+/);
-    contextWords.forEach(word => {
+    contextWords.forEach((word) => {
       if (word.length > 3 && memoryText.includes(word)) {
         score += 1;
       }
     });
 
     // Topic matches
-    memory.keyTopics.forEach(topic => {
+    memory.keyTopics.forEach((topic) => {
       if (contextLower.includes(topic.toLowerCase())) {
         score += 2;
       }
     });
 
     // Recency bias (more recent = slightly higher score)
-    const daysOld = (Date.now() - memory.createdAt.getTime()) / (1000 * 60 * 60 * 24);
+    const daysOld =
+      (Date.now() - memory.createdAt.getTime()) / (1000 * 60 * 60 * 24);
     score += Math.max(0, 10 - daysOld) * 0.1;
 
     return score;
@@ -562,14 +637,18 @@ ${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map(tc => tc.name).join(', ')}` :
   /**
    * Get system prompt for mode
    */
-  private getSystemPrompt(mode: 'productivity' | 'engineering', metadata: Record<string, unknown>): string {
-    const basePrompt = mode === 'productivity'
-      ? 'You are a helpful productivity assistant focused on planning, organization, and efficiency.'
-      : 'You are an engineering assistant focused on technical design, implementation, and best practices.';
+  private getSystemPrompt(
+    mode: "productivity" | "engineering",
+    metadata: Record<string, unknown>,
+  ): string {
+    const basePrompt =
+      mode === "productivity"
+        ? "You are a helpful productivity assistant focused on planning, organization, and efficiency."
+        : "You are an engineering assistant focused on technical design, implementation, and best practices.";
 
     const contextInfo = Object.entries(metadata.context || {})
       .map(([key, value]) => `${key}: ${value}`)
-      .join('\n');
+      .join("\n");
 
     return `${basePrompt}\n\n${contextInfo}`;
   }
@@ -578,32 +657,40 @@ ${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map(tc => tc.name).join(', ')}` :
    * Save active session to disk
    */
   private saveActiveSession(session: ConversationSession): void {
-    const filepath = path.join(this.memoryBasePath, 'active', `${session.id}.json`);
+    const filepath = path.join(
+      this.memoryBasePath,
+      "active",
+      `${session.id}.json`,
+    );
     const data = {
       ...session,
       createdAt: session.createdAt.toISOString(),
       updatedAt: session.updatedAt.toISOString(),
-      messages: session.messages.map(m => ({
+      messages: session.messages.map((m) => ({
         ...m,
         timestamp: m.timestamp.toISOString(),
       })),
     };
 
-    fs.writeFileSync(filepath, JSON.stringify(data, null, 2), 'utf-8');
+    fs.writeFileSync(filepath, JSON.stringify(data, null, 2), "utf-8");
   }
 
   /**
    * Load active session from disk
    */
   private loadActiveSession(sessionId: string): ConversationSession | null {
-    const filepath = path.join(this.memoryBasePath, 'active', `${sessionId}.json`);
+    const filepath = path.join(
+      this.memoryBasePath,
+      "active",
+      `${sessionId}.json`,
+    );
 
     if (!fs.existsSync(filepath)) {
       return null;
     }
 
     try {
-      const data = JSON.parse(fs.readFileSync(filepath, 'utf-8'));
+      const data = JSON.parse(fs.readFileSync(filepath, "utf-8"));
       return {
         ...data,
         createdAt: new Date(data.createdAt),
@@ -614,7 +701,10 @@ ${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map(tc => tc.name).join(', ')}` :
         })),
       };
     } catch (error) {
-      console.error(`[MemoryManager] Error loading session ${sessionId}:`, error);
+      console.error(
+        `[MemoryManager] Error loading session ${sessionId}:`,
+        error,
+      );
       return null;
     }
   }
@@ -623,7 +713,11 @@ ${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map(tc => tc.name).join(', ')}` :
    * Remove active session file
    */
   private removeActiveSession(sessionId: string): void {
-    const filepath = path.join(this.memoryBasePath, 'active', `${sessionId}.json`);
+    const filepath = path.join(
+      this.memoryBasePath,
+      "active",
+      `${sessionId}.json`,
+    );
     if (fs.existsSync(filepath)) {
       fs.unlinkSync(filepath);
     }
@@ -633,17 +727,24 @@ ${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map(tc => tc.name).join(', ')}` :
    * Load session summary
    */
   private loadSessionSummary(sessionId: string): MemorySummary | null {
-    const filepath = path.join(this.memoryBasePath, 'sessions', `${sessionId}.summary.md`);
+    const filepath = path.join(
+      this.memoryBasePath,
+      "sessions",
+      `${sessionId}.summary.md`,
+    );
 
     if (!fs.existsSync(filepath)) {
       return null;
     }
 
     try {
-      const content = fs.readFileSync(filepath, 'utf-8');
+      const content = fs.readFileSync(filepath, "utf-8");
       return this.parseMarkdownSummary(content);
     } catch (error) {
-      console.error(`[MemoryManager] Error loading summary for ${sessionId}:`, error);
+      console.error(
+        `[MemoryManager] Error loading summary for ${sessionId}:`,
+        error,
+      );
       return null;
     }
   }
@@ -653,9 +754,12 @@ ${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map(tc => tc.name).join(', ')}` :
    */
   private startCleanupTask(): void {
     // Run cleanup every hour
-    setInterval(() => {
-      this.cleanupOldSessions();
-    }, 60 * 60 * 1000);
+    setInterval(
+      () => {
+        this.cleanupOldSessions();
+      },
+      60 * 60 * 1000,
+    );
 
     // Initial cleanup
     this.cleanupOldSessions();
@@ -666,7 +770,7 @@ ${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map(tc => tc.name).join(', ')}` :
    */
   private cleanupOldSessions(): void {
     const now = Date.now();
-    const activeDir = path.join(this.memoryBasePath, 'active');
+    const activeDir = path.join(this.memoryBasePath, "active");
 
     if (!fs.existsSync(activeDir)) {
       return;
@@ -674,17 +778,20 @@ ${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map(tc => tc.name).join(', ')}` :
 
     const files = fs.readdirSync(activeDir);
 
-    files.forEach(file => {
-      if (file.endsWith('.json')) {
+    files.forEach((file) => {
+      if (file.endsWith(".json")) {
         const filepath = path.join(activeDir, file);
         const stats = fs.statSync(filepath);
 
         if (now - stats.mtime.getTime() > this.SESSION_TIMEOUT_MS) {
-          const sessionId = file.replace('.json', '');
+          const sessionId = file.replace(".json", "");
 
           // End the session and move to long-term storage
-          this.endSession(sessionId).catch(error => {
-            console.error(`[MemoryManager] Error ending session ${sessionId}:`, error);
+          this.endSession(sessionId).catch((error) => {
+            console.error(
+              `[MemoryManager] Error ending session ${sessionId}:`,
+              error,
+            );
           });
         }
       }
@@ -699,28 +806,30 @@ ${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map(tc => tc.name).join(', ')}` :
     totalSummaries: number;
     usersCount: number;
   } {
-    const activeDir = path.join(this.memoryBasePath, 'active');
-    const summariesDir = path.join(this.memoryBasePath, 'summaries');
-    const usersDir = path.join(this.memoryBasePath, 'users');
+    const activeDir = path.join(this.memoryBasePath, "active");
+    const summariesDir = path.join(this.memoryBasePath, "summaries");
+    const usersDir = path.join(this.memoryBasePath, "users");
 
     let activeSessions = 0;
     let totalSummaries = 0;
     let usersCount = 0;
 
     if (fs.existsSync(activeDir)) {
-      activeSessions = fs.readdirSync(activeDir).filter(f => f.endsWith('.json')).length;
+      activeSessions = fs
+        .readdirSync(activeDir)
+        .filter((f) => f.endsWith(".json")).length;
     }
 
     if (fs.existsSync(summariesDir)) {
       const countRecursive = (dir: string): number => {
         let count = 0;
         const files = fs.readdirSync(dir);
-        files.forEach(file => {
+        files.forEach((file) => {
           const filepath = path.join(dir, file);
           const stat = fs.statSync(filepath);
           if (stat.isDirectory()) {
             count += countRecursive(filepath);
-          } else if (file.endsWith('.md')) {
+          } else if (file.endsWith(".md")) {
             count++;
           }
         });
@@ -728,7 +837,9 @@ ${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map(tc => tc.name).join(', ')}` :
       };
 
       totalSummaries = countRecursive(summariesDir);
-      usersCount = fs.existsSync(usersDir) ? fs.readdirSync(usersDir).length : 0;
+      usersCount = fs.existsSync(usersDir)
+        ? fs.readdirSync(usersDir).length
+        : 0;
     }
 
     return {
@@ -736,6 +847,83 @@ ${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map(tc => tc.name).join(', ')}` :
       totalSummaries,
       usersCount,
     };
+  }
+
+  listSessionsForUser(userId: string): Array<{
+    id: string;
+    mode: string;
+    messageCount: number;
+    createdAt: Date;
+    updatedAt: Date;
+    title: string;
+    preview: string;
+  }> {
+    const activeDir = path.join(this.memoryBasePath, "active");
+    const sessions: Array<{
+      id: string;
+      mode: string;
+      messageCount: number;
+      createdAt: Date;
+      updatedAt: Date;
+      title: string;
+      preview: string;
+    }> = [];
+
+    if (!fs.existsSync(activeDir)) return sessions;
+
+    const files = fs.readdirSync(activeDir).filter((f) => f.endsWith(".json"));
+    for (const file of files) {
+      try {
+        const data = JSON.parse(
+          fs.readFileSync(path.join(activeDir, file), "utf-8"),
+        );
+        if (data.userId !== userId) continue;
+
+        const lastUserMsg = [...(data.messages || [])]
+          .reverse()
+          .find((m: any) => m.role === "user");
+        sessions.push({
+          id: data.id,
+          mode: data.mode,
+          messageCount: data.messages?.length || 0,
+          createdAt: new Date(data.createdAt),
+          updatedAt: new Date(data.updatedAt),
+          title: data.metadata?.title || "Untitled",
+          preview: lastUserMsg?.content?.substring(0, 100) || "",
+        });
+      } catch {
+        // skip corrupted files
+      }
+    }
+
+    sessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+    return sessions;
+  }
+
+  getSessionMessagesForDisplay(sessionId: string): Array<{
+    role: string;
+    content: string;
+    timestamp: string;
+  }> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      const loaded = this.loadActiveSession(sessionId);
+      if (loaded) {
+        this.sessions.set(sessionId, loaded);
+        return loaded.messages.map((m) => ({
+          role: m.role,
+          content: m.content,
+          timestamp: m.timestamp.toISOString(),
+        }));
+      }
+      return [];
+    }
+
+    return session.messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+      timestamp: m.timestamp.toISOString(),
+    }));
   }
 }
 

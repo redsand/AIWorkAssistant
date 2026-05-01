@@ -3,18 +3,23 @@
  * TODO: Implement actual health break logic
  */
 
-import { fileCalendarService } from '../integrations/file/calendar-service';
+import { fileCalendarService } from "../integrations/file/calendar-service";
 
 class HealthBreaks {
   /**
    * Recommend health breaks based on schedule
    */
-  async recommendBreaks(date: Date, userId: string): Promise<Array<{
-    startTime: Date;
-    duration: number;
-    title: string;
-    type: 'fitness' | 'meal' | 'mental_health';
-  }>> {
+  async recommendBreaks(
+    date: Date,
+    userId: string,
+  ): Promise<
+    Array<{
+      startTime: Date;
+      duration: number;
+      title: string;
+      type: "fitness" | "meal" | "mental_health";
+    }>
+  > {
     // TODO: Implement actual recommendation logic
     console.log(`[Health Breaks] Recommending breaks for ${date}`);
 
@@ -22,20 +27,20 @@ class HealthBreaks {
       {
         startTime: new Date(date.setHours(7, 0, 0, 0)),
         duration: 30,
-        title: 'Morning workout',
-        type: 'fitness',
+        title: "Morning workout",
+        type: "fitness",
       },
       {
         startTime: new Date(date.setHours(12, 0, 0, 0)),
         duration: 60,
-        title: 'Lunch break',
-        type: 'meal',
+        title: "Lunch break",
+        type: "meal",
       },
       {
         startTime: new Date(date.setHours(15, 0, 0, 0)),
         duration: 15,
-        title: 'Afternoon walk',
-        type: 'mental_health',
+        title: "Afternoon walk",
+        type: "mental_health",
       },
     ];
   }
@@ -43,12 +48,15 @@ class HealthBreaks {
   /**
    * Create health break
    */
-  async createHealthBlock(params: {
-    title: string;
-    startTime: Date;
-    duration: number;
-    type: 'FITNESS' | 'MEAL' | 'MENTAL_HEALTH';
-  }, userId: string) {
+  async createHealthBlock(
+    params: {
+      title: string;
+      startTime: Date;
+      duration: number;
+      type: "fitness" | "meal" | "mental_health";
+    },
+    _userId: string,
+  ) {
     return fileCalendarService.createHealthBlock(params);
   }
 }

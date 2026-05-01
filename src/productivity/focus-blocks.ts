@@ -9,7 +9,7 @@ class FocusBlocks {
   /**
    * Recommend focus blocks based on calendar and priorities
    */
-  async recommendFocusBlocks(date: Date, userId: string): Promise<Array<{
+  async recommendFocusBlocks(date: Date, _userId: string): Promise<Array<{
     startTime: Date;
     duration: number;
     title: string;

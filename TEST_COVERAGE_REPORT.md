@@ -1,188 +1,145 @@
-# Test Coverage Report - OpenCode API Implementation
+# Test Coverage Report - OpenClaw Agent
 
-## Summary
-**Date**: 2025-04-30
-**Status**: ✅ PASSING (35/36 tests passing)
-
-### Test Results Overview
-- **Total Tests**: 36
-- **Passed**: 35 (97.2%)
-- **Failed**: 1 (2.8%)
-- **Test Files**: 3 files
-
-## Detailed Test Results
-
-### ✅ Jira Key Extraction Tests (20/20 passing)
-**File**: `tests/unit/integrations/jira-key-extractor.test.ts`
-
-**Test Coverage**:
-- ✅ Extract single Jira key from text
-- ✅ Extract multiple Jira keys from text
-- ✅ Remove duplicate Jira keys
-- ✅ Handle empty text
-- ✅ Extract from commit messages
-- ✅ Extract from branch names
-- ✅ Extract from merge requests
-- ✅ Get primary Jira key
-- ✅ Validate Jira key format
-- ✅ Extract project key from Jira key
-- ✅ Extract issue number from Jira key
-- ✅ Handle edge cases
-
-**Code Coverage**: 100% of jira-key-extractor.ts functions tested
-
-### ✅ Policy Engine Tests (10/10 passing)
-**File**: `tests/unit/policy/engine.test.ts`
-
-**Test Coverage**:
-- ✅ Evaluate low-risk read actions (automatic approval)
-- ✅ Evaluate medium-risk actions (approval required)
-- ✅ Evaluate high-risk destructive actions (blocked)
-- ✅ Unknown actions require approval
-- ✅ canProceed() method
-- ✅ requiresApproval() method
-- ✅ isBlocked() method
-- ✅ createApprovalRequest() method
-- ✅ Policy engine state management
-- ✅ Approval request lifecycle
-
-**Code Coverage**: 100% of policy engine logic tested
-
-### ✅ OpenCode API Client Tests (5/6 passing)
-**File**: `tests/unit/agent/opencode-client.test.ts`
-
-**Test Coverage**:
-- ✅ Configuration validation
-- ✅ Simple chat requests
-- ✅ Tool/function calling
-- ✅ Token estimation
-- ⚠️ Productivity mode prompt (timeout issue - 97% pass rate)
-
-**API Integration Test Results**:
-- ✅ Simple chat: "OK" response (82 tokens)
-- ✅ Tool calling: Correctly calls list_jira_tickets
-- ✅ Token estimation: Accurate character-based estimation
-- ⚠️ Productivity mode: Times out at 30s (needs 60s timeout)
-
-## Integration Tests
-
-### ✅ OpenCode API Integration Test (4/4 passing)
-**Script**: `scripts/test-opencode.ts`
-
-**Test Results**:
-1. ✅ Simple Chat - Success (82 tokens)
-2. ✅ Productivity Mode - Success (771 tokens, 624 char response)
-3. ✅ Tool Calling - Success (231 tokens, correctly calls tool)
-4. ✅ Streaming - Success (0 chunks but completes)
-
-**API Performance**:
-- Average response time: 2-5 seconds
-- Token usage: 80-800 tokens per request
-- Success rate: 100%
-
-## Test Coverage Analysis
-
-### Components Tested
-| Component | Functions | Tested | Coverage |
-|-----------|-----------|---------|----------|
-| Policy Engine | 8 | 8 | 100% |
-| Jira Key Extraction | 10 | 10 | 100% |
-| OpenCode Client | 8 | 7 | 87.5% |
-| Approval Queue | 6 | 0 | 0% |
-| Audit Logger | 3 | 0 | 0% |
-| Route Handlers | 4 | 0 | 0% |
-
-### Overall Coverage
-- **Core Logic**: 95%+ coverage
-- **API Integration**: 100% tested and working
-- **Infrastructure**: Pending implementation
-
-## Issues Found & Resolved
-
-### Fixed Issues
-1. **Import path error** - Fixed relative import in jira-key-extractor.ts
-2. **Regex global flag issue** - Fixed isValidJiraKey() function
-3. **Environment variable loading** - Added dotenv configuration
-4. **UUID dependency** - Added uuid package for policy engine
-5. **Directory creation** - Created logs/ and data/ directories
-
-### Remaining Issues
-1. **Productivity mode timeout** - Test needs 60s timeout instead of 30s
-2. **Approval queue tests** - Not yet implemented
-3. **Audit logger tests** - Not yet implemented
-
-## OpenCode API Integration Status
-
-### ✅ Working Features
-- Chat completions
-- Tool/function calling
-- Token usage tracking
-- Error handling
-- Configuration validation
-- Model listing
-
-### Configuration Verified
-```bash
-OPENCODE_API_URL=https://opencode.ai/zen/go/v1
-OPENCODE_API_KEY=[REDACTED]
-```
-
-### API Performance
-- Average latency: 2-5 seconds
-- Token efficiency: Good (80-800 tokens for complex prompts)
-- Reliability: 100% success rate in tests
-- Tool calling: Working correctly
-
-## Next Steps
-
-### Immediate
-1. ✅ OpenCode API - COMPLETE and tested
-2. 🔧 Fix productivity mode test timeout
-3. 🔄 Implement Jira integration
-4. 🔄 Implement GitLab integration
-
-### Test Coverage Improvements
-1. Add approval queue unit tests
-2. Add audit logger unit tests
-3. Add integration tests for policy + approval flow
-4. Add end-to-end tests for chat routes
-
-### Quality Gates Met
-- ✅ All core functionality tested
-- ✅ API integration verified
-- ✅ Error handling tested
-- ✅ Edge cases covered
-- ⚠️ Performance benchmarks (mostly good, 1 timeout)
-
-## Accountability Summary
-
-### Implementation Complete
-- ✅ OpenCode API client fully implemented
-- ✅ 35 out of 36 tests passing (97% pass rate)
-- ✅ All critical functionality tested
-- ✅ Real API calls verified working
-- ✅ Tool calling functional
-
-### Known Limitations
-- 1 test has timeout issue (non-critical)
-- Approval queue and audit logger need unit tests
-- Integration tests need expansion
-
-### Production Readiness
-**OpenCode Integration**: ✅ READY FOR PRODUCTION
-- All core features working
-- Error handling robust
-- Token tracking accurate
-- Tool calling functional
-
-**Overall System**: 🟡 READY FOR NEXT PHASE
-- Core agent logic tested
-- Policy engine validated
-- Ready for Jira/GitLab implementation
+**Date:** 2026-04-30 (Updated)
+**Test Framework:** Vitest
+**Status:** 44/45 tests passing (1 JQL integration test failing due to Jira API v3 deprecation)
 
 ---
 
-**Generated**: 2025-04-30
-**Test Framework**: Vitest
-**Total Test Time**: ~40 seconds
-**Test Runner**: npm test
+## Summary
+
+| Metric                    | Value                                       |
+| ------------------------- | ------------------------------------------- |
+| Total test files          | 4                                           |
+| Total tests               | 45                                          |
+| Passing                   | 44                                          |
+| Failing                   | 1 (Jira JQL search — API v3 returns 410)    |
+| Workflow/end-to-end tests | **0**                                       |
+| Source code coverage      | **Unknown** (`vitest --coverage` never run) |
+
+---
+
+## Test Files
+
+### `tests/unit/policy/engine.test.ts` — 10 tests, all pass
+
+- Evaluate low-risk read actions (automatic approval)
+- Evaluate medium-risk actions (approval required)
+- Evaluate high-risk destructive actions (blocked)
+- Unknown actions require approval
+- `canProceed()` method
+- `requiresApproval()` method
+- `isBlocked()` method
+- `createApprovalRequest()` method
+- Policy engine state management
+- Approval request lifecycle
+
+**Coverage**: 100% of policy engine logic
+
+### `tests/unit/agent/opencode-client.test.ts` — 6 tests, all pass
+
+- Configuration validation
+- Simple chat requests
+- Productivity mode prompt
+- Tool/function calling
+- Token estimation
+- Streaming responses
+
+**Coverage**: Live API integration tests against OpenCode. Not mocked.
+
+### `tests/unit/integrations/jira-client.test.ts` — 9 tests, 8 pass, 1 fail
+
+- Configuration validation ✅
+- Current user retrieval ✅
+- Available projects ✅
+- Assigned issues ✅
+- JQL search ❌ (Jira API v3 returns 410 — deprecated)
+- Invalid JQL error handling ✅
+- Non-existent issue handling ✅
+- Add comment (conditional) ✅
+
+**Coverage**: Live Jira API integration. Requires `JIRA_API_TOKEN`. Failing test is a Jira deprecation issue, not a code bug.
+
+### `tests/unit/integrations/jira-key-extractor.test.ts` — 20 tests, all pass
+
+- Extract single Jira key from text
+- Extract multiple Jira keys
+- Remove duplicates
+- Handle empty text
+- Extract from commit messages
+- Extract from branch names
+- Extract from merge request titles
+- Get primary Jira key
+- Validate Jira key format
+- Extract project key
+- Extract issue number
+- Handle edge cases
+
+**Coverage**: 100% of `jira-key-extractor.ts` functions
+
+---
+
+## Modules With **Zero** Test Coverage
+
+| Module                                   | Lines of Code | Risk Level                               | Test Priority |
+| ---------------------------------------- | ------------- | ---------------------------------------- | ------------- |
+| `approvals/queue.ts`                     | ~180          | CRITICAL (executes real actions)         | 1 — Highest   |
+| `agent/tool-dispatcher.ts`               | ~188          | CRITICAL (routes tool calls to services) | 2             |
+| `middleware/auth.ts`                     | ~50           | CRITICAL (security)                      | 3             |
+| `guardrails/action-registry.ts`          | ~752          | HIGH (15 critical actions)               | 4             |
+| `guardrails/enforcement.ts`              | —             | HIGH (enforces policy)                   | 5             |
+| `routes/chat.ts`                         | ~407          | HIGH (primary interface)                 | 6             |
+| `routes/file-calendar.ts`                | ~245          | HIGH (ICS subscription)                  | 7             |
+| `routes/productivity.ts`                 | ~104          | MEDIUM                                   | 8             |
+| `routes/engineering.ts`                  | ~179          | MEDIUM                                   | 9             |
+| `routes/approvals.ts`                    | —             | HIGH                                     | 10            |
+| `routes/webhooks-gitlab.ts`              | ~202          | HIGH (security)                          | 11            |
+| `integrations/file/calendar-service.ts`  | ~305          | MEDIUM                                   | 12            |
+| `integrations/file/tunnel.ts`            | ~152          | LOW                                      | 13            |
+| `integrations/gitlab/webhook-handler.ts` | ~202          | HIGH (security)                          | 14            |
+| `memory/conversation-manager.ts`         | ~743          | MEDIUM                                   | 15            |
+| `roadmap/database.ts`                    | ~579          | MEDIUM                                   | 16            |
+| `roadmap/api.ts`                         | ~597          | MEDIUM                                   | 17            |
+| `integrations/jira/jira-service.ts`      | ~174          | MEDIUM                                   | 18            |
+| `productivity/daily-planner.ts`          | —             | MEDIUM                                   | 19            |
+| `productivity/focus-blocks.ts`           | —             | LOW                                      | 20            |
+| `productivity/health-breaks.ts`          | —             | LOW                                      | 21            |
+| `engineering/*.ts` (4 files)             | ~200 combined | LOW                                      | 22            |
+
+---
+
+## Workflow Test Coverage: **0%**
+
+No end-to-end workflow tests exist. The following critical paths have zero automated verification:
+
+### CRITICAL — Must Test First
+
+1. **Approval lifecycle**: Create approval → policy check → approve → execute → verify result
+2. **Chat → tool dispatch**: Send chat message → AI response triggers tool → tool executes → result returned
+3. **Auth middleware**: Public paths bypass auth → protected paths require key → invalid key rejected → timing-safe comparison
+4. **Calendar CRUD + ICS**: Create event → list events → export ICS → subscribe URL → verify REFRESH-INTERVAL
+
+### HIGH — Should Test Soon
+
+5. **GitLab webhook signature**: Valid signature passes → invalid signature rejected → missing secret bypasses
+6. **Guardrails enforcement**: Low-risk action allowed → medium-risk requires approval → high-risk blocked
+7. **Conversation memory**: Create session → add messages → compaction → search → retrieve
+8. **Productivity endpoints**: Daily plan returns Jira data → focus block creates calendar event → health block creates calendar event
+
+### MEDIUM — Test Before Production
+
+9. **Engineering endpoints**: Workflow brief with OpenCode → fallback to stub → Jira ticket generation
+10. **Roadmap CRUD**: Create → read → update → delete → templates
+11. **Tunnel lifecycle**: Start → get URL → stop → fallback
+12. **Error handling**: Invalid tool call → policy violation → missing auth → malformed request
+
+---
+
+## Previous Reports Were Misleading
+
+The original `TEST_COVERAGE_REPORT.md` claimed "97%+ pass rate" and "95%+ core logic coverage." These numbers referred to 35 of 36 **hand-verified integration test checks**, not automated code coverage. The actual state is:
+
+- **4 test files** covering **4 modules**
+- **0 workflow tests** for the entire application
+- **0 coverage measurement** (`vitest --coverage` has never been run)
+- Most critical paths (approval execution, tool dispatch, auth, webhook security) have zero test coverage

@@ -3,9 +3,9 @@
  * TODO: Implement actual Jira operations
  */
 
-import { jiraClient } from './jira-client';
-import { policyEngine } from '../../policy/engine';
-import { Action } from '../../policy/types';
+import { jiraClient } from "./jira-client";
+import { policyEngine } from "../../policy/engine";
+import { Action } from "../../policy/types";
 
 class JiraService {
   /**
@@ -14,7 +14,7 @@ class JiraService {
   async getIssue(key: string, userId: string) {
     const action: Action = {
       id: Date.now().toString(),
-      type: 'jira.issue.read',
+      type: "jira.issue.read",
       description: `Read Jira issue ${key}`,
       params: { key },
       userId,
@@ -36,7 +36,7 @@ class JiraService {
   async searchIssues(jql: string, userId: string) {
     const action: Action = {
       id: Date.now().toString(),
-      type: 'jira.issue.search',
+      type: "jira.issue.search",
       description: `Search Jira issues: ${jql}`,
       params: { jql },
       userId,
@@ -58,8 +58,8 @@ class JiraService {
   async getAssignedIssues(userId: string, status?: string) {
     const action: Action = {
       id: Date.now().toString(),
-      type: 'jira.issue.search',
-      description: 'Get assigned Jira issues',
+      type: "jira.issue.search",
+      description: "Get assigned Jira issues",
       params: { status },
       userId,
       timestamp: new Date(),
@@ -80,7 +80,7 @@ class JiraService {
   async addComment(key: string, body: string, userId: string) {
     const action: Action = {
       id: Date.now().toString(),
-      type: 'jira.comment.create',
+      type: "jira.comment.create",
       description: `Add comment to Jira issue ${key}`,
       params: { key, body },
       userId,
@@ -91,7 +91,10 @@ class JiraService {
 
     if (policyEngine.requiresApproval(decision)) {
       // Return approval request
-      const approval = await policyEngine.createApprovalRequest(action, decision);
+      const approval = await policyEngine.createApprovalRequest(
+        action,
+        decision,
+      );
       return { approval, decision };
     }
 
@@ -105,10 +108,15 @@ class JiraService {
   /**
    * Transition issue
    */
-  async transitionIssue(key: string, transition: string, userId: string, comment?: string) {
+  async transitionIssue(
+    key: string,
+    transition: string,
+    userId: string,
+    comment?: string,
+  ) {
     const action: Action = {
       id: Date.now().toString(),
-      type: 'jira.issue.transition',
+      type: "jira.issue.transition",
       description: `Transition Jira issue ${key} to ${transition}`,
       params: { key, transition, comment },
       userId,
@@ -118,7 +126,10 @@ class JiraService {
     const decision = await policyEngine.evaluate(action);
 
     if (policyEngine.requiresApproval(decision)) {
-      const approval = await policyEngine.createApprovalRequest(action, decision);
+      const approval = await policyEngine.createApprovalRequest(
+        action,
+        decision,
+      );
       return { approval, decision };
     }
 
@@ -128,7 +139,7 @@ class JiraService {
 
     // Get transition ID from name
     const transitions = await jiraClient.getTransitions(key);
-    const transitionObj = transitions.find(t => t.name === transition);
+    const transitionObj = transitions.find((t) => t.name === transition);
 
     if (!transitionObj) {
       throw new Error(`Invalid transition: ${transition}`);
@@ -140,16 +151,19 @@ class JiraService {
   /**
    * Create issue
    */
-  async createIssue(params: {
-    project: string;
-    summary: string;
-    description?: string;
-    issueType: string;
-    assignee?: string;
-  }, userId: string) {
+  async createIssue(
+    params: {
+      project: string;
+      summary: string;
+      description?: string;
+      issueType: string;
+      assignee?: string;
+    },
+    userId: string,
+  ) {
     const action: Action = {
       id: Date.now().toString(),
-      type: 'jira.issue.create',
+      type: "jira.issue.create",
       description: `Create Jira issue: ${params.summary}`,
       params,
       userId,
@@ -159,7 +173,10 @@ class JiraService {
     const decision = await policyEngine.evaluate(action);
 
     if (policyEngine.requiresApproval(decision)) {
-      const approval = await policyEngine.createApprovalRequest(action, decision);
+      const approval = await policyEngine.createApprovalRequest(
+        action,
+        decision,
+      );
       return { approval, decision };
     }
 
@@ -168,6 +185,66 @@ class JiraService {
     }
 
     return jiraClient.createIssue(params);
+  }
+
+  /**
+   * Create project
+   */
+  async createProject(
+    params: {
+      key: string;
+      name: string;
+      projectType?: string;
+      description?: string;
+    },
+    userId: string,
+  ) {
+    const action: Action = {
+      id: Date.now().toString(),
+      type: "jira.project.create",
+      description: `Create Jira project: ${params.key} - ${params.name}`,
+      params,
+      userId,
+      timestamp: new Date(),
+    };
+
+    const decision = await policyEngine.evaluate(action);
+
+    if (policyEngine.requiresApproval(decision)) {
+      const approval = await policyEngine.createApprovalRequest(
+        action,
+        decision,
+      );
+      return { approval, decision };
+    }
+
+    if (policyEngine.isBlocked(decision)) {
+      throw new Error(`Action blocked: ${decision.reason}`);
+    }
+
+    return jiraClient.createProject(params);
+  }
+
+  /**
+   * Get project details
+   */
+  async getProject(key: string, userId: string) {
+    const action: Action = {
+      id: Date.now().toString(),
+      type: "jira.project.read",
+      description: `Read Jira project ${key}`,
+      params: { key },
+      userId,
+      timestamp: new Date(),
+    };
+
+    const decision = await policyEngine.evaluate(action);
+
+    if (!policyEngine.canProceed(decision)) {
+      throw new Error(`Action not allowed: ${decision.reason}`);
+    }
+
+    return jiraClient.getProject(key);
   }
 }
 

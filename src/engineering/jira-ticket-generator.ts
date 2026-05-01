@@ -30,7 +30,7 @@ class JiraTicketGenerator {
   /**
    * Create tickets in Jira
    */
-  async createTickets(plan: ImplementationPlan, projectKey: string, userId: string) {
+  async createTickets(plan: ImplementationPlan, projectKey: string, _userId: string) {
     const tickets = [];
 
     for (const ticket of plan.tickets) {

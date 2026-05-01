@@ -1,20 +1,53 @@
 /**
- * In-memory approval queue
- * TODO: Persist to database for production
+ * Approval queue with SQLite persistence
  */
 
-import { v4 as uuidv4 } from 'uuid';
-import { ApprovalRequest, ApprovalFilter, ApprovalResponse, ApprovalActionResult } from './types';
-import { auditLogger } from '../audit/logger';
+import { v4 as uuidv4 } from "uuid";
+import {
+  ApprovalRequest,
+  ApprovalFilter,
+  ApprovalResponse,
+  ApprovalActionResult,
+} from "./types";
+import { auditLogger } from "../audit/logger";
+import { dispatchToolCall } from "../agent/tool-dispatcher";
+import { approvalDatabase } from "./database";
 
 class ApprovalQueue {
   private approvals: Map<string, ApprovalRequest> = new Map();
+
+  constructor() {
+    this.loadFromDatabase();
+  }
+
+  private loadFromDatabase() {
+    try {
+      const result = approvalDatabase.list({ limit: 1000 });
+      for (const approval of result.approvals) {
+        this.approvals.set(approval.id, approval);
+      }
+      console.log(
+        `[ApprovalQueue] Loaded ${this.approvals.size} approvals from database`,
+      );
+    } catch (error) {
+      console.error("[ApprovalQueue] Failed to load from database:", error);
+    }
+  }
+
+  private persist(approval: ApprovalRequest) {
+    try {
+      approvalDatabase.save(approval);
+    } catch (error) {
+      console.error("[ApprovalQueue] Failed to persist approval:", error);
+    }
+  }
 
   /**
    * Add approval request to queue
    */
   async enqueue(request: ApprovalRequest): Promise<ApprovalRequest> {
     this.approvals.set(request.id, request);
+    this.persist(request);
     return request;
   }
 
@@ -33,12 +66,12 @@ class ApprovalQueue {
 
     // Filter by status
     if (filter.status) {
-      approvals = approvals.filter(a => a.status === filter.status);
+      approvals = approvals.filter((a) => a.status === filter.status);
     }
 
     // Filter by user
     if (filter.userId) {
-      approvals = approvals.filter(a => a.action.userId === filter.userId);
+      approvals = approvals.filter((a) => a.action.userId === filter.userId);
     }
 
     // Sort by requested date (newest first)
@@ -69,11 +102,11 @@ class ApprovalQueue {
       return {
         success: false,
         approval: null as unknown as ApprovalRequest,
-        message: 'Approval request not found',
+        message: "Approval request not found",
       };
     }
 
-    if (approval.status !== 'pending') {
+    if (approval.status !== "pending") {
       return {
         success: false,
         approval,
@@ -81,21 +114,45 @@ class ApprovalQueue {
       };
     }
 
-    approval.status = 'approved';
+    approval.status = "approved";
     approval.respondedAt = new Date();
     approval.responseBy = userId;
 
     await auditLogger.log({
       id: uuidv4(),
       timestamp: new Date(),
-      action: 'approved',
+      action: "approved",
       actor: userId,
       details: {
         approvalId: id,
         actionType: approval.action.type,
       },
-      severity: 'info',
+      severity: "info",
     });
+
+    try {
+      const result = await dispatchToolCall(
+        approval.action.type,
+        approval.action.params,
+        approval.action.userId,
+      );
+      approval.status = "executed";
+      approval.executionResult = {
+        success: result.success,
+        output: result.data,
+        executedAt: new Date(),
+      };
+    } catch (error) {
+      approval.status = "failed";
+      approval.executionResult = {
+        success: false,
+        error: error instanceof Error ? error.message : "Execution failed",
+        executedAt: new Date(),
+      };
+    }
+
+    this.approvals.set(id, approval);
+    this.persist(approval);
 
     return {
       success: true,
@@ -113,11 +170,11 @@ class ApprovalQueue {
       return {
         success: false,
         approval: null as unknown as ApprovalRequest,
-        message: 'Approval request not found',
+        message: "Approval request not found",
       };
     }
 
-    if (approval.status !== 'pending') {
+    if (approval.status !== "pending") {
       return {
         success: false,
         approval,
@@ -125,20 +182,22 @@ class ApprovalQueue {
       };
     }
 
-    approval.status = 'rejected';
+    approval.status = "rejected";
     approval.respondedAt = new Date();
     approval.responseBy = userId;
+
+    this.persist(approval);
 
     await auditLogger.log({
       id: uuidv4(),
       timestamp: new Date(),
-      action: 'rejected',
+      action: "rejected",
       actor: userId,
       details: {
         approvalId: id,
         actionType: approval.action.type,
       },
-      severity: 'info',
+      severity: "info",
     });
 
     return {
@@ -152,6 +211,7 @@ class ApprovalQueue {
    */
   async updateAfterExecution(approval: ApprovalRequest): Promise<void> {
     this.approvals.set(approval.id, approval);
+    this.persist(approval);
   }
 
   /**
@@ -165,7 +225,10 @@ class ApprovalQueue {
 
     for (const [id, approval] of this.approvals.entries()) {
       if (
-        (approval.status === 'approved' || approval.status === 'rejected') &&
+        (approval.status === "approved" ||
+          approval.status === "rejected" ||
+          approval.status === "executed" ||
+          approval.status === "failed") &&
         approval.respondedAt &&
         approval.respondedAt < cutoff
       ) {
@@ -173,6 +236,8 @@ class ApprovalQueue {
         removed++;
       }
     }
+
+    approvalDatabase.cleanup(olderThanDays);
 
     return removed;
   }

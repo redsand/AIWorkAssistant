@@ -6,16 +6,14 @@
  * approach combined with Signal CLI for message sending/receiving
  */
 
-import axios from 'axios';
-import { spawn } from 'child_process';
-import { writeFile } from 'fs/promises';
-import { join } from 'path';
-import { randomUUID } from 'crypto';
+import axios from "axios";
+import { spawn } from "child_process";
+import { join } from "path";
 
-const API_BASE = process.env.API_BASE_URL || 'http://localhost:3000';
+const API_BASE = process.env.API_BASE_URL || "http://localhost:3000";
 
 interface SignalMessage {
-  type: 'sent' | 'received';
+  type: "sent" | "received";
   timestamp: Date;
   phoneNumber: string;
   content: string;
@@ -24,7 +22,7 @@ interface SignalMessage {
 
 interface SignalConfig {
   phoneNumber: string; // Your Signal phone number
-  dataPath: string;    // Path to Signal CLI data
+  dataPath: string; // Path to Signal CLI data
 }
 
 class SignalAgentBot {
@@ -43,10 +41,12 @@ class SignalAgentBot {
 
       // Using signal-cli via command line
       const args = [
-        '-u', this.config.phoneNumber,
-        'send',
+        "-u",
+        this.config.phoneNumber,
+        "send",
         phoneNumber,
-        '-m', message
+        "-m",
+        message,
       ];
 
       const result = await this.executeSignalCli(args);
@@ -54,7 +54,7 @@ class SignalAgentBot {
       if (result.success) {
         // Log the sent message
         this.logMessage({
-          type: 'sent',
+          type: "sent",
           timestamp: new Date(),
           phoneNumber,
           content: message,
@@ -62,11 +62,11 @@ class SignalAgentBot {
 
         return true;
       } else {
-        console.error('[SignalBot] Failed to send message:', result.error);
+        console.error("[SignalBot] Failed to send message:", result.error);
         return false;
       }
     } catch (error) {
-      console.error('[SignalBot] Error sending message:', error);
+      console.error("[SignalBot] Error sending message:", error);
       return false;
     }
   }
@@ -74,33 +74,37 @@ class SignalAgentBot {
   /**
    * Process incoming message from Signal
    */
-  async processIncomingMessage(phoneNumber: string, message: string): Promise<string> {
+  async processIncomingMessage(
+    phoneNumber: string,
+    message: string,
+  ): Promise<string> {
     try {
       console.log(`[SignalBot] Processing message from ${phoneNumber}`);
 
       // Send to OpenClaw Agent
       const response = await axios.post(`${API_BASE}/chat`, {
         message,
-        mode: 'productivity',
+        mode: "productivity",
         userId: `signal-${phoneNumber}`,
         includeMemory: true,
       });
 
-      const aiResponse = response.data.content || 'Sorry, I couldn\'t process that message.';
+      const aiResponse =
+        response.data.content || "Sorry, I couldn't process that message.";
 
       // Send response back through Signal
       await this.sendMessage(phoneNumber, aiResponse);
 
       // Log the conversation
       this.logMessage({
-        type: 'received',
+        type: "received",
         timestamp: new Date(),
         phoneNumber,
         content: message,
       });
 
       this.logMessage({
-        type: 'sent',
+        type: "sent",
         timestamp: new Date(),
         phoneNumber,
         content: aiResponse,
@@ -108,9 +112,10 @@ class SignalAgentBot {
 
       return aiResponse;
     } catch (error) {
-      console.error('[SignalBot] Error processing message:', error);
+      console.error("[SignalBot] Error processing message:", error);
 
-      const errorMessage = 'Sorry, I encountered an error processing your message.';
+      const errorMessage =
+        "Sorry, I encountered an error processing your message.";
       await this.sendMessage(phoneNumber, errorMessage);
 
       return errorMessage;
@@ -120,28 +125,30 @@ class SignalAgentBot {
   /**
    * Execute signal-cli command
    */
-  private async executeSignalCli(args: string[]): Promise<{ success: boolean; error?: string }> {
+  private async executeSignalCli(
+    args: string[],
+  ): Promise<{ success: boolean; error?: string }> {
     return new Promise((resolve) => {
-      const signalProcess = spawn('signal-cli', args, {
-        stdio: 'pipe',
+      const signalProcess = spawn("signal-cli", args, {
+        stdio: "pipe",
         env: {
           ...process.env,
           SIGNAL_CONFIG_DIR: this.config.dataPath,
         },
       });
 
-      let stdout = '';
-      let stderr = '';
+      let stdout = "";
+      let stderr = "";
 
-      signalProcess.stdout.on('data', (data: Buffer) => {
+      signalProcess.stdout.on("data", (data: Buffer) => {
         stdout += data.toString();
       });
 
-      signalProcess.stderr.on('data', (data: Buffer) => {
+      signalProcess.stderr.on("data", (data: Buffer) => {
         stderr += data.toString();
       });
 
-      signalProcess.on('close', (code: number | null) => {
+      signalProcess.on("close", (code: number | null) => {
         if (code === 0) {
           resolve({ success: true });
         } else {
@@ -149,14 +156,14 @@ class SignalAgentBot {
         }
       });
 
-      signalProcess.on('error', (error: Error) => {
+      signalProcess.on("error", (error: Error) => {
         resolve({ success: false, error: error.message });
       });
 
       // Timeout after 30 seconds
       setTimeout(() => {
         signalProcess.kill();
-        resolve({ success: false, error: 'Command timed out' });
+        resolve({ success: false, error: "Command timed out" });
       }, 30000);
     });
   }
@@ -166,35 +173,53 @@ class SignalAgentBot {
    */
   private async logMessage(message: SignalMessage): Promise<void> {
     try {
-      const logPath = join(process.cwd(), 'data', 'audit', 'signal-messages.log');
-      const logEntry = JSON.stringify({
-        ...message,
-        timestamp: message.timestamp.toISOString(),
-      }) + '\n';
+      const logPath = join(
+        process.cwd(),
+        "data",
+        "audit",
+        "signal-messages.log",
+      );
+      const logEntry =
+        JSON.stringify({
+          ...message,
+          timestamp: message.timestamp.toISOString(),
+        }) + "\n";
 
       await appendFile(logPath, logEntry);
     } catch (error) {
-      console.error('[SignalBot] Failed to log message:', error);
+      console.error("[SignalBot] Failed to log message:", error);
     }
   }
 
   /**
    * Check if Signal CLI is installed and configured
    */
-  async verifySetup(): Promise<{ installed: boolean; configured: boolean; error?: string }> {
+  async verifySetup(): Promise<{
+    installed: boolean;
+    configured: boolean;
+    error?: string;
+  }> {
     try {
       // Check if signal-cli is installed
-      const result = await this.executeSignalCli(['--version']);
+      const result = await this.executeSignalCli(["--version"]);
 
       if (!result.success) {
-        return { installed: false, configured: false, error: 'signal-cli not installed' };
+        return {
+          installed: false,
+          configured: false,
+          error: "signal-cli not installed",
+        };
       }
 
       // Check if configured
-      const listResult = await this.executeSignalCli(['listIds']);
+      const listResult = await this.executeSignalCli(["listIds"]);
 
       if (!listResult.success) {
-        return { installed: true, configured: false, error: 'signal-cli not configured' };
+        return {
+          installed: true,
+          configured: false,
+          error: "signal-cli not configured",
+        };
       }
 
       return { installed: true, configured: true };
@@ -202,7 +227,7 @@ class SignalAgentBot {
       return {
         installed: false,
         configured: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
+        error: error instanceof Error ? error.message : "Unknown error",
       };
     }
   }
@@ -247,18 +272,20 @@ class SignalWebhookHandler {
   /**
    * Handle incoming webhook from Signal
    */
-  async handleWebhook(payload: any): Promise<{ success: boolean; message?: string }> {
+  async handleWebhook(
+    payload: any,
+  ): Promise<{ success: boolean; message?: string }> {
     try {
-      console.log('[SignalWebhook] Received webhook:', payload);
+      console.log("[SignalWebhook] Received webhook:", payload);
 
       // Extract message data from webhook payload
-      const message = payload.envelope?.dataMessage?.message || '';
-      const phoneNumber = payload.envelope?.source || '';
+      const message = payload.envelope?.dataMessage?.message || "";
+      const phoneNumber = payload.envelope?.source || "";
 
       if (!message || !phoneNumber) {
         return {
           success: false,
-          message: 'Invalid webhook payload'
+          message: "Invalid webhook payload",
         };
       }
 
@@ -267,10 +294,10 @@ class SignalWebhookHandler {
 
       return { success: true };
     } catch (error) {
-      console.error('[SignalWebhook] Error handling webhook:', error);
+      console.error("[SignalWebhook] Error handling webhook:", error);
       return {
         success: false,
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: error instanceof Error ? error.message : "Unknown error",
       };
     }
   }
@@ -290,11 +317,11 @@ class SignalWebhookHandler {
  */
 class SignalHTTPBridge {
   private apiBase: string;
-  private phoneNumber: string;
+  private _phoneNumber: string;
 
   constructor(apiBase: string, configuredPhoneNumber: string) {
     this.apiBase = apiBase;
-    this.phoneNumber = configuredPhoneNumber;
+    this._phoneNumber = configuredPhoneNumber;
   }
 
   /**
@@ -312,7 +339,7 @@ class SignalHTTPBridge {
 
       return response.status === 200;
     } catch (error) {
-      console.error('[SignalHTTPBridge] Failed to send message:', error);
+      console.error("[SignalHTTPBridge] Failed to send message:", error);
       return false;
     }
   }
@@ -330,7 +357,7 @@ class SignalHTTPBridge {
 
       return [];
     } catch (error) {
-      console.error('[SignalHTTPBridge] Failed to poll messages:', error);
+      console.error("[SignalHTTPBridge] Failed to poll messages:", error);
       return [];
     }
   }
@@ -340,7 +367,7 @@ class SignalHTTPBridge {
  * Helper function to append to file
  */
 async function appendFile(filePath: string, content: string): Promise<void> {
-  const fs = await import('fs/promises');
+  const fs = await import("fs/promises");
   await fs.appendFile(filePath, content);
 }
 

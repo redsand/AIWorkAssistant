@@ -4,9 +4,16 @@
  * Perfect for local development
  */
 
-import { writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'fs';
-import { join } from 'path';
-import { v4 as uuidv4 } from 'uuid';
+import {
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  unlinkSync,
+} from "fs";
+import { join } from "path";
+import { v4 as uuidv4 } from "uuid";
 
 export interface CalendarEvent {
   id: string;
@@ -15,7 +22,7 @@ export interface CalendarEvent {
   startTime: Date;
   endTime: Date;
   location?: string;
-  type: 'meeting' | 'focus' | 'fitness' | 'meal' | 'mental_health' | 'other';
+  type: "meeting" | "focus" | "fitness" | "meal" | "mental_health" | "other";
   created: Date;
   updated: Date;
 }
@@ -26,14 +33,14 @@ export interface CreateEventParams {
   startTime: Date;
   endTime: Date;
   location?: string;
-  type?: CalendarEvent['type'];
+  type?: CalendarEvent["type"];
 }
 
 class FileCalendarService {
   private calendarDir: string;
 
   constructor() {
-    this.calendarDir = join(process.cwd(), 'data', 'calendar');
+    this.calendarDir = join(process.cwd(), "data", "calendar");
     this.ensureDirectory();
   }
 
@@ -64,7 +71,7 @@ class FileCalendarService {
       startTime: params.startTime,
       endTime: params.endTime,
       location: params.location,
-      type: params.type || 'other',
+      type: params.type || "other",
       created: new Date(),
       updated: new Date(),
     };
@@ -77,19 +84,26 @@ class FileCalendarService {
   /**
    * Update an existing event
    */
-  async updateEvent(eventId: string, params: Partial<CreateEventParams>): Promise<CalendarEvent> {
+  async updateEvent(
+    eventId: string,
+    params: Partial<CreateEventParams>,
+  ): Promise<CalendarEvent> {
     const existing = this.getEvent(eventId);
     if (!existing) {
-      throw new Error('Event not found');
+      throw new Error("Event not found");
     }
 
     const updated: CalendarEvent = {
       ...existing,
       summary: params.summary || existing.summary,
-      description: params.description !== undefined ? params.description : existing.description,
+      description:
+        params.description !== undefined
+          ? params.description
+          : existing.description,
       startTime: params.startTime || existing.startTime,
       endTime: params.endTime || existing.endTime,
-      location: params.location !== undefined ? params.location : existing.location,
+      location:
+        params.location !== undefined ? params.location : existing.location,
       type: params.type || existing.type,
       updated: new Date(),
     };
@@ -122,7 +136,7 @@ class FileCalendarService {
     }
 
     try {
-      const data = readFileSync(eventPath, 'utf-8');
+      const data = readFileSync(eventPath, "utf-8");
       return JSON.parse(data);
     } catch (error) {
       console.error(`[FileCalendar] Failed to read event: ${eventId}`, error);
@@ -139,10 +153,10 @@ class FileCalendarService {
     try {
       const files = readdirSync(this.calendarDir);
       for (const file of files) {
-        if (file.endsWith('.json')) {
+        if (file.endsWith(".json")) {
           const eventPath = join(this.calendarDir, file);
           try {
-            const data = readFileSync(eventPath, 'utf-8');
+            const data = readFileSync(eventPath, "utf-8");
             const event = JSON.parse(data);
 
             // Parse dates
@@ -157,12 +171,15 @@ class FileCalendarService {
 
             events.push(event);
           } catch (error) {
-            console.error(`[FileCalendar] Failed to parse event: ${file}`, error);
+            console.error(
+              `[FileCalendar] Failed to parse event: ${file}`,
+              error,
+            );
           }
         }
       }
     } catch (error) {
-      console.error('[FileCalendar] Failed to list events', error);
+      console.error("[FileCalendar] Failed to list events", error);
     }
 
     // Sort by start time
@@ -178,14 +195,17 @@ class FileCalendarService {
     duration: number;
     description?: string;
   }): Promise<CalendarEvent> {
-    const endTime = new Date(params.startTime.getTime() + params.duration * 60000);
+    const endTime = new Date(
+      params.startTime.getTime() + params.duration * 60000,
+    );
 
     return this.createEvent({
       summary: `🎯 Focus: ${params.title}`,
-      description: params.description || 'Deep work session - minimize interruptions',
+      description:
+        params.description || "Deep work session - minimize interruptions",
       startTime: params.startTime,
       endTime: endTime,
-      type: 'focus',
+      type: "focus",
     });
   }
 
@@ -196,17 +216,29 @@ class FileCalendarService {
     title: string;
     startTime: Date;
     duration: number;
-    type: 'fitness' | 'meal' | 'mental_health';
+    type: "fitness" | "meal" | "mental_health";
   }): Promise<CalendarEvent> {
-    const endTime = new Date(params.startTime.getTime() + params.duration * 60000);
+    const endTime = new Date(
+      params.startTime.getTime() + params.duration * 60000,
+    );
 
-    const emoji = params.type === 'fitness' ? '🏃' :
-                 params.type === 'meal' ? '🍽️' :
-                 params.type === 'mental_health' ? '🧘' : '📅';
+    const emoji =
+      params.type === "fitness"
+        ? "🏃"
+        : params.type === "meal"
+          ? "🍽️"
+          : params.type === "mental_health"
+            ? "🧘"
+            : "📅";
 
-    const description = params.type === 'fitness' ? 'Exercise and physical wellness' :
-                       params.type === 'meal' ? 'Meal time and nutrition' :
-                       params.type === 'mental_health' ? 'Mental health and wellness break' : 'Health block';
+    const description =
+      params.type === "fitness"
+        ? "Exercise and physical wellness"
+        : params.type === "meal"
+          ? "Meal time and nutrition"
+          : params.type === "mental_health"
+            ? "Mental health and wellness break"
+            : "Health block";
 
     return this.createEvent({
       summary: `${emoji} ${params.title}`,
@@ -217,52 +249,101 @@ class FileCalendarService {
     });
   }
 
+  private foldLine(line: string): string {
+    if (line.length <= 75) return line;
+    let result = line.slice(0, 75);
+    let remaining = line.slice(75);
+    while (remaining.length > 0) {
+      result += "\r\n " + remaining.slice(0, 74);
+      remaining = remaining.slice(74);
+    }
+    return result;
+  }
+
+  private formatICSDate(date: Date): string {
+    return date.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+  }
+
+  private escapeICS(text: string): string {
+    return text
+      .replace(/\\/g, "\\\\")
+      .replace(/;/g, "\\;")
+      .replace(/,/g, "\\,")
+      .replace(/\n/g, "\\n");
+  }
+
   /**
    * Export to iCal format (.ics file)
-   * Can be imported into iPhone Calendar, Google Calendar, etc.
+   * Can be subscribed to from iPhone, Google Calendar, etc.
    */
   exportToICS(events?: CalendarEvent[]): string {
     const eventsToExport = events || this.listEvents();
+    const now = this.formatICSDate(new Date());
 
-    let ics = `BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//OpenClaw Agent//EN
-CALSCALE:GREGORIAN
-METHOD:PUBLISH
-X-WR-CALNAME:OpenClaw Calendar
-X-WR-TIMEZONE:America/New_York
-X-WR-CALDESC:OpenClaw Agent Calendar
-`;
+    const lines: string[] = [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "PRODID:-//OpenClaw Agent//EN",
+      "CALSCALE:GREGORIAN",
+      "METHOD:PUBLISH",
+      "X-WR-CALNAME:OpenClaw Calendar",
+      "X-WR-TIMEZONE:America/New_York",
+      "X-WR-CALDESC:OpenClaw Agent Calendar",
+      "X-PUBLISHED-TTL:PT15M",
+      "REFRESH-INTERVAL;VALUE=PT15M",
+      "BEGIN:VTIMEZONE",
+      "TZID:America/New_York",
+      "BEGIN:STANDARD",
+      "DTSTART:19701101T020000",
+      "RRULE:FREQ=YEARLY;BYDAY=1SU;BYMONTH=11",
+      "TZOFFSETFROM:-0400",
+      "TZOFFSETTO:-0500",
+      "TZNAME:EST",
+      "END:STANDARD",
+      "BEGIN:DAYLIGHT",
+      "DTSTART:19700308T020000",
+      "RRULE:FREQ=YEARLY;BYDAY=2SU;BYMONTH=3",
+      "TZOFFSETFROM:-0500",
+      "TZOFFSETTO:-0400",
+      "TZNAME:EDT",
+      "END:DAYLIGHT",
+      "END:VTIMEZONE",
+    ];
 
     for (const event of eventsToExport) {
-      const now = new Date().toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-      const start = event.startTime.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-      const end = event.endTime.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-
-      ics += `BEGIN:VEVENT
-DTSTART:${start}
-DTEND:${end}
-DTSTAMP:${now}
-CREATED:${now}
-LAST-MODIFIED:${now}
-UID:${event.id}@openclaw.agent
-SUMMARY:${event.summary}
-DESCRIPTION:${event.description || ''}
-END:VEVENT
-`;
+      lines.push("BEGIN:VEVENT");
+      lines.push(
+        this.foldLine(`DTSTART:${this.formatICSDate(event.startTime)}`),
+      );
+      lines.push(this.foldLine(`DTEND:${this.formatICSDate(event.endTime)}`));
+      lines.push(`DTSTAMP:${now}`);
+      lines.push(`CREATED:${now}`);
+      lines.push(`LAST-MODIFIED:${now}`);
+      lines.push(`UID:${event.id}@openclaw.agent`);
+      lines.push(this.foldLine(`SUMMARY:${this.escapeICS(event.summary)}`));
+      if (event.description) {
+        lines.push(
+          this.foldLine(`DESCRIPTION:${this.escapeICS(event.description)}`),
+        );
+      }
+      if (event.location) {
+        lines.push(this.foldLine(`LOCATION:${this.escapeICS(event.location)}`));
+      }
+      lines.push(`SEQUENCE:0`);
+      lines.push("END:VEVENT");
     }
 
-    ics += `END:VCALENDAR`;
+    lines.push("END:VCALENDAR");
 
-    return ics;
+    return lines.join("\r\n");
   }
 
   /**
    * Save ICS file to disk
    */
-  saveICSFile(filename: string = 'openclaw-calendar.ics'): string {
+  saveICSFile(filename: string = "openclaw-calendar.ics"): string {
     const icsContent = this.exportToICS();
-    const icsPath = join(process.cwd(), 'data', filename);
+    const icsPath = join(process.cwd(), "data", filename);
 
     writeFileSync(icsPath, icsContent);
     console.log(`[FileCalendar] Exported to: ${icsPath}`);
@@ -279,17 +360,23 @@ END:VEVENT
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const weekFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-    const upcoming = events.filter(e => e.startTime >= today && e.startTime <= weekFromNow);
-    const byType = events.reduce((acc, event) => {
-      acc[event.type] = (acc[event.type] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
+    const upcoming = events.filter(
+      (e) => e.startTime >= today && e.startTime <= weekFromNow,
+    );
+    const byType = events.reduce(
+      (acc, event) => {
+        acc[event.type] = (acc[event.type] || 0) + 1;
+        return acc;
+      },
+      {} as Record<string, number>,
+    );
 
     return {
       total: events.length,
       upcoming: upcoming.length,
       byType,
-      latest: events.length > 0 ? events[events.length - 1].summary : 'No events',
+      latest:
+        events.length > 0 ? events[events.length - 1].summary : "No events",
     };
   }
 

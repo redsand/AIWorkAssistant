@@ -87,7 +87,7 @@ async function main() {
   });
 
   // Health check
-  server.get('/health', async (request, reply) => {
+  server.get('/health', async (_request, reply) => {
     const status = await bot.getStatus();
     reply.send({
       service: 'signal-bot',

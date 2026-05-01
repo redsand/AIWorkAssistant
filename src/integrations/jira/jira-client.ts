@@ -3,8 +3,8 @@
  * Production implementation for Jira Cloud
  */
 
-import axios, { AxiosInstance, AxiosError } from 'axios';
-import { env } from '../../config/env';
+import axios, { AxiosInstance } from "axios";
+import { env } from "../../config/env";
 
 export interface JiraIssue {
   id: string;
@@ -62,14 +62,22 @@ export interface JiraUser {
   accountId: string;
 }
 
-class JiraClient {
+export interface JiraProject {
+  key: string;
+  name: string;
+  id: string;
+  projectTypeKey: string;
+  style: string;
+}
+
+export class JiraClient {
   private client: AxiosInstance;
   private baseUrl: string;
   private email: string;
   private apiToken: string;
 
   constructor() {
-    this.baseUrl = env.JIRA_BASE_URL.replace(/\/$/, ''); // Remove trailing slash
+    this.baseUrl = env.JIRA_BASE_URL.replace(/\/$/, ""); // Remove trailing slash
     this.email = env.JIRA_EMAIL;
     this.apiToken = env.JIRA_API_TOKEN;
 
@@ -81,8 +89,8 @@ class JiraClient {
         password: this.apiToken,
       },
       headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
+        "Content-Type": "application/json",
+        Accept: "application/json",
       },
       timeout: 30000, // 30 seconds
     });
@@ -92,7 +100,7 @@ class JiraClient {
    * Check if Jira client is configured
    */
   isConfigured(): boolean {
-    return !!this.email && !!this.email.includes('@') && !!this.apiToken;
+    return !!this.email && !!this.email.includes("@") && !!this.apiToken;
   }
 
   /**
@@ -105,10 +113,10 @@ class JiraClient {
 
     try {
       // Try to get current user info
-      await this.client.get('/rest/api/3/myself');
+      await this.client.get("/rest/api/3/myself");
       return true;
     } catch (error) {
-      console.error('[Jira] Config validation failed:', error);
+      console.error("[Jira] Config validation failed:", error);
       return false;
     }
   }
@@ -118,13 +126,15 @@ class JiraClient {
    */
   async getIssue(key: string): Promise<JiraIssue> {
     if (!this.isConfigured()) {
-      throw new Error('Jira client not configured');
+      throw new Error("Jira client not configured");
     }
 
     try {
       console.log(`[Jira] Fetching issue: ${key}`);
       const response = await this.client.get(`/rest/api/3/issue/${key}`);
-      console.log(`[Jira] Issue ${key} retrieved: ${response.data.fields.summary}`);
+      console.log(
+        `[Jira] Issue ${key} retrieved: ${response.data.fields.summary}`,
+      );
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -132,28 +142,36 @@ class JiraClient {
         if (status === 404) {
           throw new Error(`Jira issue ${key} not found`);
         } else if (status === 401) {
-          throw new Error('Jira authentication failed. Check your credentials.');
+          throw new Error(
+            "Jira authentication failed. Check your credentials.",
+          );
         } else if (status === 403) {
           throw new Error(`Jira permission denied for issue ${key}`);
         }
       }
-      throw new Error(`Failed to get Jira issue ${key}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to get Jira issue ${key}: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 
   /**
    * Search issues with JQL
    */
-  async searchIssues(jql: string, maxResults: number = 50, useApiV2: boolean = false): Promise<JiraIssue[]> {
+  async searchIssues(
+    jql: string,
+    maxResults: number = 50,
+    useApiV2: boolean = false,
+  ): Promise<JiraIssue[]> {
     if (!this.isConfigured()) {
-      throw new Error('Jira client not configured');
+      throw new Error("Jira client not configured");
     }
 
     try {
       console.log(`[Jira] Searching issues: ${jql}`);
 
       // Try API v2 first if specified, fallback to v3
-      const apiVersion = useApiV2 ? '2' : '3';
+      const apiVersion = useApiV2 ? "2" : "3";
       const endpoint = `/rest/api/${apiVersion}/search`;
 
       const response = await this.client.get(endpoint, {
@@ -161,20 +179,22 @@ class JiraClient {
           jql,
           maxResults,
           fields: [
-            'summary',
-            'status',
-            'assignee',
-            'priority',
-            'issuetype',
-            'created',
-            'updated',
-            'project',
+            "summary",
+            "status",
+            "assignee",
+            "priority",
+            "issuetype",
+            "created",
+            "updated",
+            "project",
           ],
         },
       });
 
       const issues = response.data.issues || [];
-      console.log(`[Jira] Found ${issues.length} issues using API v${apiVersion}`);
+      console.log(
+        `[Jira] Found ${issues.length} issues using API v${apiVersion}`,
+      );
       return issues;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -182,17 +202,24 @@ class JiraClient {
         const data = error.response?.data as any;
 
         if (status === 400) {
-          const errorMessages = data?.errorMessages || data?.errors?.join(', ') || 'Invalid JQL syntax';
+          const errorMessages =
+            data?.errorMessages ||
+            data?.errors?.join(", ") ||
+            "Invalid JQL syntax";
           throw new Error(`Invalid JQL query: ${errorMessages}`);
         } else if (status === 401) {
-          throw new Error('Jira authentication failed. Check your credentials.');
+          throw new Error(
+            "Jira authentication failed. Check your credentials.",
+          );
         } else if (status === 410 && !useApiV2) {
           // Try API v2 if v3 returns 410
-          console.log('[Jira] API v3 returned 410, trying API v2...');
+          console.log("[Jira] API v3 returned 410, trying API v2...");
           return await this.searchIssues(jql, maxResults, true);
         }
       }
-      throw new Error(`Failed to search Jira issues: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to search Jira issues: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 
@@ -201,7 +228,7 @@ class JiraClient {
    */
   async getAssignedIssues(status?: string): Promise<JiraIssue[]> {
     if (!this.isConfigured()) {
-      throw new Error('Jira client not configured');
+      throw new Error("Jira client not configured");
     }
 
     try {
@@ -214,49 +241,57 @@ class JiraClient {
         if (status) {
           jql += ` AND status = "${status}"`;
         }
-        jql += ' ORDER BY created DESC';
+        jql += " ORDER BY created DESC";
 
-        console.log('[Jira] Fetching assigned issues via JQL');
+        console.log("[Jira] Fetching assigned issues via JQL");
         return await this.searchIssues(jql, 50);
       } catch (jqlError) {
         // Fallback: Try to get issues from each project
-        console.log('[Jira] JQL failed, trying project-based approach');
+        console.log("[Jira] JQL failed, trying project-based approach");
 
         const projects = await this.getProjects();
         const allIssues: JiraIssue[] = [];
 
         for (const project of projects) {
           try {
-            const response = await this.client.get(`/rest/api/2/issue/${project.key}`, {
-              params: {
-                jql: `assignee = "${user.accountId}"`,
-                maxResults: 50,
-                fields: [
-                  'summary',
-                  'status',
-                  'assignee',
-                  'priority',
-                  'issuetype',
-                  'created',
-                  'updated',
-                  'project',
-                ],
+            const response = await this.client.get(
+              `/rest/api/2/issue/${project.key}`,
+              {
+                params: {
+                  jql: `assignee = "${user.accountId}"`,
+                  maxResults: 50,
+                  fields: [
+                    "summary",
+                    "status",
+                    "assignee",
+                    "priority",
+                    "issuetype",
+                    "created",
+                    "updated",
+                    "project",
+                  ],
+                },
               },
-            });
+            );
 
             if (response.data.issues) {
               allIssues.push(...response.data.issues);
             }
           } catch (projectError) {
             // Skip projects we can't access
-            console.log(`[Jira] Skipping project ${project.key}:`, (projectError as Error).message);
+            console.log(
+              `[Jira] Skipping project ${project.key}:`,
+              (projectError as Error).message,
+            );
           }
         }
 
         return allIssues;
       }
     } catch (error) {
-      throw new Error(`Failed to get assigned issues: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to get assigned issues: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 
@@ -265,28 +300,31 @@ class JiraClient {
    */
   async addComment(key: string, body: string): Promise<JiraComment> {
     if (!this.isConfigured()) {
-      throw new Error('Jira client not configured');
+      throw new Error("Jira client not configured");
     }
 
     try {
       console.log(`[Jira] Adding comment to ${key}`);
-      const response = await this.client.post(`/rest/api/3/issue/${key}/comment`, {
-        body: {
-          type: 'doc',
-          version: 1,
-          content: [
-            {
-              type: 'paragraph',
-              content: [
-                {
-                  type: 'text',
-                  text: body,
-                },
-              ],
-            },
-          ],
+      const response = await this.client.post(
+        `/rest/api/3/issue/${key}/comment`,
+        {
+          body: {
+            type: "doc",
+            version: 1,
+            content: [
+              {
+                type: "paragraph",
+                content: [
+                  {
+                    type: "text",
+                    text: body,
+                  },
+                ],
+              },
+            ],
+          },
         },
-      });
+      );
 
       console.log(`[Jira] Comment added to ${key}`);
       return response.data;
@@ -299,7 +337,9 @@ class JiraClient {
           throw new Error(`No permission to comment on issue ${key}`);
         }
       }
-      throw new Error(`Failed to add comment to ${key}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to add comment to ${key}: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 
@@ -308,12 +348,14 @@ class JiraClient {
    */
   async getTransitions(key: string): Promise<JiraTransition[]> {
     if (!this.isConfigured()) {
-      throw new Error('Jira client not configured');
+      throw new Error("Jira client not configured");
     }
 
     try {
       console.log(`[Jira] Fetching transitions for ${key}`);
-      const response = await this.client.get(`/rest/api/3/issue/${key}/transitions`);
+      const response = await this.client.get(
+        `/rest/api/3/issue/${key}/transitions`,
+      );
       const transitions = response.data.transitions || [];
       console.log(`[Jira] Found ${transitions.length} transitions for ${key}`);
       return transitions;
@@ -324,16 +366,22 @@ class JiraClient {
           throw new Error(`Jira issue ${key} not found`);
         }
       }
-      throw new Error(`Failed to get transitions for ${key}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to get transitions for ${key}: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 
   /**
    * Transition issue to new status
    */
-  async transitionIssue(key: string, transitionId: string, comment?: string): Promise<void> {
+  async transitionIssue(
+    key: string,
+    transitionId: string,
+    comment?: string,
+  ): Promise<void> {
     if (!this.isConfigured()) {
-      throw new Error('Jira client not configured');
+      throw new Error("Jira client not configured");
     }
 
     try {
@@ -351,14 +399,14 @@ class JiraClient {
             {
               add: {
                 body: {
-                  type: 'doc',
+                  type: "doc",
                   version: 1,
                   content: [
                     {
-                      type: 'paragraph',
+                      type: "paragraph",
                       content: [
                         {
-                          type: 'text',
+                          type: "text",
                           text: comment,
                         },
                       ],
@@ -384,7 +432,9 @@ class JiraClient {
           throw new Error(`No permission to transition issue ${key}`);
         }
       }
-      throw new Error(`Failed to transition issue ${key}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to transition issue ${key}: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 
@@ -399,11 +449,11 @@ class JiraClient {
     assignee?: string;
   }): Promise<JiraIssue> {
     if (!this.isConfigured()) {
-      throw new Error('Jira client not configured');
+      throw new Error("Jira client not configured");
     }
 
     try {
-      console.log('[Jira] Creating issue:', params.summary);
+      console.log("[Jira] Creating issue:", params.summary);
 
       const payload: any = {
         fields: {
@@ -419,14 +469,14 @@ class JiraClient {
 
       if (params.description) {
         payload.fields.description = {
-          type: 'doc',
+          type: "doc",
           version: 1,
           content: [
             {
-              type: 'paragraph',
+              type: "paragraph",
               content: [
                 {
-                  type: 'text',
+                  type: "text",
                   text: params.description,
                 },
               ],
@@ -441,7 +491,7 @@ class JiraClient {
         };
       }
 
-      const response = await this.client.post('/rest/api/3/issue', payload);
+      const response = await this.client.post("/rest/api/3/issue", payload);
       console.log(`[Jira] Issue ${response.data.key} created`);
       return response.data;
     } catch (error) {
@@ -449,21 +499,28 @@ class JiraClient {
         const status = error.response?.status;
         const data = error.response?.data as any;
         if (status === 400) {
-          throw new Error(`Invalid issue data: ${data?.errors?.join(', ') || 'Unknown error'}`);
+          throw new Error(
+            `Invalid issue data: ${data?.errors?.join(", ") || "Unknown error"}`,
+          );
         } else if (status === 403) {
-          throw new Error('No permission to create issue in this project');
+          throw new Error("No permission to create issue in this project");
         }
       }
-      throw new Error(`Failed to create issue: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to create issue: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 
   /**
    * Update issue fields
    */
-  async updateIssue(key: string, fields: Record<string, unknown>): Promise<void> {
+  async updateIssue(
+    key: string,
+    fields: Record<string, unknown>,
+  ): Promise<void> {
     if (!this.isConfigured()) {
-      throw new Error('Jira client not configured');
+      throw new Error("Jira client not configured");
     }
 
     try {
@@ -481,7 +538,9 @@ class JiraClient {
           throw new Error(`No permission to edit issue ${key}`);
         }
       }
-      throw new Error(`Failed to update issue ${key}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to update issue ${key}: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 
@@ -490,14 +549,16 @@ class JiraClient {
    */
   async getCurrentUser(): Promise<JiraUser> {
     if (!this.isConfigured()) {
-      throw new Error('Jira client not configured');
+      throw new Error("Jira client not configured");
     }
 
     try {
-      const response = await this.client.get('/rest/api/3/myself');
+      const response = await this.client.get("/rest/api/3/myself");
       return response.data;
     } catch (error) {
-      throw new Error(`Failed to get current user: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to get current user: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 
@@ -506,13 +567,13 @@ class JiraClient {
    */
   async getProjects(): Promise<Array<{ key: string; name: string }>> {
     if (!this.isConfigured()) {
-      throw new Error('Jira client not configured');
+      throw new Error("Jira client not configured");
     }
 
     try {
-      const response = await this.client.get('/rest/api/3/project', {
+      const response = await this.client.get("/rest/api/3/project", {
         params: {
-          fields: 'key,name',
+          fields: "key,name",
         },
       });
 
@@ -521,7 +582,132 @@ class JiraClient {
         name: p.name,
       }));
     } catch (error) {
-      throw new Error(`Failed to get projects: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to get projects: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
+  /**
+   * Get a single project by key
+   */
+  async getProject(key: string): Promise<JiraProject> {
+    if (!this.isConfigured()) {
+      throw new Error("Jira client not configured");
+    }
+
+    try {
+      console.log(`[Jira] Fetching project: ${key}`);
+      const response = await this.client.get(`/rest/api/3/project/${key}`);
+      const data = response.data;
+      return {
+        key: data.key,
+        name: data.name,
+        id: data.id,
+        projectTypeKey: data.projectTypeKey,
+        style: data.style,
+      };
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        if (status === 404) {
+          throw new Error(`Jira project ${key} not found`);
+        } else if (status === 403) {
+          throw new Error(`No permission to access project ${key}`);
+        }
+      }
+      throw new Error(
+        `Failed to get project ${key}: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
+  /**
+   * Create a new Jira project
+   */
+  async createProject(params: {
+    key: string;
+    name: string;
+    projectType?: string;
+    projectTemplate?: string;
+    description?: string;
+    leadAccountId?: string;
+    url?: string;
+  }): Promise<JiraProject> {
+    if (!this.isConfigured()) {
+      throw new Error("Jira client not configured");
+    }
+
+    try {
+      console.log(`[Jira] Creating project: ${params.key} - ${params.name}`);
+
+      let leadAccountId = params.leadAccountId;
+      if (!leadAccountId) {
+        const currentUser = await this.getCurrentUser();
+        leadAccountId = currentUser.accountId;
+      }
+
+      const projectType = params.projectType || "software";
+      const templates: Record<string, string> = {
+        software: "com.pyxis.greenhopper.jira:gh-scrum-template",
+        business:
+          "com.atlassian.jira-core-project-templates:jira-core-scrum-management",
+        service_desk: "com.atlassian.servicedesk.simplified-service-desk:it-v2",
+      };
+
+      const payload: any = {
+        key: params.key,
+        name: params.name,
+        projectTypeKey: projectType,
+        projectTemplateKey:
+          params.projectTemplate ||
+          templates[projectType] ||
+          templates.software,
+        leadAccountId,
+        assigneeType: "PROJECT_LEAD",
+        description: params.description || "",
+        url: params.url || "",
+      };
+
+      const response = await this.client.post("/rest/api/3/project", payload);
+      const data = response.data;
+      console.log(`[Jira] Project ${data.key} created successfully`);
+      return {
+        key: data.key,
+        name: data.name,
+        id: data.id,
+        projectTypeKey: data.projectTypeKey,
+        style: data.style,
+      };
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        const data = error.response?.data as any;
+        if (status === 400) {
+          const errors = data?.errors || {};
+          const errorMessages = data?.errorMessages || [];
+          const details = [
+            ...Object.entries(errors).map(([k, v]) => `${k}: ${v}`),
+            ...errorMessages,
+          ].join("; ");
+          throw new Error(
+            `Invalid project data: ${details || "Unknown error"}`,
+          );
+        } else if (status === 401) {
+          throw new Error(
+            "Jira authentication failed. Check your credentials.",
+          );
+        } else if (status === 403) {
+          throw new Error(
+            "No permission to create projects. Ensure your API token has project admin rights.",
+          );
+        } else if (status === 409) {
+          throw new Error(`Project with key ${params.key} already exists.`);
+        }
+      }
+      throw new Error(
+        `Failed to create project: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 }

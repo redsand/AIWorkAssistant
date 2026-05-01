@@ -4,7 +4,6 @@
  */
 
 import { jiraService } from '../integrations/jira/jira-service';
-import { gitlabClient } from '../integrations/gitlab/gitlab-client';
 import { fileCalendarService } from '../integrations/file/calendar-service';
 
 interface DailyPlan {

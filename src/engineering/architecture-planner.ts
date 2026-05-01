@@ -32,7 +32,7 @@ class ArchitecturePlanner {
   /**
    * Generate architecture proposal from workflow brief
    */
-  async generate(workflowBrief: WorkflowBrief): Promise<ArchitectureProposal> {
+  async generate(_workflowBrief: WorkflowBrief): Promise<ArchitectureProposal> {
     // TODO: Use OpenCode API to generate architecture proposal
     console.log('[Architecture Planner] Generating from workflow brief');
 

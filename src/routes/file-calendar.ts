@@ -3,14 +3,15 @@
  * Simple calendar management without external dependencies
  */
 
-import { FastifyInstance } from 'fastify';
-import { fileCalendarService } from '../integrations/file/calendar-service';
+import { FastifyInstance } from "fastify";
+import { fileCalendarService } from "../integrations/file/calendar-service";
+import { getTunnelUrl } from "../integrations/file/tunnel";
 
 export async function fileCalendarRoutes(fastify: FastifyInstance) {
   /**
    * List all events
    */
-  fastify.get('/calendar/events', async (request, reply) => {
+  fastify.get("/calendar/events", async (request, reply) => {
     try {
       const { startDate, endDate } = request.query as {
         startDate?: string;
@@ -19,19 +20,19 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
 
       const events = fileCalendarService.listEvents(
         startDate ? new Date(startDate) : undefined,
-        endDate ? new Date(endDate) : undefined
+        endDate ? new Date(endDate) : undefined,
       );
 
       return {
         success: true,
         events,
-        count: events.length
+        count: events.length,
       };
     } catch (error) {
       reply.code(500);
       return {
         success: false,
-        error: 'Failed to list events'
+        error: "Failed to list events",
       };
     }
   });
@@ -39,19 +40,19 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
   /**
    * Get calendar statistics
    */
-  fastify.get('/calendar/stats', async (request, reply) => {
+  fastify.get("/calendar/stats", async (_request, reply) => {
     try {
       const stats = fileCalendarService.getStats();
 
       return {
         success: true,
-        stats
+        stats,
       };
     } catch (error) {
       reply.code(500);
       return {
         success: false,
-        error: 'Failed to get calendar stats'
+        error: "Failed to get calendar stats",
       };
     }
   });
@@ -59,7 +60,7 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
   /**
    * Create a new event
    */
-  fastify.post('/calendar/events', async (request, reply) => {
+  fastify.post("/calendar/events", async (request, reply) => {
     try {
       const body = request.body as {
         summary: string;
@@ -67,7 +68,13 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
         startTime: string;
         endTime: string;
         location?: string;
-        type?: 'meeting' | 'focus' | 'fitness' | 'meal' | 'mental_health' | 'other';
+        type?:
+          | "meeting"
+          | "focus"
+          | "fitness"
+          | "meal"
+          | "mental_health"
+          | "other";
       };
 
       const event = await fileCalendarService.createEvent({
@@ -82,13 +89,13 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
       return {
         success: true,
         event,
-        message: 'Event created successfully'
+        message: "Event created successfully",
       };
     } catch (error) {
       reply.code(500);
       return {
         success: false,
-        error: 'Failed to create event'
+        error: "Failed to create event",
       };
     }
   });
@@ -96,7 +103,7 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
   /**
    * Create focus block
    */
-  fastify.post('/calendar/focus-blocks', async (request, reply) => {
+  fastify.post("/calendar/focus-blocks", async (request, reply) => {
     try {
       const body = request.body as {
         title: string;
@@ -115,13 +122,13 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
       return {
         success: true,
         event,
-        message: 'Focus block created successfully'
+        message: "Focus block created successfully",
       };
     } catch (error) {
       reply.code(500);
       return {
         success: false,
-        error: 'Failed to create focus block'
+        error: "Failed to create focus block",
       };
     }
   });
@@ -129,13 +136,13 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
   /**
    * Create health block
    */
-  fastify.post('/calendar/health-blocks', async (request, reply) => {
+  fastify.post("/calendar/health-blocks", async (request, reply) => {
     try {
       const body = request.body as {
         title: string;
         startTime: string;
         duration: number;
-        type: 'fitness' | 'meal' | 'mental_health';
+        type: "fitness" | "meal" | "mental_health";
       };
 
       const event = await fileCalendarService.createHealthBlock({
@@ -148,38 +155,69 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
       return {
         success: true,
         event,
-        message: 'Health block created successfully'
+        message: "Health block created successfully",
       };
     } catch (error) {
       reply.code(500);
       return {
         success: false,
-        error: 'Failed to create health block'
+        error: "Failed to create health block",
       };
     }
   });
 
   /**
-   * Export calendar to ICS format
+   * Export calendar to ICS format (subscription feed)
    */
-  fastify.get('/calendar/export/ics', async (request, reply) => {
+  fastify.get("/calendar/export/ics", async (_request, reply) => {
     try {
       const icsContent = fileCalendarService.exportToICS();
 
-      reply.type('text/calendar').send(icsContent);
+      reply.header("Content-Type", "text/calendar; charset=utf-8");
+      reply.header(
+        "Content-Disposition",
+        'inline; filename="openclaw-calendar.ics"',
+      );
+      reply.header("Cache-Control", "no-cache, must-revalidate");
+      reply.header("X-Published-TTL", "PT15M");
+      reply.header("Refresh-Interval", "PT15M");
+      return reply.send(icsContent);
     } catch (error) {
       reply.code(500);
       return {
         success: false,
-        error: 'Failed to export calendar'
+        error: "Failed to export calendar",
       };
     }
+  });
+
+  /**
+   * Get iPhone subscription info
+   */
+  fastify.get("/calendar/subscribe", async (_request, _reply) => {
+    const baseUrl =
+      getTunnelUrl() || `http://localhost:${process.env.PORT || 3050}`;
+    const icsUrl = `${baseUrl}/calendar/export/ics`;
+    const webcalUrl = icsUrl.replace(/^https?/, "webcal");
+
+    return {
+      success: true,
+      subscription: {
+        icsUrl,
+        webcalUrl,
+        instructions: {
+          iphone: `Settings > Calendar > Accounts > Add Account > Other > Add Subscribed Calendar > paste: ${webcalUrl}`,
+          mac: `Calendar.app > File > New Calendar Subscription > paste: ${webcalUrl}`,
+          web: `Open ${icsUrl} in browser to download .ics file`,
+        },
+      },
+    };
   });
 
   /**
    * Update an event
    */
-  fastify.patch('/calendar/events/:eventId', async (request, reply) => {
+  fastify.patch("/calendar/events/:eventId", async (request, reply) => {
     try {
       const { eventId } = request.params as { eventId: string };
       const body = request.body as Partial<{
@@ -188,7 +226,13 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
         startTime: string;
         endTime: string;
         location: string;
-        type: 'meeting' | 'focus' | 'fitness' | 'meal' | 'mental_health' | 'other';
+        type:
+          | "meeting"
+          | "focus"
+          | "fitness"
+          | "meal"
+          | "mental_health"
+          | "other";
       }>;
 
       const event = await fileCalendarService.updateEvent(eventId, {
@@ -203,13 +247,13 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
       return {
         success: true,
         event,
-        message: 'Event updated successfully'
+        message: "Event updated successfully",
       };
     } catch (error) {
       reply.code(500);
       return {
         success: false,
-        error: 'Failed to update event'
+        error: "Failed to update event",
       };
     }
   });
@@ -217,7 +261,7 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
   /**
    * Delete an event
    */
-  fastify.delete('/calendar/events/:eventId', async (request, reply) => {
+  fastify.delete("/calendar/events/:eventId", async (request, reply) => {
     try {
       const { eventId } = request.params as { eventId: string };
       const deleted = await fileCalendarService.deleteEvent(eventId);
@@ -226,19 +270,19 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
         reply.code(404);
         return {
           success: false,
-          error: 'Event not found'
+          error: "Event not found",
         };
       }
 
       return {
         success: true,
-        message: 'Event deleted successfully'
+        message: "Event deleted successfully",
       };
     } catch (error) {
       reply.code(500);
       return {
         success: false,
-        error: 'Failed to delete event'
+        error: "Failed to delete event",
       };
     }
   });

@@ -32,13 +32,13 @@ class GraphClient {
   private tenantId: string;
   private clientId: string;
   private clientSecret: string;
-  private redirectUri: string;
+  private _redirectUri: string;
 
   constructor() {
     this.tenantId = env.MICROSOFT_TENANT_ID;
     this.clientId = env.MICROSOFT_CLIENT_ID;
     this.clientSecret = env.MICROSOFT_CLIENT_SECRET;
-    this.redirectUri = env.MICROSOFT_REDIRECT_URI;
+    this._redirectUri = env.MICROSOFT_REDIRECT_URI;
   }
 
   /**
