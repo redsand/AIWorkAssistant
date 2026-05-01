@@ -3,7 +3,7 @@
  * TODO: Implement OAuth flow and actual Graph API calls
  */
 
-import { env } from '../../config/env';
+import { env } from "../../config/env";
 
 export interface MicrosoftEvent {
   id: string;
@@ -32,13 +32,11 @@ class GraphClient {
   private tenantId: string;
   private clientId: string;
   private clientSecret: string;
-  private _redirectUri: string;
 
   constructor() {
     this.tenantId = env.MICROSOFT_TENANT_ID;
     this.clientId = env.MICROSOFT_CLIENT_ID;
     this.clientSecret = env.MICROSOFT_CLIENT_SECRET;
-    this._redirectUri = env.MICROSOFT_REDIRECT_URI;
   }
 
   /**
@@ -53,15 +51,15 @@ class GraphClient {
    * TODO: Implement OAuth flow
    */
   getAuthorizationUrl(): string {
-    throw new Error('OAuth not implemented');
+    throw new Error("OAuth not implemented");
   }
 
   /**
    * Exchange authorization code for access token
    * TODO: Implement OAuth flow
    */
-  async getAccessToken(code: string): Promise<string> {
-    throw new Error('OAuth not implemented');
+  async getAccessToken(_code: string): Promise<string> {
+    throw new Error("OAuth not implemented");
   }
 
   /**
@@ -69,8 +67,10 @@ class GraphClient {
    */
   async listEvents(startDate: Date, endDate: Date): Promise<MicrosoftEvent[]> {
     // TODO: Implement actual API call
-    console.log(`[Microsoft Graph] Listing events from ${startDate} to ${endDate}`);
-    throw new Error('Not implemented');
+    console.log(
+      `[Microsoft Graph] Listing events from ${startDate} to ${endDate}`,
+    );
+    throw new Error("Not implemented");
   }
 
   /**
@@ -78,17 +78,20 @@ class GraphClient {
    */
   async createEvent(event: Partial<MicrosoftEvent>): Promise<MicrosoftEvent> {
     // TODO: Implement actual API call
-    console.log('[Microsoft Graph] Creating event:', event.subject);
-    throw new Error('Not implemented');
+    console.log("[Microsoft Graph] Creating event:", event.subject);
+    throw new Error("Not implemented");
   }
 
   /**
    * Update calendar event
    */
-  async updateEvent(id: string, event: Partial<MicrosoftEvent>): Promise<MicrosoftEvent> {
+  async updateEvent(
+    id: string,
+    _event: Partial<MicrosoftEvent>,
+  ): Promise<MicrosoftEvent> {
     // TODO: Implement actual API call
-    console.log('[Microsoft Graph] Updating event:', id);
-    throw new Error('Not implemented');
+    console.log("[Microsoft Graph] Updating event:", id);
+    throw new Error("Not implemented");
   }
 
   /**
@@ -96,8 +99,8 @@ class GraphClient {
    */
   async deleteEvent(id: string): Promise<void> {
     // TODO: Implement actual API call
-    console.log('[Microsoft Graph] Deleting event:', id);
-    throw new Error('Not implemented');
+    console.log("[Microsoft Graph] Deleting event:", id);
+    throw new Error("Not implemented");
   }
 }
 

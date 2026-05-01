@@ -3,8 +3,8 @@
  * TODO: Implement actual daily planning logic
  */
 
-import { jiraService } from '../integrations/jira/jira-service';
-import { fileCalendarService } from '../integrations/file/calendar-service';
+import { jiraService } from "../integrations/jira/jira-service";
+import { fileCalendarService } from "../integrations/file/calendar-service";
 
 interface DailyPlan {
   date: string;
@@ -13,7 +13,7 @@ interface DailyPlan {
   schedule: Array<{
     time: string;
     title: string;
-    type: 'meeting' | 'focus' | 'health' | 'break';
+    type: "meeting" | "focus" | "health" | "break";
   }>;
   jiraUpdates: {
     assigned: number;
@@ -37,24 +37,24 @@ class DailyPlanner {
 
     // Fetch data
     const assignedIssues = await jiraService.getAssignedIssues(userId);
-    const calendarEvents = fileCalendarService.listEvents(date, date);
+    fileCalendarService.listEvents(date, date);
     // const mergeRequests = await gitlabClient.getMergeRequests(projectId); // TODO: Need project context
 
     // Analyze and generate plan
     return {
-      date: date.toISOString().split('T')[0],
-      summary: 'Daily plan summary',
+      date: date.toISOString().split("T")[0],
+      summary: "Daily plan summary",
       priorities: [
-        'Review urgent tickets',
-        'Focus on PROJ-123 implementation',
-        'Attend standup meeting',
+        "Review urgent tickets",
+        "Focus on PROJ-123 implementation",
+        "Attend standup meeting",
       ],
       schedule: [
-        { time: '09:00', title: 'Standup', type: 'meeting' },
-        { time: '10:00', title: 'Focus: PROJ-123', type: 'focus' },
-        { time: '12:00', title: 'Lunch', type: 'health' },
-        { time: '14:00', title: 'Focus: PROJ-456', type: 'focus' },
-        { time: '16:00', title: 'Break', type: 'break' },
+        { time: "09:00", title: "Standup", type: "meeting" },
+        { time: "10:00", title: "Focus: PROJ-123", type: "focus" },
+        { time: "12:00", title: "Lunch", type: "health" },
+        { time: "14:00", title: "Focus: PROJ-456", type: "focus" },
+        { time: "16:00", title: "Break", type: "break" },
       ],
       jiraUpdates: {
         assigned: assignedIssues.length,
@@ -66,9 +66,9 @@ class DailyPlanner {
         mergeRequests: 2,
       },
       recommendations: [
-        'Consider rescheduling afternoon focus block due to meeting density',
-        'PROJ-789 is blocked and may need attention',
-        'Review and merge MR !42',
+        "Consider rescheduling afternoon focus block due to meeting density",
+        "PROJ-789 is blocked and may need attention",
+        "Review and merge MR !42",
       ],
     };
   }

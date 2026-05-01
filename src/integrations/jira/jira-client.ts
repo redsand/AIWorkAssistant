@@ -77,11 +77,10 @@ export class JiraClient {
   private apiToken: string;
 
   constructor() {
-    this.baseUrl = env.JIRA_BASE_URL.replace(/\/$/, ""); // Remove trailing slash
+    this.baseUrl = env.JIRA_BASE_URL.replace(/\/$/, "");
     this.email = env.JIRA_EMAIL;
     this.apiToken = env.JIRA_API_TOKEN;
 
-    // Create axios instance with base configuration
     this.client = axios.create({
       baseURL: this.baseUrl,
       auth: {
@@ -89,11 +88,14 @@ export class JiraClient {
         password: this.apiToken,
       },
       headers: {
-        "Content-Type": "application/json",
         Accept: "application/json",
+        "Content-Type": "application/json",
       },
-      timeout: 30000, // 30 seconds
     });
+  }
+
+  getBaseUrl(): string {
+    return this.baseUrl;
   }
 
   /**
@@ -339,6 +341,39 @@ export class JiraClient {
       }
       throw new Error(
         `Failed to add comment to ${key}: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
+  async getComments(
+    key: string,
+  ): Promise<
+    Array<{ id: string; author: string; body: string; created: string }>
+  > {
+    if (!this.isConfigured()) {
+      throw new Error("Jira client not configured");
+    }
+
+    try {
+      const response = await this.client.get(
+        `/rest/api/3/issue/${key}/comment`,
+      );
+      const comments = response.data.comments || [];
+      return comments.map((c: any) => ({
+        id: c.id,
+        author: c.author?.displayName || "Unknown",
+        body:
+          c.body?.content
+            ?.map((p: any) => p.content?.map((t: any) => t.text).join(""))
+            .join("\n") || "",
+        created: c.created,
+      }));
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 404) {
+        throw new Error(`Jira issue ${key} not found`);
+      }
+      throw new Error(
+        `Failed to get comments for ${key}: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
     }
   }

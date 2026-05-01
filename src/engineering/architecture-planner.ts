@@ -3,7 +3,7 @@
  * TODO: Implement actual architecture generation with OpenCode API
  */
 
-import { WorkflowBrief } from './workflow-brief';
+import { WorkflowBrief } from "./workflow-brief";
 
 export interface ArchitectureProposal {
   recommendedStack: {
@@ -34,30 +34,30 @@ class ArchitecturePlanner {
    */
   async generate(_workflowBrief: WorkflowBrief): Promise<ArchitectureProposal> {
     // TODO: Use OpenCode API to generate architecture proposal
-    console.log('[Architecture Planner] Generating from workflow brief');
+    console.log("[Architecture Planner] Generating from workflow brief");
 
     // Stub response
     return {
       recommendedStack: {
-        backend: 'TypeScript + Fastify',
-        frontend: 'React + TypeScript',
-        database: 'PostgreSQL',
-        queue: 'Redis + Bull',
-        cache: 'Redis',
+        backend: "TypeScript + Fastify",
+        frontend: "React + TypeScript",
+        database: "PostgreSQL",
+        queue: "Redis + Bull",
+        cache: "Redis",
       },
-      systemBoundaries: ['API Gateway', 'Core Service', 'Worker Service'],
-      dataModel: 'Data model description',
-      apiDesign: 'REST API design',
-      eventModel: 'Event-driven architecture',
-      backgroundJobs: ['Job processing', 'Notifications', 'Cleanup'],
-      integrations: ['Jira', 'GitLab', 'Microsoft 365'],
-      authStrategy: 'OAuth 2.0 + JWT',
-      errorHandling: 'Global error handler + retry logic',
-      observability: 'Logging + metrics + tracing',
-      deploymentModel: 'Docker + Kubernetes',
-      security: 'Input validation + RBAC + encryption',
-      privacy: 'Data minimization + GDPR compliance',
-      testingStrategy: 'Unit + integration + E2E tests',
+      systemBoundaries: ["API Gateway", "Core Service", "Worker Service"],
+      dataModel: "Data model description",
+      apiDesign: "REST API design",
+      eventModel: "Event-driven architecture",
+      backgroundJobs: ["Job processing", "Notifications", "Cleanup"],
+      integrations: ["Jira", "GitLab", "Microsoft 365"],
+      authStrategy: "OAuth 2.0 + JWT",
+      errorHandling: "Global error handler + retry logic",
+      observability: "Logging + metrics + tracing",
+      deploymentModel: "Docker + Kubernetes",
+      security: "Input validation + RBAC + encryption",
+      privacy: "Data minimization + GDPR compliance",
+      testingStrategy: "Unit + integration + E2E tests",
     };
   }
 }

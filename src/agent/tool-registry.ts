@@ -192,6 +192,157 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     actionType: "jira.project.create",
     riskLevel: "medium",
   },
+  {
+    name: "jira.create_issue",
+    description:
+      "Create a new Jira issue/ticket in a project. Use this when the user asks to create a ticket, bug, task, or story.",
+    params: {
+      project: {
+        type: "string",
+        description: "Jira project key (e.g., SIEM, IR, MDR)",
+        required: true,
+      },
+      summary: {
+        type: "string",
+        description: "Issue title/summary",
+        required: true,
+      },
+      description: {
+        type: "string",
+        description: "Detailed description of the issue",
+        required: false,
+      },
+      issueType: {
+        type: "string",
+        description:
+          "Issue type (e.g., Task, Bug, Story, Epic). Defaults to Task.",
+        required: false,
+      },
+      assignee: {
+        type: "string",
+        description: "Username or email to assign the issue to",
+        required: false,
+      },
+      priority: {
+        type: "string",
+        description:
+          "Priority level (e.g., Highest, High, Medium, Low, Lowest)",
+        required: false,
+      },
+      labels: {
+        type: "string",
+        description: "Comma-separated list of labels to apply",
+        required: false,
+      },
+    },
+    actionType: "jira.issue.create",
+    riskLevel: "medium",
+  },
+  {
+    name: "jira.update_issue",
+    description:
+      "Update fields on an existing Jira issue (summary, description, assignee, priority, labels, etc.)",
+    params: {
+      key: {
+        type: "string",
+        description: "Jira issue key (e.g., SIEM-123)",
+        required: true,
+      },
+      summary: {
+        type: "string",
+        description: "New summary/title",
+        required: false,
+      },
+      description: {
+        type: "string",
+        description: "New description",
+        required: false,
+      },
+      assignee: {
+        type: "string",
+        description: "Username or email to reassign to",
+        required: false,
+      },
+      priority: {
+        type: "string",
+        description: "Priority level (Highest, High, Medium, Low, Lowest)",
+        required: false,
+      },
+      labels: {
+        type: "string",
+        description: "Comma-separated list of labels",
+        required: false,
+      },
+    },
+    actionType: "jira.issue.update",
+    riskLevel: "medium",
+  },
+  {
+    name: "jira.close_issue",
+    description:
+      "Close/resolve a Jira issue by transitioning it to Done or Closed status",
+    params: {
+      key: {
+        type: "string",
+        description: "Jira issue key (e.g., SIEM-123)",
+        required: true,
+      },
+      comment: {
+        type: "string",
+        description: "Optional comment explaining why it was closed",
+        required: false,
+      },
+    },
+    actionType: "jira.issue.transition",
+    riskLevel: "medium",
+  },
+  {
+    name: "jira.search_issues",
+    description:
+      "Search for Jira issues using JQL (Jira Query Language). Use for finding issues by status, assignee, project, text, etc.",
+    params: {
+      jql: {
+        type: "string",
+        description:
+          'JQL query (e.g., "project = SIEM AND status = Open ORDER BY created DESC")',
+        required: true,
+      },
+      limit: {
+        type: "number",
+        description: "Maximum number of results (default 20)",
+        required: false,
+      },
+    },
+    actionType: "jira.issue.read",
+    riskLevel: "low",
+  },
+  {
+    name: "jira.list_transitions",
+    description:
+      "List available status transitions for a Jira issue (shows what statuses you can move it to)",
+    params: {
+      key: {
+        type: "string",
+        description: "Jira issue key (e.g., SIEM-123)",
+        required: true,
+      },
+    },
+    actionType: "jira.issue.read",
+    riskLevel: "low",
+  },
+  {
+    name: "jira.get_comments",
+    description: "List comments on a Jira issue",
+    params: {
+      key: {
+        type: "string",
+        description: "Jira issue key (e.g., SIEM-123)",
+        required: true,
+      },
+    },
+    actionType: "jira.issue.read",
+    riskLevel: "low",
+  },
 
   // GitLab tools
   {

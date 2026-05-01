@@ -19,9 +19,12 @@ class JiraTicketGenerator {
   /**
    * Generate Jira tickets from implementation plan
    */
-  async generate(plan: ImplementationPlan, projectKey: string): Promise<ImplementationPlan> {
+  async generate(
+    plan: ImplementationPlan,
+    projectKey: string,
+  ): Promise<ImplementationPlan> {
     // TODO: Use OpenCode API to generate detailed tickets
-    console.log('[Jira Ticket Generator] Generating tickets for', projectKey);
+    console.log("[Jira Ticket Generator] Generating tickets for", projectKey);
 
     // Return the plan with enhanced tickets
     return plan;
@@ -30,7 +33,11 @@ class JiraTicketGenerator {
   /**
    * Create tickets in Jira
    */
-  async createTickets(plan: ImplementationPlan, projectKey: string, _userId: string) {
+  async createTickets(
+    plan: ImplementationPlan,
+    projectKey: string,
+    _userId: string,
+  ) {
     const tickets = [];
 
     for (const ticket of plan.tickets) {

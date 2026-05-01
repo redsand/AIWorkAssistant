@@ -11,7 +11,7 @@ class HealthBreaks {
    */
   async recommendBreaks(
     date: Date,
-    userId: string,
+    _userId: string,
   ): Promise<
     Array<{
       startTime: Date;

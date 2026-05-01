@@ -124,6 +124,219 @@ async function handleJiraCreateProject(
   return { success: true, data: result };
 }
 
+async function handleJiraCreateIssue(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  if (!jiraClient.isConfigured()) {
+    return { success: false, error: "Jira client not configured" };
+  }
+
+  const project = params.project as string;
+  const summary = params.summary as string;
+  if (!project || !summary) {
+    return {
+      success: false,
+      error: "project and summary are required to create an issue",
+    };
+  }
+
+  const issueType = (params.issueType as string) || "Task";
+
+  const labels = params.labels
+    ? (params.labels as string)
+        .split(",")
+        .map((l) => l.trim())
+        .filter(Boolean)
+    : undefined;
+
+  const result = await jiraClient.createIssue({
+    project,
+    summary,
+    description: params.description as string | undefined,
+    issueType,
+    assignee: params.assignee as string | undefined,
+  });
+
+  if (labels && labels.length > 0) {
+    try {
+      await jiraClient.updateIssue(result.key, { labels });
+    } catch {
+      // labels are best-effort
+    }
+  }
+
+  if (params.priority) {
+    try {
+      await jiraClient.updateIssue(result.key, {
+        priority: { name: params.priority as string },
+      });
+    } catch {
+      // priority is best-effort
+    }
+  }
+
+  return {
+    success: true,
+    data: {
+      key: result.key,
+      summary,
+      project,
+      issueType,
+      url: `${jiraClient.getBaseUrl()}/browse/${result.key}`,
+    },
+  };
+}
+
+async function handleJiraUpdateIssue(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  if (!jiraClient.isConfigured()) {
+    return { success: false, error: "Jira client not configured" };
+  }
+
+  const key = params.key as string;
+  if (!key) {
+    return { success: false, error: "key is required" };
+  }
+
+  const fields: Record<string, unknown> = {};
+  if (params.summary) fields.summary = params.summary;
+  if (params.description) {
+    fields.description = {
+      type: "doc",
+      version: 1,
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: params.description as string }],
+        },
+      ],
+    };
+  }
+  if (params.assignee) fields.assignee = { name: params.assignee as string };
+  if (params.priority) fields.priority = { name: params.priority as string };
+  if (params.labels) {
+    fields.labels = (params.labels as string)
+      .split(",")
+      .map((l) => l.trim())
+      .filter(Boolean);
+  }
+
+  if (Object.keys(fields).length === 0) {
+    return { success: false, error: "No fields provided to update" };
+  }
+
+  await jiraClient.updateIssue(key, fields);
+  return { success: true, data: { key, updatedFields: Object.keys(fields) } };
+}
+
+async function handleJiraCloseIssue(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  if (!jiraClient.isConfigured()) {
+    return { success: false, error: "Jira client not configured" };
+  }
+
+  const key = params.key as string;
+  if (!key) {
+    return { success: false, error: "key is required" };
+  }
+
+  const transitions = await jiraClient.getTransitions(key);
+
+  const closeNames = ["done", "closed", "resolved", "complete"];
+  const transition = transitions.find((t) =>
+    closeNames.some((n) => t.to.name.toLowerCase().includes(n)),
+  );
+
+  if (!transition) {
+    return {
+      success: false,
+      error: `No close/complete transition found for ${key}. Available: ${transitions.map((t) => t.to.name).join(", ")}`,
+    };
+  }
+
+  await jiraClient.transitionIssue(
+    key,
+    transition.id,
+    params.comment as string | undefined,
+  );
+  return {
+    success: true,
+    data: { key, transitionedTo: transition.to.name },
+  };
+}
+
+async function handleJiraSearchIssues(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  if (!jiraClient.isConfigured()) {
+    return { success: false, error: "Jira client not configured" };
+  }
+
+  const jql = params.jql as string;
+  if (!jql) {
+    return { success: false, error: "jql query is required" };
+  }
+
+  const limit = (params.limit as number) || 20;
+  const issues = await jiraClient.searchIssues(jql, limit);
+  return {
+    success: true,
+    data: issues.map((i) => ({
+      key: i.key,
+      summary: i.fields.summary,
+      status: i.fields.status.name,
+      assignee: i.fields.assignee?.displayName || "Unassigned",
+      priority: i.fields.priority?.name,
+      type: i.fields.issuetype.name,
+      project: i.fields.project.key,
+      created: i.fields.created,
+    })),
+  };
+}
+
+async function handleJiraListTransitions(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  if (!jiraClient.isConfigured()) {
+    return { success: false, error: "Jira client not configured" };
+  }
+
+  const key = params.key as string;
+  if (!key) {
+    return { success: false, error: "key is required" };
+  }
+
+  const transitions = await jiraClient.getTransitions(key);
+  return {
+    success: true,
+    data: transitions.map((t) => ({ id: t.id, name: t.name, to: t.to.name })),
+  };
+}
+
+async function handleJiraGetComments(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  if (!jiraClient.isConfigured()) {
+    return { success: false, error: "Jira client not configured" };
+  }
+
+  const key = params.key as string;
+  if (!key) {
+    return { success: false, error: "key is required" };
+  }
+
+  const comments = await jiraClient.getComments(key);
+  return { success: true, data: comments };
+}
+
 async function handleJiraGetProject(
   params: Record<string, unknown>,
   userId: string,
@@ -183,6 +396,12 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "jira.add_comment": handleJiraAddComment,
   "jira.transition_issue": handleJiraTransitionIssue,
   "jira.create_project": handleJiraCreateProject,
+  "jira.create_issue": handleJiraCreateIssue,
+  "jira.update_issue": handleJiraUpdateIssue,
+  "jira.close_issue": handleJiraCloseIssue,
+  "jira.search_issues": handleJiraSearchIssues,
+  "jira.list_transitions": handleJiraListTransitions,
+  "jira.get_comments": handleJiraGetComments,
   "jira.get_project": handleJiraGetProject,
   "jira.list_projects": handleJiraListProjects,
   "gitlab.list_merge_requests": handleGitlabListMergeRequests,

@@ -317,11 +317,9 @@ class SignalWebhookHandler {
  */
 class SignalHTTPBridge {
   private apiBase: string;
-  private _phoneNumber: string;
 
-  constructor(apiBase: string, configuredPhoneNumber: string) {
+  constructor(apiBase: string, _configuredPhoneNumber: string) {
     this.apiBase = apiBase;
-    this._phoneNumber = configuredPhoneNumber;
   }
 
   /**

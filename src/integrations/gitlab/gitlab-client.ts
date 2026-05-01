@@ -3,9 +3,9 @@
  * Production implementation for GitLab operations
  */
 
-import axios, { AxiosInstance } from 'axios';
-import * as https from 'https';
-import { env } from '../../config/env';
+import axios, { AxiosInstance } from "axios";
+import * as https from "https";
+import { env } from "../../config/env";
 
 export interface GitlabCommit {
   id: string;
@@ -113,7 +113,7 @@ class GitlabClient {
   private token: string;
 
   constructor() {
-    this.baseUrl = env.GITLAB_BASE_URL.replace(/\/$/, ''); // Remove trailing slash
+    this.baseUrl = env.GITLAB_BASE_URL.replace(/\/$/, ""); // Remove trailing slash
     this.token = env.GITLAB_TOKEN;
 
     // Create HTTPS agent that accepts self-signed certificates
@@ -126,8 +126,8 @@ class GitlabClient {
     this.client = axios.create({
       baseURL: this.baseUrl,
       headers: {
-        'Content-Type': 'application/json',
-        'PRIVATE-TOKEN': this.token,
+        "Content-Type": "application/json",
+        "PRIVATE-TOKEN": this.token,
       },
       timeout: 30000, // 30 seconds
       httpsAgent: httpsAgent,
@@ -151,10 +151,10 @@ class GitlabClient {
 
     try {
       // Try to get current user info
-      await this.client.get('/api/v4/user');
+      await this.client.get("/api/v4/user");
       return true;
     } catch (error) {
-      console.error('[GitLab] Config validation failed:', error);
+      console.error("[GitLab] Config validation failed:", error);
       return false;
     }
   }
@@ -164,14 +164,16 @@ class GitlabClient {
    */
   async getCurrentUser(): Promise<any> {
     if (!this.isConfigured()) {
-      throw new Error('GitLab client not configured');
+      throw new Error("GitLab client not configured");
     }
 
     try {
-      const response = await this.client.get('/api/v4/user');
+      const response = await this.client.get("/api/v4/user");
       return response.data;
     } catch (error) {
-      throw new Error(`Failed to get current user: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to get current user: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 
@@ -180,17 +182,17 @@ class GitlabClient {
    */
   async getProjects(): Promise<GitlabProject[]> {
     if (!this.isConfigured()) {
-      throw new Error('GitLab client not configured');
+      throw new Error("GitLab client not configured");
     }
 
     try {
-      console.log('[GitLab] Fetching projects');
-      const response = await this.client.get('/api/v4/projects', {
+      console.log("[GitLab] Fetching projects");
+      const response = await this.client.get("/api/v4/projects", {
         params: {
           membership: true,
           per_page: 100,
-          order_by: 'last_activity_at',
-          sort: 'desc',
+          order_by: "last_activity_at",
+          sort: "desc",
         },
       });
 
@@ -201,31 +203,39 @@ class GitlabClient {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
         if (status === 401) {
-          throw new Error('GitLab authentication failed. Check your token.');
+          throw new Error("GitLab authentication failed. Check your token.");
         }
       }
-      throw new Error(`Failed to get projects: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to get projects: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 
   /**
    * Get merge requests for a project
    */
-  async getMergeRequests(projectId: number | string, state?: 'opened' | 'closed' | 'merged' | 'all'): Promise<GitlabMergeRequest[]> {
+  async getMergeRequests(
+    projectId: number | string,
+    state?: "opened" | "closed" | "merged" | "all",
+  ): Promise<GitlabMergeRequest[]> {
     if (!this.isConfigured()) {
-      throw new Error('GitLab client not configured');
+      throw new Error("GitLab client not configured");
     }
 
     try {
       console.log(`[GitLab] Fetching MRs for project ${projectId}`);
-      const response = await this.client.get(`/api/v4/projects/${projectId}/merge_requests`, {
-        params: {
-          state: state || 'opened',
-          per_page: 100,
-          order_by: 'created_at',
-          sort: 'desc',
+      const response = await this.client.get(
+        `/api/v4/projects/${projectId}/merge_requests`,
+        {
+          params: {
+            state: state || "opened",
+            per_page: 100,
+            order_by: "created_at",
+            sort: "desc",
+          },
         },
-      });
+      );
 
       const mrs = response.data || [];
       console.log(`[GitLab] Found ${mrs.length} MRs`);
@@ -234,26 +244,33 @@ class GitlabClient {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
         if (status === 401) {
-          throw new Error('GitLab authentication failed.');
+          throw new Error("GitLab authentication failed.");
         } else if (status === 404) {
           throw new Error(`Project ${projectId} not found or not accessible.`);
         }
       }
-      throw new Error(`Failed to get MRs: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to get MRs: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 
   /**
    * Get commit details
    */
-  async getCommit(projectId: number | string, sha: string): Promise<GitlabCommit> {
+  async getCommit(
+    projectId: number | string,
+    sha: string,
+  ): Promise<GitlabCommit> {
     if (!this.isConfigured()) {
-      throw new Error('GitLab client not configured');
+      throw new Error("GitLab client not configured");
     }
 
     try {
       console.log(`[GitLab] Fetching commit ${sha} from project ${projectId}`);
-      const response = await this.client.get(`/api/v4/projects/${projectId}/repository/commits/${sha}`);
+      const response = await this.client.get(
+        `/api/v4/projects/${projectId}/repository/commits/${sha}`,
+      );
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -262,49 +279,69 @@ class GitlabClient {
           throw new Error(`Commit ${sha} not found in project ${projectId}`);
         }
       }
-      throw new Error(`Failed to get commit: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to get commit: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 
   /**
    * Get commits for a ref (branch/tag)
    */
-  async getCommits(projectId: number | string, ref: string, since?: string): Promise<GitlabCommit[]> {
+  async getCommits(
+    projectId: number | string,
+    ref: string,
+    since?: string,
+  ): Promise<GitlabCommit[]> {
     if (!this.isConfigured()) {
-      throw new Error('GitLab client not configured');
+      throw new Error("GitLab client not configured");
     }
 
     try {
-      console.log(`[GitLab] Fetching commits for ref ${ref} in project ${projectId}`);
-      const response = await this.client.get(`/api/v4/projects/${projectId}/repository/commits`, {
-        params: {
-          ref_name: ref,
-          since: since,
-          per_page: 100,
+      console.log(
+        `[GitLab] Fetching commits for ref ${ref} in project ${projectId}`,
+      );
+      const response = await this.client.get(
+        `/api/v4/projects/${projectId}/repository/commits`,
+        {
+          params: {
+            ref_name: ref,
+            since: since,
+            per_page: 100,
+          },
         },
-      });
+      );
 
       const commits = response.data || [];
       console.log(`[GitLab] Found ${commits.length} commits`);
       return commits;
     } catch (error) {
-      throw new Error(`Failed to get commits: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to get commits: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 
   /**
    * Add comment to merge request
    */
-  async addMergeRequestComment(projectId: number | string, mrIid: number, body: string): Promise<any> {
+  async addMergeRequestComment(
+    projectId: number | string,
+    mrIid: number,
+    body: string,
+  ): Promise<any> {
     if (!this.isConfigured()) {
-      throw new Error('GitLab client not configured');
+      throw new Error("GitLab client not configured");
     }
 
     try {
       console.log(`[GitLab] Adding comment to MR !${mrIid}`);
-      const response = await this.client.post(`/api/v4/projects/${projectId}/merge_requests/${mrIid}/notes`, {
-        body,
-      });
+      const response = await this.client.post(
+        `/api/v4/projects/${projectId}/merge_requests/${mrIid}/notes`,
+        {
+          body,
+        },
+      );
       console.log(`[GitLab] Comment added to MR !${mrIid}`);
       return response.data;
     } catch (error) {
@@ -314,7 +351,9 @@ class GitlabClient {
           throw new Error(`MR !${mrIid} not found in project ${projectId}`);
         }
       }
-      throw new Error(`Failed to add comment: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to add comment: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 
@@ -323,22 +362,27 @@ class GitlabClient {
    */
   async getBranches(projectId: number | string): Promise<any[]> {
     if (!this.isConfigured()) {
-      throw new Error('GitLab client not configured');
+      throw new Error("GitLab client not configured");
     }
 
     try {
       console.log(`[GitLab] Fetching branches for project ${projectId}`);
-      const response = await this.client.get(`/api/v4/projects/${projectId}/repository/branches`, {
-        params: {
-          per_page: 100,
+      const response = await this.client.get(
+        `/api/v4/projects/${projectId}/repository/branches`,
+        {
+          params: {
+            per_page: 100,
+          },
         },
-      });
+      );
 
       const branches = response.data || [];
       console.log(`[GitLab] Found ${branches.length} branches`);
       return branches;
     } catch (error) {
-      throw new Error(`Failed to get branches: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to get branches: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 }
