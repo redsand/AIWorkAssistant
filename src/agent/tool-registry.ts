@@ -1791,7 +1791,8 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       },
       status: {
         type: "string",
-        description: "Filter by status: 'draft', 'active', 'completed', 'archived'",
+        description:
+          "Filter by status: 'draft', 'active', 'completed', 'archived'",
         required: false,
       },
     },
@@ -1839,7 +1840,8 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       },
       status: {
         type: "string",
-        description: "'draft', 'active', 'completed', or 'archived'. Default: draft",
+        description:
+          "'draft', 'active', 'completed', or 'archived'. Default: draft",
         required: false,
       },
       description: {
@@ -1868,9 +1870,17 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       },
       name: { type: "string", description: "New name", required: false },
       status: { type: "string", description: "New status", required: false },
-      startDate: { type: "string", description: "New start date", required: false },
+      startDate: {
+        type: "string",
+        description: "New start date",
+        required: false,
+      },
       endDate: { type: "string", description: "New end date", required: false },
-      description: { type: "string", description: "New description", required: false },
+      description: {
+        type: "string",
+        description: "New description",
+        required: false,
+      },
     },
     actionType: "roadmap.write",
     riskLevel: "medium",
@@ -1886,9 +1896,21 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
         required: true,
       },
       name: { type: "string", description: "Milestone name", required: true },
-      targetDate: { type: "string", description: "Target date (YYYY-MM-DD)", required: true },
-      description: { type: "string", description: "Milestone description", required: false },
-      jiraEpicKey: { type: "string", description: "Link to a Jira epic key", required: false },
+      targetDate: {
+        type: "string",
+        description: "Target date (YYYY-MM-DD)",
+        required: true,
+      },
+      description: {
+        type: "string",
+        description: "Milestone description",
+        required: false,
+      },
+      jiraEpicKey: {
+        type: "string",
+        description: "Link to a Jira epic key",
+        required: false,
+      },
     },
     actionType: "roadmap.write",
     riskLevel: "medium",
@@ -1904,13 +1926,145 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
         required: true,
       },
       title: { type: "string", description: "Item title", required: true },
-      type: { type: "string", description: "'feature', 'task', 'bug', 'technical_debt', or 'research'", required: false },
-      priority: { type: "string", description: "'low', 'medium', 'high', or 'critical'", required: false },
-      description: { type: "string", description: "Item description", required: false },
-      jiraKey: { type: "string", description: "Link to a Jira issue key", required: false },
+      type: {
+        type: "string",
+        description:
+          "'feature', 'task', 'bug', 'technical_debt', or 'research'",
+        required: false,
+      },
+      priority: {
+        type: "string",
+        description: "'low', 'medium', 'high', or 'critical'",
+        required: false,
+      },
+      description: {
+        type: "string",
+        description: "Item description",
+        required: false,
+      },
+      jiraKey: {
+        type: "string",
+        description: "Link to a Jira issue key",
+        required: false,
+      },
     },
     actionType: "roadmap.write",
     riskLevel: "medium",
+  },
+  {
+    name: "roadmap.update_milestone",
+    description:
+      "Update a milestone's name, target date, status, or description",
+    params: {
+      id: {
+        type: "string",
+        description: "Milestone ID",
+        required: true,
+      },
+      name: {
+        type: "string",
+        description: "New milestone name",
+        required: false,
+      },
+      targetDate: {
+        type: "string",
+        description: "New target date (YYYY-MM-DD)",
+        required: false,
+      },
+      status: {
+        type: "string",
+        description: "New status: pending, in_progress, completed, or at_risk",
+        required: false,
+      },
+      description: {
+        type: "string",
+        description: "New description",
+        required: false,
+      },
+    },
+    actionType: "roadmap.write",
+    riskLevel: "medium",
+  },
+  {
+    name: "roadmap.update_item",
+    description:
+      "Update a roadmap item's title, status, priority, type, or other fields",
+    params: {
+      id: {
+        type: "string",
+        description: "Item ID",
+        required: true,
+      },
+      title: { type: "string", description: "New title", required: false },
+      status: {
+        type: "string",
+        description: "New status: todo, in_progress, done, or blocked",
+        required: false,
+      },
+      priority: {
+        type: "string",
+        description: "New priority: low, medium, high, or critical",
+        required: false,
+      },
+      type: {
+        type: "string",
+        description:
+          "New type: feature, task, bug, technical_debt, or research",
+        required: false,
+      },
+      description: {
+        type: "string",
+        description: "New description",
+        required: false,
+      },
+      jiraKey: {
+        type: "string",
+        description: "New linked Jira issue key",
+        required: false,
+      },
+    },
+    actionType: "roadmap.write",
+    riskLevel: "medium",
+  },
+  {
+    name: "roadmap.delete",
+    description:
+      "Delete a roadmap and all its milestones and items. This is irreversible.",
+    params: {
+      id: {
+        type: "string",
+        description: "Roadmap ID to delete",
+        required: true,
+      },
+    },
+    actionType: "roadmap.write",
+    riskLevel: "high",
+  },
+  {
+    name: "roadmap.delete_milestone",
+    description: "Delete a milestone and all its items. This is irreversible.",
+    params: {
+      id: {
+        type: "string",
+        description: "Milestone ID to delete",
+        required: true,
+      },
+    },
+    actionType: "roadmap.write",
+    riskLevel: "high",
+  },
+  {
+    name: "roadmap.delete_item",
+    description: "Delete a single item from a milestone. This is irreversible.",
+    params: {
+      id: {
+        type: "string",
+        description: "Item ID to delete",
+        required: true,
+      },
+    },
+    actionType: "roadmap.write",
+    riskLevel: "high",
   },
 ];
 
@@ -2015,7 +2169,9 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "github.list_tree")!,
 
   // Planning
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "productivity.generate_daily_plan")!,
+  PRODUCTIVITY_TOOLS.find(
+    (t) => t.name === "productivity.generate_daily_plan",
+  )!,
 
   // Roadmap core
   PRODUCTIVITY_TOOLS.find((t) => t.name === "roadmap.list")!,
@@ -2097,7 +2253,9 @@ export function getToolCategories(mode: string): Record<string, string[]> {
  */
 export function getToolsByCategory(mode: string, category: string): Tool[] {
   return getAllToolsForMode(mode).filter(
-    (t) => t.name.startsWith(category + ".") || (category === "other" && !t.name.includes(".")),
+    (t) =>
+      t.name.startsWith(category + ".") ||
+      (category === "other" && !t.name.includes(".")),
   );
 }
 

@@ -1,5 +1,5 @@
 import { FastifyInstance } from "fastify";
-import { opencodeClient } from "../agent/opencode-client";
+import { aiClient } from "../agent/opencode-client";
 import {
   workflowBriefGenerator,
   WorkflowBrief,
@@ -19,9 +19,9 @@ export async function engineeringRoutes(fastify: FastifyInstance) {
       return { success: false, error: "idea is required" };
     }
 
-    if (opencodeClient.isConfigured()) {
+    if (aiClient.isConfigured()) {
       try {
-        const response = await opencodeClient.chat({
+        const response = await aiClient.chat({
           messages: [
             {
               role: "system",
@@ -59,9 +59,9 @@ export async function engineeringRoutes(fastify: FastifyInstance) {
         return { success: false, error: "brief is required" };
       }
 
-      if (opencodeClient.isConfigured()) {
+      if (aiClient.isConfigured()) {
         try {
-          const response = await opencodeClient.chat({
+          const response = await aiClient.chat({
             messages: [
               {
                 role: "system",
@@ -100,9 +100,9 @@ export async function engineeringRoutes(fastify: FastifyInstance) {
       return { success: false, error: "architecture is required" };
     }
 
-    if (opencodeClient.isConfigured()) {
+    if (aiClient.isConfigured()) {
       try {
-        const response = await opencodeClient.chat({
+        const response = await aiClient.chat({
           messages: [
             {
               role: "system",

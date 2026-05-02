@@ -38,14 +38,16 @@ sessionDb.exec(`
   )
 `);
 const stmtInsert = sessionDb.prepare(
-  "INSERT INTO auth_sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)"
+  "INSERT INTO auth_sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
 );
 const stmtGet = sessionDb.prepare(
-  "SELECT token, user_id, created_at, expires_at FROM auth_sessions WHERE token = ? AND expires_at > ?"
+  "SELECT token, user_id, created_at, expires_at FROM auth_sessions WHERE token = ? AND expires_at > ?",
 );
-const stmtDelete = sessionDb.prepare("DELETE FROM auth_sessions WHERE token = ?");
+const stmtDelete = sessionDb.prepare(
+  "DELETE FROM auth_sessions WHERE token = ?",
+);
 const stmtCleanExpired = sessionDb.prepare(
-  "DELETE FROM auth_sessions WHERE expires_at <= ?"
+  "DELETE FROM auth_sessions WHERE expires_at <= ?",
 );
 
 // Clean expired sessions on startup
@@ -71,12 +73,14 @@ export function createSessionToken(userId: string): string {
 }
 
 export function validateSessionToken(token: string): Session | null {
-  const row = stmtGet.get(token, Date.now()) as {
-    token: string;
-    user_id: string;
-    created_at: number;
-    expires_at: number;
-  } | undefined;
+  const row = stmtGet.get(token, Date.now()) as
+    | {
+        token: string;
+        user_id: string;
+        created_at: number;
+        expires_at: number;
+      }
+    | undefined;
   if (!row) return null;
   return {
     token: row.token,
@@ -95,8 +99,11 @@ export function getAuthPassword(): string {
   return env.AUTH_PASSWORD || process.env.AUTH_PASSWORD || "";
 }
 
-export function getOpenCodeApiKey(): string {
-  return env.OPENCODE_API_KEY || process.env.OPENCODE_API_KEY || "";
+export function getApiKeyForAuth(): string {
+  const provider = env.AI_PROVIDER;
+  if (provider === "zai") return env.ZAI_API_KEY || "";
+  if (provider === "ollama") return env.OLLAMA_API_KEY || "";
+  return env.OPENCODE_API_KEY || "";
 }
 
 export function isAuthConfigured(): boolean {
@@ -123,7 +130,7 @@ export async function authMiddleware(fastify: FastifyInstance) {
       }
 
       const authPassword = getAuthPassword();
-      const apiKey = getOpenCodeApiKey();
+      const apiKey = getApiKeyForAuth();
 
       if (!authPassword && !apiKey) {
         return;

@@ -21,7 +21,7 @@ import { engineeringRoutes } from "./routes/engineering";
 import {
   authMiddleware,
   isAuthConfigured,
-  getOpenCodeApiKey,
+  getApiKeyForAuth,
 } from "./middleware/auth";
 import { startTunnel } from "./integrations/file/tunnel";
 import { startCalendarScheduler } from "./scheduler/calendar-midnight";
@@ -43,7 +43,7 @@ export async function buildServer() {
   });
 
   // Auth middleware (credentials or API key for protected routes)
-  if (isAuthConfigured() || getOpenCodeApiKey()) {
+  if (isAuthConfigured() || getApiKeyForAuth()) {
     await authMiddleware(server);
   }
 
@@ -161,14 +161,24 @@ async function start() {
 
     // Log configuration status
     console.log("📋 Configuration Status:");
+    const providerLabel = env.AI_PROVIDER.toUpperCase();
+    const providerKeys: Record<string, string> = {
+      opencode: env.OPENCODE_API_KEY,
+      zai: env.ZAI_API_KEY,
+      ollama: env.OLLAMA_API_KEY,
+    };
+    const providerKey = providerKeys[env.AI_PROVIDER] || "";
     console.log(
-      `   OpenCode API: ${env.OPENCODE_API_KEY ? "✅ Configured" : "⚠️  Not configured"}`,
+      `   AI Provider (${providerLabel}): ${providerKey ? "✅ Configured" : "⚠️  Not configured"}`,
     );
     console.log(
       `   Jira: ${env.JIRA_API_TOKEN ? "✅ Configured" : "⚠️  Not configured"}`,
     );
     console.log(
       `   GitLab: ${env.GITLAB_TOKEN ? "✅ Configured" : "⚠️  Not configured"}`,
+    );
+    console.log(
+      `   GitHub: ${env.GITHUB_TOKEN ? "✅ Configured" : "⚠️  Not configured"}`,
     );
     console.log(
       `   Microsoft 365: ${env.MICROSOFT_CLIENT_ID ? "✅ Configured" : "⚠️  Not configured"}`,

@@ -1,6 +1,6 @@
 /**
  * Workflow brief generator for engineering projects
- * TODO: Implement actual workflow brief generation with OpenCode API
+ * TODO: Implement actual workflow brief generation with AI provider
  */
 
 export interface WorkflowBrief {
@@ -26,7 +26,7 @@ class WorkflowBriefGenerator {
    * Generate workflow brief from project idea
    */
   async generate(idea: string): Promise<WorkflowBrief> {
-    // TODO: Use OpenCode API to generate comprehensive workflow brief
+    // TODO: Use AI provider to generate comprehensive workflow brief
     console.log("[Workflow Brief] Generating for:", idea);
 
     // Stub response

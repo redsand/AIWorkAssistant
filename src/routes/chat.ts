@@ -4,12 +4,16 @@
 
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { getSystemPrompt, opencodeClient } from "../agent";
+import { getSystemPrompt, aiClient } from "../agent";
 import { getTools, getToolsByCategory } from "../agent/tool-registry";
 import { dispatchToolCall } from "../agent/tool-dispatcher";
 import { AGENT_MODES } from "../config/constants";
 import type { Tool, ChatMessage } from "../agent/opencode-client";
+import { githubClient } from "../integrations/github/github-client";
+import { gitlabClient } from "../integrations/gitlab/gitlab-client";
+import { jiraClient } from "../integrations/jira/jira-client";
 import { conversationManager } from "../memory/conversation-manager";
+import { env } from "../config/env";
 
 const chatRequestSchema = z.object({
   message: z.string(),
@@ -39,11 +43,18 @@ export async function chatRoutes(fastify: FastifyInstance) {
     try {
       const body = chatRequestSchema.parse(request.body);
 
-      if (!opencodeClient.isConfigured()) {
+      if (!aiClient.isConfigured()) {
         reply.code(503);
+        const provider = env.AI_PROVIDER;
+        const keyHint =
+          provider === "zai"
+            ? "ZAI_API_KEY"
+            : provider === "ollama"
+              ? "OLLAMA_API_URL"
+              : "OPENCODE_API_KEY";
         return {
-          error: "OpenCode API not configured",
-          message: "Please set OPENCODE_API_KEY environment variable",
+          error: `AI provider (${provider}) not configured`,
+          message: `Please set the ${keyHint} environment variable`,
         };
       }
 
@@ -60,7 +71,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           content: body.message,
         });
 
-        messages = conversationManager.getSessionMessages(
+        messages = await conversationManager.getSessionMessages(
           sessionId!,
           body.includeMemory,
         );
@@ -81,7 +92,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           content: body.message,
         });
 
-        messages = conversationManager.getSessionMessages(
+        messages = await conversationManager.getSessionMessages(
           sessionId,
           body.includeMemory,
         );
@@ -113,7 +124,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         });
       }
 
-      let response = await opencodeClient.chat({
+      let response = await aiClient.chat({
         messages: messages,
         tools,
         temperature: 0.7,
@@ -125,13 +136,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
       let expandedTools = [...(tools || [])];
 
       let loopCount = 0;
-      const maxLoops = 10;
 
-      while (
-        response.toolCalls &&
-        response.toolCalls.length > 0 &&
-        loopCount < maxLoops
-      ) {
+      while (response.toolCalls && response.toolCalls.length > 0) {
         loopCount++;
 
         if (sessionId) {
@@ -189,7 +195,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
                 };
               });
 
-              const existingNames = new Set(expandedTools.map((t) => t.function.name));
+              const existingNames = new Set(
+                expandedTools.map((t) => t.function.name),
+              );
               for (const td of categoryToolDefs) {
                 if (!existingNames.has(td.function.name)) {
                   expandedTools.push(td);
@@ -222,7 +230,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           })),
         ];
 
-        response = await opencodeClient.chat({
+        response = await aiClient.chat({
           messages: followupMessages,
           tools: expandedTools.length > 0 ? expandedTools : undefined,
           temperature: 0.7,
@@ -264,11 +272,18 @@ export async function chatRoutes(fastify: FastifyInstance) {
   fastify.post("/chat/stream", async (request, reply) => {
     const body = chatRequestSchema.parse(request.body);
 
-    if (!opencodeClient.isConfigured()) {
+    if (!aiClient.isConfigured()) {
       reply.code(503);
+      const provider = env.AI_PROVIDER;
+      const keyHint =
+        provider === "zai"
+          ? "ZAI_API_KEY"
+          : provider === "ollama"
+            ? "OLLAMA_API_URL"
+            : "OPENCODE_API_KEY";
       return {
-        error: "AI provider not configured",
-        message: "Please set the appropriate API key environment variable",
+        error: `AI provider (${provider}) not configured`,
+        message: `Please set the ${keyHint} environment variable`,
       };
     }
 
@@ -292,7 +307,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       let messages: ChatMessage[];
 
       if (existingSession) {
-        messages = conversationManager.getSessionMessages(sessionId!);
+        messages = await conversationManager.getSessionMessages(sessionId!);
         messages.push({ role: "user", content: body.message });
       } else {
         sessionId = conversationManager.startSession(body.userId, body.mode);
@@ -335,7 +350,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         });
       }
 
-      let response = await opencodeClient.chat({
+      let response = await aiClient.chat({
         messages: messages,
         tools,
         temperature: 0.7,
@@ -345,13 +360,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
       let allToolResults: Record<string, unknown> = {};
       let expandedTools = [...(tools || [])];
       let loopCount = 0;
-      const maxLoops = 10;
 
-      while (
-        response.toolCalls &&
-        response.toolCalls.length > 0 &&
-        loopCount < maxLoops
-      ) {
+      while (response.toolCalls && response.toolCalls.length > 0) {
         loopCount++;
 
         // Send intermediate content (commentary like "Let me look up IR-55...")
@@ -423,7 +433,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
                 };
               });
 
-              const existingNames = new Set(expandedTools.map((t) => t.function.name));
+              const existingNames = new Set(
+                expandedTools.map((t) => t.function.name),
+              );
               for (const td of categoryToolDefs) {
                 if (!existingNames.has(td.function.name)) {
                   expandedTools.push(td);
@@ -456,7 +468,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           })),
         ];
 
-        response = await opencodeClient.chat({
+        response = await aiClient.chat({
           messages: followupMessages,
           tools: expandedTools.length > 0 ? expandedTools : undefined,
           temperature: 0.7,
@@ -488,21 +500,36 @@ export async function chatRoutes(fastify: FastifyInstance) {
     return reply;
   });
 
-  /**
-   * Health check for OpenCode API
-   */
   fastify.get("/chat/health", async (_request, _reply) => {
-    const isConfigured = opencodeClient.isConfigured();
-    const isValid = isConfigured
-      ? await opencodeClient.validateConfig()
-      : false;
+    const provider = env.AI_PROVIDER;
+    const isConfigured = aiClient.isConfigured();
+    const isValid = isConfigured ? await aiClient.validateConfig() : false;
+
+    const providerKeyMap: Record<string, { key: string; url: string }> = {
+      opencode: { key: env.OPENCODE_API_KEY, url: env.OPENCODE_API_URL },
+      zai: { key: env.ZAI_API_KEY, url: env.ZAI_API_URL },
+      ollama: { key: env.OLLAMA_API_KEY || "local", url: env.OLLAMA_API_URL },
+    };
+
+    const info = providerKeyMap[provider] || providerKeyMap.opencode;
 
     return {
-      opencode: {
+      provider: {
+        active: provider,
         configured: isConfigured,
         valid: isValid,
-        baseUrl:
-          process.env.OPENCODE_API_URL || "https://opencode.ai/zen/go/v1",
+        baseUrl: info.url,
+      },
+      integrations: {
+        github: {
+          configured: githubClient.isConfigured(),
+        },
+        gitlab: {
+          configured: gitlabClient.isConfigured(),
+        },
+        jira: {
+          configured: jiraClient.isConfigured(),
+        },
       },
     };
   });

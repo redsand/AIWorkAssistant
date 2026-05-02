@@ -1,6 +1,6 @@
 /**
  * Scaffolding plan generator
- * TODO: Implement actual scaffolding generation with OpenCode API
+ * TODO: Implement actual scaffolding generation with AI provider
  */
 
 import { ArchitectureProposal } from "./architecture-planner";
@@ -27,7 +27,7 @@ class ScaffoldPlanner {
   async generate(
     _architecture: ArchitectureProposal,
   ): Promise<ScaffoldingPlan> {
-    // TODO: Use OpenCode API to generate scaffolding plan
+    // TODO: Use AI provider to generate scaffolding plan
     console.log("[Scaffold Planner] Generating from architecture");
 
     // Stub response

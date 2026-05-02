@@ -7,10 +7,7 @@ import { dailyPlanner } from "../productivity/daily-planner";
 import { roadmapDatabase } from "../roadmap/database";
 import { auditLogger } from "../audit/logger";
 import { env } from "../config/env";
-import {
-  getToolCategories,
-  getToolsByCategory,
-} from "./tool-registry";
+import { getToolCategories, getToolsByCategory } from "./tool-registry";
 
 export interface ToolCallResult {
   success: boolean;
@@ -208,12 +205,18 @@ async function handleJiraCreateIssues(
     try {
       issues = JSON.parse(issues);
     } catch {
-      return { success: false, error: "issues parameter must be a valid JSON array" };
+      return {
+        success: false,
+        error: "issues parameter must be a valid JSON array",
+      };
     }
   }
 
   if (!Array.isArray(issues) || issues.length === 0) {
-    return { success: false, error: "issues must be a non-empty array of issue objects" };
+    return {
+      success: false,
+      error: "issues must be a non-empty array of issue objects",
+    };
   }
 
   // Validate and normalize each issue
@@ -1865,7 +1868,10 @@ async function handleRoadmapList(
     const roadmaps = roadmapDatabase.listRoadmaps(filters);
     return { success: true, data: roadmaps };
   } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
   }
 }
 
@@ -1881,7 +1887,10 @@ async function handleRoadmapGet(
     const items = milestones.flatMap((m) => roadmapDatabase.getItems(m.id));
     return { success: true, data: { ...roadmap, milestones, items } };
   } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
   }
 }
 
@@ -1894,7 +1903,9 @@ async function handleRoadmapCreate(
 
     // Prevent duplicates: return existing roadmap with same name+type
     const existing = roadmapDatabase.listRoadmaps({ type });
-    const duplicate = existing.find((r: any) => r.name.toLowerCase() === name.toLowerCase());
+    const duplicate = existing.find(
+      (r: any) => r.name.toLowerCase() === name.toLowerCase(),
+    );
     if (duplicate) {
       return { success: true, data: duplicate };
     }
@@ -1912,7 +1923,10 @@ async function handleRoadmapCreate(
     });
     return { success: true, data: roadmap };
   } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
   }
 }
 
@@ -1923,14 +1937,23 @@ async function handleRoadmapUpdate(
     const id = params.id as string;
     if (!id) return { success: false, error: "id is required" };
     const updates: Record<string, unknown> = {};
-    for (const key of ["name", "status", "startDate", "endDate", "description"]) {
+    for (const key of [
+      "name",
+      "status",
+      "startDate",
+      "endDate",
+      "description",
+    ]) {
       if (params[key] !== undefined) updates[key] = params[key];
     }
     const roadmap = roadmapDatabase.updateRoadmap(id, updates as any);
     if (!roadmap) return { success: false, error: `Roadmap ${id} not found` };
     return { success: true, data: roadmap };
   } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
   }
 }
 
@@ -1941,7 +1964,8 @@ async function handleRoadmapAddMilestone(
     const roadmapId = params.roadmapId as string;
     if (!roadmapId) return { success: false, error: "roadmapId is required" };
     const roadmap = roadmapDatabase.getRoadmap(roadmapId);
-    if (!roadmap) return { success: false, error: `Roadmap ${roadmapId} not found` };
+    if (!roadmap)
+      return { success: false, error: `Roadmap ${roadmapId} not found` };
     const milestones = roadmapDatabase.getMilestones(roadmapId);
     const milestone = roadmapDatabase.createMilestone({
       roadmapId,
@@ -1954,7 +1978,10 @@ async function handleRoadmapAddMilestone(
     });
     return { success: true, data: milestone };
   } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
   }
 }
 
@@ -1963,7 +1990,8 @@ async function handleRoadmapAddItem(
 ): Promise<ToolCallResult> {
   try {
     const milestoneId = params.milestoneId as string;
-    if (!milestoneId) return { success: false, error: "milestoneId is required" };
+    if (!milestoneId)
+      return { success: false, error: "milestoneId is required" };
     const items = roadmapDatabase.getItems(milestoneId);
     const item = roadmapDatabase.createItem({
       milestoneId,
@@ -1980,7 +2008,111 @@ async function handleRoadmapAddItem(
     });
     return { success: true, data: item };
   } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleRoadmapUpdateMilestone(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const id = params.id as string;
+    if (!id) return { success: false, error: "id is required" };
+    const updates: Record<string, unknown> = {};
+    for (const key of ["name", "targetDate", "status", "description"]) {
+      if (params[key] !== undefined) updates[key] = params[key];
+    }
+    const milestone = roadmapDatabase.updateMilestone(id, updates as any);
+    if (!milestone)
+      return { success: false, error: `Milestone ${id} not found` };
+    return { success: true, data: milestone };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleRoadmapUpdateItem(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const id = params.id as string;
+    if (!id) return { success: false, error: "id is required" };
+    const updates: Record<string, unknown> = {};
+    for (const key of [
+      "title",
+      "status",
+      "priority",
+      "type",
+      "description",
+      "jiraKey",
+    ]) {
+      if (params[key] !== undefined) updates[key] = params[key];
+    }
+    const item = roadmapDatabase.updateItem(id, updates as any);
+    if (!item) return { success: false, error: `Item ${id} not found` };
+    return { success: true, data: item };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleRoadmapDelete(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const id = params.id as string;
+    if (!id) return { success: false, error: "id is required" };
+    const deleted = roadmapDatabase.deleteRoadmap(id);
+    if (!deleted) return { success: false, error: `Roadmap ${id} not found` };
+    return { success: true, data: { id, deleted: true } };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleRoadmapDeleteMilestone(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const id = params.id as string;
+    if (!id) return { success: false, error: "id is required" };
+    const deleted = roadmapDatabase.deleteMilestone(id);
+    if (!deleted) return { success: false, error: `Milestone ${id} not found` };
+    return { success: true, data: { id, deleted: true } };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleRoadmapDeleteItem(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const id = params.id as string;
+    if (!id) return { success: false, error: "id is required" };
+    const deleted = roadmapDatabase.deleteItem(id);
+    if (!deleted) return { success: false, error: `Item ${id} not found` };
+    return { success: true, data: { id, deleted: true } };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
   }
 }
 
@@ -2075,6 +2207,11 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "roadmap.update": handleRoadmapUpdate,
   "roadmap.add_milestone": handleRoadmapAddMilestone,
   "roadmap.add_item": handleRoadmapAddItem,
+  "roadmap.update_milestone": handleRoadmapUpdateMilestone,
+  "roadmap.update_item": handleRoadmapUpdateItem,
+  "roadmap.delete": handleRoadmapDelete,
+  "roadmap.delete_milestone": handleRoadmapDeleteMilestone,
+  "roadmap.delete_item": handleRoadmapDeleteItem,
 
   discover_tools: handleDiscoverTools,
 };

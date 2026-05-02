@@ -1,10 +1,11 @@
-import axios, { AxiosInstance } from "axios";
+import axios, { AxiosInstance, AxiosError } from "axios";
 import { env } from "../../config/env";
 
 export class GithubClient {
   private client: AxiosInstance;
   private defaultOwner: string;
   private defaultRepo: string;
+  private maxRetries = 3;
 
   constructor() {
     this.defaultOwner = env.GITHUB_DEFAULT_OWNER;
@@ -20,6 +21,65 @@ export class GithubClient {
       },
       timeout: 30000,
     });
+
+    if (env.GITHUB_TOKEN) {
+      this.client.interceptors.response.use(
+        undefined,
+        async (error: AxiosError) => {
+          const config = error.config as any;
+          if (!config) return Promise.reject(error);
+
+          config.__retryCount = config.__retryCount || 0;
+
+          const status = error.response?.status;
+          if (status === 401 || status === 403 || status === 404) {
+            return Promise.reject(error);
+          }
+
+          if (status === 429) {
+            const retryAfter = error.response?.headers?.["retry-after"];
+            const delay = retryAfter
+              ? Number(retryAfter) * 1000
+              : Math.min(4000 * Math.pow(2, config.__retryCount), 60000);
+            console.warn(
+              `[GitHub] Rate limited (429), waiting ${Math.round(delay)}ms (attempt ${config.__retryCount + 1}/${this.maxRetries})`,
+            );
+            await new Promise((r) =>
+              setTimeout(r, delay + Math.random() * 500),
+            );
+          } else if (status && status >= 500) {
+            const delay = Math.min(
+              1000 * Math.pow(2, config.__retryCount),
+              30000,
+            );
+            console.warn(
+              `[GitHub] Server error (${status}), retrying in ${Math.round(delay)}ms (attempt ${config.__retryCount + 1}/${this.maxRetries})`,
+            );
+            await new Promise((r) =>
+              setTimeout(r, delay + Math.random() * 1000),
+            );
+          } else if (!status) {
+            const delay = Math.min(
+              1000 * Math.pow(2, config.__retryCount),
+              30000,
+            );
+            console.warn(
+              `[GitHub] Network error, retrying in ${Math.round(delay)}ms (attempt ${config.__retryCount + 1}/${this.maxRetries})`,
+            );
+            await new Promise((r) =>
+              setTimeout(r, delay + Math.random() * 1000),
+            );
+          }
+
+          config.__retryCount += 1;
+          if (config.__retryCount > this.maxRetries) {
+            return Promise.reject(error);
+          }
+
+          return this.client.request(config);
+        },
+      );
+    }
   }
 
   resolveRepo(owner?: string, repo?: string): { owner: string; repo: string } {

@@ -28,76 +28,105 @@ export class OpenCodeProvider extends AIProvider {
       );
     }
 
-    try {
-      const requestBody = this.buildRequestBody(request);
+    let lastError: Error | null = null;
+    const maxAttempts = this.config.maxRetries + 1;
 
-      console.log("[OpenCode API] Sending request:", {
-        model: requestBody.model,
-        messageCount: (requestBody.messages as any[]).length,
-        hasTools: !!request.tools,
-      });
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const requestBody = this.buildRequestBody(request);
 
-      const response = await this.client.post("/chat/completions", requestBody);
-
-      const data = response.data;
-      const message = data.choices[0].message;
-
-      const result: ChatResponse = {
-        content: message.content || "",
-        thinking: message.reasoning_content || undefined,
-        toolCalls: message.tool_calls
-          ? this.parseToolCalls(message.tool_calls)
-          : undefined,
-        usage: {
-          promptTokens: data.usage?.prompt_tokens || 0,
-          completionTokens: data.usage?.completion_tokens || 0,
-          totalTokens: data.usage?.total_tokens || 0,
-        },
-        model: data.model || this.config.model,
-        done: true,
-      };
-
-      console.log("[OpenCode API] Response received:", {
-        contentLength: result.content.length,
-        toolCallCount: result.toolCalls?.length || 0,
-        tokensUsed: result.usage?.totalTokens || 0,
-      });
-
-      return result;
-    } catch (error) {
-      if (axios.isAxiosError(error)) {
-        const axiosError = error as AxiosError;
-        const status = axiosError.response?.status;
-        const data = axiosError.response?.data as any;
-
-        console.error("[OpenCode API] Request failed:", {
-          status,
-          statusText: axiosError.response?.statusText,
-          data: data ? JSON.stringify(data).substring(0, 200) : undefined,
+        console.log("[OpenCode API] Sending request:", {
+          model: requestBody.model,
+          messageCount: (requestBody.messages as any[]).length,
+          hasTools: !!request.tools,
+          attempt: `${attempt}/${maxAttempts}`,
         });
 
-        if (status === 401) {
-          throw new Error(
-            "OpenCode API authentication failed. Check your API key.",
+        const response = await this.client.post(
+          "/chat/completions",
+          requestBody,
+        );
+
+        const data = response.data;
+        const message = data.choices[0].message;
+
+        const result: ChatResponse = {
+          content: message.content || "",
+          thinking: message.reasoning_content || undefined,
+          toolCalls: message.tool_calls
+            ? this.parseToolCalls(message.tool_calls)
+            : undefined,
+          usage: {
+            promptTokens: data.usage?.prompt_tokens || 0,
+            completionTokens: data.usage?.completion_tokens || 0,
+            totalTokens: data.usage?.total_tokens || 0,
+          },
+          model: data.model || this.config.model,
+          done: true,
+        };
+
+        console.log("[OpenCode API] Response received:", {
+          contentLength: result.content.length,
+          toolCallCount: result.toolCalls?.length || 0,
+          tokensUsed: result.usage?.totalTokens || 0,
+        });
+
+        return result;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+
+        if (axios.isAxiosError(error)) {
+          const axiosError = error as AxiosError;
+          const status = axiosError.response?.status;
+          const data = axiosError.response?.data as any;
+
+          console.error("[OpenCode API] Request failed:", {
+            status,
+            statusText: axiosError.response?.statusText,
+            data: data ? JSON.stringify(data).substring(0, 200) : undefined,
+          });
+
+          if (status === 401) {
+            throw new Error(
+              "OpenCode API authentication failed. Check your API key.",
+            );
+          } else if (status === 400 || status === 403 || status === 404) {
+            throw new Error(
+              `OpenCode API error (${status}): ${data?.error?.message || "Unknown error"}`,
+            );
+          } else if (status === 429) {
+            if (attempt >= maxAttempts) break;
+            const delay = this.getRateLimitDelay(error, attempt);
+            console.warn(
+              `[OpenCode API] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`,
+            );
+            await this.sleep(delay);
+            continue;
+          } else if (status && status >= 500) {
+            if (attempt >= maxAttempts) break;
+            const delay = this.getRetryDelay(attempt);
+            console.warn(
+              `[OpenCode API] Server error (${status}), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`,
+            );
+            await this.sleep(delay);
+            continue;
+          }
+        }
+
+        if (attempt < maxAttempts) {
+          const delay = this.getRetryDelay(attempt);
+          console.warn(
+            `[OpenCode API] Network error, waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`,
           );
-        } else if (status === 429) {
-          throw new Error(
-            "OpenCode API rate limit exceeded. Please try again later.",
-          );
-        } else if (status && status >= 500) {
-          throw new Error(`OpenCode API server error: ${status}`);
-        } else if (status === 400) {
-          throw new Error(
-            `OpenCode API bad request: ${data?.error?.message || "Unknown error"}`,
-          );
+          await this.sleep(delay);
+          continue;
         }
       }
-
-      console.error("[OpenCode API] Unexpected error:", error);
-      throw new Error(
-        `OpenCode API request failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
     }
+
+    throw new Error(
+      `OpenCode API request failed after ${this.config.maxRetries} retries: ${lastError?.message || "Unknown error"}`,
+    );
   }
 
   async *chatStream(
@@ -202,5 +231,39 @@ export class OpenCodeProvider extends AIProvider {
       console.error("[OpenCode API] Failed to get models:", error);
       return [];
     }
+  }
+
+  private getRetryDelay(attempt: number): number {
+    const baseDelay = 1000;
+    const maxDelay = 30000;
+    const exponentialDelay = Math.min(
+      baseDelay * Math.pow(2, attempt - 1),
+      maxDelay,
+    );
+    const jitter = Math.random() * 1000;
+    return exponentialDelay + jitter;
+  }
+
+  private getRateLimitDelay(error: AxiosError, attempt: number): number {
+    const retryAfter = error.response?.headers?.["retry-after"];
+    if (retryAfter) {
+      const seconds = Number(retryAfter);
+      if (!isNaN(seconds) && seconds > 0) {
+        return seconds * 1000 + Math.random() * 500;
+      }
+    }
+
+    const baseDelay = 4000;
+    const maxDelay = 60000;
+    const exponentialDelay = Math.min(
+      baseDelay * Math.pow(2, attempt - 1),
+      maxDelay,
+    );
+    const jitter = Math.random() * 2000;
+    return exponentialDelay + jitter;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

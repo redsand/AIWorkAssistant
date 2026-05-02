@@ -994,7 +994,7 @@
         .chat-messages {
           flex: 1;
           min-height: 0;
-          max-height: 50vh;
+          max-height: 65vh;
         }
 
         .panel-section {
@@ -1002,8 +1002,16 @@
           grid-row: 2;
           padding: 12px;
           gap: 12px;
-          max-height: 40vh;
+          max-height: 70vh;
           overflow-y: auto;
+        }
+
+        .roadmap-list {
+          max-height: 30vh;
+        }
+
+        .conversation-list {
+          max-height: 25vh;
         }
 
         .mode-selector {
@@ -1097,7 +1105,9 @@
       }
 
       @keyframes spin {
-        to { transform: rotate(360deg); }
+        to {
+          transform: rotate(360deg);
+        }
       }
 
       .final-marker {
@@ -1111,6 +1121,200 @@
         border-radius: 4px;
         font-size: 11px;
         color: #2e7d32;
+      }
+
+      .conversation-list {
+        flex: 1;
+        overflow-y: auto;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 8px;
+      }
+
+      .conversation-item {
+        padding: 10px 12px;
+        border-bottom: 1px solid #e5e7eb;
+        cursor: pointer;
+        transition: background 0.2s;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .conversation-item:hover {
+        background: #f9fafb;
+      }
+
+      .conversation-item:last-child {
+        border-bottom: none;
+      }
+
+      .conversation-item.active {
+        background: #eff1ff;
+        border-left: 3px solid #667eea;
+      }
+
+      .conversation-info {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .conversation-title {
+        font-weight: 600;
+        font-size: 13px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .conversation-preview {
+        font-size: 11px;
+        color: #666;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin-top: 2px;
+      }
+
+      .conversation-date {
+        font-size: 10px;
+        color: #999;
+        margin-top: 2px;
+      }
+
+      .conversation-delete {
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: #ccc;
+        font-size: 14px;
+        padding: 4px;
+        border-radius: 4px;
+        flex-shrink: 0;
+        margin-left: 8px;
+        transition: color 0.2s;
+      }
+
+      .conversation-delete:hover {
+        color: #e53e3e;
+      }
+
+      .stop-btn {
+        padding: 4px 12px;
+        background: #e53e3e;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+
+      .stop-btn:hover {
+        background: #c53030;
+      }
+
+      .confirm-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 2000;
+      }
+
+      .confirm-dialog {
+        background: white;
+        border-radius: 12px;
+        padding: 24px;
+        width: 380px;
+        max-width: 90vw;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      }
+
+      .confirm-dialog h3 {
+        margin: 0 0 12px;
+        font-size: 16px;
+      }
+
+      .confirm-dialog p {
+        font-size: 14px;
+        color: #555;
+        margin-bottom: 16px;
+        line-height: 1.5;
+      }
+
+      .confirm-auto-accept {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 16px;
+        font-size: 13px;
+        color: #555;
+      }
+
+      .confirm-auto-accept input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        accent-color: #667eea;
+      }
+
+      .confirm-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+      }
+
+      .confirm-actions button {
+        padding: 8px 20px;
+        border-radius: 6px;
+        font-size: 14px;
+        font-weight: 500;
+        cursor: pointer;
+        border: 1px solid #d1d5db;
+        transition: all 0.2s;
+      }
+
+      .confirm-cancel {
+        background: white;
+        color: #555;
+      }
+
+      .confirm-cancel:hover {
+        background: #f3f4f6;
+      }
+
+      .confirm-danger {
+        background: #e53e3e;
+        color: white;
+        border-color: #e53e3e;
+      }
+
+      .confirm-danger:hover {
+        background: #c53030;
+      }
+
+      .new-chat-btn {
+        width: 100%;
+        padding: 8px;
+        background: #667eea;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        margin-bottom: 8px;
+        transition: background 0.2s;
+      }
+
+      .new-chat-btn:hover {
+        background: #5568d3;
       }
     </style>
   </head>
@@ -1200,6 +1404,27 @@
             </svg>
             Clear
           </button>
+          <button
+            class="header-icon-btn"
+            onclick="exportChat()"
+            title="Export Chat"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            Export
+          </button>
           <button class="logout-btn" id="logoutBtn" onclick="logout()">
             Sign Out
           </button>
@@ -1236,6 +1461,7 @@
           <div class="processing-indicator" id="processingIndicator">
             <span class="spinner"></span>
             <span>Processing your request...</span>
+            <button class="stop-btn" onclick="stopGeneration()">Stop</button>
           </div>
 
           <div class="message-input">
@@ -1278,6 +1504,22 @@
           <div class="section-header">Recent Roadmaps</div>
           <div class="roadmap-list" id="roadmapList">
             <div class="loading">Loading roadmaps...</div>
+          </div>
+
+          <div
+            class="section-header"
+            style="
+              margin-top: 16px;
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+            "
+          >
+            <span>Conversations</span>
+          </div>
+          <button class="new-chat-btn" onclick="newChat()">+ New Chat</button>
+          <div class="conversation-list" id="conversationList">
+            <div style="padding: 12px; color: #666">No conversations yet</div>
           </div>
         </div>
       </div>
@@ -1329,10 +1571,12 @@
           hideLoginOverlay();
           initializeChat();
           loadRoadmaps();
+          loadConversations();
         } catch (error) {
           hideLoginOverlay();
           initializeChat();
           loadRoadmaps();
+          loadConversations();
         }
       }
 
@@ -1434,16 +1678,21 @@
           }
           if (e.key === "ArrowUp" && !e.shiftKey) {
             const textarea = e.target;
-            const isAtStart = textarea.selectionStart === 0 && textarea.selectionEnd === 0;
+            const isAtStart =
+              textarea.selectionStart === 0 && textarea.selectionEnd === 0;
             const isEmpty = textarea.value.length === 0;
             if (isAtStart || isEmpty) {
               e.preventDefault();
               if (historyIndex === -1) {
                 draftBeforeHistory = textarea.value;
               }
-              if (messageHistory.length > 0 && historyIndex < messageHistory.length - 1) {
+              if (
+                messageHistory.length > 0 &&
+                historyIndex < messageHistory.length - 1
+              ) {
                 historyIndex++;
-                textarea.value = messageHistory[messageHistory.length - 1 - historyIndex];
+                textarea.value =
+                  messageHistory[messageHistory.length - 1 - historyIndex];
                 autoResizeTextarea(textarea);
                 textarea.setSelectionRange(0, 0);
               }
@@ -1451,12 +1700,15 @@
           }
           if (e.key === "ArrowDown" && !e.shiftKey) {
             const textarea = e.target;
-            const isAtEnd = textarea.selectionStart === textarea.value.length && textarea.selectionEnd === textarea.value.length;
+            const isAtEnd =
+              textarea.selectionStart === textarea.value.length &&
+              textarea.selectionEnd === textarea.value.length;
             if (isAtEnd) {
               e.preventDefault();
               if (historyIndex > 0) {
                 historyIndex--;
-                textarea.value = messageHistory[messageHistory.length - 1 - historyIndex];
+                textarea.value =
+                  messageHistory[messageHistory.length - 1 - historyIndex];
               } else if (historyIndex === 0) {
                 historyIndex = -1;
                 textarea.value = draftBeforeHistory;
@@ -1467,7 +1719,9 @@
             }
           }
         });
-        messageInput.addEventListener("input", () => autoResizeTextarea(messageInput));
+        messageInput.addEventListener("input", () =>
+          autoResizeTextarea(messageInput),
+        );
       }
 
       function autoResizeTextarea(el) {
@@ -1588,7 +1842,7 @@
 
         function processBuffer(flush) {
           const lines = buffer.split("\n");
-          buffer = flush ? "" : (lines.pop() || "");
+          buffer = flush ? "" : lines.pop() || "";
           for (const line of lines) {
             if (line.startsWith("event: ")) {
               eventType = line.slice(7).trim();
@@ -1618,13 +1872,20 @@
                 }
                 // Each content event is its own completed message round
                 if (data.content && data.content.trim()) {
-                  addMessage(data.content, "assistant", currentThinking || undefined);
+                  addMessage(
+                    data.content,
+                    "assistant",
+                    currentThinking || undefined,
+                  );
                   currentThinking = "";
                   contentCount++;
                 }
                 if (data.message) {
                   progressEl.remove();
-                  addMessage("Sorry, I encountered an error: " + data.message, "assistant");
+                  addMessage(
+                    "Sorry, I encountered an error: " + data.message,
+                    "assistant",
+                  );
                   return { error: true, roadmapTouched };
                 }
               } catch {}
@@ -1677,6 +1938,11 @@
           document.getElementById("chatMessages").scrollHeight;
 
         try {
+          if (activeStreamController) {
+            activeStreamController.abort();
+          }
+          activeStreamController = new AbortController();
+
           const response = await fetch(`${API_BASE}/chat/stream`, {
             method: "POST",
             headers: authHeaders(),
@@ -1688,6 +1954,7 @@
               includeMemory: true,
               includeTools: true,
             }),
+            signal: activeStreamController.signal,
           });
 
           if (response.status === 401 || response.status === 403) {
@@ -1720,7 +1987,9 @@
 
           // Add completion marker to the last assistant message
           if (result.contentCount > 0) {
-            const messages = document.getElementById("chatMessages").querySelectorAll(".message.assistant");
+            const messages = document
+              .getElementById("chatMessages")
+              .querySelectorAll(".message.assistant");
             const lastMsg = messages[messages.length - 1];
             if (lastMsg) {
               const bubble = lastMsg.querySelector(".message-bubble");
@@ -1737,14 +2006,20 @@
           if (result.roadmapTouched) {
             loadRoadmaps();
           }
+
+          loadConversations();
         } catch (error) {
           progressEl.remove();
           processingEl.classList.remove("active");
           progressEl.remove();
+          if (error instanceof DOMException && error.name === "AbortError")
+            return;
           console.error("Failed to send message:", error);
           const errMsg = error instanceof Error ? error.message : String(error);
           addMessage(
-            "Failed to connect to the agent: " + errMsg + ". Please check that the server is running and try again.",
+            "Failed to connect to the agent: " +
+              errMsg +
+              ". Please check that the server is running and try again.",
             "assistant",
           );
         }
@@ -1852,7 +2127,11 @@
         const resultDiv = document.createElement("div");
         resultDiv.className = "tool-call-result";
         if (resultObj && fullJson.length > 200) {
-          const resultId = "result-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
+          const resultId =
+            "result-" +
+            Date.now() +
+            "-" +
+            Math.random().toString(36).slice(2, 6);
           resultDiv.innerHTML = `<span>${escapeHtml(summaryText)}</span> <span class="result-toggle" data-result-id="${resultId}" style="color:#667eea;cursor:pointer;font-size:11px;margin-left:4px;">[show raw]</span><pre id="${resultId}" style="display:none;margin:4px 0 0;padding:6px;background:#1e1e2e;color:#cdd6f4;border-radius:4px;font-size:11px;max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all;">${escapeHtml(truncJson)}</pre>`;
         } else {
           resultDiv.textContent = summaryText;
@@ -1889,11 +2168,14 @@
         if (result.error) return `Error: ${result.error}`;
         if (result.message && result.tools) return result.message;
         if (result.message) return result.message;
-        if (result.success === false) return `Failed: ${result.error || "unknown error"}`;
+        if (result.success === false)
+          return `Failed: ${result.error || "unknown error"}`;
         const keys = Object.keys(result);
         if (keys.length === 0) return "OK";
         if (keys.length <= 3) {
-          return keys.map((k) => `${k}: ${truncate(String(result[k]), 60)}`).join(", ");
+          return keys
+            .map((k) => `${k}: ${truncate(String(result[k]), 60)}`)
+            .join(", ");
         }
         return `${keys.length} fields: ${keys.slice(0, 4).join(", ")}${keys.length > 4 ? "..." : ""}`;
       }
@@ -1908,8 +2190,11 @@
         return div.innerHTML;
       }
 
-      document.addEventListener("click", function(e) {
-        if (e.target.classList && e.target.classList.contains("result-toggle")) {
+      document.addEventListener("click", function (e) {
+        if (
+          e.target.classList &&
+          e.target.classList.contains("result-toggle")
+        ) {
           const resultId = e.target.getAttribute("data-result-id");
           const pre = document.getElementById(resultId);
           if (pre) {
@@ -1958,6 +2243,11 @@
           document.getElementById("chatMessages").scrollHeight;
 
         try {
+          if (activeStreamController) {
+            activeStreamController.abort();
+          }
+          activeStreamController = new AbortController();
+
           const response = await fetch(`${API_BASE}/chat/stream`, {
             method: "POST",
             headers: authHeaders(),
@@ -1969,6 +2259,7 @@
               includeMemory: true,
               includeTools: true,
             }),
+            signal: activeStreamController.signal,
           });
 
           if (response.status === 401 || response.status === 403) {
@@ -2002,7 +2293,9 @@
 
           // Add completion marker
           if (result.contentCount > 0) {
-            const msgs = document.getElementById("chatMessages").querySelectorAll(".message.assistant");
+            const msgs = document
+              .getElementById("chatMessages")
+              .querySelectorAll(".message.assistant");
             const lastMsg = msgs[msgs.length - 1];
             if (lastMsg) {
               const bubble = lastMsg.querySelector(".message-bubble");
@@ -2019,14 +2312,21 @@
           if (result.roadmapTouched) {
             loadRoadmaps();
           }
+
+          loadConversations();
         } catch (error) {
+          if (error instanceof DOMException && error.name === "AbortError")
+            return;
           console.error("Failed to send message:", error);
           progressEl.remove();
           processingEl2.classList.remove("active");
           addMessage(message, "user");
-          const errMsg2 = error instanceof Error ? error.message : String(error);
+          const errMsg2 =
+            error instanceof Error ? error.message : String(error);
           addMessage(
-            "Failed to connect to the agent: " + errMsg2 + ". Please check that the server is running and try again.",
+            "Failed to connect to the agent: " +
+              errMsg2 +
+              ". Please check that the server is running and try again.",
             "assistant",
           );
         }
@@ -2253,11 +2553,23 @@
           if (r.milestones && r.milestones.length > 0) {
             md += `\n### Milestones\n`;
             for (const m of r.milestones) {
-              const icon = m.status === "completed" ? "✅" : m.status === "blocked" ? "🚫" : "⬜";
+              const icon =
+                m.status === "completed"
+                  ? "✅"
+                  : m.status === "blocked"
+                    ? "🚫"
+                    : "⬜";
               md += `- ${icon} **${m.name}** — ${m.status} (target: ${m.targetDate ? new Date(m.targetDate).toLocaleDateString() : "TBD"})\n`;
               if (m.items && m.items.length > 0) {
                 for (const item of m.items) {
-                  const ic = item.status === "done" ? "✅" : item.status === "blocked" ? "🚫" : item.status === "in_progress" ? "🔄" : "⬜";
+                  const ic =
+                    item.status === "done"
+                      ? "✅"
+                      : item.status === "blocked"
+                        ? "🚫"
+                        : item.status === "in_progress"
+                          ? "🔄"
+                          : "⬜";
                   md += `  - ${ic} ${item.title} [${item.priority}]${item.jiraKey ? " (" + item.jiraKey + ")" : ""}\n`;
                 }
               }
@@ -2275,6 +2587,242 @@
         const input = document.getElementById("messageInput");
         input.value = action;
         await sendMessage();
+      }
+
+      let activeStreamController = null;
+      let autoAcceptDeletes = false;
+
+      async function loadConversations() {
+        try {
+          const response = await fetch(
+            `${API_BASE}/chat/sessions?userId=web-user`,
+            { headers: authHeaders() },
+          );
+          const data = await response.json();
+          const list = document.getElementById("conversationList");
+
+          if (data.sessions && data.sessions.length > 0) {
+            list.innerHTML = data.sessions
+              .map((s) => {
+                const isActive = s.id === currentSessionId;
+                const date = new Date(s.updatedAt);
+                const timeStr =
+                  date.toLocaleDateString() === new Date().toLocaleDateString()
+                    ? date.toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })
+                    : date.toLocaleDateString();
+                return `
+                  <div class="conversation-item${isActive ? " active" : ""}" data-session-id="${s.id}" onclick="switchConversation('${s.id}')">
+                    <div class="conversation-info">
+                      <div class="conversation-title">${escapeHtml(s.title || "Untitled")}</div>
+                      <div class="conversation-preview">${escapeHtml(s.preview || s.mode + " mode")}</div>
+                      <div class="conversation-date">${timeStr} · ${s.messageCount} msgs</div>
+                    </div>
+                    <button class="conversation-delete" onclick="event.stopPropagation(); deleteConversation('${s.id}')" title="Delete conversation">&#10005;</button>
+                  </div>
+                `;
+              })
+              .join("");
+          } else {
+            list.innerHTML =
+              '<div style="padding: 12px; color: #666;">No conversations yet</div>';
+          }
+        } catch (error) {
+          console.error("Failed to load conversations:", error);
+        }
+      }
+
+      async function switchConversation(sessionId) {
+        currentSessionId = sessionId;
+        localStorage.setItem("currentSessionId", currentSessionId);
+
+        const chatMessages = document.getElementById("chatMessages");
+        chatMessages.innerHTML = "";
+
+        try {
+          const response = await fetch(
+            `${API_BASE}/chat/sessions/${sessionId}/messages`,
+            { headers: authHeaders() },
+          );
+
+          if (!response.ok) {
+            currentSessionId = null;
+            localStorage.removeItem("currentSessionId");
+            chatMessages.innerHTML = `
+              <div class="message assistant">
+                <div class="message-bubble">Session not found. Start a new conversation.</div>
+              </div>
+            `;
+            loadConversations();
+            return;
+          }
+
+          const data = await response.json();
+          if (data.messages && data.messages.length > 0) {
+            for (const msg of data.messages) {
+              if (msg.role === "system" || msg.role === "tool") continue;
+              if (
+                msg.role === "assistant" &&
+                (!msg.content || msg.content.trim() === "")
+              )
+                continue;
+              addMessage(msg.content, msg.role);
+              if (msg.role === "user" && msg.content) {
+                messageHistory.push(msg.content);
+              }
+            }
+          } else {
+            chatMessages.innerHTML = `
+              <div class="message assistant">
+                <div class="message-bubble">Hello! How can I help you?</div>
+              </div>
+            `;
+          }
+        } catch {
+          chatMessages.innerHTML = `
+            <div class="message assistant">
+              <div class="message-bubble">Failed to load conversation.</div>
+            </div>
+          `;
+        }
+
+        loadConversations();
+      }
+
+      function newChat() {
+        currentSessionId = null;
+        localStorage.removeItem("currentSessionId");
+        const chatMessages = document.getElementById("chatMessages");
+        chatMessages.innerHTML = `
+          <div class="message assistant">
+            <div class="message-bubble">
+              Hello! I'm your AI Assistant. I can help you with productivity
+              planning, engineering tasks, roadmap management, and much more.
+              How can I assist you today?
+            </div>
+          </div>
+        `;
+        loadConversations();
+      }
+
+      async function deleteConversation(sessionId) {
+        if (autoAcceptDeletes) {
+          await performDeleteConversation(sessionId);
+          return;
+        }
+
+        const overlay = document.createElement("div");
+        overlay.className = "confirm-overlay";
+        overlay.innerHTML = `
+          <div class="confirm-dialog">
+            <h3>Delete Conversation?</h3>
+            <p>This will permanently delete this conversation and all its messages. This cannot be undone.</p>
+            <label class="confirm-auto-accept">
+              <input type="checkbox" id="autoAcceptCheck" />
+              Don't ask again (hands-off mode)
+            </label>
+            <div class="confirm-actions">
+              <button class="confirm-cancel" onclick="this.closest('.confirm-overlay').remove()">Cancel</button>
+              <button class="confirm-danger" id="confirmDeleteBtn">Delete</button>
+            </div>
+          </div>
+        `;
+        document.body.appendChild(overlay);
+
+        overlay.addEventListener("click", (e) => {
+          if (e.target === overlay) overlay.remove();
+        });
+
+        overlay
+          .querySelector("#confirmDeleteBtn")
+          .addEventListener("click", async () => {
+            if (overlay.querySelector("#autoAcceptCheck").checked) {
+              autoAcceptDeletes = true;
+            }
+            overlay.remove();
+            await performDeleteConversation(sessionId);
+          });
+      }
+
+      async function performDeleteConversation(sessionId) {
+        try {
+          await fetch(`${API_BASE}/chat/sessions/${sessionId}`, {
+            method: "DELETE",
+            headers: authHeaders(),
+          });
+        } catch {}
+
+        if (currentSessionId === sessionId) {
+          currentSessionId = null;
+          localStorage.removeItem("currentSessionId");
+          const chatMessages = document.getElementById("chatMessages");
+          chatMessages.innerHTML = `
+            <div class="message assistant">
+              <div class="message-bubble">Conversation deleted. Start a new one or select another from the sidebar.</div>
+            </div>
+          `;
+        }
+
+        loadConversations();
+      }
+
+      function stopGeneration() {
+        if (activeStreamController) {
+          activeStreamController.abort();
+          activeStreamController = null;
+        }
+        const processingEl = document.getElementById("processingIndicator");
+        processingEl.classList.remove("active");
+
+        const progressEls = document.querySelectorAll(".tool-progress");
+        progressEls.forEach((el) => {
+          const headerStatus = el.querySelector(
+            ".tool-progress-header-left .tool-call-status",
+          );
+          if (headerStatus) {
+            headerStatus.classList.remove("running");
+            headerStatus.classList.add("error");
+          }
+          const headerText = el.querySelector(".tool-progress-header-left");
+          if (headerText && headerStatus) {
+            headerText.innerHTML = `
+              <span class="tool-call-status error"></span>
+              Stopped by user
+            `;
+          }
+        });
+
+        addMessage("Generation stopped by user.", "assistant");
+      }
+
+      function exportChat() {
+        const messages = document.querySelectorAll("#chatMessages .message");
+        if (messages.length === 0) return;
+
+        let md = `# Chat Export\n`;
+        md += `**Exported:** ${new Date().toLocaleString()}\n`;
+        md += `**Mode:** ${currentMode}\n\n---\n\n`;
+
+        messages.forEach((msg) => {
+          const bubble = msg.querySelector(".message-bubble");
+          if (!bubble) return;
+          const isUser = msg.classList.contains("user");
+          const text = bubble.textContent.trim();
+          if (!text) return;
+          md += isUser
+            ? `## You\n\n${text}\n\n`
+            : `## Assistant\n\n${text}\n\n---\n\n`;
+        });
+
+        const blob = new Blob([md], { type: "text/markdown" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `chat-${new Date().toISOString().slice(0, 10)}.md`;
+        a.click();
+        URL.revokeObjectURL(url);
       }
 
       function showError(message) {

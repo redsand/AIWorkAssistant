@@ -7,6 +7,7 @@ import fs from "fs";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import type { ChatMessage } from "../agent/opencode-client";
+import { aiClient } from "../agent/opencode-client";
 
 export interface Message {
   role: "system" | "user" | "assistant" | "tool";
@@ -53,9 +54,9 @@ export class ConversationManager {
   private memoryBasePath: string;
 
   // Configuration thresholds — compact early to keep context lean
-  private readonly MAX_MESSAGES_BEFORE_COMPACT = 24;
-  private readonly MIN_RECENT_MESSAGES = 6;
-  private readonly MAX_TOOL_RESULT_LENGTH = 2000;
+  private readonly MAX_MESSAGES_BEFORE_COMPACT = 40;
+  private readonly MIN_RECENT_MESSAGES = 10;
+  private readonly MAX_TOOL_RESULT_LENGTH = 3000;
   private readonly SESSION_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
 
   constructor() {
@@ -163,10 +164,10 @@ export class ConversationManager {
    * Get messages in OpenCode API format — compacts on-the-fly for the AI context
    * without mutating the stored session (which preserves full display history).
    */
-  getSessionMessages(
+  async getSessionMessages(
     sessionId: string,
     includeSummaries = true,
-  ): ChatMessage[] {
+  ): Promise<ChatMessage[]> {
     const session = this.sessions.get(sessionId);
     if (!session) {
       return [];
@@ -199,7 +200,7 @@ export class ConversationManager {
       const recentMessages = allMessages.slice(-recentCount);
 
       // Build compact summary of old messages
-      const summary = this.buildCompactSummary(oldMessages);
+      const summary = await this.buildCompactSummaryLLM(oldMessages);
       messages.push({
         role: "system",
         content: summary,
@@ -325,66 +326,195 @@ export class ConversationManager {
   /**
    * Build a structured summary preserving key facts, decisions, and actions
    */
-  private buildCompactSummary(messages: Message[]): string {
-    const userMessages = messages.filter((m) => m.role === "user");
-    const assistantMessages = messages.filter((m) => m.role === "assistant");
-    const toolMessages = messages.filter((m) => m.role === "tool");
+  private cachedSummary: string | null = null;
 
-    // Extract key topics and entities
-    const topics = this.extractTopics(messages);
-    const timeRange = this.getTimeRange(messages);
+  private async buildCompactSummaryLLM(messages: Message[]): Promise<string> {
+    const conversationText = this.serializeMessagesForSummary(messages);
 
-    // Collect user intents (first few words of each user message)
-    const userIntents = userMessages
-      .slice(-8) // last 8 user messages
-      .map((m) => m.content.substring(0, 120).replace(/\n/g, " "))
-      .filter((c) => c.trim().length > 0);
+    const summaryPrompt = `You are summarizing a conversation between a user and an AI assistant. Your summary will replace the older messages in the conversation history, so the AI can continue seamlessly WITHOUT re-calling tools or re-asking questions.
 
-    // Collect tool actions performed
-    const toolActions = toolMessages
-      .slice(-6)
-      .map((m) => {
-        try {
-          const result = JSON.parse(m.content);
-          if (result.error) return `Failed: ${result.error}`.substring(0, 100);
-          if (result.success === false)
-            return `Failed: ${result.error || "unknown"}`.substring(0, 100);
-          return `OK`;
-        } catch {
-          return m.content.substring(0, 80).replace(/\n/g, " ");
-        }
+PRESERVE ALL OF THE FOLLOWING — this is critical to prevent the AI from wasting tokens on redundant actions:
+
+1. **Tool results with actual data**: For every tool call, include the tool name, its parameters, and the KEY DATA from the result (IDs, names, statuses, counts, specific items found). Do NOT just say "OK" or "completed" — include the actual data.
+
+2. **Decisions made**: Any conclusions the assistant reached, recommendations given, or choices the user confirmed.
+
+3. **User's goals**: What the user explicitly asked for and whether it was completed or still pending.
+
+4. **Pending actions**: Anything the assistant said it would do but hasn't done yet.
+
+5. **Facts established**: Specific Jira keys, roadmap IDs, ticket statuses, dates, or other concrete data referenced.
+
+FORMAT: Use bullet points grouped by category. Be concise but never omit concrete data (IDs, keys, names, statuses).
+
+Here is the conversation to summarize:
+
+---
+${conversationText}
+---`;
+
+    try {
+      const response = await aiClient.chat({
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a precise conversation summarizer. You preserve all concrete data (IDs, keys, names, statuses) from tool results so the AI does not re-call tools.",
+          },
+          { role: "user", content: summaryPrompt },
+        ],
+        temperature: 0.3,
       });
 
-    // Collect tool call names from assistant messages
-    const toolNames = assistantMessages
-      .flatMap((m) => m.toolCalls?.map((tc) => tc.name) || [])
-      .slice(-10);
+      if (response.content && response.content.trim().length > 50) {
+        this.cachedSummary = `[LLM Summary — ${messages.length} earlier messages]\n\n${response.content.trim()}`;
+        return this.cachedSummary;
+      }
+    } catch (error) {
+      console.error(
+        "[MemoryManager] LLM summarization failed, using fallback:",
+        error,
+      );
+    }
+
+    return this.buildCompactSummaryFallback(messages);
+  }
+
+  private serializeMessagesForSummary(messages: Message[]): string {
+    const toolCallMap = new Map<string, { name: string; params: string }>();
+    for (const msg of messages) {
+      if (msg.toolCalls) {
+        for (const tc of msg.toolCalls) {
+          const paramsStr =
+            typeof tc.params === "object"
+              ? Object.entries(tc.params)
+                  .filter(([, v]) => v !== undefined && v !== null)
+                  .map(([k, v]) => `${k}=${String(v).substring(0, 80)}`)
+                  .join(", ")
+              : String(tc.params).substring(0, 120);
+          toolCallMap.set(tc.id, { name: tc.name, params: paramsStr });
+        }
+      }
+    }
+
+    return messages
+      .filter((m) => m.role !== "system")
+      .map((m) => {
+        switch (m.role) {
+          case "user":
+            return `USER: ${m.content.substring(0, 500)}`;
+          case "assistant": {
+            const parts: string[] = [];
+            if (m.toolCalls?.length) {
+              for (const tc of m.toolCalls) {
+                const params = toolCallMap.get(tc.id)?.params || "";
+                parts.push(`[Called tool: ${tc.name}(${params})]`);
+              }
+            }
+            if (m.content?.trim()) {
+              parts.push(m.content.substring(0, 400));
+            }
+            return `ASSISTANT: ${parts.join(" ")}`;
+          }
+          case "tool": {
+            const callInfo = m.tool_call_id
+              ? toolCallMap.get(m.tool_call_id)
+              : null;
+            const label = callInfo
+              ? `TOOL RESULT (${callInfo.name}): `
+              : "TOOL RESULT: ";
+            let resultText: string;
+            try {
+              const parsed = JSON.parse(m.content);
+              resultText = JSON.stringify(parsed, null, 0).substring(0, 600);
+            } catch {
+              resultText = m.content.substring(0, 300);
+            }
+            return `${label}${resultText}`;
+          }
+          default:
+            return "";
+        }
+      })
+      .filter((line) => line.length > 0)
+      .join("\n\n");
+  }
+
+  private buildCompactSummaryFallback(messages: Message[]): string {
+    const userMessages = messages.filter((m) => m.role === "user");
+    const toolMessages = messages.filter((m) => m.role === "tool");
+    const topics = this.extractTopics(messages);
+
+    const toolCallMap = new Map<string, { name: string; params: string }>();
+    for (const msg of messages) {
+      if (msg.toolCalls) {
+        for (const tc of msg.toolCalls) {
+          const paramsStr =
+            typeof tc.params === "object"
+              ? Object.entries(tc.params)
+                  .filter(([, v]) => v !== undefined && v !== null)
+                  .map(([k, v]) => `${k}=${String(v).substring(0, 60)}`)
+                  .join(", ")
+              : "";
+          toolCallMap.set(tc.id, { name: tc.name, params: paramsStr });
+        }
+      }
+    }
 
     const lines = [
-      `[Conversation context — ${messages.length} messages compressed from ${timeRange}]`,
+      `[Fallback summary — ${messages.length} messages compressed]`,
       `Topics: ${topics.join(", ")}`,
     ];
 
+    const userIntents = userMessages
+      .slice(-6)
+      .map((m) => m.content.substring(0, 120).replace(/\n/g, " "))
+      .filter((c) => c.trim().length > 0);
+
     if (userIntents.length > 0) {
-      lines.push(`Recent user requests:`);
+      lines.push(`User requests:`);
       userIntents.forEach((intent, i) => {
         lines.push(`  ${i + 1}. ${intent}`);
       });
     }
 
-    if (toolNames.length > 0) {
-      const uniqueTools = [...new Set(toolNames)];
-      lines.push(`Tools used: ${uniqueTools.join(", ")}`);
+    const toolResults: string[] = [];
+    for (const msg of toolMessages) {
+      const callId = msg.tool_call_id;
+      const callInfo = callId ? toolCallMap.get(callId) : null;
+      const toolName = callInfo?.name || "unknown";
+      const params = callInfo?.params || "";
+
+      let resultSummary: string;
+      try {
+        const parsed = JSON.parse(msg.content);
+        if (parsed.error)
+          resultSummary = `ERROR: ${parsed.error}`.substring(0, 150);
+        else if (Array.isArray(parsed.data))
+          resultSummary = `[${parsed.data.length} items]`;
+        else if (typeof parsed.data === "object" && parsed.data) {
+          const keys = Object.keys(parsed.data).slice(0, 4);
+          resultSummary = keys
+            .map((k) => `${k}=${String(parsed.data[k]).substring(0, 50)}`)
+            .join(", ");
+        } else resultSummary = String(parsed.data || "OK").substring(0, 100);
+      } catch {
+        resultSummary = msg.content.substring(0, 100).replace(/\n/g, " ");
+      }
+
+      toolResults.push(
+        `${toolName}${params ? `(${params})` : ""} → ${resultSummary}`,
+      );
     }
 
-    if (toolActions.length > 0) {
-      lines.push(`Tool results: ${toolActions.length} calls completed`);
+    if (toolResults.length > 0) {
+      lines.push(`Tool results (DO NOT re-call):`);
+      toolResults.slice(-12).forEach((r) => {
+        lines.push(`  - ${r}`);
+      });
     }
 
-    lines.push(
-      `(Continue the conversation naturally — full context of the last ${this.MIN_RECENT_MESSAGES} messages is preserved below.)`,
-    );
-
+    lines.push(`(Do NOT repeat tools that already returned data above.)`);
     return lines.join("\n");
   }
 
@@ -394,7 +524,7 @@ export class ConversationManager {
   private async generateSessionSummary(
     session: ConversationSession,
   ): Promise<MemorySummary> {
-    const summary = this.buildCompactSummary(session.messages);
+    const summary = await this.buildCompactSummaryLLM(session.messages);
     const topics = this.extractTopics(session.messages);
     const timeRange = {
       start: session.messages[0]?.timestamp || session.createdAt,
@@ -565,27 +695,6 @@ ${summary.keyTopics.map((topic) => `- ${topic}`).join("\n")}
 
   /**
    * Get time range of messages
-   */
-  private getTimeRange(messages: Message[]): string {
-    if (messages.length === 0) return "No messages";
-
-    const start = messages[0].timestamp;
-    const end = messages[messages.length - 1].timestamp;
-
-    const duration = end.getTime() - start.getTime();
-    const minutes = Math.floor(duration / (1000 * 60));
-
-    if (minutes < 60) {
-      return `${minutes} minutes`;
-    } else if (minutes < 1440) {
-      return `${Math.floor(minutes / 60)} hours`;
-    } else {
-      return `${Math.floor(minutes / 1440)} days`;
-    }
-  }
-
-  /**
-   * Calculate relevance score for memory
    */
   private calculateRelevance(memory: MemorySummary, context: string): number {
     const memoryText =
@@ -888,7 +997,8 @@ ${summary.keyTopics.map((topic) => `- ${topic}`).join("\n")}
     content: string;
     timestamp: string;
   }> {
-    const session = this.sessions.get(sessionId) || this.loadActiveSession(sessionId);
+    const session =
+      this.sessions.get(sessionId) || this.loadActiveSession(sessionId);
     if (!session) {
       return [];
     }
@@ -900,7 +1010,10 @@ ${summary.keyTopics.map((topic) => `- ${topic}`).join("\n")}
     // Only show user and assistant messages in the UI — skip system and tool
     return session.messages
       .filter((m) => m.role === "user" || m.role === "assistant")
-      .filter((m) => !(m.role === "assistant" && (!m.content || m.content.trim() === "")))
+      .filter(
+        (m) =>
+          !(m.role === "assistant" && (!m.content || m.content.trim() === "")),
+      )
       .map((m) => ({
         role: m.role,
         content: m.content,

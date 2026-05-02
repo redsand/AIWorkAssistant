@@ -1,6 +1,6 @@
 /**
  * Architecture proposal generator
- * TODO: Implement actual architecture generation with OpenCode API
+ * TODO: Implement actual architecture generation with AI provider
  */
 
 import { WorkflowBrief } from "./workflow-brief";
@@ -33,7 +33,7 @@ class ArchitecturePlanner {
    * Generate architecture proposal from workflow brief
    */
   async generate(_workflowBrief: WorkflowBrief): Promise<ArchitectureProposal> {
-    // TODO: Use OpenCode API to generate architecture proposal
+    // TODO: Use AI provider to generate architecture proposal
     console.log("[Architecture Planner] Generating from workflow brief");
 
     // Stub response

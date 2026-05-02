@@ -74,11 +74,7 @@ export class OllamaProvider extends AIProvider {
         if (axios.isAxiosError(error)) {
           const status = error.response?.status;
 
-          if (
-            status === 400 &&
-            request.tools &&
-            attempt === 1
-          ) {
+          if (status === 400 && request.tools && attempt === 1) {
             console.warn(
               "[Ollama API] Model may not support tools, retrying without tools",
             );
@@ -203,7 +199,7 @@ export class OllamaProvider extends AIProvider {
   }
 
   isConfigured(): boolean {
-    return true;
+    return !!this.config.baseUrl;
   }
 
   async validateConfig(): Promise<boolean> {

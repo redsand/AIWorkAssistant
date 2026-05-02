@@ -203,13 +203,13 @@ async function checkHealth(): Promise<void> {
     console.log(`   Version: ${health.version}`);
     console.log(`   Server: ${API_BASE_URL}`);
 
-    if (health.opencode) {
+    if (health.provider) {
       console.log("");
-      console.log("🤖 OpenCode API:");
+      console.log(`🤖 AI Provider (${health.provider.active}):`);
       console.log(
-        `   Configured: ${health.opencode.configured ? "Yes" : "No"}`,
+        `   Configured: ${health.provider.configured ? "Yes" : "No"}`,
       );
-      console.log(`   Valid: ${health.opencode.valid ? "Yes" : "No"}`);
+      console.log(`   Valid: ${health.provider.valid ? "Yes" : "No"}`);
     }
   } catch (error) {
     console.error("❌ Agent not available");

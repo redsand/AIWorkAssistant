@@ -5,6 +5,9 @@ vi.mock("axios", () => {
     get: vi.fn(),
     post: vi.fn(),
     put: vi.fn(),
+    interceptors: {
+      response: { use: vi.fn() },
+    },
   };
   return {
     default: {
@@ -53,6 +56,9 @@ function createMockedClient(): {
     get: mockGet,
     post: mockPost,
     put: mockPut,
+    interceptors: {
+      response: { use: vi.fn() },
+    },
   } as any);
 
   const client = new GitlabClient();
@@ -64,7 +70,7 @@ describe("GitlabClient", () => {
     it("should return provided projectId when given", () => {
       const { client } = createMockedClient();
       expect(client.resolveProjectId(42)).toBe(42);
-      expect(client.resolveProjectId("my/project")).toBe("my/project");
+      expect(client.resolveProjectId("my/project")).toBe("my%2Fproject");
     });
 
     it("should fall back to GITLAB_DEFAULT_PROJECT when no projectId", () => {

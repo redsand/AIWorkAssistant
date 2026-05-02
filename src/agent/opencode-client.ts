@@ -41,7 +41,7 @@ class OpenCodeClient {
   }
 }
 
-export const opencodeClient = new OpenCodeClient();
+export const aiClient = new OpenCodeClient();
 
 export type {
   ChatMessage,

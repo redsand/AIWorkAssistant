@@ -130,44 +130,46 @@ export class GitlabClient {
       httpsAgent: httpsAgent,
     });
 
-    this.client.interceptors.response.use(undefined, async (error) => {
-      if (!axios.isAxiosError(error) || !error.config) {
+    if (this.token) {
+      this.client.interceptors.response.use(undefined, async (error) => {
+        if (!axios.isAxiosError(error) || !error.config) {
+          return Promise.reject(error);
+        }
+
+        const status = error.response?.status;
+        const configAny = error.config as any;
+        const retryCount = configAny.__retryCount || 0;
+
+        if (retryCount >= 3) {
+          return Promise.reject(error);
+        }
+
+        if (status === 429) {
+          const retryAfter = error.response?.headers?.["retry-after"];
+          const delay = retryAfter
+            ? Number(retryAfter) * 1000
+            : Math.min(2000 * Math.pow(2, retryCount), 30000);
+          console.warn(
+            `[GitLab] Rate limited (429), retrying in ${Math.round(delay)}ms (attempt ${retryCount + 1}/3)`,
+          );
+          configAny.__retryCount = retryCount + 1;
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          return this.client.request(error.config!);
+        }
+
+        if (status && status >= 500) {
+          const delay = Math.min(1000 * Math.pow(2, retryCount), 10000);
+          console.warn(
+            `[GitLab] Server error (${status}), retrying in ${Math.round(delay)}ms (attempt ${retryCount + 1}/3)`,
+          );
+          configAny.__retryCount = retryCount + 1;
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          return this.client.request(error.config!);
+        }
+
         return Promise.reject(error);
-      }
-
-      const status = error.response?.status;
-      const configAny = error.config as any;
-      const retryCount = configAny.__retryCount || 0;
-
-      if (retryCount >= 3) {
-        return Promise.reject(error);
-      }
-
-      if (status === 429) {
-        const retryAfter = error.response?.headers?.["retry-after"];
-        const delay = retryAfter
-          ? Number(retryAfter) * 1000
-          : Math.min(2000 * Math.pow(2, retryCount), 30000);
-        console.warn(
-          `[GitLab] Rate limited (429), retrying in ${Math.round(delay)}ms (attempt ${retryCount + 1}/3)`,
-        );
-        configAny.__retryCount = retryCount + 1;
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        return this.client.request(error.config!);
-      }
-
-      if (status && status >= 500) {
-        const delay = Math.min(1000 * Math.pow(2, retryCount), 10000);
-        console.warn(
-          `[GitLab] Server error (${status}), retrying in ${Math.round(delay)}ms (attempt ${retryCount + 1}/3)`,
-        );
-        configAny.__retryCount = retryCount + 1;
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        return this.client.request(error.config!);
-      }
-
-      return Promise.reject(error);
-    });
+      });
+    }
   }
 
   getDefaultProject(): string {
