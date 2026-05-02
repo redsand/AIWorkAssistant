@@ -150,12 +150,14 @@ export async function loadTodos() {
     });
     const data = await response.json();
     const todoListEl = document.getElementById("todoList");
+    const todoSection = document.getElementById("todoSection");
 
     if (!data.success || !data.lists || data.lists.length === 0) {
-      todoListEl.innerHTML =
-        '<div style="color:#888;padding:4px 0">No active tasks</div>';
+      todoSection.style.display = "none";
       return;
     }
+
+    todoSection.style.display = "block";
 
     let html = "";
     for (const list of data.lists) {

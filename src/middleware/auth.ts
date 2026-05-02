@@ -124,7 +124,7 @@ export async function authMiddleware(fastify: FastifyInstance) {
 
       if (
         request.url === "/" ||
-        request.url.match(/\.(html|css|js|ico|png)$/)
+        request.url.split("?")[0].match(/\.(html|css|js|ico|png|map)$/)
       ) {
         return;
       }

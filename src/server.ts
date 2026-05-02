@@ -82,7 +82,10 @@ export async function buildServer() {
   // Serve static web files
   await server.register(fastifyStatic, {
     root: path.join(__dirname, "..", "web"),
-    prefix: "/", // Serve from root
+    prefix: "/",
+    cacheControl: false,
+    lastModified: false,
+    etag: false,
   });
 
   // Initialize roadmap templates
