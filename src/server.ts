@@ -34,7 +34,24 @@ export async function buildServer() {
     },
     requestTimeout: 0,
     keepAliveTimeout: 120000,
+    ignoreTrailingSlash: true,
   });
+
+  server.addContentTypeParser(
+    "application/json",
+    { parseAs: "string" },
+    (_req, body, done) => {
+      if (!body || (typeof body === "string" && body.trim() === "")) {
+        done(null, {});
+        return;
+      }
+      try {
+        done(null, JSON.parse(body as string));
+      } catch (err) {
+        done(err as Error, undefined);
+      }
+    },
+  );
 
   // Enable CORS
   await server.register(cors, {

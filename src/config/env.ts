@@ -106,6 +106,7 @@ const envSchema = z.object({
   DISCORD_BOT_TOKEN: z.string().default(""),
   DISCORD_CLIENT_ID: z.string().default(""),
   DISCORD_GUILD_ID: z.string().default(""),
+  DISCORD_ALLOWED_USER_ID: z.string().default(""),
 
   // Signal
   SIGNAL_PHONE_NUMBER: z.string().default(""),

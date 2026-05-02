@@ -34,7 +34,8 @@ async function main() {
   const bot = new DiscordAgentBot({
     token: env.DISCORD_BOT_TOKEN,
     clientId: env.DISCORD_CLIENT_ID,
-    guildId: env.DISCORD_GUILD_ID, // Optional: for faster command registration during development
+    guildId: env.DISCORD_GUILD_ID,
+    allowedUserId: env.DISCORD_ALLOWED_USER_ID || undefined,
   });
 
   try {

@@ -747,3 +747,282 @@ describe("E2E: Guardrails Persistence (SQLite)", () => {
     expect(stats).toHaveProperty("executionsLast24h");
   });
 });
+
+describe("E2E: Chat Session CRUD", () => {
+  let createdSessionId: string;
+
+  beforeAll(async () => {
+    server = await buildTestServer();
+    await server.ready();
+    authToken = createSessionToken("e2e-test-user");
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it("should create a new session", async () => {
+    const response = await server.inject({
+      method: "POST",
+      url: "/chat/sessions",
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+        "Content-Type": "application/json",
+      },
+      payload: {
+        userId: "e2e-test-user",
+        mode: "productivity",
+        title: "E2E Test Session",
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+    expect(body.sessionId).toBeDefined();
+    createdSessionId = body.sessionId;
+  });
+
+  it("should list sessions", async () => {
+    const response = await server.inject({
+      method: "GET",
+      url: "/chat/sessions?userId=e2e-test-user",
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+    expect(Array.isArray(body.sessions)).toBe(true);
+  });
+
+  it("should get a session by ID", async () => {
+    const response = await server.inject({
+      method: "GET",
+      url: `/chat/sessions/${createdSessionId}`,
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+    expect(body.session.id).toBe(createdSessionId);
+    expect(body.session.mode).toBe("productivity");
+  });
+
+  it("should return 404 for non-existent session", async () => {
+    const response = await server.inject({
+      method: "GET",
+      url: "/chat/sessions/non-existent-id",
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("should end a session", async () => {
+    const { conversationManager } =
+      await import("../../src/memory/conversation-manager");
+    const sessionId = conversationManager.startSession(
+      "e2e-end-test",
+      "productivity",
+      { title: "End Test Session" },
+    );
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/chat/sessions/${sessionId}/end`,
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+        "Content-Type": "application/json",
+      },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+  }, 30000);
+
+  it("should delete a session with empty body and content-type json", async () => {
+    const { conversationManager } =
+      await import("../../src/memory/conversation-manager");
+    const sessionId = conversationManager.startSession(
+      "e2e-delete-test",
+      "productivity",
+      { title: "Delete Test Session" },
+    );
+
+    const response = await server.inject({
+      method: "DELETE",
+      url: `/chat/sessions/${sessionId}`,
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+
+    const verify = await server.inject({
+      method: "GET",
+      url: `/chat/sessions/${sessionId}`,
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+    expect(verify.statusCode).toBe(404);
+  }, 30000);
+
+  it("should delete a session without content-type header", async () => {
+    const { conversationManager } =
+      await import("../../src/memory/conversation-manager");
+    const sessionId = conversationManager.startSession(
+      "e2e-delete-test-2",
+      "engineering",
+      { title: "Delete Test Session 2" },
+    );
+
+    const response = await server.inject({
+      method: "DELETE",
+      url: `/chat/sessions/${sessionId}`,
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+  }, 30000);
+
+  it("should get session messages", async () => {
+    const { conversationManager } =
+      await import("../../src/memory/conversation-manager");
+    const sessionId = conversationManager.startSession(
+      "e2e-messages-test",
+      "productivity",
+      { title: "Messages Test" },
+    );
+    conversationManager.addMessage(sessionId, {
+      role: "user",
+      content: "Hello test",
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: `/chat/sessions/${sessionId}/messages`,
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+    expect(body.sessionId).toBe(sessionId);
+    expect(Array.isArray(body.messages)).toBe(true);
+    expect(body.messages.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("should get memory stats", async () => {
+    const response = await server.inject({
+      method: "GET",
+      url: "/chat/memory/stats",
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+    expect(body.stats).toBeDefined();
+  });
+
+  it("should search memories", async () => {
+    const response = await server.inject({
+      method: "GET",
+      url: "/chat/memory/search?userId=e2e-test-user&query=test",
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+    expect(Array.isArray(body.results)).toBe(true);
+  });
+
+  it("should get relevant memories", async () => {
+    const response = await server.inject({
+      method: "POST",
+      url: "/chat/memory/relevant",
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+        "Content-Type": "application/json",
+      },
+      payload: {
+        userId: "e2e-test-user",
+        context: "test context for memory lookup",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+  });
+
+  it("should return 400 for memory search without userId", async () => {
+    const response = await server.inject({
+      method: "GET",
+      url: "/chat/memory/search?query=test",
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("should return 400 for relevant memories without required fields", async () => {
+    const response = await server.inject({
+      method: "POST",
+      url: "/chat/memory/relevant",
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+        "Content-Type": "application/json",
+      },
+      payload: {
+        userId: "e2e-test-user",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("should get chat health", async () => {
+    const response = await server.inject({
+      method: "GET",
+      url: "/chat/health",
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.provider).toBeDefined();
+    expect(body.provider.active).toBeDefined();
+    expect(body.integrations).toBeDefined();
+  });
+});

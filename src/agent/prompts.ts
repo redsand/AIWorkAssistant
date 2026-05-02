@@ -3,6 +3,7 @@
  */
 
 import { AGENT_NAME, AGENT_VERSION } from "../config/constants";
+import { getToolInventory } from "./tool-registry";
 
 const TASK_COMPLETION_RULES = `
 
@@ -198,12 +199,19 @@ BE OPINIONATED BUT COLLABORATIVE:
  * Get system prompt for mode
  */
 export function getSystemPrompt(mode: "productivity" | "engineering"): string {
+  const toolInventory = getToolInventory(mode);
   switch (mode) {
     case "productivity":
-      return PRODUCTIVITY_SYSTEM_PROMPT;
+      return `${PRODUCTIVITY_SYSTEM_PROMPT}
+
+${toolInventory}`;
     case "engineering":
-      return ENGINEERING_SYSTEM_PROMPT;
+      return `${ENGINEERING_SYSTEM_PROMPT}
+
+${toolInventory}`;
     default:
-      return PRODUCTIVITY_SYSTEM_PROMPT;
+      return `${PRODUCTIVITY_SYSTEM_PROMPT}
+
+${toolInventory}`;
   }
 }

@@ -2074,11 +2074,12 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
 const ENGINEERING_TOOLS: Tool[] = [
   {
     name: "engineering.workflow_brief",
-    description: "Generate workflow brief for project idea",
+    description:
+      "Generate a comprehensive workflow brief from a project idea. Covers users, jobs-to-be-done, friction points, states, transitions, edge cases, automation opportunities, and guardrails.",
     params: {
       idea: {
         type: "string",
-        description: "Project idea description",
+        description: "Project idea or problem description",
         required: true,
       },
     },
@@ -2087,11 +2088,12 @@ const ENGINEERING_TOOLS: Tool[] = [
   },
   {
     name: "engineering.architecture_proposal",
-    description: "Generate architecture proposal",
+    description:
+      "Generate an architecture proposal from a project idea. Includes recommended stack, system boundaries, data model, API design, auth, error handling, observability, and deployment model.",
     params: {
-      workflowBrief: {
+      idea: {
         type: "string",
-        description: "Workflow brief JSON",
+        description: "Project idea or problem description",
         required: true,
       },
     },
@@ -2100,11 +2102,12 @@ const ENGINEERING_TOOLS: Tool[] = [
   },
   {
     name: "engineering.scaffolding_plan",
-    description: "Generate scaffolding plan",
+    description:
+      "Generate a scaffolding plan from a project idea. Includes repo structure, packages, env config, Docker setup, migrations, test setup, linting, CI pipeline, and docs structure.",
     params: {
-      architecture: {
+      idea: {
         type: "string",
-        description: "Architecture proposal JSON",
+        description: "Project idea or problem description",
         required: true,
       },
     },
@@ -2113,16 +2116,17 @@ const ENGINEERING_TOOLS: Tool[] = [
   },
   {
     name: "engineering.jira_tickets",
-    description: "Generate Jira tickets from implementation plan",
+    description:
+      "Generate workflow brief, architecture, and Jira tickets from a project idea. Creates real Jira tickets in the specified project.",
     params: {
-      plan: {
+      idea: {
         type: "string",
-        description: "Implementation plan JSON",
+        description: "Project idea or problem description",
         required: true,
       },
       projectKey: {
         type: "string",
-        description: "Jira project key",
+        description: "Jira project key (e.g., 'PROJ')",
         required: true,
       },
     },
@@ -2208,22 +2212,35 @@ export function getTools(mode: string): Tool[] {
     case AGENT_MODES.PRODUCTIVITY:
       return [...CORE_PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META];
     case AGENT_MODES.ENGINEERING:
-      return [...ENGINEERING_TOOLS, DISCOVER_TOOL_META];
+      return [
+        ...ENGINEERING_TOOLS,
+        ...CORE_PRODUCTIVITY_TOOLS,
+        DISCOVER_TOOL_META,
+      ];
     default:
       return [];
   }
 }
 
-/**
- * Get full tool set by mode (all tools, not just core).
- * Used when the model requests more tools via discover_tools.
- */
+export function getToolInventory(mode: string): string {
+  const tools = getTools(mode);
+  const lines = tools.map((t) => `- ${t.name}: ${t.description}`);
+  const categories = getToolCategories(mode);
+  const catNames = Object.keys(categories).join(", ");
+  return `AVAILABLE TOOLS (${tools.length} loaded, expandable via discover_tools):
+${lines.join("\n")}
+
+EXPANDABLE CATEGORIES (use discover_tools to load): ${catNames}
+
+IMPORTANT: You MUST use these tools to take actions. Do NOT say "I don't have access" or "I cannot do that" — if a tool exists for the action, USE IT. If you need a tool not listed above, call discover_tools to load it.`;
+}
+
 export function getAllToolsForMode(mode: string): Tool[] {
   switch (mode) {
     case AGENT_MODES.PRODUCTIVITY:
       return PRODUCTIVITY_TOOLS;
     case AGENT_MODES.ENGINEERING:
-      return ENGINEERING_TOOLS;
+      return [...ENGINEERING_TOOLS, ...PRODUCTIVITY_TOOLS];
     default:
       return [];
   }

@@ -13,12 +13,14 @@ import {
 } from "discord.js";
 import axios from "axios";
 
-const API_BASE = process.env.API_BASE_URL || "http://localhost:3000";
+const API_BASE = process.env.API_BASE_URL || "http://localhost:3050";
 
 interface DiscordConfig {
   token: string;
   clientId: string;
   guildId?: string;
+  allowedUserId?: string;
+  apiKey?: string;
 }
 
 interface ConversationSession {
@@ -34,10 +36,12 @@ class DiscordAgentBot {
   private config: DiscordConfig;
   private sessions: Map<string, ConversationSession> = new Map();
   private apiBaseUrl: string;
+  private apiKey: string;
 
   constructor(config: DiscordConfig) {
     this.config = config;
     this.apiBaseUrl = API_BASE;
+    this.apiKey = config.apiKey || "";
 
     this.client = new Client({
       intents: [
@@ -193,8 +197,14 @@ class DiscordAgentBot {
    * Handle incoming messages
    */
   private async onMessage(message: Message): Promise<void> {
-    // Ignore messages from bots
     if (message.author.bot) return;
+
+    if (
+      this.config.allowedUserId &&
+      message.author.id !== this.config.allowedUserId
+    ) {
+      return;
+    }
 
     // Ignore messages without bot mention (for DMs, always respond)
     const isDM = message.channel.isDMBased();
@@ -234,6 +244,17 @@ class DiscordAgentBot {
    */
   private async onInteraction(interaction: any): Promise<void> {
     if (!interaction.isChatInputCommand()) return;
+
+    if (
+      this.config.allowedUserId &&
+      interaction.user.id !== this.config.allowedUserId
+    ) {
+      await interaction.reply({
+        content: "This bot is not available to you.",
+        ephemeral: true,
+      });
+      return;
+    }
 
     const { commandName } = interaction;
 
@@ -317,7 +338,9 @@ class DiscordAgentBot {
       case "list": {
         await interaction.deferReply();
 
-        const response = await axios.get(`${this.apiBaseUrl}/api/roadmaps`);
+        const response = await axios.get(`${this.apiBaseUrl}/api/roadmaps`, {
+          headers: this.getAuthHeaders(),
+        });
         const roadmaps = response.data.roadmaps || [];
 
         if (roadmaps.length === 0) {
@@ -340,7 +363,9 @@ class DiscordAgentBot {
       case "templates": {
         await interaction.deferReply();
 
-        const response = await axios.get(`${this.apiBaseUrl}/api/templates`);
+        const response = await axios.get(`${this.apiBaseUrl}/api/templates`, {
+          headers: this.getAuthHeaders(),
+        });
         const templates = response.data.templates || [];
 
         const reply = `📋 **Roadmap Templates** (${templates.length}):\n\n${templates
@@ -538,6 +563,16 @@ Just start chatting with me! 🚀
     }
   }
 
+  private getAuthHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (this.apiKey) {
+      headers["Authorization"] = `Bearer ${this.apiKey}`;
+    }
+    return headers;
+  }
+
   /**
    * Send message to AI Assistant
    */
@@ -547,13 +582,24 @@ Just start chatting with me! 🚀
     mode: "productivity" | "engineering",
   ): Promise<string> {
     try {
-      const response = await axios.post(`${this.apiBaseUrl}/chat`, {
-        message,
-        mode,
-        userId: `discord-${userId}`,
-        includeMemory: true,
-        includeTools: true,
-      });
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (this.apiKey) {
+        headers["Authorization"] = `Bearer ${this.apiKey}`;
+      }
+
+      const response = await axios.post(
+        `${this.apiBaseUrl}/chat`,
+        {
+          message,
+          mode,
+          userId: `discord-${userId}`,
+          includeMemory: true,
+          includeTools: true,
+        },
+        { headers },
+      );
 
       return response.data.content || "No response from agent.";
     } catch (error) {

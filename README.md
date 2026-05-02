@@ -2,69 +2,105 @@
 
 A guarded productivity and engineering agent with local-first calendar, Jira, GitLab, and GitHub integration.
 
-**Status:** Beta — Core infrastructure solid, multi-provider AI support, dynamic tool expansion, streaming chat with thinking display.
+**Status:** v0.2.0 — Multi-provider AI with robust agent loop, 100+ tool handlers, full GitHub/GitLab/Jira CRUD, streaming chat, auto-compaction, and comprehensive test coverage.
 
 ## Overview
 
 AI Assistant is a personal productivity and engineering copilot that helps you:
 
 - **Personal Productivity**: Plan your day, protect focus/fitness/mental-health time, manage Jira tickets, and connect GitLab/GitHub activity to Jira work
-- **Engineering Strategy**: Convert vague app ideas into workflow-first designs with thoughtful architecture, scaffolding, and implementation plans
+- **Engineering Strategy**: Convert vague app ideas into workflow-first designs with thoughtful architecture, scaffolding, and implementation plans — now with real tool dispatch handlers
 - **Calendar Integration**: Local file-based calendar with ICS export for iPhone subscription via Cloudflare tunnel
-- **Multi-Provider AI**: Switch between Ollama (local/cloud), Z.ai, and OpenCode providers with automatic retry and rate limit handling
+- **Multi-Provider AI**: Switch between Ollama (local/cloud), Z.ai, and OpenCode providers with consistent behavior across all three
 
 **Core Philosophy**: Design from workflows. Scaffold from architecture. Implement with guardrails. Iterate from evidence.
 
 ## AI Providers
 
-| Provider | Config | Notes |
-|----------|--------|-------|
-| Ollama | `AI_PROVIDER=ollama` | Local or cloud models (e.g., `glm-5.1:cloud`). Supports API key auth for cloud endpoints. |
-| Z.ai | `AI_PROVIDER=zai` | Z.ai GLM models. Automatic 429 rate-limit handling with Retry-After header support. |
-| OpenCode | `AI_PROVIDER=opencode` (default) | OpenCode API. |
+| Provider | Config                           | Notes                                                                                            |
+| -------- | -------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Ollama   | `AI_PROVIDER=ollama`             | Local or cloud models (e.g., `glm-5.1:cloud`). Synthesizes tool call IDs when API omits them.    |
+| Z.ai     | `AI_PROVIDER=zai`                | Z.ai GLM models. Retry + rate-limit handling with Retry-After header support. Chunked streaming. |
+| OpenCode | `AI_PROVIDER=opencode` (default) | OpenCode API with exponential backoff retry.                                                     |
 
 All providers support:
+
 - Automatic retry with exponential backoff (429 rate limits handled separately from server errors)
 - Tool calling with dynamic expansion (core set sent first, more loaded on demand)
 - Thinking/reasoning content extraction and display
 - Streaming SSE responses with tool progress indicators
+- `toolChoice: "auto"` — the AI decides when to call tools (not forced)
+- Consistent tool call ID handling — missing IDs are synthesized to prevent collisions
+
+## Agent Architecture
+
+The agent loop is designed for reliable multi-step task execution:
+
+1. **System prompts** are injected for every request (new sessions and continued sessions alike), including `TASK_COMPLETION_RULES` that instruct the AI to finish tasks without stopping mid-way
+2. **Tool call history accumulates** across loop iterations — round 3 sees results from rounds 1 and 2, so the AI can build on prior tool outputs
+3. **Loop guard** caps at 25 iterations to prevent infinite loops while allowing complex workflows
+4. **JSON.parse protection** — malformed AI tool arguments are caught gracefully instead of crashing the request
+5. **Compaction preserves metadata** — `toolCalls` and `tool_call_id` are maintained in the correct API message format, so compacted sessions don't break subsequent requests
+6. **LLM-based summarization** — compaction uses the AI provider to generate summaries that preserve tool results, IDs, and decisions (not just "OK")
 
 ## Dynamic Tool System
 
 To keep token usage manageable, the system sends a **core set of ~26 tools** initially and adds a `discover_tools` meta-tool. When the AI needs capabilities beyond the core set (e.g., GitLab pipelines, GitHub PRs), it calls `discover_tools` with a category name, and those tools are dynamically added to the next API call.
 
 **Core tools always available:**
+
 - Calendar: list events, create focus/health blocks
 - Jira: list, get, search, create, update issues + add comments + transition
 - GitLab: projects, MRs, files, tree, search, commits, branches, create file
 - GitHub: repos, files, tree, search
 - Planning: daily planner
 
-**Expandable categories:** `gitlab` (29 tools), `github` (35 tools), `jira` (13 tools), `calendar` (3 tools)
+**Expandable categories:** `gitlab` (29 tools), `github` (35 tools), `jira` (13 tools), `calendar` (3 tools), `roadmap` (11 tools)
 
 ## What Works Now
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Chat API | ✅ Real | Streaming, sessions, memory, tool calling, thinking display |
-| Multi-Provider AI | ✅ Real | Ollama, Z.ai, OpenCode with retry/rate-limit handling |
-| Dynamic Tools | ✅ Real | Core set + discover_tools for on-demand expansion |
-| Tool Dispatcher | ✅ Real | 80+ real handlers: Jira, GitLab, GitHub, Calendar, Daily Planner |
-| Policy Engine | ✅ Real | Pattern matching, 3-tier modes |
-| Guardrails | ✅ Real | 15 critical actions, rate limiting, REST API |
-| Approval Queue | ✅ Real | SQLite-persisted, executes approved actions via dispatcher |
-| Jira Integration | ✅ Real | Full CRUD, v2/v3 fallback, comments, transitions |
-| GitLab Integration | ✅ Real | REST API with retry logic, commits, MRs, files, pipelines, issues, webhooks |
-| GitHub Integration | ✅ Real | Repos, files, branches, PRs, issues, workflows, releases |
-| File Calendar + ICS | ✅ Real | CRUD, RFC 5545 ICS export, iPhone subscription via tunnel |
-| Cloudflare Tunnel | ✅ Real | Starts at boot for external ICS access |
-| Google Calendar | ✅ Real | OAuth2 + Calendar API |
-| Conversation Memory | ✅ Real | Auto-compaction, file persistence, search |
-| Web UI | ✅ Real | Chat with thinking display, tool progress, collapsible JSON results |
-| Audit Logger | ⚠️ Partial | Write works; `query()` returns empty |
-| Discord Bot | ✅ Real | Slash commands, sessions, API integration |
-| Engineering Mode | ⚠️ Partial | Routes mounted, AI-first with stub fallback |
-| Daily Planner | ⚠️ Partial | Jira data for issue count, rest partially stubbed |
+| Feature             | Status  | Notes                                                                                                                       |
+| ------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Chat API            | ✅ Real | Streaming, sessions, memory, tool calling, thinking display, multi-step agent loop                                          |
+| Multi-Provider AI   | ✅ Real | Ollama, Z.ai, OpenCode with retry/rate-limit handling, consistent tool call behavior                                        |
+| Agent Loop          | ✅ Real | History accumulation, loop guard, system prompts on all requests, JSON protection                                           |
+| Dynamic Tools       | ✅ Real | Core set + discover_tools for on-demand expansion                                                                           |
+| Tool Dispatcher     | ✅ Real | 100+ real handlers: Jira, GitLab, GitHub, Calendar, Daily Planner, Roadmap, Engineering                                     |
+| Engineering Tools   | ✅ Real | Workflow brief, architecture proposal, scaffolding plan, Jira ticket generation — all dispatched                            |
+| Policy Engine       | ✅ Real | Pattern matching, 3-tier modes                                                                                              |
+| Guardrails          | ✅ Real | 16 critical actions, rate limiting, REST API                                                                                |
+| Approval Queue      | ✅ Real | SQLite-persisted, executes approved actions via dispatcher                                                                  |
+| Jira Integration    | ✅ Real | Full CRUD, v2/v3 fallback, comments, transitions, list projects                                                             |
+| GitLab Integration  | ✅ Real | REST API with retry logic, commits, MRs, files, pipelines, issues, branches, tags, blame, compare, webhooks                 |
+| GitHub Integration  | ✅ Real | Repos, files, branches, PRs, issues, workflows, releases, tags, commits, blame, compare, code search                        |
+| File Calendar + ICS | ✅ Real | CRUD, RFC 5545 ICS export, iPhone subscription via tunnel                                                                   |
+| Cloudflare Tunnel   | ✅ Real | Starts at boot for external ICS access                                                                                      |
+| Google Calendar     | ✅ Real | OAuth2 + Calendar API                                                                                                       |
+| Conversation Memory | ✅ Real | LLM-based auto-compaction, file persistence, search, metadata preservation                                                  |
+| Audit Logger        | ✅ Real | Write + query with severity filtering and JSONL storage                                                                     |
+| Roadmap CRUD        | ✅ Real | SQLite-backed CRUD + milestones + items + delete operations + templates                                                     |
+| Web UI              | ✅ Real | Chat with thinking display, tool progress, collapsible JSON, export, stop button, conversation sidebar, delete confirmation |
+| Daily Planner       | ✅ Real | Jira + GitLab data wired, real issue counts and activity                                                                    |
+| Health Endpoints    | ✅ Real | `/health` reports GitHub/GitLab/Jira integration status; `/chat/health` reports active AI provider                          |
+| Discord Bot         | ✅ Real | Slash commands, sessions, API integration                                                                                   |
+
+## Test Coverage
+
+**236 tests across 11 test files, 230+ passing consistently.**
+
+| File                                                 | Tests | Notes                                                                                                    |
+| ---------------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------- |
+| `tests/e2e/workflows.test.ts`                        | 44    | Auth, calendar CRUD, ICS export, approval lifecycle, roadmap CRUD, productivity, engineering, guardrails |
+| `tests/unit/integrations/jira-crud.test.ts`          | 36    | Full Jira CRUD: create, update, transition, search, comments                                             |
+| `tests/unit/integrations/gitlab-client.test.ts`      | 41    | Projects, MRs, commits, branches, pipelines, files, issues, tags, blame, compare                         |
+| `tests/unit/integrations/gitlab-dispatcher.test.ts`  | 24    | Tool dispatch for GitLab operations                                                                      |
+| `tests/e2e/guardrails.test.ts`                       | 21    | Guardrails enforcement, rate limiting, approval flow                                                     |
+| `tests/unit/integrations/jira-key-extractor.test.ts` | 20    | Jira key extraction from text                                                                            |
+| `tests/unit/middleware/auth.test.ts`                 | 18    | Bearer/X-API-Key/query auth, public paths, session auth                                                  |
+| `tests/unit/integrations/jira-client.test.ts`        | 9     | Live Jira API integration                                                                                |
+| `tests/unit/integrations/jira-list-projects.test.ts` | 7     | Project listing                                                                                          |
+| `tests/unit/policy/engine.test.ts`                   | 10    | Policy engine pattern matching                                                                           |
+| `tests/unit/agent/opencode-client.test.ts`           | 6     | Live AI provider chat + tool calling                                                                     |
 
 ## Quick Start
 
@@ -103,6 +139,11 @@ OLLAMA_MAX_CONTEXT_TOKENS=128000
 ZAI_API_URL=https://api.z.ai/api/coding/paas/v4
 ZAI_API_KEY=your_zai_api_key
 ZAI_MODEL=GLM-5.1
+
+# OpenCode
+OPENCODE_API_URL=https://api.opencode.com/v1
+OPENCODE_API_KEY=your_opencode_api_key
+OPENCODE_MODEL=GLM-5.1
 
 # Jira Cloud
 JIRA_BASE_URL=https://your-domain.atlassian.net
@@ -146,6 +187,7 @@ npm start            # Start production server
 ```
 POST   /chat                    # Send a message (productivity/engineering mode)
 POST   /chat/stream              # Stream a response (SSE with tool progress + thinking events)
+GET    /chat/health              # AI provider + integration health check
 GET    /chat/sessions             # List sessions
 POST   /chat/sessions             # Create a new session
 GET    /chat/sessions/:id         # Get a session
@@ -161,15 +203,15 @@ GET    /chat/memory/stats         # Get memory statistics
 
 The `/chat/stream` endpoint sends Server-Sent Events:
 
-| Event | Data | Description |
-|-------|------|-------------|
-| `session` | `{ sessionId }` | Session ID for the conversation |
-| `tool_start` | `{ id, name, params }` | Tool call started |
-| `tool_result` | `{ id, result }` | Tool call completed |
-| `thinking` | `{ thinking }` | AI reasoning content (collapsible in UI) |
-| `content` | `{ content }` | Final response content |
-| `done` | `{ usage, model }` | Stream complete |
-| `error` | `{ error, message }` | Error occurred |
+| Event         | Data                   | Description                              |
+| ------------- | ---------------------- | ---------------------------------------- |
+| `session`     | `{ sessionId }`        | Session ID for the conversation          |
+| `tool_start`  | `{ id, name, params }` | Tool call started                        |
+| `tool_result` | `{ id, result }`       | Tool call completed                      |
+| `thinking`    | `{ thinking }`         | AI reasoning content (collapsible in UI) |
+| `content`     | `{ content }`          | Final response content                   |
+| `done`        | `{ usage, model }`     | Stream complete                          |
+| `error`       | `{ error, message }`   | Error occurred                           |
 
 ### Approvals
 
@@ -196,7 +238,7 @@ GET    /calendar/subscribe        # Get webcal:// subscription URL for iPhone
 ### Productivity
 
 ```
-GET    /productivity/daily-plan                # Get daily plan
+GET    /productivity/daily-plan                # Get daily plan (Jira + GitLab data)
 GET    /productivity/focus-blocks/recommend     # Get focus block recommendations
 POST   /productivity/focus-blocks              # Create focus block
 GET    /productivity/health-breaks/recommend    # Get health break recommendations
@@ -225,7 +267,7 @@ POST   /webhooks/gitlab           # GitLab webhook endpoint
 GET    /api/roadmaps              # List roadmaps
 POST   /api/roadmaps              # Create a roadmap
 GET    /api/roadmaps/:id          # Get a roadmap
-PUT    /api/roadmaps/:id          # Update a roadmap
+PATCH  /api/roadmaps/:id          # Update a roadmap
 DELETE /api/roadmaps/:id          # Delete a roadmap
 GET    /api/templates             # List templates
 POST   /api/templates/:id/create-roadmap  # Create from template
@@ -245,8 +287,8 @@ GET    /api/guardrails/stats             # Get stats
 ### Health
 
 ```
-GET    /health                     # Health check
-GET    /chat/health                # AI provider health check
+GET    /health                     # System health (GitHub/GitLab/Jira integration status)
+GET    /chat/health                # AI provider + integration health check
 ```
 
 ## Architecture
@@ -258,40 +300,43 @@ src/
 │   ├── providers/          # AI providers (Ollama, Z.ai, OpenCode)
 │   │   ├── types.ts         # Shared interfaces (ChatRequest, ChatResponse, ToolCall)
 │   │   ├── factory.ts        # Provider factory (switches on AI_PROVIDER env)
-│   │   ├── ollama-provider.ts # Ollama local/cloud with retry + rate limiting
-│   │   ├── zai-provider.ts   # Z.ai with retry + rate limiting + thinking
-│   │   └── opencode-provider.ts # OpenCode API provider
-│   ├── opencode-client.ts   # Provider facade
-│   ├── tool-registry.ts     # 80+ tools with core set + discover_tools
-│   └── tool-dispatcher.ts   # Tool execution with audit logging
+│   │   ├── ollama-provider.ts # Ollama with ID synthesis + descriptive error handling
+│   │   ├── zai-provider.ts   # Z.ai with retry + rate limiting + thinking + chunked streaming
+│   │   └── opencode-provider.ts # OpenCode API with exponential backoff retry
+│   ├── opencode-client.ts   # Provider facade (provider-agnostic)
+│   ├── tool-registry.ts     # 100+ tools with core set + discover_tools
+│   ├── tool-dispatcher.ts   # Tool execution with audit logging + engineering handlers
+│   └── prompts.ts           # System prompts with TASK_COMPLETION_RULES
 ├── policy/                 # Policy engine with pattern matching
 ├── approvals/              # Approval queue (SQLite, dispatches on approve)
-├── audit/                  # Audit logger
+├── audit/                  # Audit logger (write + query with severity filtering)
 ├── guardrails/             # Action registry, enforcement, REST API
-├── memory/                 # Conversation manager with compaction
-├── roadmap/                # SQLite-backed CRUD, templates
+├── memory/                 # Conversation manager with LLM-based compaction
+├── roadmap/                # SQLite-backed CRUD, milestones, items, templates
 ├── integrations/
 │   ├── jira/               # Jira Cloud REST API (v2/v3)
 │   ├── gitlab/             # GitLab API with retry + webhook support
-│   ├── github/             # GitHub REST API
+│   ├── github/             # GitHub REST API with retry (repos, PRs, issues, workflows, releases)
 │   ├── google/             # Google Calendar OAuth2 + Calendar API
 │   ├── discord/            # Discord bot with slash commands
 │   └── file/               # File-based calendar + ICS export + tunnel
-├── productivity/           # Daily planner, focus blocks, health breaks
+├── engineering/            # Workflow brief, architecture planner, scaffold planner, Jira tickets
+├── productivity/           # Daily planner (Jira + GitLab), focus blocks, health breaks
 ├── routes/                 # HTTP endpoints (chat, calendar, etc.)
-├── middleware/              # Auth middleware
-└── server.ts               # Fastify entry point
+├── middleware/              # Auth middleware (provider-agnostic key validation)
+└── server.ts               # Fastify entry point with provider-aware startup logging
 ```
 
 ## Error Handling
 
 All AI providers include:
+
 - **Exponential backoff** with jitter for server errors (5xx)
 - **Rate limit handling** (429) with `Retry-After` header support
-- **Off-by-one retry fix** — retries are now bounded correctly
 - **Thinking/reasoning extraction** — GLM-5.x `reasoning_content` captured and displayed
-- **500-with-tools fallback** — if a model returns 500 with tools, automatically retries without tools
-- **GitLab retry** — 429 and 5xx responses automatically retried with backoff
+- **Tool call ID synthesis** — Ollama and Z.ai synthesize IDs when the API omits them
+- **Descriptive errors** — Ollama 400-with-tools throws a clear error instead of silently degrading
+- **GitLab/GitHub retry** — 429 and 5xx responses automatically retried with backoff; interceptors guarded when token is empty
 
 ## Security Notes
 
@@ -299,8 +344,10 @@ All AI providers include:
 - Use strong webhook secrets
 - GitLab webhook verification uses `crypto.timingSafeEqual`
 - Auth middleware uses bcrypt password hashing
+- Auth key validation is provider-agnostic (uses active provider's key)
 - Scope API tokens to minimum required permissions
 - Audit logging on all tool dispatches
+- GitHub/GitLab client interceptors are guarded when tokens are empty (prevents crashes)
 
 ## License
 
