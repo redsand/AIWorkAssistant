@@ -239,6 +239,21 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "medium",
   },
   {
+    name: "jira.create_issues",
+    description:
+      "Bulk create multiple Jira issues at once. Pass an array of issues with project, summary, description, issueType, and assignee. Use this instead of calling jira.create_issue multiple times when creating several tickets.",
+    params: {
+      issues: {
+        type: "array",
+        description:
+          'JSON array of issue objects: [{"project":"IR","summary":"Title","description":"Details","issueType":"Story","assignee":"user"}]',
+        required: true,
+      },
+    },
+    actionType: "jira.issue.bulk_create",
+    riskLevel: "medium",
+  },
+  {
     name: "jira.update_issue",
     description:
       "Update fields on an existing Jira issue (summary, description, assignee, priority, labels, etc.)",

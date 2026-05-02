@@ -931,20 +931,186 @@
       }
 
       @media (max-width: 768px) {
+        .container {
+          padding: 8px;
+          height: 100vh;
+          height: 100dvh;
+        }
+
+        .header {
+          padding: 12px;
+          margin-bottom: 8px;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+
+        .header-left {
+          flex: 1 1 100%;
+        }
+
+        .header-left .logo {
+          font-size: 18px;
+        }
+
+        .status {
+          flex-wrap: wrap;
+          gap: 6px;
+          width: 100%;
+          justify-content: flex-end;
+        }
+
+        .status-indicator {
+          width: 6px;
+          height: 6px;
+        }
+
+        .header-icon-btn {
+          padding: 4px 8px;
+          font-size: 11px;
+        }
+
+        .header-icon-btn svg {
+          width: 12px;
+          height: 12px;
+        }
+
         .main-content {
           grid-template-columns: 1fr;
-          grid-template-rows: 1fr 1fr;
+          grid-template-rows: minmax(0, 1fr) minmax(0, auto);
+          gap: 8px;
+          flex: 1;
+          min-height: 0;
+          overflow: hidden;
         }
 
         .chat-section {
           grid-column: 1;
           grid-row: 1;
+          padding: 12px;
+          min-height: 0;
+          overflow: hidden;
+        }
+
+        .chat-messages {
+          flex: 1;
+          min-height: 0;
+          max-height: 50vh;
         }
 
         .panel-section {
           grid-column: 1;
           grid-row: 2;
+          padding: 12px;
+          gap: 12px;
+          max-height: 40vh;
+          overflow-y: auto;
         }
+
+        .mode-selector {
+          margin-bottom: 8px;
+          gap: 6px;
+        }
+
+        .mode-btn {
+          padding: 6px 12px;
+          font-size: 13px;
+        }
+
+        .quick-actions {
+          grid-template-columns: 1fr 1fr;
+          gap: 6px;
+          margin-bottom: 8px;
+        }
+
+        .action-btn {
+          padding: 10px 8px;
+          font-size: 13px;
+        }
+
+        .section-header {
+          font-size: 14px;
+          margin-bottom: 8px;
+        }
+
+        .message-bubble {
+          max-width: 90%;
+          padding: 10px 12px;
+          font-size: 13px;
+        }
+
+        .message-input {
+          gap: 6px;
+        }
+
+        .message-input textarea {
+          padding: 10px 12px;
+          font-size: 14px;
+          min-height: 38px;
+        }
+
+        .send-btn {
+          padding: 10px 16px;
+          font-size: 13px;
+        }
+
+        .calendar-modal-overlay {
+          padding: 12px;
+        }
+
+        .calendar-modal {
+          width: 100%;
+          max-width: 90vw;
+          padding: 16px;
+        }
+
+        .login-card {
+          width: 90vw;
+          padding: 24px;
+        }
+      }
+
+      .processing-indicator {
+        display: none;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 14px;
+        margin: 8px 0;
+        background: #f0f1ff;
+        border: 1px solid #d0d3f7;
+        border-radius: 8px;
+        font-size: 13px;
+        color: #555;
+      }
+
+      .processing-indicator.active {
+        display: flex;
+      }
+
+      .spinner {
+        width: 16px;
+        height: 16px;
+        border: 2px solid #d0d3f7;
+        border-top-color: #667eea;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        flex-shrink: 0;
+      }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+
+      .final-marker {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        margin-top: 8px;
+        padding: 4px 10px;
+        background: #e8f5e9;
+        border: 1px solid #a5d6a7;
+        border-radius: 4px;
+        font-size: 11px;
+        color: #2e7d32;
       }
     </style>
   </head>
@@ -1065,6 +1231,11 @@
 
           <div class="typing-indicator" id="typingIndicator">
             AI Assistant is thinking...
+          </div>
+
+          <div class="processing-indicator" id="processingIndicator">
+            <span class="spinner"></span>
+            <span>Processing your request...</span>
           </div>
 
           <div class="message-input">
@@ -1412,6 +1583,8 @@
         let buffer = "";
         let currentThinking = "";
         let eventType = "";
+        let roadmapTouched = false;
+        let contentCount = 0;
 
         function processBuffer(flush) {
           const lines = buffer.split("\n");
@@ -1430,8 +1603,16 @@
                   currentSessionId = data.sessionId;
                   localStorage.setItem("currentSessionId", currentSessionId);
                 }
-                if (eventType === "tool_start") addToolCall(data.id, data.name, data.params);
-                if (eventType === "tool_result") completeToolCall(data.id, data.result);
+                if (eventType === "tool_start") {
+                  addToolCall(data.id, data.name, data.params);
+                  // Detect roadmap tool calls to refresh the panel after
+                  if (data.name && String(data.name).startsWith("roadmap.")) {
+                    roadmapTouched = true;
+                  }
+                }
+                if (eventType === "tool_result") {
+                  completeToolCall(data.id, data.result);
+                }
                 if (eventType === "thinking" && data.thinking) {
                   currentThinking += data.thinking;
                 }
@@ -1439,11 +1620,12 @@
                 if (data.content && data.content.trim()) {
                   addMessage(data.content, "assistant", currentThinking || undefined);
                   currentThinking = "";
+                  contentCount++;
                 }
                 if (data.message) {
                   progressEl.remove();
                   addMessage("Sorry, I encountered an error: " + data.message, "assistant");
-                  return { error: true };
+                  return { error: true, roadmapTouched };
                 }
               } catch {}
             }
@@ -1458,16 +1640,16 @@
             if (buffer.trim()) {
               buffer += "\n";
               const result = processBuffer(true);
-              if (result.error) return { error: true };
+              if (result.error) return { error: true, roadmapTouched };
             }
             break;
           }
           buffer += decoder.decode(value, { stream: true });
           const result = processBuffer(false);
-          if (result.error) return { error: true };
+          if (result.error) return { error: true, roadmapTouched };
         }
 
-        return { error: false };
+        return { error: false, roadmapTouched, contentCount };
       }
 
       async function sendMessage() {
@@ -1484,6 +1666,10 @@
           messageHistory.push(message);
         }
         addMessage(message, "user");
+
+        // Show processing spinner
+        const processingEl = document.getElementById("processingIndicator");
+        processingEl.classList.add("active");
 
         const { progressEl } = createToolProgress();
         document.getElementById("chatMessages").appendChild(progressEl);
@@ -1506,12 +1692,14 @@
 
           if (response.status === 401 || response.status === 403) {
             progressEl.remove();
+            processingEl.classList.remove("active");
             showLoginOverlay();
             return;
           }
 
           if (!response.ok) {
             progressEl.remove();
+            processingEl.classList.remove("active");
             let errorText = `Server returned ${response.status}`;
             try {
               const errBody = await response.json();
@@ -1526,10 +1714,32 @@
           const result = await handleStreamResponse(response, progressEl);
 
           progressEl.remove();
+          processingEl.classList.remove("active");
 
           if (result.error) return;
-          // Content is already rendered inline by handleStreamResponse
+
+          // Add completion marker to the last assistant message
+          if (result.contentCount > 0) {
+            const messages = document.getElementById("chatMessages").querySelectorAll(".message.assistant");
+            const lastMsg = messages[messages.length - 1];
+            if (lastMsg) {
+              const bubble = lastMsg.querySelector(".message-bubble");
+              if (bubble) {
+                const marker = document.createElement("div");
+                marker.className = "final-marker";
+                marker.textContent = "Done";
+                bubble.appendChild(marker);
+              }
+            }
+          }
+
+          // Refresh roadmaps if any roadmap tools were used
+          if (result.roadmapTouched) {
+            loadRoadmaps();
+          }
         } catch (error) {
+          progressEl.remove();
+          processingEl.classList.remove("active");
           progressEl.remove();
           console.error("Failed to send message:", error);
           const errMsg = error instanceof Error ? error.message : String(error);
@@ -1738,6 +1948,10 @@
           clickedMsg.remove();
         }
 
+        // Show processing spinner
+        const processingEl2 = document.getElementById("processingIndicator");
+        processingEl2.classList.add("active");
+
         const { progressEl } = createToolProgress();
         document.getElementById("chatMessages").appendChild(progressEl);
         document.getElementById("chatMessages").scrollTop =
@@ -1759,12 +1973,14 @@
 
           if (response.status === 401 || response.status === 403) {
             progressEl.remove();
+            processingEl2.classList.remove("active");
             showLoginOverlay();
             return;
           }
 
           if (!response.ok) {
             progressEl.remove();
+            processingEl2.classList.remove("active");
             addMessage(message, "user");
             let errorText = `Server returned ${response.status}`;
             try {
@@ -1780,12 +1996,33 @@
           const result = await handleStreamResponse(response, progressEl);
 
           progressEl.remove();
+          processingEl2.classList.remove("active");
 
           if (result.error) return;
-          // Content is already rendered inline by handleStreamResponse
+
+          // Add completion marker
+          if (result.contentCount > 0) {
+            const msgs = document.getElementById("chatMessages").querySelectorAll(".message.assistant");
+            const lastMsg = msgs[msgs.length - 1];
+            if (lastMsg) {
+              const bubble = lastMsg.querySelector(".message-bubble");
+              if (bubble) {
+                const marker = document.createElement("div");
+                marker.className = "final-marker";
+                marker.textContent = "Done";
+                bubble.appendChild(marker);
+              }
+            }
+          }
+
+          // Refresh roadmaps if roadmap tools were used
+          if (result.roadmapTouched) {
+            loadRoadmaps();
+          }
         } catch (error) {
           console.error("Failed to send message:", error);
           progressEl.remove();
+          processingEl2.classList.remove("active");
           addMessage(message, "user");
           const errMsg2 = error instanceof Error ? error.message : String(error);
           addMessage(
@@ -1978,7 +2215,7 @@
             roadmapList.innerHTML = data.roadmaps
               .map(
                 (roadmap) => `
-                        <div class="roadmap-item">
+                        <div class="roadmap-item" style="cursor:pointer" onclick="viewRoadmap('${roadmap.id}','${roadmap.name.replace(/'/g, "\\'")}')">
                             <div class="roadmap-name">${roadmap.name}</div>
                             <div class="roadmap-meta">
                                 ${roadmap.type} • ${roadmap.status} • ${new Date(roadmap.createdAt).toLocaleDateString()}
@@ -1995,6 +2232,42 @@
           console.error("Failed to load roadmaps:", error);
           document.getElementById("roadmapList").innerHTML =
             '<div style="padding: 12px; color: #c33;">Failed to load roadmaps</div>';
+        }
+      }
+
+      async function viewRoadmap(id, name) {
+        try {
+          const response = await fetch(`${API_BASE}/api/roadmaps/${id}`, {
+            headers: authHeaders(),
+          });
+          const data = await response.json();
+          if (!data.success) {
+            addMessage(`Failed to load roadmap: ${data.error}`, "assistant");
+            return;
+          }
+          const r = data.roadmap;
+          let md = `## ${r.name}\n`;
+          md += `**${r.type}** · ${r.status}\n\n`;
+          if (r.description) md += `*${r.description}*\n\n`;
+          md += `Start: ${r.startDate}${r.endDate ? " — End: " + r.endDate : ""}\n`;
+          if (r.milestones && r.milestones.length > 0) {
+            md += `\n### Milestones\n`;
+            for (const m of r.milestones) {
+              const icon = m.status === "completed" ? "✅" : m.status === "blocked" ? "🚫" : "⬜";
+              md += `- ${icon} **${m.name}** — ${m.status} (target: ${m.targetDate ? new Date(m.targetDate).toLocaleDateString() : "TBD"})\n`;
+              if (m.items && m.items.length > 0) {
+                for (const item of m.items) {
+                  const ic = item.status === "done" ? "✅" : item.status === "blocked" ? "🚫" : item.status === "in_progress" ? "🔄" : "⬜";
+                  md += `  - ${ic} ${item.title} [${item.priority}]${item.jiraKey ? " (" + item.jiraKey + ")" : ""}\n`;
+                }
+              }
+            }
+          } else {
+            md += `\n*No milestones yet.*\n`;
+          }
+          addMessage(md, "assistant");
+        } catch (error) {
+          addMessage("Failed to load roadmap details.", "assistant");
         }
       }
 

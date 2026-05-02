@@ -194,6 +194,76 @@ async function handleJiraCreateIssue(
   };
 }
 
+async function handleJiraCreateIssues(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  if (!jiraClient.isConfigured()) {
+    return { success: false, error: "Jira client not configured" };
+  }
+
+  let issues = params.issues;
+  // The AI model may pass issues as a JSON string instead of an array
+  if (typeof issues === "string") {
+    try {
+      issues = JSON.parse(issues);
+    } catch {
+      return { success: false, error: "issues parameter must be a valid JSON array" };
+    }
+  }
+
+  if (!Array.isArray(issues) || issues.length === 0) {
+    return { success: false, error: "issues must be a non-empty array of issue objects" };
+  }
+
+  // Validate and normalize each issue
+  const normalized = issues.map((issue: any, i: number) => {
+    const project = issue.project || issue.projectKey;
+    const summary = issue.summary || issue.title;
+    if (!project || !summary) {
+      return { error: `Issue ${i + 1}: project and summary are required` };
+    }
+    return {
+      project,
+      summary,
+      description: issue.description || issue.body || undefined,
+      issueType: issue.issueType || issue.type || "Task",
+      assignee: issue.assignee || undefined,
+    };
+  });
+
+  const invalid = normalized.find((i: any) => i.error);
+  if (invalid) {
+    return { success: false, error: invalid.error };
+  }
+
+  try {
+    const results = await jiraClient.bulkCreateIssues(normalized as any);
+    const created = results.filter((r) => r.status === "created");
+    const failed = results.filter((r) => r.status === "failed");
+
+    return {
+      success: created.length > 0,
+      data: {
+        created: created.length,
+        failed: failed.length,
+        issues: results.map((r) => ({
+          key: r.key || "",
+          summary: r.summary,
+          status: r.status,
+          url: r.key ? `${jiraClient.getBaseUrl()}/browse/${r.key}` : undefined,
+          error: r.error,
+        })),
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Bulk create failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+    };
+  }
+}
+
 async function handleJiraUpdateIssue(
   params: Record<string, unknown>,
   _userId: string,
@@ -1819,9 +1889,19 @@ async function handleRoadmapCreate(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
   try {
+    const name = params.name as string;
+    const type = (params.type as "client" | "internal") || "internal";
+
+    // Prevent duplicates: return existing roadmap with same name+type
+    const existing = roadmapDatabase.listRoadmaps({ type });
+    const duplicate = existing.find((r: any) => r.name.toLowerCase() === name.toLowerCase());
+    if (duplicate) {
+      return { success: true, data: duplicate };
+    }
+
     const roadmap = roadmapDatabase.createRoadmap({
-      name: params.name as string,
-      type: (params.type as "client" | "internal") || "internal",
+      name,
+      type,
       startDate: params.startDate as string,
       endDate: (params.endDate as string) || null,
       status: (params.status as any) || "draft",
@@ -1914,6 +1994,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "jira.transition_issue": handleJiraTransitionIssue,
   "jira.create_project": handleJiraCreateProject,
   "jira.create_issue": handleJiraCreateIssue,
+  "jira.create_issues": handleJiraCreateIssues,
   "jira.update_issue": handleJiraUpdateIssue,
   "jira.close_issue": handleJiraCloseIssue,
   "jira.search_issues": handleJiraSearchIssues,

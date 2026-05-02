@@ -1,5 +1,6 @@
 import { jiraService } from "../integrations/jira/jira-service";
 import { fileCalendarService } from "../integrations/file/calendar-service";
+import { gitlabClient } from "../integrations/gitlab/gitlab-client";
 
 interface DailyPlan {
   date: string;
@@ -54,7 +55,7 @@ class DailyPlanner {
           urgent: 0,
           blocked: 0,
         },
-        gitlabActivity: { commits: 0, mergeRequests: 0 },
+        gitlabActivity: await this.getGitLabActivity(d),
         recommendations: ["Enjoy your weekend!"],
       };
     }
@@ -138,11 +139,7 @@ class DailyPlanner {
           jiraKey: key,
         });
       });
-      for (
-        let i = afternoonTasks.length;
-        i < AFTERNOON_FOCUS_SLOTS;
-        i++
-      ) {
+      for (let i = afternoonTasks.length; i < AFTERNOON_FOCUS_SLOTS; i++) {
         schedule.push({
           time: afternoonTimes[i],
           title: `Focus block (unassigned) #${i + 1}`,
@@ -256,6 +253,39 @@ class DailyPlanner {
         Math.max(e.startTime.getTime(), dayStart.getTime());
     }
     return Math.max(0, freeMs / 60000);
+  }
+
+  private async getGitLabActivity(date: Date): Promise<{
+    commits: number;
+    mergeRequests: number;
+  }> {
+    if (!gitlabClient.isConfigured()) {
+      return { commits: 0, mergeRequests: 0 };
+    }
+
+    try {
+      const dayStart = date.toISOString();
+      const dayEndDate = new Date(date);
+      dayEndDate.setHours(23, 59, 59, 999);
+
+      const [commits, mergeRequests] = await Promise.all([
+        gitlabClient.getCommits(undefined, "main", dayStart).catch(() => []),
+        gitlabClient.getMergeRequests(undefined, "all").catch(() => []),
+      ]);
+
+      const todayMRs = mergeRequests.filter((mr) => {
+        const createdAt = new Date(mr.created_at);
+        return createdAt >= date && createdAt <= dayEndDate;
+      });
+
+      return {
+        commits: commits.length,
+        mergeRequests: todayMRs.length,
+      };
+    } catch (error) {
+      console.error("[Daily Planner] Failed to fetch GitLab activity:", error);
+      return { commits: 0, mergeRequests: 0 };
+    }
   }
 }
 

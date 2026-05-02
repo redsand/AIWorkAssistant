@@ -535,6 +535,116 @@ export class JiraClient {
   }
 
   /**
+   * Bulk create multiple issues in a single request.
+   * Falls back to sequential creation if the bulk endpoint fails.
+   */
+  async bulkCreateIssues(
+    issues: Array<{
+      project: string;
+      summary: string;
+      description?: string;
+      issueType: string;
+      assignee?: string;
+    }>,
+  ): Promise<Array<{ key: string; summary: string; status: string; error?: string }>> {
+    if (!this.isConfigured()) {
+      throw new Error("Jira client not configured");
+    }
+
+    const results: Array<{ key: string; summary: string; status: string; error?: string }> = [];
+
+    // Try bulk endpoint first
+    try {
+      const payload = {
+        issueUpdates: issues.map((issue) => {
+          const fields: any = {
+            project: { key: issue.project },
+            summary: issue.summary,
+            issuetype: { name: issue.issueType || "Task" },
+          };
+          if (issue.description) {
+            fields.description = {
+              type: "doc",
+              version: 1,
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: issue.description }],
+                },
+              ],
+            };
+          }
+          if (issue.assignee) {
+            fields.assignee = { name: issue.assignee };
+          }
+          return { fields };
+        }),
+      };
+
+      console.log(`[Jira] Bulk creating ${issues.length} issues`);
+      const response = await this.client.post(
+        "/rest/api/3/issue/bulk",
+        payload,
+      );
+
+      if (response.data?.issues) {
+        for (let i = 0; i < response.data.issues.length; i++) {
+          const created = response.data.issues[i];
+          results.push({
+            key: created.key,
+            summary: issues[i]?.summary || created.key,
+            status: "created",
+          });
+        }
+      }
+
+      // Handle any errors returned for individual issues
+      if (response.data?.errors) {
+        for (const err of response.data.errors) {
+          results.push({
+            key: "",
+            summary: err.message || "Unknown error",
+            status: "failed",
+            error: err.message,
+          });
+        }
+      }
+
+      return results;
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        console.warn(
+          `[Jira] Bulk create failed (${status}), falling back to sequential`,
+        );
+      } else {
+        console.warn("[Jira] Bulk create failed, falling back to sequential");
+      }
+    }
+
+    // Fallback: create one at a time
+    for (const issue of issues) {
+      try {
+        const result = await this.createIssue(issue);
+        results.push({
+          key: result.key,
+          summary: issue.summary,
+          status: "created",
+        });
+      } catch (error) {
+        results.push({
+          key: "",
+          summary: issue.summary,
+          status: "failed",
+          error: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
+    }
+
+    return results;
+  }
+
+  /**
    * Update issue fields
    */
   async updateIssue(

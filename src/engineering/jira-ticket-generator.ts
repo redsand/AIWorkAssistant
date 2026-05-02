@@ -1,7 +1,4 @@
-/**
- * Jira ticket generator from implementation plan
- * TODO: Implement actual ticket generation with OpenCode API
- */
+import { jiraService } from "../integrations/jira/jira-service";
 
 interface ImplementationPlan {
   milestones: string[];
@@ -16,40 +13,60 @@ interface ImplementationPlan {
 }
 
 class JiraTicketGenerator {
-  /**
-   * Generate Jira tickets from implementation plan
-   */
   async generate(
     plan: ImplementationPlan,
     projectKey: string,
   ): Promise<ImplementationPlan> {
-    // TODO: Use OpenCode API to generate detailed tickets
     console.log("[Jira Ticket Generator] Generating tickets for", projectKey);
-
-    // Return the plan with enhanced tickets
     return plan;
   }
 
-  /**
-   * Create tickets in Jira
-   */
   async createTickets(
     plan: ImplementationPlan,
     projectKey: string,
-    _userId: string,
+    userId: string,
   ) {
     const tickets = [];
 
     for (const ticket of plan.tickets) {
       try {
-        // TODO: Create actual tickets via Jira API
-        console.log(`[Jira] Creating ticket: ${ticket.summary}`);
-        tickets.push({
-          key: `${projectKey}-${Math.floor(Math.random() * 1000)}`,
-          summary: ticket.summary,
-        });
+        const description = [
+          ticket.description,
+          "",
+          "## Acceptance Criteria",
+          ...ticket.acceptanceCriteria.map((c) => `- ${c}`),
+        ].join("\n");
+
+        const result = await jiraService.createIssue(
+          {
+            project: projectKey,
+            summary: ticket.summary,
+            description,
+            issueType: ticket.issueType,
+          },
+          userId,
+        );
+
+        if ("approval" in result) {
+          tickets.push({
+            summary: ticket.summary,
+            status: "pending_approval",
+            approvalId: result.approval.id,
+          });
+        } else {
+          tickets.push({
+            key: (result as any).key,
+            summary: ticket.summary,
+            status: "created",
+          });
+        }
       } catch (error) {
         console.error(`Failed to create ticket: ${ticket.summary}`, error);
+        tickets.push({
+          summary: ticket.summary,
+          status: "failed",
+          error: (error as Error).message,
+        });
       }
     }
 
