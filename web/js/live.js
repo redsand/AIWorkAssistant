@@ -81,7 +81,7 @@ export function subscribeLive(sessionId) {
               const data = JSON.parse(dataStr);
 
               if (eventType === "state" && data.processing === false) {
-                return;
+                return { stop: false };
               }
 
               if (eventType === "session" && data.sessionId) {
