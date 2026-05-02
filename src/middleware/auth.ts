@@ -1,5 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import crypto from "crypto";
+import Database from "better-sqlite3";
+import path from "path";
 import { env } from "../config/env";
 
 const PUBLIC_PATHS = new Set([
@@ -23,7 +25,31 @@ interface Session {
   expiresAt: number;
 }
 
-const activeSessions = new Map<string, Session>();
+// SQLite-backed session store — survives server restarts
+const DB_PATH = path.join(process.cwd(), "data", "app.db");
+const sessionDb = new Database(DB_PATH);
+sessionDb.pragma("journal_mode = WAL");
+sessionDb.exec(`
+  CREATE TABLE IF NOT EXISTS auth_sessions (
+    token TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  )
+`);
+const stmtInsert = sessionDb.prepare(
+  "INSERT INTO auth_sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)"
+);
+const stmtGet = sessionDb.prepare(
+  "SELECT token, user_id, created_at, expires_at FROM auth_sessions WHERE token = ? AND expires_at > ?"
+);
+const stmtDelete = sessionDb.prepare("DELETE FROM auth_sessions WHERE token = ?");
+const stmtCleanExpired = sessionDb.prepare(
+  "DELETE FROM auth_sessions WHERE expires_at <= ?"
+);
+
+// Clean expired sessions on startup
+stmtCleanExpired.run(Date.now());
 
 export function timingSafeEqual(a: string, b: string): boolean {
   if (typeof a !== "string" || typeof b !== "string") {
@@ -40,27 +66,29 @@ export function timingSafeEqual(a: string, b: string): boolean {
 export function createSessionToken(userId: string): string {
   const token = crypto.randomBytes(SESSION_TOKEN_BYTES).toString("hex");
   const now = Date.now();
-  activeSessions.set(token, {
-    token,
-    userId,
-    createdAt: now,
-    expiresAt: now + SESSION_TTL_MS,
-  });
+  stmtInsert.run(token, userId, now, now + SESSION_TTL_MS);
   return token;
 }
 
 export function validateSessionToken(token: string): Session | null {
-  const session = activeSessions.get(token);
-  if (!session) return null;
-  if (Date.now() > session.expiresAt) {
-    activeSessions.delete(token);
-    return null;
-  }
-  return session;
+  const row = stmtGet.get(token, Date.now()) as {
+    token: string;
+    user_id: string;
+    created_at: number;
+    expires_at: number;
+  } | undefined;
+  if (!row) return null;
+  return {
+    token: row.token,
+    userId: row.user_id,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+  };
 }
 
 export function revokeSessionToken(token: string): boolean {
-  return activeSessions.delete(token);
+  const result = stmtDelete.run(token);
+  return result.changes > 0;
 }
 
 export function getAuthPassword(): string {

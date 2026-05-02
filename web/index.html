@@ -621,19 +621,26 @@
       .message-input {
         display: flex;
         gap: 8px;
+        align-items: flex-end;
       }
 
-      .message-input input {
+      .message-input textarea {
         flex: 1;
         padding: 12px 16px;
         border: 2px solid #e5e7eb;
         border-radius: 8px;
         font-size: 14px;
+        font-family: inherit;
         outline: none;
         transition: border-color 0.2s;
+        resize: none;
+        min-height: 44px;
+        max-height: 200px;
+        line-height: 1.5;
+        overflow-y: auto;
       }
 
-      .message-input input:focus {
+      .message-input textarea:focus {
         border-color: #667eea;
       }
 
@@ -1061,11 +1068,11 @@
           </div>
 
           <div class="message-input">
-            <input
-              type="text"
+            <textarea
               id="messageInput"
-              placeholder="Type your message here..."
-            />
+              placeholder="Type your message here... (Shift+Enter for new line)"
+              rows="1"
+            ></textarea>
             <button class="send-btn" id="sendBtn">Send</button>
           </div>
         </div>
@@ -1110,6 +1117,9 @@
       let currentMode = "productivity";
       let currentSessionId = localStorage.getItem("currentSessionId") || null;
       let authToken = localStorage.getItem("authToken") || null;
+      let messageHistory = [];
+      let historyIndex = -1;
+      let draftBeforeHistory = "";
 
       document.addEventListener("DOMContentLoaded", () => {
         checkAuth();
@@ -1245,13 +1255,53 @@
         document
           .getElementById("sendBtn")
           .addEventListener("click", sendMessage);
-        document
-          .getElementById("messageInput")
-          .addEventListener("keypress", (e) => {
-            if (e.key === "Enter") {
-              sendMessage();
+        const messageInput = document.getElementById("messageInput");
+        messageInput.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+          }
+          if (e.key === "ArrowUp" && !e.shiftKey) {
+            const textarea = e.target;
+            const isAtStart = textarea.selectionStart === 0 && textarea.selectionEnd === 0;
+            const isEmpty = textarea.value.length === 0;
+            if (isAtStart || isEmpty) {
+              e.preventDefault();
+              if (historyIndex === -1) {
+                draftBeforeHistory = textarea.value;
+              }
+              if (messageHistory.length > 0 && historyIndex < messageHistory.length - 1) {
+                historyIndex++;
+                textarea.value = messageHistory[messageHistory.length - 1 - historyIndex];
+                autoResizeTextarea(textarea);
+                textarea.setSelectionRange(0, 0);
+              }
             }
-          });
+          }
+          if (e.key === "ArrowDown" && !e.shiftKey) {
+            const textarea = e.target;
+            const isAtEnd = textarea.selectionStart === textarea.value.length && textarea.selectionEnd === textarea.value.length;
+            if (isAtEnd) {
+              e.preventDefault();
+              if (historyIndex > 0) {
+                historyIndex--;
+                textarea.value = messageHistory[messageHistory.length - 1 - historyIndex];
+              } else if (historyIndex === 0) {
+                historyIndex = -1;
+                textarea.value = draftBeforeHistory;
+              }
+              autoResizeTextarea(textarea);
+              const len = textarea.value.length;
+              textarea.setSelectionRange(len, len);
+            }
+          }
+        });
+        messageInput.addEventListener("input", () => autoResizeTextarea(messageInput));
+      }
+
+      function autoResizeTextarea(el) {
+        el.style.height = "auto";
+        el.style.height = Math.min(el.scrollHeight, 200) + "px";
       }
 
       async function initializeChat() {
@@ -1321,6 +1371,9 @@
             )
               continue;
             addMessage(msg.content, msg.role);
+            if (msg.role === "user" && msg.content) {
+              messageHistory.push(msg.content);
+            }
           }
         } catch {
           currentSessionId = null;
@@ -1353,6 +1406,70 @@
         `;
       }
 
+      async function handleStreamResponse(response, progressEl, onError) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let currentThinking = "";
+        let eventType = "";
+
+        function processBuffer(flush) {
+          const lines = buffer.split("\n");
+          buffer = flush ? "" : (lines.pop() || "");
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              eventType = line.slice(7).trim();
+              continue;
+            }
+            if (line.startsWith("data: ")) {
+              const dataStr = line.slice(6).trim();
+              if (dataStr === "[DONE]") continue;
+              try {
+                const data = JSON.parse(dataStr);
+                if (data.sessionId) {
+                  currentSessionId = data.sessionId;
+                  localStorage.setItem("currentSessionId", currentSessionId);
+                }
+                if (eventType === "tool_start") addToolCall(data.id, data.name, data.params);
+                if (eventType === "tool_result") completeToolCall(data.id, data.result);
+                if (eventType === "thinking" && data.thinking) {
+                  currentThinking += data.thinking;
+                }
+                // Each content event is its own completed message round
+                if (data.content && data.content.trim()) {
+                  addMessage(data.content, "assistant", currentThinking || undefined);
+                  currentThinking = "";
+                }
+                if (data.message) {
+                  progressEl.remove();
+                  addMessage("Sorry, I encountered an error: " + data.message, "assistant");
+                  return { error: true };
+                }
+              } catch {}
+            }
+          }
+          return { error: false };
+        }
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            // Flush any remaining data in the buffer
+            if (buffer.trim()) {
+              buffer += "\n";
+              const result = processBuffer(true);
+              if (result.error) return { error: true };
+            }
+            break;
+          }
+          buffer += decoder.decode(value, { stream: true });
+          const result = processBuffer(false);
+          if (result.error) return { error: true };
+        }
+
+        return { error: false };
+      }
+
       async function sendMessage() {
         const input = document.getElementById("messageInput");
         const message = input.value.trim();
@@ -1360,9 +1477,15 @@
         if (!message) return;
 
         input.value = "";
+        autoResizeTextarea(input);
+        historyIndex = -1;
+        draftBeforeHistory = "";
+        if (messageHistory[messageHistory.length - 1] !== message) {
+          messageHistory.push(message);
+        }
         addMessage(message, "user");
 
-        const { statusDiv, progressEl } = createToolProgress();
+        const { progressEl } = createToolProgress();
         document.getElementById("chatMessages").appendChild(progressEl);
         document.getElementById("chatMessages").scrollTop =
           document.getElementById("chatMessages").scrollHeight;
@@ -1387,77 +1510,31 @@
             return;
           }
 
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-          let contentReceived = "";
-          let thinkingReceived = "";
-          let eventType = "";
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
-
-            for (const line of lines) {
-              if (line.startsWith("event: ")) {
-                eventType = line.slice(7).trim();
-                continue;
+          if (!response.ok) {
+            progressEl.remove();
+            let errorText = `Server returned ${response.status}`;
+            try {
+              const errBody = await response.json();
+              if (errBody.error || errBody.message) {
+                errorText = errBody.error || errBody.message;
               }
-              if (line.startsWith("data: ")) {
-                const dataStr = line.slice(6).trim();
-                if (dataStr === "[DONE]") continue;
-
-                try {
-                  const data = JSON.parse(dataStr);
-
-                  if (data.sessionId) {
-                    currentSessionId = data.sessionId;
-                    localStorage.setItem("currentSessionId", currentSessionId);
-                  }
-
-                  if (eventType === "tool_start") {
-                    addToolCall(data.id, data.name, data.params);
-                  }
-
-                  if (eventType === "tool_result") {
-                    completeToolCall(data.id, data.result);
-                  }
-
-                  if (eventType === "thinking" && data.thinking) {
-                    thinkingReceived += data.thinking;
-                  }
-
-                  if (data.content) {
-                    contentReceived += data.content;
-                  }
-
-                  if (data.message) {
-                    progressEl.remove();
-                    addMessage(
-                      "Sorry, I encountered an error: " + data.message,
-                      "assistant",
-                    );
-                    return;
-                  }
-                } catch {}
-              }
-            }
+            } catch {}
+            addMessage("Error: " + errorText, "assistant");
+            return;
           }
+
+          const result = await handleStreamResponse(response, progressEl);
 
           progressEl.remove();
 
-          if (contentReceived && contentReceived.trim()) {
-            addMessage(contentReceived, "assistant", thinkingReceived || undefined);
-          }
+          if (result.error) return;
+          // Content is already rendered inline by handleStreamResponse
         } catch (error) {
           progressEl.remove();
           console.error("Failed to send message:", error);
+          const errMsg = error instanceof Error ? error.message : String(error);
           addMessage(
-            "Failed to connect to the agent. Please check your connection.",
+            "Failed to connect to the agent: " + errMsg + ". Please check that the server is running and try again.",
             "assistant",
           );
         }
@@ -1554,16 +1631,22 @@
         statusDot.classList.remove("running");
         statusDot.classList.add("done");
 
-        const resultStr =
-          typeof result === "object"
-            ? JSON.stringify(result, null, 2)
-            : String(result);
-        const shortResult =
-          resultStr.length > 300 ? resultStr.slice(0, 300) + "..." : resultStr;
+        const resultObj = typeof result === "object" ? result : null;
+        const summaryText = summarizeResult(resultObj || result);
+        const fullJson = resultObj
+          ? JSON.stringify(result, null, 2)
+          : String(result);
+        const truncJson =
+          fullJson.length > 2000 ? fullJson.slice(0, 2000) + "..." : fullJson;
 
         const resultDiv = document.createElement("div");
         resultDiv.className = "tool-call-result";
-        resultDiv.textContent = shortResult;
+        if (resultObj && fullJson.length > 200) {
+          const resultId = "result-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
+          resultDiv.innerHTML = `<span>${escapeHtml(summaryText)}</span> <span class="result-toggle" data-result-id="${resultId}" style="color:#667eea;cursor:pointer;font-size:11px;margin-left:4px;">[show raw]</span><pre id="${resultId}" style="display:none;margin:4px 0 0;padding:6px;background:#1e1e2e;color:#cdd6f4;border-radius:4px;font-size:11px;max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all;">${escapeHtml(truncJson)}</pre>`;
+        } else {
+          resultDiv.textContent = summaryText;
+        }
         item.appendChild(resultDiv);
 
         const chatMessages = document.getElementById("chatMessages");
@@ -1585,10 +1668,28 @@
           if (headerText) {
             headerText.innerHTML = `
               <span class="tool-call-status done"></span>
-              Finished processing
+              Generating response...
             `;
           }
         }
+      }
+
+      function summarizeResult(result) {
+        if (!result || typeof result !== "object") return String(result);
+        if (result.error) return `Error: ${result.error}`;
+        if (result.message && result.tools) return result.message;
+        if (result.message) return result.message;
+        if (result.success === false) return `Failed: ${result.error || "unknown error"}`;
+        const keys = Object.keys(result);
+        if (keys.length === 0) return "OK";
+        if (keys.length <= 3) {
+          return keys.map((k) => `${k}: ${truncate(String(result[k]), 60)}`).join(", ");
+        }
+        return `${keys.length} fields: ${keys.slice(0, 4).join(", ")}${keys.length > 4 ? "..." : ""}`;
+      }
+
+      function truncate(str, max) {
+        return str.length > max ? str.slice(0, max) + "..." : str;
       }
 
       function escapeHtml(str) {
@@ -1597,19 +1698,44 @@
         return div.innerHTML;
       }
 
-      async function resendMessage(message) {
-        const messagesDiv = document.getElementById("chatMessages");
-        const userMessages = messagesDiv.querySelectorAll(".message.user");
-        const lastUserMsg = userMessages[userMessages.length - 1];
+      document.addEventListener("click", function(e) {
+        if (e.target.classList && e.target.classList.contains("result-toggle")) {
+          const resultId = e.target.getAttribute("data-result-id");
+          const pre = document.getElementById(resultId);
+          if (pre) {
+            const isVisible = pre.style.display !== "none";
+            pre.style.display = isVisible ? "none" : "block";
+            e.target.textContent = isVisible ? "[show raw]" : "[hide raw]";
+          }
+        }
+      });
 
-        if (lastUserMsg) {
-          let removeNext = lastUserMsg.nextElementSibling;
-          while (removeNext) {
-            const current = removeNext;
-            removeNext = removeNext.nextElementSibling;
+      async function resendMessage(message) {
+        historyIndex = -1;
+        if (messageHistory[messageHistory.length - 1] !== message) {
+          messageHistory.push(message);
+        }
+        const messagesDiv = document.getElementById("chatMessages");
+
+        // Find the clicked user message by matching text content
+        const userMessages = messagesDiv.querySelectorAll(".message.user");
+        let clickedMsg = null;
+        for (const um of userMessages) {
+          if (um.dataset.originalText === message) {
+            clickedMsg = um;
+            break;
+          }
+        }
+
+        // Remove the clicked message and everything after it
+        if (clickedMsg) {
+          let next = clickedMsg.nextElementSibling;
+          while (next) {
+            const current = next;
+            next = next.nextElementSibling;
             current.remove();
           }
-          lastUserMsg.remove();
+          clickedMsg.remove();
         }
 
         const { progressEl } = createToolProgress();
@@ -1637,79 +1763,33 @@
             return;
           }
 
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-          let contentReceived = "";
-          let thinkingReceived = "";
-          let eventType = "";
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
-
-            for (const line of lines) {
-              if (line.startsWith("event: ")) {
-                eventType = line.slice(7).trim();
-                continue;
+          if (!response.ok) {
+            progressEl.remove();
+            addMessage(message, "user");
+            let errorText = `Server returned ${response.status}`;
+            try {
+              const errBody = await response.json();
+              if (errBody.error || errBody.message) {
+                errorText = errBody.error || errBody.message;
               }
-              if (line.startsWith("data: ")) {
-                const dataStr = line.slice(6).trim();
-                if (dataStr === "[DONE]") continue;
-
-                try {
-                  const data = JSON.parse(dataStr);
-
-                  if (data.sessionId) {
-                    currentSessionId = data.sessionId;
-                    localStorage.setItem("currentSessionId", currentSessionId);
-                  }
-
-                  if (eventType === "tool_start") {
-                    addToolCall(data.id, data.name, data.params);
-                  }
-
-                  if (eventType === "tool_result") {
-                    completeToolCall(data.id, data.result);
-                  }
-
-                  if (eventType === "thinking" && data.thinking) {
-                    thinkingReceived += data.thinking;
-                  }
-
-                  if (data.content) {
-                    contentReceived += data.content;
-                  }
-
-                  if (data.message) {
-                    progressEl.remove();
-                    addMessage(
-                      "Sorry, I encountered an error: " + data.message,
-                      "assistant",
-                    );
-                    return;
-                  }
-                } catch {}
-              }
-            }
+            } catch {}
+            addMessage("Error: " + errorText, "assistant");
+            return;
           }
+
+          const result = await handleStreamResponse(response, progressEl);
 
           progressEl.remove();
 
-          if (contentReceived && contentReceived.trim()) {
-            addMessage(message, "user");
-            addMessage(contentReceived, "assistant", thinkingReceived || undefined);
-          }
+          if (result.error) return;
+          // Content is already rendered inline by handleStreamResponse
         } catch (error) {
           console.error("Failed to send message:", error);
           progressEl.remove();
           addMessage(message, "user");
+          const errMsg2 = error instanceof Error ? error.message : String(error);
           addMessage(
-            "Failed to connect to the agent. Please check your connection.",
+            "Failed to connect to the agent: " + errMsg2 + ". Please check that the server is running and try again.",
             "assistant",
           );
         }
@@ -1919,7 +1999,8 @@
       }
 
       async function quickAction(action) {
-        document.getElementById("messageInput").value = action;
+        const input = document.getElementById("messageInput");
+        input.value = action;
         await sendMessage();
       }
 

@@ -1,6 +1,11 @@
 import { fileCalendarService } from "../integrations/file/calendar-service";
 
 class HealthBreaks {
+  // Exercise schedule: 3 days per week, 1 hour each
+  private readonly EXERCISE_DAYS = [1, 3, 5]; // Mon, Wed, Fri
+  private readonly EXERCISE_DURATION = 60; // minutes
+  private readonly EXERCISE_PREFERRED_HOUR = 7; // 7am before work
+
   async recommendBreaks(
     date: Date,
     _userId: string,
@@ -26,27 +31,6 @@ class HealthBreaks {
     dayEnd.setHours(23, 59, 59, 999);
     const existing = fileCalendarService.listEvents(d, dayEnd);
 
-    const templates = [
-      {
-        duration: 30,
-        title: "Morning stretch / walk",
-        type: "fitness" as const,
-        preferredHour: 9,
-      },
-      {
-        duration: 60,
-        title: "Lunch break",
-        type: "meal" as const,
-        preferredHour: 12,
-      },
-      {
-        duration: 15,
-        title: "Afternoon walk",
-        type: "mental_health" as const,
-        preferredHour: 15,
-      },
-    ];
-
     const recommendations: Array<{
       startTime: Date;
       duration: number;
@@ -54,42 +38,71 @@ class HealthBreaks {
       type: "fitness" | "meal" | "mental_health";
     }> = [];
 
-    for (const template of templates) {
-      if (recommendations.length >= 3) break;
-
-      const preferred = new Date(d);
-      preferred.setHours(template.preferredHour, 0, 0, 0);
-      const preferredEnd = new Date(
-        preferred.getTime() + template.duration * 60000,
+    // 1-hour exercise on Mon/Wed/Fri
+    if (this.EXERCISE_DAYS.includes(day)) {
+      const exerciseStart = new Date(d);
+      exerciseStart.setHours(this.EXERCISE_PREFERRED_HOUR, 0, 0, 0);
+      const exerciseEnd = new Date(
+        exerciseStart.getTime() + this.EXERCISE_DURATION * 60000,
       );
 
       const conflicts = existing.filter(
-        (e) => preferred < e.endTime && preferredEnd > e.startTime,
+        (e) => exerciseStart < e.endTime && exerciseEnd > e.startTime,
       );
 
       if (conflicts.length === 0) {
         recommendations.push({
-          startTime: preferred,
-          duration: template.duration,
-          title: template.title,
-          type: template.type,
+          startTime: exerciseStart,
+          duration: this.EXERCISE_DURATION,
+          title: "Exercise (1 hour)",
+          type: "fitness",
         });
       } else {
-        const slot = fileCalendarService.findNextAvailableSlot(
-          d,
-          template.duration,
-          conflicts.sort((a, b) => b.endTime.getTime() - a.endTime.getTime())[0]
-            .endTime,
+        // Try to find an alternative slot after the conflict
+        const afterConflict = new Date(
+          Math.max(...conflicts.map((c) => c.endTime.getTime())),
         );
-        if (slot) {
+        if (afterConflict.getHours() < 17) {
           recommendations.push({
-            startTime: slot,
-            duration: template.duration,
-            title: template.title,
-            type: template.type,
+            startTime: afterConflict,
+            duration: this.EXERCISE_DURATION,
+            title: "Exercise (1 hour)",
+            type: "fitness",
           });
         }
       }
+    }
+
+    // Lunch break
+    const lunchStart = new Date(d);
+    lunchStart.setHours(12, 0, 0, 0);
+    const lunchEnd = new Date(lunchStart.getTime() + 60 * 60000);
+    const lunchConflicts = existing.filter(
+      (e) => lunchStart < e.endTime && lunchEnd > e.startTime,
+    );
+    if (lunchConflicts.length === 0) {
+      recommendations.push({
+        startTime: lunchStart,
+        duration: 60,
+        title: "Lunch break",
+        type: "meal",
+      });
+    }
+
+    // Afternoon mental break
+    const pmBreak = new Date(d);
+    pmBreak.setHours(15, 0, 0, 0);
+    const pmBreakEnd = new Date(pmBreak.getTime() + 15 * 60000);
+    const pmConflicts = existing.filter(
+      (e) => pmBreak < e.endTime && pmBreakEnd > e.startTime,
+    );
+    if (pmConflicts.length === 0) {
+      recommendations.push({
+        startTime: pmBreak,
+        duration: 15,
+        title: "Afternoon walk / mental reset",
+        type: "mental_health",
+      });
     }
 
     if (recommendations.length === 0) {

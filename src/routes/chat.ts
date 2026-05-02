@@ -5,7 +5,7 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getSystemPrompt, opencodeClient } from "../agent";
-import { getTools, getToolsByCategory, getAllToolsForMode } from "../agent/tool-registry";
+import { getTools, getToolsByCategory } from "../agent/tool-registry";
 import { dispatchToolCall } from "../agent/tool-dispatcher";
 import { AGENT_MODES } from "../config/constants";
 import type { Tool, ChatMessage } from "../agent/opencode-client";
@@ -122,6 +122,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       let allToolCalls: Array<{ id: string; name: string; params: any }> = [];
       let allToolResults: Record<string, unknown> = {};
+      let expandedTools = [...(tools || [])];
 
       let loopCount = 0;
       const maxLoops = 10;
@@ -154,12 +155,49 @@ export async function chatRoutes(fastify: FastifyInstance) {
         allToolCalls = allToolCalls.concat(toolCalls);
 
         for (const tc of toolCalls) {
+          const dispatchParams = { ...tc.params, _mode: body.mode };
           const result = await dispatchToolCall(
             tc.name,
-            tc.params,
+            dispatchParams,
             body.userId,
           );
           allToolResults[tc.id] = result;
+
+          if (tc.name === "discover_tools" && result.success) {
+            const category = tc.params.category as string | undefined;
+            if (category) {
+              const categoryTools = getToolsByCategory(body.mode, category);
+              const categoryToolDefs = categoryTools.map((tool) => {
+                const properties: Record<string, unknown> = {};
+                for (const [key, param] of Object.entries(tool.params)) {
+                  const { required: _, ...rest } = param as any;
+                  properties[key] = rest;
+                }
+                return {
+                  type: "function" as const,
+                  function: {
+                    name: tool.name,
+                    description: tool.description,
+                    parameters: {
+                      type: "object",
+                      properties,
+                      required: Object.entries(tool.params)
+                        .filter(([_, param]) => (param as any).required)
+                        .map(([name]) => name),
+                    },
+                  },
+                };
+              });
+
+              const existingNames = new Set(expandedTools.map((t) => t.function.name));
+              for (const td of categoryToolDefs) {
+                if (!existingNames.has(td.function.name)) {
+                  expandedTools.push(td);
+                  existingNames.add(td.function.name);
+                }
+              }
+            }
+          }
 
           if (sessionId) {
             conversationManager.addMessage(sessionId, {
@@ -186,7 +224,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
         response = await opencodeClient.chat({
           messages: followupMessages,
-          tools,
+          tools: expandedTools.length > 0 ? expandedTools : undefined,
           temperature: 0.7,
           top_p: 0.95,
         });
@@ -305,6 +343,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       });
 
       let allToolResults: Record<string, unknown> = {};
+      let expandedTools = [...(tools || [])];
       let loopCount = 0;
       const maxLoops = 10;
 
@@ -314,6 +353,14 @@ export async function chatRoutes(fastify: FastifyInstance) {
         loopCount < maxLoops
       ) {
         loopCount++;
+
+        // Send intermediate content (commentary like "Let me look up IR-55...")
+        if (response.content && response.content.trim()) {
+          sendEvent("content", { content: response.content });
+        }
+        if (response.thinking) {
+          sendEvent("thinking", { thinking: response.thinking });
+        }
 
         if (sessionId) {
           conversationManager.addMessage(sessionId, {
@@ -340,14 +387,51 @@ export async function chatRoutes(fastify: FastifyInstance) {
             params: tc.params,
           });
 
+          const dispatchParams = { ...tc.params, _mode: body.mode };
           const result = await dispatchToolCall(
             tc.name,
-            tc.params,
+            dispatchParams,
             body.userId,
           );
           allToolResults[tc.id] = result;
 
           sendEvent("tool_result", { id: tc.id, result });
+
+          if (tc.name === "discover_tools" && result.success) {
+            const category = tc.params.category as string | undefined;
+            if (category) {
+              const categoryTools = getToolsByCategory(body.mode, category);
+              const categoryToolDefs = categoryTools.map((tool) => {
+                const properties: Record<string, unknown> = {};
+                for (const [key, param] of Object.entries(tool.params)) {
+                  const { required: _, ...rest } = param as any;
+                  properties[key] = rest;
+                }
+                return {
+                  type: "function" as const,
+                  function: {
+                    name: tool.name,
+                    description: tool.description,
+                    parameters: {
+                      type: "object",
+                      properties,
+                      required: Object.entries(tool.params)
+                        .filter(([_, param]) => (param as any).required)
+                        .map(([name]) => name),
+                    },
+                  },
+                };
+              });
+
+              const existingNames = new Set(expandedTools.map((t) => t.function.name));
+              for (const td of categoryToolDefs) {
+                if (!existingNames.has(td.function.name)) {
+                  expandedTools.push(td);
+                  existingNames.add(td.function.name);
+                }
+              }
+            }
+          }
 
           if (sessionId) {
             conversationManager.addMessage(sessionId, {
@@ -374,7 +458,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
         response = await opencodeClient.chat({
           messages: followupMessages,
-          tools,
+          tools: expandedTools.length > 0 ? expandedTools : undefined,
           temperature: 0.7,
           top_p: 0.95,
         });

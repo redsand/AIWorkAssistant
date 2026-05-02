@@ -179,7 +179,13 @@ export class GitlabClient {
   }
 
   resolveProjectId(projectId?: string | number | undefined): string | number {
-    if (projectId) return projectId;
+    if (projectId) {
+      // Encode namespaced paths (e.g. "hawkio/siem" → "hawkio%2Fsiem") for URL safety
+      if (typeof projectId === "string" && projectId.includes("/")) {
+        return encodeURIComponent(projectId);
+      }
+      return projectId;
+    }
     const defaultProject = this.getDefaultProject();
     if (!defaultProject) {
       throw new Error(
@@ -691,14 +697,37 @@ export class GitlabClient {
       if (ref) params.ref = ref;
       if (recursive) params.recursive = true;
 
-      const response = await this.client.get(
-        `/api/v4/projects/${resolvedId}/repository/tree`,
-        { params },
-      );
+      // Paginate to get all results (GitLab caps at 100 per page)
+      const allItems: Array<{
+        id: string;
+        name: string;
+        type: "tree" | "blob";
+        path: string;
+        mode: string;
+      }> = [];
+      let page = 1;
+      let hasMore = true;
 
-      const items = response.data || [];
-      console.log(`[GitLab] Found ${items.length} items in repository tree`);
-      return items;
+      while (hasMore) {
+        const response = await this.client.get(
+          `/api/v4/projects/${resolvedId}/repository/tree`,
+          { params: { ...params, page, per_page: 100 } },
+        );
+
+        const items = response.data || [];
+        allItems.push(...items);
+
+        // GitLab returns X-Next-Page header when more pages exist
+        const nextPage = response.headers?.["x-next-page"];
+        if (nextPage && items.length === 100) {
+          page = parseInt(nextPage, 10);
+        } else {
+          hasMore = false;
+        }
+      }
+
+      console.log(`[GitLab] Found ${allItems.length} items in repository tree`);
+      return allItems;
     } catch (error) {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;

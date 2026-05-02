@@ -4,6 +4,7 @@ import { jiraClient } from "../integrations/jira/jira-client";
 import { gitlabClient } from "../integrations/gitlab/gitlab-client";
 import { githubClient } from "../integrations/github/github-client";
 import { dailyPlanner } from "../productivity/daily-planner";
+import { roadmapDatabase } from "../roadmap/database";
 import { auditLogger } from "../audit/logger";
 import { env } from "../config/env";
 import {
@@ -652,6 +653,15 @@ async function handleGitlabGetFile(
     filePath,
     params.ref as string | undefined,
   );
+  // Decode base64 content so the AI can read the file
+  if (file && file.content) {
+    try {
+      file.content = Buffer.from(file.content, "base64").toString("utf-8");
+      file.encoding = "decoded";
+    } catch {
+      // Leave as-is if decoding fails
+    }
+  }
   return { success: true, data: file };
 }
 
@@ -1773,6 +1783,127 @@ type ToolHandler = (
   userId: string,
 ) => Promise<ToolCallResult>;
 
+// ── Roadmap Handlers ──────────────────────────────────────────────
+
+async function handleRoadmapList(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const filters: { type?: "client" | "internal"; status?: string } = {};
+    if (params.type) filters.type = params.type as "client" | "internal";
+    if (params.status) filters.status = params.status as string;
+    const roadmaps = roadmapDatabase.listRoadmaps(filters);
+    return { success: true, data: roadmaps };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
+async function handleRoadmapGet(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const id = params.id as string;
+    if (!id) return { success: false, error: "id is required" };
+    const roadmap = roadmapDatabase.getRoadmap(id);
+    if (!roadmap) return { success: false, error: `Roadmap ${id} not found` };
+    const milestones = roadmapDatabase.getMilestones(id);
+    const items = milestones.flatMap((m) => roadmapDatabase.getItems(m.id));
+    return { success: true, data: { ...roadmap, milestones, items } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
+async function handleRoadmapCreate(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const roadmap = roadmapDatabase.createRoadmap({
+      name: params.name as string,
+      type: (params.type as "client" | "internal") || "internal",
+      startDate: params.startDate as string,
+      endDate: (params.endDate as string) || null,
+      status: (params.status as any) || "draft",
+      description: (params.description as string) || null,
+      jiraProjectKey: (params.jiraProjectKey as string) || null,
+      jiraProjectId: null,
+      metadata: null,
+    });
+    return { success: true, data: roadmap };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
+async function handleRoadmapUpdate(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const id = params.id as string;
+    if (!id) return { success: false, error: "id is required" };
+    const updates: Record<string, unknown> = {};
+    for (const key of ["name", "status", "startDate", "endDate", "description"]) {
+      if (params[key] !== undefined) updates[key] = params[key];
+    }
+    const roadmap = roadmapDatabase.updateRoadmap(id, updates as any);
+    if (!roadmap) return { success: false, error: `Roadmap ${id} not found` };
+    return { success: true, data: roadmap };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
+async function handleRoadmapAddMilestone(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const roadmapId = params.roadmapId as string;
+    if (!roadmapId) return { success: false, error: "roadmapId is required" };
+    const roadmap = roadmapDatabase.getRoadmap(roadmapId);
+    if (!roadmap) return { success: false, error: `Roadmap ${roadmapId} not found` };
+    const milestones = roadmapDatabase.getMilestones(roadmapId);
+    const milestone = roadmapDatabase.createMilestone({
+      roadmapId,
+      name: params.name as string,
+      targetDate: params.targetDate as string,
+      description: (params.description as string) || null,
+      status: "pending",
+      order: milestones.length,
+      jiraEpicKey: (params.jiraEpicKey as string) || null,
+    });
+    return { success: true, data: milestone };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
+async function handleRoadmapAddItem(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const milestoneId = params.milestoneId as string;
+    if (!milestoneId) return { success: false, error: "milestoneId is required" };
+    const items = roadmapDatabase.getItems(milestoneId);
+    const item = roadmapDatabase.createItem({
+      milestoneId,
+      title: params.title as string,
+      type: (params.type as any) || "task",
+      status: "todo",
+      priority: (params.priority as any) || "medium",
+      estimatedHours: null,
+      actualHours: null,
+      assignee: null,
+      jiraKey: (params.jiraKey as string) || null,
+      description: (params.description as string) || null,
+      order: items.length,
+    });
+    return { success: true, data: item };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
 const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "calendar.list_events": handleCalendarListEvents,
   "calendar.create_focus_block": handleCalendarCreateFocusBlock,
@@ -1855,6 +1986,15 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "github.list_releases": handleGithubListReleases,
   "github.create_release": handleGithubCreateRelease,
   "productivity.generate_daily_plan": handleDailyPlan,
+
+  // ── Roadmap Handlers ────────────────────────────────────────
+  "roadmap.list": handleRoadmapList,
+  "roadmap.get": handleRoadmapGet,
+  "roadmap.create": handleRoadmapCreate,
+  "roadmap.update": handleRoadmapUpdate,
+  "roadmap.add_milestone": handleRoadmapAddMilestone,
+  "roadmap.add_item": handleRoadmapAddItem,
+
   discover_tools: handleDiscoverTools,
 };
 

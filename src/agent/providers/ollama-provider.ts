@@ -85,6 +85,13 @@ export class OllamaProvider extends AIProvider {
             return this.chat({ ...request, tools: undefined });
           }
 
+          if (status === 500 && request.tools && attempt === 1) {
+            console.warn(
+              "[Ollama API] Server error with tools, retrying without tools",
+            );
+            return this.chat({ ...request, tools: undefined });
+          }
+
           if (status === 401 || status === 403) {
             throw new Error(
               `Ollama API authentication failed (${status}). Check your API key.`,

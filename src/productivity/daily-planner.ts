@@ -9,6 +9,7 @@ interface DailyPlan {
     time: string;
     title: string;
     type: "meeting" | "focus" | "health" | "break";
+    jiraKey?: string;
   }>;
   jiraUpdates: {
     assigned: number;
@@ -21,6 +22,11 @@ interface DailyPlan {
   };
   recommendations: string[];
 }
+
+// Exercise schedule config
+const EXERCISE_DAYS = [1, 3, 5]; // Mon, Wed, Fri
+const MORNING_FOCUS_SLOTS = 2;
+const AFTERNOON_FOCUS_SLOTS = 2;
 
 class DailyPlanner {
   async generatePlan(date: Date, userId: string): Promise<DailyPlan> {
@@ -56,6 +62,7 @@ class DailyPlanner {
     const priorities: string[] = [];
     const schedule: DailyPlan["schedule"] = [];
 
+    // Add existing calendar events to schedule
     for (const event of calendarEvents) {
       const timeStr = event.startTime.toLocaleTimeString("en-US", {
         hour: "2-digit",
@@ -72,26 +79,93 @@ class DailyPlanner {
       schedule.push({ time: timeStr, title: event.summary, type });
     }
 
-    const businessStart = new Date(d);
-    businessStart.setHours(9, 0, 0, 0);
-    const businessEnd = new Date(d);
-    businessEnd.setHours(17, 0, 0, 0);
-
+    // Build a task-aware schedule if no events exist
     if (calendarEvents.length === 0) {
-      schedule.push(
-        { time: "09:00", title: "Morning standup / planning", type: "meeting" },
-        { time: "09:30", title: "Focus block: Deep work", type: "focus" },
-        { time: "12:00", title: "Lunch break", type: "health" },
-        { time: "13:00", title: "Focus block: Implementation", type: "focus" },
-        {
-          time: "15:00",
-          title: "Code review / collaboration",
-          type: "meeting",
-        },
-        { time: "15:30", title: "Focus block: Wrap up tasks", type: "focus" },
+      // Exercise on Mon/Wed/Fri at 7am
+      if (EXERCISE_DAYS.includes(day)) {
+        schedule.push({
+          time: "07:00",
+          title: "Exercise (1 hour)",
+          type: "health",
+        });
+      }
+
+      // Morning planning
+      schedule.push({
+        time: "09:00",
+        title: "Morning standup / planning",
+        type: "meeting",
+      });
+
+      // Assign Jira tasks to morning focus blocks (2 tasks)
+      const morningTasks = assignedIssues.slice(0, MORNING_FOCUS_SLOTS);
+      const morningTimes = ["09:30", "11:00"];
+      morningTasks.forEach((issue: any, i: number) => {
+        const key = issue.key || "TASK";
+        const summary = issue.fields?.summary || issue.summary || key;
+        schedule.push({
+          time: morningTimes[i],
+          title: `Focus: ${key} - ${summary}`,
+          type: "focus",
+          jiraKey: key,
+        });
+      });
+      // Fill remaining morning slots if not enough tasks
+      for (let i = morningTasks.length; i < MORNING_FOCUS_SLOTS; i++) {
+        schedule.push({
+          time: morningTimes[i],
+          title: `Focus block (unassigned) #${i + 1}`,
+          type: "focus",
+        });
+      }
+
+      // Lunch
+      schedule.push({ time: "12:00", title: "Lunch break", type: "health" });
+
+      // Afternoon focus blocks (2 tasks)
+      const afternoonTasks = assignedIssues.slice(
+        MORNING_FOCUS_SLOTS,
+        MORNING_FOCUS_SLOTS + AFTERNOON_FOCUS_SLOTS,
       );
+      const afternoonTimes = ["13:00", "14:30"];
+      afternoonTasks.forEach((issue: any, i: number) => {
+        const key = issue.key || "TASK";
+        const summary = issue.fields?.summary || issue.summary || key;
+        schedule.push({
+          time: afternoonTimes[i],
+          title: `Focus: ${key} - ${summary}`,
+          type: "focus",
+          jiraKey: key,
+        });
+      });
+      for (
+        let i = afternoonTasks.length;
+        i < AFTERNOON_FOCUS_SLOTS;
+        i++
+      ) {
+        schedule.push({
+          time: afternoonTimes[i],
+          title: `Focus block (unassigned) #${i + 1}`,
+          type: "focus",
+        });
+      }
+
+      // Afternoon mental break
+      schedule.push({
+        time: "15:30",
+        title: "Afternoon walk / mental reset",
+        type: "health",
+      });
+
+      // Wrap-up
+      schedule.push({
+        time: "16:00",
+        title: "Wrap up / review progress",
+        type: "meeting",
+      });
     }
 
+    // Build priorities from Jira issues
     for (const issue of assignedIssues.slice(0, 5)) {
       const summary =
         (issue as any).fields?.summary ||
@@ -108,6 +182,21 @@ class DailyPlanner {
 
     const freeMinutes = this.calculateFreeMinutes(calendarEvents, d);
     const recommendations: string[] = [];
+
+    // Task pace recommendation
+    const totalFocusSlots = MORNING_FOCUS_SLOTS + AFTERNOON_FOCUS_SLOTS;
+    const taskCount = Math.min(assignedIssues.length, totalFocusSlots);
+    if (taskCount > 0) {
+      recommendations.push(
+        `Targeting ${taskCount} task${taskCount > 1 ? "s" : ""} today — adjust pace as tasks complete organically`,
+      );
+    }
+    if (assignedIssues.length > totalFocusSlots) {
+      recommendations.push(
+        `${assignedIssues.length - totalFocusSlots} more tasks queued — pick up extras if ahead of pace`,
+      );
+    }
+
     if (freeMinutes < 120) {
       recommendations.push(
         "Heavy meeting day - consider declining non-essential meetings",
@@ -118,10 +207,12 @@ class DailyPlanner {
         `${assignedIssues.length} Jira issues assigned - consider triaging`,
       );
     }
-    if (freeMinutes >= 240) {
-      recommendations.push(
-        "Good availability for deep work - schedule focus blocks",
-      );
+
+    // Exercise reminder
+    if (EXERCISE_DAYS.includes(day)) {
+      recommendations.push("Exercise day — 1 hour workout scheduled");
+    } else {
+      recommendations.push("Rest day from exercise — focus on recovery");
     }
 
     return {

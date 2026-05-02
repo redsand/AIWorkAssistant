@@ -52,11 +52,10 @@ export class ConversationManager {
   private sessions: Map<string, ConversationSession> = new Map();
   private memoryBasePath: string;
 
-  // Configuration thresholds
-  private readonly MAX_MESSAGES_BEFORE_COMPACT = 60;
-  private readonly MAX_TOKENS_BEFORE_COMPACT = 50000;
-  private readonly MIN_RECENT_MESSAGES = 8;
-  private readonly MAX_TOOL_RESULT_LENGTH = 3000;
+  // Configuration thresholds — compact early to keep context lean
+  private readonly MAX_MESSAGES_BEFORE_COMPACT = 24;
+  private readonly MIN_RECENT_MESSAGES = 6;
+  private readonly MAX_TOOL_RESULT_LENGTH = 2000;
   private readonly SESSION_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
 
   constructor() {
@@ -133,18 +132,22 @@ export class ConversationManager {
           "\n...[truncated]"
         : message.content;
 
+    // Also truncate large assistant responses
+    const content =
+      message.role === "assistant" &&
+      truncatedContent.length > this.MAX_TOOL_RESULT_LENGTH
+        ? truncatedContent.substring(0, this.MAX_TOOL_RESULT_LENGTH) +
+          "\n...[truncated]"
+        : truncatedContent;
+
     const messageWithTimestamp: Message = {
       ...message,
-      content: truncatedContent,
+      content,
       timestamp: new Date(),
     };
 
     session.messages.push(messageWithTimestamp);
     session.updatedAt = new Date();
-
-    if (this.shouldCompact(session)) {
-      this.compactSession(sessionId);
-    }
 
     this.saveActiveSession(session);
   }
@@ -157,7 +160,8 @@ export class ConversationManager {
   }
 
   /**
-   * Get messages in OpenCode API format
+   * Get messages in OpenCode API format — compacts on-the-fly for the AI context
+   * without mutating the stored session (which preserves full display history).
    */
   getSessionMessages(
     sessionId: string,
@@ -187,13 +191,36 @@ export class ConversationManager {
       }
     }
 
-    // Add recent messages
-    session.messages.forEach((msg) => {
+    // Compact on-the-fly: if session is large, only include recent messages + summary
+    const allMessages = session.messages;
+    const recentCount = this.MIN_RECENT_MESSAGES;
+    if (allMessages.length > this.MAX_MESSAGES_BEFORE_COMPACT) {
+      const oldMessages = allMessages.slice(0, -recentCount);
+      const recentMessages = allMessages.slice(-recentCount);
+
+      // Build compact summary of old messages
+      const summary = this.buildCompactSummary(oldMessages);
       messages.push({
-        role: msg.role,
-        content: msg.content,
+        role: "system",
+        content: summary,
       });
-    });
+
+      // Add only recent messages
+      for (const msg of recentMessages) {
+        messages.push({
+          role: msg.role,
+          content: msg.content,
+        });
+      }
+    } else {
+      // Session is small enough, include all messages
+      for (const msg of allMessages) {
+        messages.push({
+          role: msg.role,
+          content: msg.content,
+        });
+      }
+    }
 
     return messages;
   }
@@ -296,77 +323,69 @@ export class ConversationManager {
   }
 
   /**
-   * Check if session needs compaction
+   * Build a structured summary preserving key facts, decisions, and actions
    */
-  private shouldCompact(session: ConversationSession): boolean {
-    const messageCount = session.messages.length;
-    const estimatedTokens = this.estimateTokens(session.messages);
+  private buildCompactSummary(messages: Message[]): string {
+    const userMessages = messages.filter((m) => m.role === "user");
+    const assistantMessages = messages.filter((m) => m.role === "assistant");
+    const toolMessages = messages.filter((m) => m.role === "tool");
 
-    return (
-      messageCount > this.MAX_MESSAGES_BEFORE_COMPACT ||
-      estimatedTokens > this.MAX_TOKENS_BEFORE_COMPACT
-    );
-  }
-
-  /**
-   * Compact session by summarizing old messages
-   */
-  private async compactSession(sessionId: string): Promise<void> {
-    const session = this.sessions.get(sessionId);
-    if (!session || session.messages.length <= this.MIN_RECENT_MESSAGES) {
-      return;
-    }
-
-    console.log(`[MemoryManager] Compacting session ${sessionId}`);
-
-    // Split messages into old and recent
-    const splitPoint = session.messages.length - this.MIN_RECENT_MESSAGES;
-    const oldMessages = session.messages.slice(0, splitPoint);
-    const recentMessages = session.messages.slice(splitPoint);
-
-    // Generate summary of old messages
-    const summary = await this.generateMessagesSummary(oldMessages);
-
-    // Save summary
-    const summaryPath = path.join(
-      this.memoryBasePath,
-      "sessions",
-      `${sessionId}.summary.md`,
-    );
-    const summaryContent = this.formatSessionSummary(oldMessages, summary);
-    fs.writeFileSync(summaryPath, summaryContent, "utf-8");
-
-    // Replace old messages with summary
-    session.messages = [
-      {
-        role: "system",
-        content: `[Previous conversation summary]\n${summary}`,
-        timestamp: new Date(),
-      },
-      ...recentMessages,
-    ];
-
-    session.updatedAt = new Date();
-  }
-
-  /**
-   * Generate summary of messages
-   */
-  private async generateMessagesSummary(messages: Message[]): Promise<string> {
-    // Simple summarization logic - can be enhanced with AI
-    const userMessages = messages.filter((m) => m.role === "user").length;
-    const assistantMessages = messages.filter(
-      (m) => m.role === "assistant",
-    ).length;
-
+    // Extract key topics and entities
     const topics = this.extractTopics(messages);
     const timeRange = this.getTimeRange(messages);
 
-    return (
-      `Conversation spanned ${timeRange}. ` +
-      `Discussed ${userMessages} user messages and ${assistantMessages} assistant responses. ` +
-      `Key topics: ${topics.join(", ")}.`
+    // Collect user intents (first few words of each user message)
+    const userIntents = userMessages
+      .slice(-8) // last 8 user messages
+      .map((m) => m.content.substring(0, 120).replace(/\n/g, " "))
+      .filter((c) => c.trim().length > 0);
+
+    // Collect tool actions performed
+    const toolActions = toolMessages
+      .slice(-6)
+      .map((m) => {
+        try {
+          const result = JSON.parse(m.content);
+          if (result.error) return `Failed: ${result.error}`.substring(0, 100);
+          if (result.success === false)
+            return `Failed: ${result.error || "unknown"}`.substring(0, 100);
+          return `OK`;
+        } catch {
+          return m.content.substring(0, 80).replace(/\n/g, " ");
+        }
+      });
+
+    // Collect tool call names from assistant messages
+    const toolNames = assistantMessages
+      .flatMap((m) => m.toolCalls?.map((tc) => tc.name) || [])
+      .slice(-10);
+
+    const lines = [
+      `[Conversation context — ${messages.length} messages compressed from ${timeRange}]`,
+      `Topics: ${topics.join(", ")}`,
+    ];
+
+    if (userIntents.length > 0) {
+      lines.push(`Recent user requests:`);
+      userIntents.forEach((intent, i) => {
+        lines.push(`  ${i + 1}. ${intent}`);
+      });
+    }
+
+    if (toolNames.length > 0) {
+      const uniqueTools = [...new Set(toolNames)];
+      lines.push(`Tools used: ${uniqueTools.join(", ")}`);
+    }
+
+    if (toolActions.length > 0) {
+      lines.push(`Tool results: ${toolActions.length} calls completed`);
+    }
+
+    lines.push(
+      `(Continue the conversation naturally — full context of the last ${this.MIN_RECENT_MESSAGES} messages is preserved below.)`,
     );
+
+    return lines.join("\n");
   }
 
   /**
@@ -375,7 +394,7 @@ export class ConversationManager {
   private async generateSessionSummary(
     session: ConversationSession,
   ): Promise<MemorySummary> {
-    const summary = await this.generateMessagesSummary(session.messages);
+    const summary = this.buildCompactSummary(session.messages);
     const topics = this.extractTopics(session.messages);
     const timeRange = {
       start: session.messages[0]?.timestamp || session.createdAt,
@@ -455,42 +474,7 @@ ${summary.keyTopics.map((topic) => `- ${topic}`).join("\n")}
 `;
   }
 
-  /**
-   * Format session summary for temporary storage
-   */
-  private formatSessionSummary(messages: Message[], summary: string): string {
-    const topics = this.extractTopics(messages);
-    const timeRange = this.getTimeRange(messages);
-
-    return `# Conversation Summary
-
-**Time Range:** ${timeRange}
-**Messages:** ${messages.length}
-**Key Topics:** ${topics.join(", ")}
-
-## Summary
-
-${summary}
-
-## Message Details
-
-${messages
-  .map(
-    (m) => `
-### ${m.role} - ${m.timestamp.toLocaleTimeString()}
-
-${m.content}
-
-${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map((tc) => tc.name).join(", ")}` : ""}
-`,
-  )
-  .join("\n")}
-
----
-*Compacted by AI Assistant Memory Manager*
-`;
-  }
-
+  /** @internal Kept for future use */
   /**
    * Parse markdown summary back into object
    */
@@ -598,15 +582,6 @@ ${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map((tc) => tc.name).join(", ")}`
     } else {
       return `${Math.floor(minutes / 1440)} days`;
     }
-  }
-
-  /**
-   * Estimate token count for messages
-   */
-  private estimateTokens(messages: Message[]): number {
-    // Rough estimate: ~4 characters per token
-    const totalChars = messages.reduce((sum, m) => sum + m.content.length, 0);
-    return Math.floor(totalChars / 4);
   }
 
   /**
@@ -913,25 +888,24 @@ ${m.toolCalls ? `**Tool Calls:** ${m.toolCalls.map((tc) => tc.name).join(", ")}`
     content: string;
     timestamp: string;
   }> {
-    const session = this.sessions.get(sessionId);
+    const session = this.sessions.get(sessionId) || this.loadActiveSession(sessionId);
     if (!session) {
-      const loaded = this.loadActiveSession(sessionId);
-      if (loaded) {
-        this.sessions.set(sessionId, loaded);
-        return loaded.messages.map((m) => ({
-          role: m.role,
-          content: m.content,
-          timestamp: m.timestamp.toISOString(),
-        }));
-      }
       return [];
     }
 
-    return session.messages.map((m) => ({
-      role: m.role,
-      content: m.content,
-      timestamp: m.timestamp.toISOString(),
-    }));
+    if (!this.sessions.has(sessionId)) {
+      this.sessions.set(sessionId, session);
+    }
+
+    // Only show user and assistant messages in the UI — skip system and tool
+    return session.messages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .filter((m) => !(m.role === "assistant" && (!m.content || m.content.trim() === "")))
+      .map((m) => ({
+        role: m.role,
+        content: m.content,
+        timestamp: m.timestamp.toISOString(),
+      }));
   }
 }
 

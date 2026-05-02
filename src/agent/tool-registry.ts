@@ -591,7 +591,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "gitlab.get_file",
     description:
-      "Get a file from the repository (returns base64-encoded content)",
+      "Get a file from the repository (returns decoded file content)",
     params: {
       projectId: {
         type: "string",
@@ -617,7 +617,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "gitlab.list_tree",
     description:
-      "List files and directories in a GitLab repository. Use this to explore the repository structure before fetching specific files. Returns items with type 'tree' (directory) or 'blob' (file).",
+      "List files and directories in a GitLab repository. Use this to explore the repository structure before fetching specific files. Returns items with type 'tree' (directory) or 'blob' (file). Set recursive=true to get all files at once. All pages are fetched automatically.",
     params: {
       projectId: {
         type: "string",
@@ -1762,6 +1762,141 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     actionType: "productivity.plan.generate",
     riskLevel: "low",
   },
+
+  // ── Roadmap Tools ──────────────────────────────────────────────
+  {
+    name: "roadmap.list",
+    description:
+      "List all roadmaps. Returns name, type, status, dates, and milestone counts. Use this when the user asks about roadmaps or project plans.",
+    params: {
+      type: {
+        type: "string",
+        description: "Filter by type: 'client' or 'internal'",
+        required: false,
+      },
+      status: {
+        type: "string",
+        description: "Filter by status: 'draft', 'active', 'completed', 'archived'",
+        required: false,
+      },
+    },
+    actionType: "roadmap.read",
+    riskLevel: "low",
+  },
+  {
+    name: "roadmap.get",
+    description:
+      "Get a single roadmap by ID, including its milestones and items. Use this to show roadmap details.",
+    params: {
+      id: {
+        type: "string",
+        description: "Roadmap ID (UUID)",
+        required: true,
+      },
+    },
+    actionType: "roadmap.read",
+    riskLevel: "low",
+  },
+  {
+    name: "roadmap.create",
+    description:
+      "Create a new roadmap with name, type, dates, and optional Jira link.",
+    params: {
+      name: {
+        type: "string",
+        description: "Roadmap name",
+        required: true,
+      },
+      type: {
+        type: "string",
+        description: "'client' or 'internal'",
+        required: true,
+      },
+      startDate: {
+        type: "string",
+        description: "Start date (YYYY-MM-DD)",
+        required: true,
+      },
+      endDate: {
+        type: "string",
+        description: "End date (YYYY-MM-DD), optional",
+        required: false,
+      },
+      status: {
+        type: "string",
+        description: "'draft', 'active', 'completed', or 'archived'. Default: draft",
+        required: false,
+      },
+      description: {
+        type: "string",
+        description: "Roadmap description",
+        required: false,
+      },
+      jiraProjectKey: {
+        type: "string",
+        description: "Link to a Jira project key",
+        required: false,
+      },
+    },
+    actionType: "roadmap.write",
+    riskLevel: "medium",
+  },
+  {
+    name: "roadmap.update",
+    description:
+      "Update an existing roadmap's fields (name, status, dates, etc.).",
+    params: {
+      id: {
+        type: "string",
+        description: "Roadmap ID (UUID)",
+        required: true,
+      },
+      name: { type: "string", description: "New name", required: false },
+      status: { type: "string", description: "New status", required: false },
+      startDate: { type: "string", description: "New start date", required: false },
+      endDate: { type: "string", description: "New end date", required: false },
+      description: { type: "string", description: "New description", required: false },
+    },
+    actionType: "roadmap.write",
+    riskLevel: "medium",
+  },
+  {
+    name: "roadmap.add_milestone",
+    description:
+      "Add a milestone to a roadmap. Milestones group items and have target dates.",
+    params: {
+      roadmapId: {
+        type: "string",
+        description: "Roadmap ID to add milestone to",
+        required: true,
+      },
+      name: { type: "string", description: "Milestone name", required: true },
+      targetDate: { type: "string", description: "Target date (YYYY-MM-DD)", required: true },
+      description: { type: "string", description: "Milestone description", required: false },
+      jiraEpicKey: { type: "string", description: "Link to a Jira epic key", required: false },
+    },
+    actionType: "roadmap.write",
+    riskLevel: "medium",
+  },
+  {
+    name: "roadmap.add_item",
+    description:
+      "Add an item (feature, task, bug, etc.) to a milestone within a roadmap.",
+    params: {
+      milestoneId: {
+        type: "string",
+        description: "Milestone ID to add item to",
+        required: true,
+      },
+      title: { type: "string", description: "Item title", required: true },
+      type: { type: "string", description: "'feature', 'task', 'bug', 'technical_debt', or 'research'", required: false },
+      priority: { type: "string", description: "'low', 'medium', 'high', or 'critical'", required: false },
+      description: { type: "string", description: "Item description", required: false },
+      jiraKey: { type: "string", description: "Link to a Jira issue key", required: false },
+    },
+    actionType: "roadmap.write",
+    riskLevel: "medium",
+  },
 ];
 
 /**
@@ -1866,6 +2001,10 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
 
   // Planning
   PRODUCTIVITY_TOOLS.find((t) => t.name === "productivity.generate_daily_plan")!,
+
+  // Roadmap core
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "roadmap.list")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "roadmap.get")!,
 ];
 
 /**
@@ -1888,7 +2027,9 @@ const DISCOVER_TOOL_META: Tool = {
   actionType: "system.discover_tools",
   riskLevel: "low",
 };
- — returns core set for API calls.
+
+/**
+ * Get tools by mode — returns core set for API calls.
  * Use getToolByName() to look up any tool by name (including extended tools).
  */
 export function getTools(mode: string): Tool[] {
