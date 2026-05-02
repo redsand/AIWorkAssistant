@@ -715,7 +715,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
   fastify.delete("/chat/sessions/:sessionId", async (request, reply) => {
     try {
       const { sessionId } = request.params as { sessionId: string };
-      await conversationManager.endSession(sessionId);
+      conversationManager.deleteSession(sessionId);
       return { success: true };
     } catch (error) {
       fastify.log.error(error);

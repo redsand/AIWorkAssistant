@@ -60,7 +60,7 @@ class DiscordAgentBot {
     console.log("[DiscordBot] Starting bot...");
 
     // Register event handlers
-    this.client.on("ready", () => this.onReady());
+    this.client.on("clientReady", () => this.onReady());
     this.client.on("messageCreate", (message) => this.onMessage(message));
     this.client.on("interactionCreate", (interaction) =>
       this.onInteraction(interaction),
@@ -206,7 +206,6 @@ class DiscordAgentBot {
       return;
     }
 
-    // Ignore messages without bot mention (for DMs, always respond)
     const isDM = message.channel.isDMBased();
     const isMentioned = message.mentions.has(this.client.user!);
 
@@ -416,6 +415,8 @@ class DiscordAgentBot {
           try {
             await axios.post(
               `${this.apiBaseUrl}/chat/sessions/${session.sessionId}/end`,
+              {},
+              { headers: this.getAuthHeaders() },
             );
             this.sessions.delete(sessionKey);
             await interaction.reply("✅ Session ended and saved to memory.");
@@ -432,6 +433,7 @@ class DiscordAgentBot {
           try {
             const response = await axios.get(
               `${this.apiBaseUrl}/chat/sessions/${session.sessionId}`,
+              { headers: this.getAuthHeaders() },
             );
             const sessionData = response.data.session;
 
@@ -471,6 +473,7 @@ class DiscordAgentBot {
             query,
             limit: 5,
           },
+          headers: this.getAuthHeaders(),
         },
       );
 
@@ -582,13 +585,6 @@ Just start chatting with me! 🚀
     mode: "productivity" | "engineering",
   ): Promise<string> {
     try {
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
-      if (this.apiKey) {
-        headers["Authorization"] = `Bearer ${this.apiKey}`;
-      }
-
       const response = await axios.post(
         `${this.apiBaseUrl}/chat`,
         {
@@ -598,7 +594,7 @@ Just start chatting with me! 🚀
           includeMemory: true,
           includeTools: true,
         },
-        { headers },
+        { headers: this.getAuthHeaders() },
       );
 
       return response.data.content || "No response from agent.";

@@ -7,11 +7,17 @@ import { dailyPlanner } from "../productivity/daily-planner";
 import { roadmapDatabase } from "../roadmap/database";
 import { auditLogger } from "../audit/logger";
 import { env } from "../config/env";
-import { getToolCategories, getToolsByCategory } from "./tool-registry";
+import {
+  getToolCategories,
+  getToolsByCategory,
+  getToolByName,
+} from "./tool-registry";
 import { workflowBriefGenerator } from "../engineering/workflow-brief";
 import { architecturePlanner } from "../engineering/architecture-planner";
 import { scaffoldPlanner } from "../engineering/scaffold-planner";
 import { jiraTicketGenerator } from "../engineering/jira-ticket-generator";
+import { policyEngine } from "../policy/engine";
+import { approvalQueue } from "../approvals/queue";
 
 export interface ToolCallResult {
   success: boolean;
@@ -2103,6 +2109,73 @@ async function handleRoadmapDeleteMilestone(
   }
 }
 
+async function handleApproveAction(
+  params: Record<string, unknown>,
+  userId: string,
+): Promise<ToolCallResult> {
+  const approvalId = params.approvalId as string;
+  if (!approvalId) return { success: false, error: "approvalId is required" };
+
+  try {
+    const result = await approvalQueue.approve(approvalId, userId);
+    if (result.success) {
+      return {
+        success: true,
+        data: {
+          approvalId,
+          status: result.approval.status,
+          executionResult: result.approval.executionResult,
+        },
+      };
+    }
+    return { success: false, error: result.message };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleRejectAction(
+  params: Record<string, unknown>,
+  userId: string,
+): Promise<ToolCallResult> {
+  const approvalId = params.approvalId as string;
+  if (!approvalId) return { success: false, error: "approvalId is required" };
+
+  try {
+    const result = await approvalQueue.reject(approvalId, userId);
+    if (result.success) {
+      return { success: true, data: { approvalId, status: "rejected" } };
+    }
+    return { success: false, error: result.message };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleListApprovals(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const status = params.status as string | undefined;
+    const result = await approvalQueue.list({
+      status: status as any,
+      limit: 10,
+    });
+    return { success: true, data: result };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
 async function handleRoadmapDeleteItem(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -2318,6 +2391,10 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "engineering.scaffolding_plan": handleEngineeringScaffoldingPlan,
   "engineering.jira_tickets": handleEngineeringJiraTickets,
 
+  "system.approve_action": handleApproveAction,
+  "system.reject_action": handleRejectAction,
+  "system.list_approvals": handleListApprovals,
+
   discover_tools: handleDiscoverTools,
 };
 
@@ -2325,10 +2402,75 @@ export async function dispatchToolCall(
   toolName: string,
   params: Record<string, unknown>,
   userId: string = "user",
+  skipPolicyCheck: boolean = false,
 ): Promise<ToolCallResult> {
   const handler = TOOL_HANDLERS[toolName];
   if (!handler) {
     return { success: false, error: `Unknown tool: ${toolName}` };
+  }
+
+  if (!skipPolicyCheck) {
+    const toolDef = getToolByName(
+      toolName,
+      (params._mode as string) || "productivity",
+    );
+    const actionType = toolDef?.actionType || toolName;
+
+    const action = {
+      id: `action-${Date.now()}`,
+      type: actionType,
+      description: `Execute ${toolName}`,
+      params: { ...params },
+      userId,
+      timestamp: new Date(),
+    };
+
+    const decision = await policyEngine.evaluate(action);
+
+    if (decision.result === "blocked") {
+      await auditLogger.log({
+        id: "",
+        timestamp: new Date(),
+        action: `policy.blocked`,
+        actor: userId,
+        details: { toolName, actionType, reason: decision.reason },
+        severity: "warn",
+      });
+      return {
+        success: false,
+        error: `Action "${toolName}" is blocked by policy: ${decision.reason}. This action cannot be performed.`,
+      };
+    }
+
+    if (decision.result === "approval_required") {
+      const approvalRequest = await policyEngine.createApprovalRequest(
+        action,
+        decision,
+      );
+      await approvalQueue.enqueue(approvalRequest);
+
+      await auditLogger.log({
+        id: "",
+        timestamp: new Date(),
+        action: `policy.approval_required`,
+        actor: userId,
+        details: { toolName, actionType, approvalId: approvalRequest.id },
+        severity: "info",
+      });
+
+      return {
+        success: false,
+        requiresApproval: true,
+        approvalId: approvalRequest.id,
+        error: `⚠️ This action requires your approval before proceeding.\n\n**Action:** ${toolName}\n**Approval ID:** ${approvalRequest.id}\n**Risk Level:** ${decision.riskLevel}\n**Reason:** ${decision.reason}\n\nSay "approve ${approvalRequest.id}" to allow this action, or "reject ${approvalRequest.id}" to deny it.`,
+        data: {
+          approvalId: approvalRequest.id,
+          action: actionType,
+          riskLevel: decision.riskLevel,
+          reason: decision.reason,
+        },
+      };
+    }
   }
 
   try {

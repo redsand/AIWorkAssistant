@@ -79,7 +79,35 @@ export class ConversationManager {
       }
     });
 
+    this.rehydrateSessions();
+
     console.log("[MemoryManager] Storage initialized");
+  }
+
+  private rehydrateSessions() {
+    const activeDir = path.join(this.memoryBasePath, "active");
+    if (!fs.existsSync(activeDir)) return;
+
+    const files = fs.readdirSync(activeDir).filter((f) => f.endsWith(".json"));
+    let count = 0;
+
+    for (const file of files) {
+      const sessionId = file.replace(".json", "");
+      const session = this.loadActiveSession(sessionId);
+      if (session) {
+        const age = Date.now() - session.updatedAt.getTime();
+        if (age < this.SESSION_TIMEOUT_MS) {
+          this.sessions.set(sessionId, session);
+          count++;
+        } else {
+          this.removeActiveSession(sessionId);
+        }
+      }
+    }
+
+    if (count > 0) {
+      console.log(`[MemoryManager] Rehydrated ${count} session(s) from disk`);
+    }
   }
 
   /**
@@ -157,7 +185,16 @@ export class ConversationManager {
    * Get conversation history for a session
    */
   getSession(sessionId: string): ConversationSession | null {
-    return this.sessions.get(sessionId) || null;
+    const cached = this.sessions.get(sessionId);
+    if (cached) return cached;
+
+    const loaded = this.loadActiveSession(sessionId);
+    if (loaded) {
+      this.sessions.set(sessionId, loaded);
+      return loaded;
+    }
+
+    return null;
   }
 
   /**
@@ -282,6 +319,12 @@ export class ConversationManager {
     console.log(
       `[MemoryManager] Ended session ${sessionId}, saved to long-term memory`,
     );
+  }
+
+  deleteSession(sessionId: string): void {
+    this.sessions.delete(sessionId);
+    this.removeActiveSession(sessionId);
+    console.log(`[MemoryManager] Deleted session ${sessionId}`);
   }
 
   /**

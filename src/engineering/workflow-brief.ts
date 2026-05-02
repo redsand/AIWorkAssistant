@@ -1,7 +1,4 @@
-/**
- * Workflow brief generator for engineering projects
- * TODO: Implement actual workflow brief generation with AI provider
- */
+import { aiClient } from "../agent/opencode-client";
 
 export interface WorkflowBrief {
   problem: string;
@@ -22,30 +19,76 @@ export interface WorkflowBrief {
 }
 
 class WorkflowBriefGenerator {
-  /**
-   * Generate workflow brief from project idea
-   */
   async generate(idea: string): Promise<WorkflowBrief> {
-    // TODO: Use AI provider to generate comprehensive workflow brief
-    console.log("[Workflow Brief] Generating for:", idea);
+    if (!aiClient.isConfigured()) {
+      return this.fallback(idea);
+    }
 
-    // Stub response
+    try {
+      const response = await aiClient.chat({
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are an engineering strategist. Given a project idea, produce a detailed workflow brief as a JSON object with these exact fields: problem (string), users (string[]), jobsToBeDone (string[]), currentWorkflow (string), desiredWorkflow (string), frictionPoints (string[]), decisions (string[]), inputs (string[]), outputs (string[]), states (string[]), transitions (string[]), edgeCases (string[]), humanInTheLoop (string[]), automationOpportunities (string[]), guardrails (string[]). Respond with ONLY the JSON object, no markdown fences.",
+          },
+          {
+            role: "user",
+            content: `Generate a comprehensive workflow brief for this project idea:\n\n${idea}`,
+          },
+        ],
+        temperature: 0.7,
+      });
+
+      const content = response.content.trim();
+      const jsonStr = content
+        .replace(/^```json?\n?/, "")
+        .replace(/\n?```$/, "");
+      const parsed = JSON.parse(jsonStr);
+
+      return {
+        problem: parsed.problem || idea,
+        users: parsed.users || [],
+        jobsToBeDone: parsed.jobsToBeDone || [],
+        currentWorkflow: parsed.currentWorkflow || "",
+        desiredWorkflow: parsed.desiredWorkflow || "",
+        frictionPoints: parsed.frictionPoints || [],
+        decisions: parsed.decisions || [],
+        inputs: parsed.inputs || [],
+        outputs: parsed.outputs || [],
+        states: parsed.states || [],
+        transitions: parsed.transitions || [],
+        edgeCases: parsed.edgeCases || [],
+        humanInTheLoop: parsed.humanInTheLoop || [],
+        automationOpportunities: parsed.automationOpportunities || [],
+        guardrails: parsed.guardrails || [],
+      };
+    } catch (error) {
+      console.error(
+        "[Workflow Brief] AI generation failed, using fallback:",
+        error,
+      );
+      return this.fallback(idea);
+    }
+  }
+
+  private fallback(idea: string): WorkflowBrief {
     return {
-      problem: "Problem statement based on idea",
-      users: ["User type 1", "User type 2"],
-      jobsToBeDone: ["Job 1", "Job 2", "Job 3"],
-      currentWorkflow: "Current manual process",
-      desiredWorkflow: "Desired automated process",
-      frictionPoints: ["Friction 1", "Friction 2"],
-      decisions: ["Decision 1", "Decision 2"],
-      inputs: ["Input 1", "Input 2"],
-      outputs: ["Output 1", "Output 2"],
-      states: ["State 1", "State 2", "State 3"],
-      transitions: ["Transition 1", "Transition 2"],
-      edgeCases: ["Edge case 1", "Edge case 2"],
-      humanInTheLoop: ["Human step 1", "Human step 2"],
-      automationOpportunities: ["Automation 1", "Automation 2"],
-      guardrails: ["Guardrail 1", "Guardrail 2"],
+      problem: `Problem: ${idea}`,
+      users: ["End user", "Administrator"],
+      jobsToBeDone: ["Core workflow to be determined", "Secondary workflow"],
+      currentWorkflow: "Manual or non-existent",
+      desiredWorkflow: "Automated with appropriate guardrails",
+      frictionPoints: ["To be identified during implementation"],
+      decisions: ["Key decisions to be mapped"],
+      inputs: ["User input", "System data"],
+      outputs: ["Processed results", "Status updates"],
+      states: ["Initial", "In Progress", "Complete"],
+      transitions: ["Start", "Advance", "Complete"],
+      edgeCases: ["Error handling", "Timeout scenarios"],
+      humanInTheLoop: ["Approval steps", "Review checkpoints"],
+      automationOpportunities: ["To be identified"],
+      guardrails: ["Input validation", "Error handling"],
     };
   }
 }

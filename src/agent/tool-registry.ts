@@ -2182,6 +2182,52 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "roadmap.get")!,
 ];
 
+const APPROVAL_TOOLS: Tool[] = [
+  {
+    name: "system.approve_action",
+    description:
+      "Approve a pending action by its approval ID. Use this when the user verbally approves an action (e.g., 'approve', 'yes', 'do it').",
+    params: {
+      approvalId: {
+        type: "string",
+        description: "The approval ID to approve",
+        required: true,
+      },
+    },
+    actionType: "system.approve",
+    riskLevel: "low",
+  },
+  {
+    name: "system.reject_action",
+    description:
+      "Reject a pending action by its approval ID. Use this when the user verbally rejects an action.",
+    params: {
+      approvalId: {
+        type: "string",
+        description: "The approval ID to reject",
+        required: true,
+      },
+    },
+    actionType: "system.reject",
+    riskLevel: "low",
+  },
+  {
+    name: "system.list_approvals",
+    description:
+      "List pending approval requests. Use this to check if there are actions awaiting user approval.",
+    params: {
+      status: {
+        type: "string",
+        description:
+          "Filter by status: pending, approved, rejected, executed, failed",
+        required: false,
+      },
+    },
+    actionType: "system.list_approvals",
+    riskLevel: "low",
+  },
+];
+
 /**
  * Meta-tool that lets the model discover and load more tools by category.
  * When called, it returns available categories and the model can request
@@ -2210,10 +2256,15 @@ const DISCOVER_TOOL_META: Tool = {
 export function getTools(mode: string): Tool[] {
   switch (mode) {
     case AGENT_MODES.PRODUCTIVITY:
-      return [...CORE_PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META];
+      return [
+        ...APPROVAL_TOOLS,
+        ...CORE_PRODUCTIVITY_TOOLS,
+        DISCOVER_TOOL_META,
+      ];
     case AGENT_MODES.ENGINEERING:
       return [
         ...ENGINEERING_TOOLS,
+        ...APPROVAL_TOOLS,
         ...CORE_PRODUCTIVITY_TOOLS,
         DISCOVER_TOOL_META,
       ];

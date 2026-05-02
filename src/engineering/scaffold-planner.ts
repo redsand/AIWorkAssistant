@@ -1,9 +1,5 @@
-/**
- * Scaffolding plan generator
- * TODO: Implement actual scaffolding generation with AI provider
- */
-
 import { ArchitectureProposal } from "./architecture-planner";
+import { aiClient } from "../agent/opencode-client";
 
 interface ScaffoldingPlan {
   repoStructure: string[];
@@ -21,16 +17,57 @@ interface ScaffoldingPlan {
 }
 
 class ScaffoldPlanner {
-  /**
-   * Generate scaffolding plan from architecture proposal
-   */
-  async generate(
-    _architecture: ArchitectureProposal,
-  ): Promise<ScaffoldingPlan> {
-    // TODO: Use AI provider to generate scaffolding plan
-    console.log("[Scaffold Planner] Generating from architecture");
+  async generate(architecture: ArchitectureProposal): Promise<ScaffoldingPlan> {
+    if (!aiClient.isConfigured()) {
+      return this.fallback();
+    }
 
-    // Stub response
+    try {
+      const response = await aiClient.chat({
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a senior developer. Given an architecture proposal, produce a scaffolding plan as a JSON object with these exact fields: repoStructure (string[]), packages (string[]), envConfig (string[]), scripts (string[]), dockerSetup (string), migrations (string[]), seedData (string[]), testSetup (string), linting (string), formatting (string), ciPipeline (string), docsStructure (string[]). Respond with ONLY the JSON object, no markdown fences.",
+          },
+          {
+            role: "user",
+            content: `Generate a scaffolding plan for this architecture:\n\n${JSON.stringify(architecture, null, 2)}`,
+          },
+        ],
+        temperature: 0.7,
+      });
+
+      const content = response.content.trim();
+      const jsonStr = content
+        .replace(/^```json?\n?/, "")
+        .replace(/\n?```$/, "");
+      const parsed = JSON.parse(jsonStr);
+
+      return {
+        repoStructure: parsed.repoStructure || [],
+        packages: parsed.packages || [],
+        envConfig: parsed.envConfig || [],
+        scripts: parsed.scripts || [],
+        dockerSetup: parsed.dockerSetup || "",
+        migrations: parsed.migrations || [],
+        seedData: parsed.seedData || [],
+        testSetup: parsed.testSetup || "",
+        linting: parsed.linting || "",
+        formatting: parsed.formatting || "",
+        ciPipeline: parsed.ciPipeline || "",
+        docsStructure: parsed.docsStructure || [],
+      };
+    } catch (error) {
+      console.error(
+        "[Scaffold Planner] AI generation failed, using fallback:",
+        error,
+      );
+      return this.fallback();
+    }
+  }
+
+  private fallback(): ScaffoldingPlan {
     return {
       repoStructure: [
         "src/",
@@ -44,7 +81,7 @@ class ScaffoldPlanner {
       envConfig: ["PORT", "DATABASE_URL", "API_KEY"],
       scripts: ["dev", "build", "test", "lint"],
       dockerSetup: "Dockerfile + docker-compose.yml",
-      migrations: ["001_initial.sql", "002_users.sql"],
+      migrations: ["001_initial.sql"],
       seedData: ["seed_dev_data.sql"],
       testSetup: "Vitest + testing library",
       linting: "ESLint + TypeScript ESLint",

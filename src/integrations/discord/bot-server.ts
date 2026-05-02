@@ -6,6 +6,7 @@
 
 import { DiscordAgentBot } from "./discord-bot";
 import { loadEnv } from "../../config/env";
+import { getApiKeyForAuth } from "../../middleware/auth";
 
 async function main() {
   console.log("🤖 Starting AI Assistant Discord Bot...");
@@ -36,6 +37,7 @@ async function main() {
     clientId: env.DISCORD_CLIENT_ID,
     guildId: env.DISCORD_GUILD_ID,
     allowedUserId: env.DISCORD_ALLOWED_USER_ID || undefined,
+    apiKey: getApiKeyForAuth() || undefined,
   });
 
   try {

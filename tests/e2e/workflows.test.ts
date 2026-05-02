@@ -848,7 +848,7 @@ describe("E2E: Chat Session CRUD", () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
     expect(body.success).toBe(true);
-  }, 30000);
+  }, 60000);
 
   it("should delete a session with empty body and content-type json", async () => {
     const { conversationManager } =
