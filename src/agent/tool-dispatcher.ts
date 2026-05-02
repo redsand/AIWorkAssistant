@@ -8,6 +8,10 @@ import { roadmapDatabase } from "../roadmap/database";
 import { auditLogger } from "../audit/logger";
 import { env } from "../config/env";
 import { getToolCategories, getToolsByCategory } from "./tool-registry";
+import { workflowBriefGenerator } from "../engineering/workflow-brief";
+import { architecturePlanner } from "../engineering/architecture-planner";
+import { scaffoldPlanner } from "../engineering/scaffold-planner";
+import { jiraTicketGenerator } from "../engineering/jira-ticket-generator";
 
 export interface ToolCallResult {
   success: boolean;
@@ -2116,6 +2120,102 @@ async function handleRoadmapDeleteItem(
   }
 }
 
+async function handleEngineeringWorkflowBrief(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const idea = params.idea as string;
+    if (!idea) return { success: false, error: "idea is required" };
+    const brief = await workflowBriefGenerator.generate(idea);
+    return { success: true, data: brief };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleEngineeringArchitectureProposal(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const idea = params.idea as string;
+    if (!idea) return { success: false, error: "idea is required" };
+    const brief = await workflowBriefGenerator.generate(idea);
+    const proposal = await architecturePlanner.generate(brief);
+    return { success: true, data: proposal };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleEngineeringScaffoldingPlan(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const idea = params.idea as string;
+    if (!idea) return { success: false, error: "idea is required" };
+    const brief = await workflowBriefGenerator.generate(idea);
+    const proposal = await architecturePlanner.generate(brief);
+    const scaffold = await scaffoldPlanner.generate(proposal);
+    return { success: true, data: scaffold };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleEngineeringJiraTickets(
+  params: Record<string, unknown>,
+  userId: string,
+): Promise<ToolCallResult> {
+  try {
+    const idea = params.idea as string;
+    const projectKey = params.projectKey as string;
+    if (!idea) return { success: false, error: "idea is required" };
+    if (!projectKey) return { success: false, error: "projectKey is required" };
+
+    const brief = await workflowBriefGenerator.generate(idea);
+    const proposal = await architecturePlanner.generate(brief);
+
+    const plan = {
+      milestones: proposal.systemBoundaries,
+      firstVerticalSlice: proposal.systemBoundaries[0] || "MVP",
+      tickets: [
+        {
+          summary: `Implement ${proposal.systemBoundaries[0] || "core service"}`,
+          description: `Build the ${proposal.systemBoundaries[0] || "core"} service as part of ${idea}`,
+          issueType: "Story",
+          acceptanceCriteria: [
+            "Service is functional",
+            "Tests pass",
+            "Documentation updated",
+          ],
+          estimationPoints: 5,
+        },
+      ],
+    };
+
+    const results = await jiraTicketGenerator.createTickets(
+      plan,
+      projectKey,
+      userId,
+    );
+    return { success: true, data: { brief, proposal, tickets: results } };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
 const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "calendar.list_events": handleCalendarListEvents,
   "calendar.create_focus_block": handleCalendarCreateFocusBlock,
@@ -2212,6 +2312,11 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "roadmap.delete": handleRoadmapDelete,
   "roadmap.delete_milestone": handleRoadmapDeleteMilestone,
   "roadmap.delete_item": handleRoadmapDeleteItem,
+
+  "engineering.workflow_brief": handleEngineeringWorkflowBrief,
+  "engineering.architecture_proposal": handleEngineeringArchitectureProposal,
+  "engineering.scaffolding_plan": handleEngineeringScaffoldingPlan,
+  "engineering.jira_tickets": handleEngineeringJiraTickets,
 
   discover_tools: handleDiscoverTools,
 };

@@ -1,10 +1,12 @@
 import axios, { AxiosError } from "axios";
+import { randomUUID } from "crypto";
 import {
   AIProvider,
   ProviderCapabilities,
   ProviderConfig,
   ChatRequest,
   ChatResponse,
+  ToolCall,
 } from "./types";
 
 export class OllamaProvider extends AIProvider {
@@ -74,18 +76,27 @@ export class OllamaProvider extends AIProvider {
         if (axios.isAxiosError(error)) {
           const status = error.response?.status;
 
-          if (status === 400 && request.tools && attempt === 1) {
-            console.warn(
-              "[Ollama API] Model may not support tools, retrying without tools",
+          if (status === 400 && request.tools) {
+            const errorBody = error.response?.data
+              ? JSON.stringify(error.response.data).substring(0, 500)
+              : undefined;
+            console.error(
+              `[Ollama API] Bad request with tools (400):`,
+              errorBody || "no response body",
             );
-            return this.chat({ ...request, tools: undefined });
+            throw new Error(
+              `Ollama API returned 400 with tools. The model '${this.config.model}' may not support function calling. Error: ${errorBody || "unknown"}`,
+            );
           }
 
           if (status === 500 && request.tools && attempt === 1) {
             console.warn(
-              "[Ollama API] Server error with tools, retrying without tools",
+              "[Ollama API] Server error with tools, will retry with tools on next attempt",
             );
-            return this.chat({ ...request, tools: undefined });
+            if (attempt >= maxAttempts) break;
+            const delay = this.getRetryDelay(attempt);
+            await this.sleep(delay);
+            continue;
           }
 
           if (status === 401 || status === 403) {
@@ -224,6 +235,22 @@ export class OllamaProvider extends AIProvider {
       console.error("[Ollama API] Config validation failed:", error);
       return false;
     }
+  }
+
+  protected parseToolCalls(toolCalls: any[]): ToolCall[] {
+    return toolCalls.map((tc, index) => ({
+      id:
+        tc.id ||
+        `call_${randomUUID().replace(/-/g, "").substring(0, 24)}_${index}`,
+      type: tc.type || ("function" as const),
+      function: {
+        name: tc.function?.name || "",
+        arguments:
+          typeof tc.function?.arguments === "string"
+            ? tc.function.arguments
+            : JSON.stringify(tc.function?.arguments || {}),
+      },
+    }));
   }
 
   private getRetryDelay(attempt: number): number {

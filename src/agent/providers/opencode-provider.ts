@@ -11,7 +11,7 @@ export class OpenCodeProvider extends AIProvider {
   readonly name = "opencode";
   readonly capabilities: ProviderCapabilities = {
     streaming: true,
-    toolChoice: "required",
+    toolChoice: "auto",
     parallelToolCalls: true,
     requiresAuth: true,
     synthesizesToolCallIds: false,

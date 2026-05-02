@@ -208,18 +208,52 @@ export class ConversationManager {
 
       // Add only recent messages
       for (const msg of recentMessages) {
-        messages.push({
+        const chatMsg: ChatMessage = {
           role: msg.role,
           content: msg.content,
-        });
+        };
+        if (msg.toolCalls) {
+          chatMsg.tool_calls = msg.toolCalls.map((tc) => ({
+            id: tc.id,
+            type: "function" as const,
+            function: {
+              name: tc.name,
+              arguments:
+                typeof tc.params === "string"
+                  ? tc.params
+                  : JSON.stringify(tc.params),
+            },
+          }));
+        }
+        if (msg.tool_call_id) {
+          chatMsg.tool_call_id = msg.tool_call_id;
+        }
+        messages.push(chatMsg);
       }
     } else {
       // Session is small enough, include all messages
       for (const msg of allMessages) {
-        messages.push({
+        const chatMsg: ChatMessage = {
           role: msg.role,
           content: msg.content,
-        });
+        };
+        if (msg.toolCalls) {
+          chatMsg.tool_calls = msg.toolCalls.map((tc) => ({
+            id: tc.id,
+            type: "function" as const,
+            function: {
+              name: tc.name,
+              arguments:
+                typeof tc.params === "string"
+                  ? tc.params
+                  : JSON.stringify(tc.params),
+            },
+          }));
+        }
+        if (msg.tool_call_id) {
+          chatMsg.tool_call_id = msg.tool_call_id;
+        }
+        messages.push(chatMsg);
       }
     }
 

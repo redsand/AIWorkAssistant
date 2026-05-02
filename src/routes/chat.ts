@@ -35,6 +35,8 @@ const createSessionSchema = z.object({
   context: z.object({}).optional(),
 });
 
+const MAX_TOOL_LOOPS = 25;
+
 export async function chatRoutes(fastify: FastifyInstance) {
   /**
    * Main chat endpoint
@@ -65,16 +67,22 @@ export async function chatRoutes(fastify: FastifyInstance) {
         ? conversationManager.getSession(sessionId)
         : null;
 
+      const systemPrompt = getSystemPrompt(body.mode);
+
       if (existingSession) {
         conversationManager.addMessage(sessionId!, {
           role: "user",
           content: body.message,
         });
 
-        messages = await conversationManager.getSessionMessages(
+        const sessionMessages = await conversationManager.getSessionMessages(
           sessionId!,
           body.includeMemory,
         );
+        messages = [
+          { role: "system", content: systemPrompt },
+          ...sessionMessages,
+        ];
       } else {
         if (sessionId) {
           console.log(
@@ -92,10 +100,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
           content: body.message,
         });
 
-        messages = await conversationManager.getSessionMessages(
-          sessionId,
-          body.includeMemory,
-        );
+        messages = [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: body.message },
+        ];
       }
 
       let tools: Tool[] | undefined = undefined;
@@ -140,23 +148,42 @@ export async function chatRoutes(fastify: FastifyInstance) {
       while (response.toolCalls && response.toolCalls.length > 0) {
         loopCount++;
 
+        if (loopCount > MAX_TOOL_LOOPS) {
+          console.warn(
+            `[Chat] Tool loop limit (${MAX_TOOL_LOOPS}) reached, breaking`,
+          );
+          break;
+        }
+
         if (sessionId) {
           conversationManager.addMessage(sessionId, {
             role: "assistant",
             content: response.content,
-            toolCalls: response.toolCalls.map((tc) => ({
-              id: tc.id,
-              name: tc.function.name,
-              params: JSON.parse(tc.function.arguments),
-            })),
+            toolCalls: response.toolCalls.map((tc) => {
+              let parsedArgs: any = {};
+              try {
+                parsedArgs = JSON.parse(tc.function.arguments);
+              } catch {
+                parsedArgs = { raw: tc.function.arguments };
+              }
+              return {
+                id: tc.id,
+                name: tc.function.name,
+                params: parsedArgs,
+              };
+            }),
           });
         }
 
-        const toolCalls = response.toolCalls.map((tc) => ({
-          id: tc.id,
-          name: tc.function.name,
-          params: JSON.parse(tc.function.arguments),
-        }));
+        const toolCalls = response.toolCalls.map((tc) => {
+          let parsedArgs: any = {};
+          try {
+            parsedArgs = JSON.parse(tc.function.arguments);
+          } catch {
+            parsedArgs = { raw: tc.function.arguments };
+          }
+          return { id: tc.id, name: tc.function.name, params: parsedArgs };
+        });
 
         allToolCalls = allToolCalls.concat(toolCalls);
 
@@ -216,7 +243,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           }
         }
 
-        const followupMessages: ChatMessage[] = [
+        messages = [
           ...messages,
           {
             role: "assistant",
@@ -231,7 +258,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         ];
 
         response = await aiClient.chat({
-          messages: followupMessages,
+          messages: messages,
           tools: expandedTools.length > 0 ? expandedTools : undefined,
           temperature: 0.7,
           top_p: 0.95,
@@ -307,8 +334,14 @@ export async function chatRoutes(fastify: FastifyInstance) {
       let messages: ChatMessage[];
 
       if (existingSession) {
-        messages = await conversationManager.getSessionMessages(sessionId!);
-        messages.push({ role: "user", content: body.message });
+        const sessionMessages = await conversationManager.getSessionMessages(
+          sessionId!,
+        );
+        messages = [
+          { role: "system", content: systemPrompt },
+          ...sessionMessages,
+          { role: "user", content: body.message },
+        ];
       } else {
         sessionId = conversationManager.startSession(body.userId, body.mode);
         messages = [
@@ -364,7 +397,13 @@ export async function chatRoutes(fastify: FastifyInstance) {
       while (response.toolCalls && response.toolCalls.length > 0) {
         loopCount++;
 
-        // Send intermediate content (commentary like "Let me look up IR-55...")
+        if (loopCount > MAX_TOOL_LOOPS) {
+          console.warn(
+            `[Chat/Stream] Tool loop limit (${MAX_TOOL_LOOPS}) reached, breaking`,
+          );
+          break;
+        }
+
         if (response.content && response.content.trim()) {
           sendEvent("content", { content: response.content });
         }
@@ -376,19 +415,31 @@ export async function chatRoutes(fastify: FastifyInstance) {
           conversationManager.addMessage(sessionId, {
             role: "assistant",
             content: response.content,
-            toolCalls: response.toolCalls.map((tc) => ({
-              id: tc.id,
-              name: tc.function.name,
-              params: JSON.parse(tc.function.arguments),
-            })),
+            toolCalls: response.toolCalls.map((tc) => {
+              let parsedArgs: any = {};
+              try {
+                parsedArgs = JSON.parse(tc.function.arguments);
+              } catch {
+                parsedArgs = { raw: tc.function.arguments };
+              }
+              return {
+                id: tc.id,
+                name: tc.function.name,
+                params: parsedArgs,
+              };
+            }),
           });
         }
 
-        const toolCalls = response.toolCalls.map((tc) => ({
-          id: tc.id,
-          name: tc.function.name,
-          params: JSON.parse(tc.function.arguments),
-        }));
+        const toolCalls = response.toolCalls.map((tc) => {
+          let parsedArgs: any = {};
+          try {
+            parsedArgs = JSON.parse(tc.function.arguments);
+          } catch {
+            parsedArgs = { raw: tc.function.arguments };
+          }
+          return { id: tc.id, name: tc.function.name, params: parsedArgs };
+        });
 
         for (const tc of toolCalls) {
           sendEvent("tool_start", {
@@ -454,7 +505,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           }
         }
 
-        const followupMessages: ChatMessage[] = [
+        messages = [
           ...messages,
           {
             role: "assistant",
@@ -469,7 +520,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         ];
 
         response = await aiClient.chat({
-          messages: followupMessages,
+          messages: messages,
           tools: expandedTools.length > 0 ? expandedTools : undefined,
           temperature: 0.7,
           top_p: 0.95,
