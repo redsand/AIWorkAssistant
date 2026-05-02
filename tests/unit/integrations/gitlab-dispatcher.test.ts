@@ -73,6 +73,29 @@ vi.mock("../../../src/integrations/file/calendar-service", () => ({
   },
 }));
 
+vi.mock("../../../src/policy/engine", () => ({
+  policyEngine: {
+    evaluate: vi.fn(async () => ({
+      result: "allow",
+      riskLevel: "low",
+      reason: "test",
+    })),
+    canProceed: vi.fn(() => true),
+    requiresApproval: vi.fn(() => false),
+    isBlocked: vi.fn(() => false),
+    createApprovalRequest: vi.fn(),
+  },
+}));
+
+vi.mock("../../../src/approvals/queue", () => ({
+  approvalQueue: {
+    enqueue: vi.fn(async (r) => r),
+    approve: vi.fn(),
+    reject: vi.fn(),
+    list: vi.fn(async () => ({ approvals: [], total: 0, filtered: 0 })),
+  },
+}));
+
 vi.mock("../../../src/productivity/daily-planner", () => ({
   dailyPlanner: {
     generatePlan: vi.fn(),

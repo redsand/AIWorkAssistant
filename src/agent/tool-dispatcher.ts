@@ -1,3 +1,5 @@
+import { codexClient } from "../integrations/codex/codex-client";
+import { webSearchClient } from "../integrations/web/search-client";
 import { fileCalendarService } from "../integrations/file/calendar-service";
 import { jiraService } from "../integrations/jira/jira-service";
 import { jiraClient } from "../integrations/jira/jira-client";
@@ -18,6 +20,15 @@ import { scaffoldPlanner } from "../engineering/scaffold-planner";
 import { jiraTicketGenerator } from "../engineering/jira-ticket-generator";
 import { policyEngine } from "../policy/engine";
 import { approvalQueue } from "../approvals/queue";
+import * as fs from "fs";
+import * as path from "path";
+import { todoManager } from "./todo-manager";
+import { knowledgeStore } from "./knowledge-store";
+import { aiClient } from "./opencode-client";
+import { workflowExecutor } from "./workflow-executor";
+import { mcpClient } from "../integrations/mcp";
+import { codebaseIndexer } from "./codebase-indexer";
+import { knowledgeGraph } from "./knowledge-graph";
 
 export interface ToolCallResult {
   success: boolean;
@@ -2289,6 +2300,999 @@ async function handleEngineeringJiraTickets(
   }
 }
 
+async function handleCodexRun(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const prompt = params.prompt as string;
+  if (!prompt) return { success: false, error: "prompt is required" };
+
+  if (!codexClient.isConfigured()) {
+    return {
+      success: false,
+      error:
+        "Codex CLI not configured. Set OPENAI_API_KEY or CODEX_API_KEY environment variable.",
+    };
+  }
+
+  const result = await codexClient.runPrompt(prompt, {
+    cwd: params.cwd as string | undefined,
+    model: params.model as string | undefined,
+    approvalMode: params.approvalMode as
+      | "suggest"
+      | "auto-edit"
+      | "full-auto"
+      | undefined,
+  });
+
+  return {
+    success: result.success,
+    data: {
+      exitCode: result.exitCode,
+      output: result.stdout,
+      errors: result.stderr || undefined,
+      durationMs: result.duration,
+    },
+  };
+}
+
+async function handleWebSearch(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const query = params.query as string;
+  if (!query) return { success: false, error: "query is required" };
+
+  if (!webSearchClient.isConfigured()) {
+    return {
+      success: false,
+      error:
+        "Web search not configured. Set TAVILY_API_KEY (recommended) or GOOGLE_SEARCH_API_KEY + GOOGLE_SEARCH_ENGINE_ID environment variables.",
+    };
+  }
+
+  const maxResults = (params.maxResults as number) || 5;
+  const results = await webSearchClient.search(query, maxResults, {
+    searchDepth: params.searchDepth as "basic" | "advanced" | undefined,
+    topic: params.topic as "general" | "news" | "finance" | undefined,
+    includeAnswer: true,
+  });
+
+  if (results.results.length > 0) {
+    try {
+      knowledgeStore.store({
+        source: "web_search",
+        title: `Search: ${query}`,
+        content: results.results
+          .map((r) => `${r.title}: ${r.snippet}`)
+          .join("\n"),
+        tags: [query.split(" ").slice(0, 3).join(" "), "web-search"],
+        createdAt: new Date(),
+      });
+    } catch {}
+  }
+
+  return { success: true, data: results };
+}
+
+async function handleWebFetchPage(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const url = params.url as string;
+  if (!url) return { success: false, error: "url is required" };
+
+  try {
+    new URL(url);
+  } catch {
+    return { success: false, error: "Invalid URL" };
+  }
+
+  const result = await webSearchClient.fetchPage(url);
+
+  if (result.content && result.content.length > 50) {
+    try {
+      knowledgeStore.store({
+        source: "web_page",
+        title: `Page: ${url}`,
+        content: result.content.substring(0, 2000),
+        url,
+        tags: ["web-page", new URL(url).hostname],
+        createdAt: new Date(),
+      });
+    } catch {}
+  }
+
+  return { success: true, data: result };
+}
+
+const PROJECT_ROOT = process.cwd();
+
+async function handleLocalReadFile(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const filePath = params.path as string;
+  if (!filePath) return { success: false, error: "path is required" };
+
+  const resolved = path.resolve(PROJECT_ROOT, filePath);
+
+  if (!resolved.startsWith(PROJECT_ROOT)) {
+    return {
+      success: false,
+      error: "Access denied: path outside project root",
+    };
+  }
+
+  if (!fs.existsSync(resolved)) {
+    return { success: false, error: `File not found: ${filePath}` };
+  }
+
+  try {
+    const stat = fs.statSync(resolved);
+    if (stat.isDirectory()) {
+      return {
+        success: false,
+        error: `Path is a directory, not a file: ${filePath}`,
+      };
+    }
+
+    if (stat.size > 1024 * 1024) {
+      return {
+        success: false,
+        error: `File too large (${Math.round(stat.size / 1024)}KB). Use offset/limit to read portions.`,
+      };
+    }
+
+    const content = fs.readFileSync(resolved, "utf-8");
+    const lines = content.split("\n");
+    const offset = (params.offset as number) || 1;
+    const limit = (params.limit as number) || 500;
+    const start = Math.max(0, offset - 1);
+    const end = Math.min(lines.length, start + limit);
+    const selected = lines.slice(start, end);
+
+    return {
+      success: true,
+      data: {
+        path: filePath,
+        totalLines: lines.length,
+        showingLines: `${start + 1}-${end}`,
+        content: selected.map((l, i) => `${start + i + 1}: ${l}`).join("\n"),
+      },
+    };
+
+    try {
+      knowledgeStore.store({
+        source: "file_read",
+        title: `File: ${filePath}`,
+        content: content.substring(0, 2000),
+        filePath,
+        tags: ["local-file", path.extname(filePath).replace(".", "") || "txt"],
+        createdAt: new Date(),
+      });
+    } catch {}
+  } catch (error) {
+    return {
+      success: false,
+      error: `Failed to read file: ${error instanceof Error ? error.message : "Unknown error"}`,
+    };
+  }
+}
+
+async function handleLocalListTree(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const dirPath = (params.path as string) || ".";
+  const maxDepth = (params.maxDepth as number) || 3;
+  const resolved = path.resolve(PROJECT_ROOT, dirPath);
+
+  if (!resolved.startsWith(PROJECT_ROOT)) {
+    return {
+      success: false,
+      error: "Access denied: path outside project root",
+    };
+  }
+
+  if (!fs.existsSync(resolved)) {
+    return { success: false, error: `Directory not found: ${dirPath}` };
+  }
+
+  const SKIP_DIRS = new Set([
+    "node_modules",
+    ".git",
+    "dist",
+    ".next",
+    "coverage",
+    ".turbo",
+    "__pycache__",
+    ".venv",
+    "target",
+    "build",
+  ]);
+
+  function walkTree(dir: string, depth: number, prefix: string): string[] {
+    if (depth > maxDepth) return [];
+    const entries: string[] = [];
+
+    let items: fs.Dirent[];
+    try {
+      items = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+
+    const sorted = items.sort((a, b) => {
+      if (a.isDirectory() && !b.isDirectory()) return -1;
+      if (!a.isDirectory() && b.isDirectory()) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    for (const item of sorted) {
+      if (SKIP_DIRS.has(item.name)) continue;
+      if (item.name.startsWith(".") && item.name !== ".env.example") continue;
+
+      const fullPath = path.join(dir, item.name);
+      const suffix = item.isDirectory() ? "/" : "";
+
+      entries.push(`${prefix}${item.name}${suffix}`);
+
+      if (item.isDirectory()) {
+        entries.push(...walkTree(fullPath, depth + 1, prefix + "  "));
+      }
+    }
+    return entries;
+  }
+
+  const tree = walkTree(resolved, 0, "");
+  return {
+    success: true,
+    data: {
+      path: dirPath,
+      maxDepth,
+      entries: tree,
+      count: tree.length,
+    },
+  };
+}
+
+async function handleLocalSearchCode(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const pattern = params.pattern as string;
+  if (!pattern) return { success: false, error: "pattern is required" };
+
+  const searchDir = path.resolve(PROJECT_ROOT, (params.path as string) || ".");
+  if (!searchDir.startsWith(PROJECT_ROOT)) {
+    return {
+      success: false,
+      error: "Access denied: path outside project root",
+    };
+  }
+
+  let regex: RegExp;
+  try {
+    regex = new RegExp(pattern, "i");
+  } catch {
+    return { success: false, error: `Invalid regex pattern: ${pattern}` };
+  }
+
+  const SKIP_DIRS = new Set([
+    "node_modules",
+    ".git",
+    "dist",
+    ".next",
+    "coverage",
+    ".turbo",
+    "__pycache__",
+    ".venv",
+    "target",
+    "build",
+    "data",
+  ]);
+
+  const include = params.include as string | undefined;
+  let includePatterns: string[] | undefined;
+  if (include) {
+    includePatterns = include.split(",").map((p) => p.trim());
+  }
+
+  function shouldInclude(filePath: string): boolean {
+    if (!includePatterns) return true;
+    return includePatterns.some((p) => {
+      if (p.startsWith("*.")) {
+        return filePath.endsWith(p.substring(1));
+      }
+      return filePath.includes(p);
+    });
+  }
+
+  const results: Array<{
+    file: string;
+    line: number;
+    content: string;
+  }> = [];
+
+  function searchDirRecursive(dir: string) {
+    let items: fs.Dirent[];
+    try {
+      items = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const item of items) {
+      if (SKIP_DIRS.has(item.name)) continue;
+      if (item.name.startsWith(".")) continue;
+
+      const fullPath = path.join(dir, item.name);
+
+      if (item.isDirectory()) {
+        searchDirRecursive(fullPath);
+      } else if (item.isFile() && shouldInclude(item.name)) {
+        try {
+          const stat = fs.statSync(fullPath);
+          if (stat.size > 1024 * 512) continue;
+
+          const content = fs.readFileSync(fullPath, "utf-8");
+          const lines = content.split("\n");
+
+          for (let i = 0; i < lines.length; i++) {
+            if (regex.test(lines[i])) {
+              results.push({
+                file: path.relative(PROJECT_ROOT, fullPath).replace(/\\/g, "/"),
+                line: i + 1,
+                content: lines[i].trim().substring(0, 200),
+              });
+              if (results.length >= 50) return;
+            }
+          }
+        } catch {}
+      }
+    }
+  }
+
+  searchDirRecursive(searchDir);
+
+  return {
+    success: true,
+    data: {
+      pattern,
+      path: params.path || ".",
+      matches: results.length,
+      results,
+    },
+  };
+}
+
+async function handleTodoCreateList(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const title = params.title as string;
+  if (!title) return { success: false, error: "title is required" };
+
+  const list = todoManager.createList(title);
+  const items = params.items as
+    | Array<{ content: string; priority?: string }>
+    | undefined;
+  if (items && items.length > 0) {
+    todoManager.addItems(
+      list.id,
+      items.map((i) => ({
+        content: i.content,
+        priority: (i.priority as "high" | "medium" | "low") || undefined,
+      })),
+    );
+  }
+
+  const updated = todoManager.getList(list.id);
+  return { success: true, data: updated };
+}
+
+async function handleTodoAddItem(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const listId = params.listId as string;
+  const items = params.items as Array<{ content: string; priority?: string }>;
+  if (!listId) return { success: false, error: "listId is required" };
+  if (!items || items.length === 0)
+    return { success: false, error: "items array is required" };
+
+  const list = todoManager.addItems(
+    listId,
+    items.map((i) => ({
+      content: i.content,
+      priority: (i.priority as "high" | "medium" | "low") || undefined,
+    })),
+  );
+
+  if (!list) return { success: false, error: `List ${listId} not found` };
+  return { success: true, data: list };
+}
+
+async function handleTodoUpdateItem(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const listId = params.listId as string;
+  const itemId = params.itemId as string;
+  if (!listId) return { success: false, error: "listId is required" };
+  if (!itemId) return { success: false, error: "itemId is required" };
+
+  const updates: Partial<
+    Pick<
+      import("./todo-manager").TodoItem,
+      "status" | "priority" | "content" | "result"
+    >
+  > = {};
+  if (params.status) updates.status = params.status as any;
+  if (params.priority) updates.priority = params.priority as any;
+  if (params.result) updates.result = params.result as string;
+
+  const item = todoManager.updateItem(listId, itemId, updates);
+  if (!item)
+    return {
+      success: false,
+      error: `Item ${itemId} not found in list ${listId}`,
+    };
+  return {
+    success: true,
+    data: { item, progress: todoManager.getProgress(listId) },
+  };
+}
+
+async function handleTodoGetList(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const listId = params.listId as string;
+  if (!listId) return { success: false, error: "listId is required" };
+
+  const list = todoManager.getList(listId);
+  if (!list) return { success: false, error: `List ${listId} not found` };
+  return {
+    success: true,
+    data: { ...list, progress: todoManager.getProgress(listId) },
+  };
+}
+
+async function handleTodoListLists(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const sessionId = params.sessionId as string | undefined;
+  const lists = todoManager.getLists(sessionId);
+  return {
+    success: true,
+    data: lists.map((l) => ({
+      id: l.id,
+      title: l.title,
+      itemCount: l.items.length,
+      progress: todoManager.getProgress(l.id),
+      createdAt: l.createdAt,
+    })),
+  };
+}
+
+async function handleKnowledgeStore(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const title = params.title as string;
+  const content = params.content as string;
+  if (!title) return { success: false, error: "title is required" };
+  if (!content) return { success: false, error: "content is required" };
+
+  const id = knowledgeStore.store({
+    source: (params.source as any) || "manual",
+    title,
+    content,
+    url: params.url as string | undefined,
+    tags: (params.tags as string[]) || [],
+    createdAt: new Date(),
+  });
+
+  return { success: true, data: { id, stored: true } };
+}
+
+async function handleKnowledgeSearch(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const query = params.query as string;
+  if (!query) return { success: false, error: "query is required" };
+
+  const results = knowledgeStore.search(query, {
+    limit: (params.limit as number) || 5,
+    source: params.source as any,
+    tags: params.tags as string[] | undefined,
+  });
+
+  return {
+    success: true,
+    data: {
+      query,
+      count: results.length,
+      results: results.map((r) => ({
+        id: r.entry.id,
+        title: r.entry.title,
+        content: r.entry.content.substring(0, 500),
+        source: r.entry.source,
+        tags: r.entry.tags,
+        score: r.score,
+        matchType: r.matchType,
+        createdAt: r.entry.createdAt,
+      })),
+    },
+  };
+}
+
+async function handleKnowledgeRecent(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const entries = knowledgeStore.getRecent({
+    limit: (params.limit as number) || 10,
+    source: params.source as any,
+  });
+
+  return {
+    success: true,
+    data: {
+      count: entries.length,
+      entries: entries.map((e) => ({
+        id: e.id,
+        title: e.title,
+        content: e.content.substring(0, 300),
+        source: e.source,
+        tags: e.tags,
+        createdAt: e.createdAt,
+        accessCount: e.accessCount,
+      })),
+    },
+  };
+}
+
+async function handleAgentSpawn(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const task = params.task as string;
+  if (!task) return { success: false, error: "task is required" };
+
+  if (!aiClient.isConfigured()) {
+    return { success: false, error: "AI provider not configured" };
+  }
+
+  const systemPrompt =
+    (params.systemPrompt as string) ||
+    "You are a focused sub-agent. Complete the assigned task and return the result. Be concise and thorough.";
+
+  try {
+    const response = await aiClient.chat({
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: task },
+      ],
+      temperature: 0.7,
+    });
+
+    return {
+      success: true,
+      data: {
+        content: response.content,
+        usage: response.usage,
+        model: response.model,
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Sub-agent failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+    };
+  }
+}
+
+async function handleTodoDeleteList(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const listId = params.listId as string;
+  if (!listId) return { success: false, error: "listId is required" };
+
+  const deleted = todoManager.deleteList(listId);
+  if (!deleted) return { success: false, error: `List ${listId} not found` };
+  return { success: true, data: { listId, deleted: true } };
+}
+
+async function handleTodoClearCompleted(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const listId = params.listId as string;
+  if (!listId) return { success: false, error: "listId is required" };
+
+  const cleared = todoManager.clearCompleted(listId);
+  if (!cleared) return { success: false, error: `List ${listId} not found` };
+  return { success: true, data: { listId, cleared: true } };
+}
+
+async function handleKnowledgeGet(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const id = params.id as string;
+  if (!id) return { success: false, error: "id is required" };
+
+  const results = knowledgeStore.search(id, { limit: 100 });
+  const entry = results.find((r) => r.entry.id === id);
+  if (!entry) {
+    const recent = knowledgeStore.getRecent({ limit: 100 });
+    const found = recent.find((e) => e.id === id);
+    if (!found) return { success: false, error: `Entry ${id} not found` };
+    return { success: true, data: found };
+  }
+  return { success: true, data: entry.entry };
+}
+
+async function handleKnowledgeDelete(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const id = params.id as string;
+  if (!id) return { success: false, error: "id is required" };
+
+  const deleted = knowledgeStore.deleteEntry(id);
+  if (!deleted) return { success: false, error: `Entry ${id} not found` };
+  return { success: true, data: { id, deleted: true } };
+}
+
+async function handleKnowledgeStats(): Promise<ToolCallResult> {
+  const stats = knowledgeStore.getStats();
+  return { success: true, data: stats };
+}
+
+async function handleMcpCallTool(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const toolName = params.toolName as string;
+  const args = (params.args as Record<string, unknown>) || {};
+
+  if (!toolName) return { success: false, error: "toolName is required" };
+
+  return mcpClient.callTool(toolName, args);
+}
+
+async function handleMcpListTools(): Promise<ToolCallResult> {
+  const tools = mcpClient.getAvailableTools();
+  const status = mcpClient.getServerStatus();
+
+  return {
+    success: true,
+    data: {
+      servers: status,
+      totalTools: tools.length,
+      tools: tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        requiredParams: t.inputSchema.required || [],
+      })),
+    },
+  };
+}
+
+async function handleCodebaseSearch(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const query = params.query as string;
+  if (!query) return { success: false, error: "query is required" };
+
+  if (!codebaseIndexer.isIndexed()) {
+    return {
+      success: false,
+      error:
+        "Codebase not indexed yet. Indexing runs on startup. Use local.search_code as a fallback.",
+    };
+  }
+
+  const results = await codebaseIndexer.searchWithEmbeddings(query, {
+    limit: (params.limit as number) || 10,
+    language: params.language as string | undefined,
+    filePath: params.filePath as string | undefined,
+  });
+
+  return {
+    success: true,
+    data: {
+      query,
+      count: results.length,
+      results: results.map((r) => ({
+        filePath: r.filePath,
+        lines: `${r.startLine}-${r.endLine}`,
+        language: r.language,
+        content: r.content,
+        score: Math.round(r.score * 100) / 100,
+        matchType: r.matchType,
+      })),
+    },
+  };
+}
+
+async function handleCodebaseStats(): Promise<ToolCallResult> {
+  const stats = codebaseIndexer.getStats();
+  return { success: true, data: stats };
+}
+
+async function handleGraphAddNode(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const type = params.type as string;
+  const title = params.title as string;
+  const content = params.content as string;
+  if (!type || !title || !content) {
+    return { success: false, error: "type, title, and content are required" };
+  }
+
+  const id = knowledgeGraph.addNode({
+    type: type as any,
+    title,
+    content,
+    status: (params.status as any) || "proposed",
+    context: params.context as string | undefined,
+    tags: (params.tags as string[]) || [],
+    metadata: {},
+  });
+
+  return { success: true, data: { id, type, title } };
+}
+
+async function handleGraphAddEdge(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const sourceId = params.sourceId as string;
+  const targetId = params.targetId as string;
+  const type = params.type as string;
+  if (!sourceId || !targetId || !type) {
+    return {
+      success: false,
+      error: "sourceId, targetId, and type are required",
+    };
+  }
+
+  const id = knowledgeGraph.addEdge(
+    sourceId,
+    targetId,
+    type as any,
+    params.description as string | undefined,
+  );
+
+  if (!id) {
+    return { success: false, error: "Source or target node not found" };
+  }
+
+  return { success: true, data: { id, sourceId, targetId, type } };
+}
+
+async function handleGraphGetNode(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const id = params.id as string;
+  if (!id) return { success: false, error: "id is required" };
+
+  const node = knowledgeGraph.getNode(id);
+  if (!node) return { success: false, error: `Node ${id} not found` };
+
+  const edges = knowledgeGraph.getEdgesForNode(id);
+  return {
+    success: true,
+    data: {
+      ...node,
+      edges: edges.map((e) => ({
+        id: e.id,
+        type: e.type,
+        direction: e.sourceId === id ? "outgoing" : "incoming",
+        otherNodeId: e.sourceId === id ? e.targetId : e.sourceId,
+        description: e.description,
+      })),
+    },
+  };
+}
+
+async function handleGraphQuery(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const nodes = knowledgeGraph.queryNodes({
+    type: params.type as any,
+    status: params.status as any,
+    tags: params.tags as string[] | undefined,
+    search: params.search as string | undefined,
+    limit: (params.limit as number) || 20,
+  });
+
+  return {
+    success: true,
+    data: {
+      count: nodes.length,
+      nodes: nodes.map((n) => ({
+        id: n.id,
+        type: n.type,
+        title: n.title,
+        status: n.status,
+        tags: n.tags,
+        createdAt: n.createdAt,
+      })),
+    },
+  };
+}
+
+async function handleGraphNeighbors(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const nodeId = params.nodeId as string;
+  if (!nodeId) return { success: false, error: "nodeId is required" };
+
+  const depth = (params.depth as number) || 2;
+  const { nodes, edges } = knowledgeGraph.getNeighbors(nodeId, depth);
+
+  return {
+    success: true,
+    data: {
+      centerNode: nodeId,
+      depth,
+      nodes: nodes.map((n) => ({
+        id: n.id,
+        type: n.type,
+        title: n.title,
+        status: n.status,
+      })),
+      edges: edges.map((e) => ({
+        id: e.id,
+        sourceId: e.sourceId,
+        targetId: e.targetId,
+        type: e.type,
+        description: e.description,
+      })),
+    },
+  };
+}
+
+async function handleGraphUpdateNode(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const id = params.id as string;
+  if (!id) return { success: false, error: "id is required" };
+
+  const updates: Record<string, unknown> = {};
+  if (params.title !== undefined) updates.title = params.title;
+  if (params.content !== undefined) updates.content = params.content;
+  if (params.status !== undefined) updates.status = params.status;
+  if (params.tags !== undefined) updates.tags = params.tags;
+
+  const node = knowledgeGraph.updateNode(id, updates as any);
+  if (!node) return { success: false, error: `Node ${id} not found` };
+
+  return {
+    success: true,
+    data: { id, title: node.title, status: node.status },
+  };
+}
+
+async function handleGraphDeleteNode(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const id = params.id as string;
+  if (!id) return { success: false, error: "id is required" };
+
+  const deleted = knowledgeGraph.deleteNode(id);
+  if (!deleted) return { success: false, error: `Node ${id} not found` };
+  return { success: true, data: { id, deleted: true } };
+}
+
+async function handleGraphSummary(): Promise<ToolCallResult> {
+  return { success: true, data: knowledgeGraph.getGraphSummary() };
+}
+
+async function handleWorkflowCreate(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const title = params.title as string;
+  if (!title) return { success: false, error: "title is required" };
+
+  const workflow = workflowExecutor.createWorkflow(title, {
+    jiraKey: params.jiraKey as string | undefined,
+    roadmapItemId: params.roadmapItemId as string | undefined,
+    skipPhases: params.skipPhases as any[] | undefined,
+  });
+
+  return { success: true, data: workflow };
+}
+
+async function handleWorkflowAdvance(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const workflowId = params.workflowId as string;
+  const result = params.result as string;
+  if (!workflowId) return { success: false, error: "workflowId is required" };
+  if (!result) return { success: false, error: "result is required" };
+
+  const workflow = workflowExecutor.advancePhase(workflowId, result);
+  if (!workflow)
+    return {
+      success: false,
+      error: `Workflow ${workflowId} not found or already completed`,
+    };
+  return { success: true, data: workflow };
+}
+
+async function handleWorkflowGet(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const workflowId = params.workflowId as string;
+  if (!workflowId) return { success: false, error: "workflowId is required" };
+
+  const workflow = workflowExecutor.getWorkflow(workflowId);
+  if (!workflow)
+    return { success: false, error: `Workflow ${workflowId} not found` };
+  return { success: true, data: workflow };
+}
+
+async function handleWorkflowList(): Promise<ToolCallResult> {
+  const workflows = workflowExecutor.listWorkflows();
+  return {
+    success: true,
+    data: workflows.map((w) => ({
+      id: w.id,
+      title: w.title,
+      currentPhase: w.currentPhase,
+      jiraKey: w.jiraKey,
+      completedSteps: w.steps.filter((s) => s.status === "completed").length,
+      totalSteps: w.steps.filter((s) => s.status !== "skipped").length,
+      createdAt: w.createdAt,
+      completedAt: w.completedAt,
+    })),
+  };
+}
+
+async function handleWorkflowExecutePhase(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const workflowId = params.workflowId as string;
+  if (!workflowId) return { success: false, error: "workflowId is required" };
+
+  const workflow = workflowExecutor.getWorkflow(workflowId);
+  if (!workflow)
+    return { success: false, error: `Workflow ${workflowId} not found` };
+
+  if (!aiClient.isConfigured()) {
+    return { success: false, error: "AI provider not configured" };
+  }
+
+  const context = workflowExecutor.getWorkflowContext(workflowId);
+  const phasePrompt = workflowExecutor.getPhasePrompt(
+    workflow.currentPhase,
+    context,
+  );
+
+  try {
+    const response = await aiClient.chat({
+      messages: [
+        { role: "system", content: phasePrompt },
+        {
+          role: "user",
+          content: `Execute the ${workflow.currentPhase} phase for: ${workflow.title}. ${context ? `Context from previous phases:\n${context}` : ""}`,
+        },
+      ],
+      temperature: 0.7,
+    });
+
+    const result = response.content;
+    workflowExecutor.advancePhase(workflowId, result);
+
+    const updated = workflowExecutor.getWorkflow(workflowId);
+
+    return {
+      success: true,
+      data: {
+        phase: workflow.currentPhase,
+        result,
+        nextPhase: updated?.currentPhase || null,
+        completed: !!updated?.completedAt,
+        workflow: updated,
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Workflow phase execution failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+    };
+  }
+}
+
 const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "calendar.list_events": handleCalendarListEvents,
   "calendar.create_focus_block": handleCalendarCreateFocusBlock,
@@ -2372,6 +3376,8 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "github.list_releases": handleGithubListReleases,
   "github.create_release": handleGithubCreateRelease,
   "productivity.generate_daily_plan": handleDailyPlan,
+  "web.search": handleWebSearch,
+  "web.fetch_page": handleWebFetchPage,
 
   // ── Roadmap Handlers ────────────────────────────────────────
   "roadmap.list": handleRoadmapList,
@@ -2396,7 +3402,59 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "system.list_approvals": handleListApprovals,
 
   discover_tools: handleDiscoverTools,
+
+  "codex.run": handleCodexRun,
+  "todo.create_list": handleTodoCreateList,
+  "todo.add_item": handleTodoAddItem,
+  "todo.update_item": handleTodoUpdateItem,
+  "todo.get_list": handleTodoGetList,
+  "todo.list_lists": handleTodoListLists,
+  "todo.delete_list": handleTodoDeleteList,
+  "todo.clear_completed": handleTodoClearCompleted,
+  "knowledge.store": handleKnowledgeStore,
+  "knowledge.search": handleKnowledgeSearch,
+  "knowledge.recent": handleKnowledgeRecent,
+  "knowledge.get": handleKnowledgeGet,
+  "knowledge.delete": handleKnowledgeDelete,
+  "knowledge.stats": handleKnowledgeStats,
+  "agent.spawn": handleAgentSpawn,
+
+  "workflow.create": handleWorkflowCreate,
+  "workflow.advance": handleWorkflowAdvance,
+  "workflow.get": handleWorkflowGet,
+  "workflow.list": handleWorkflowList,
+  "workflow.execute_phase": handleWorkflowExecutePhase,
+
+  "local.read_file": handleLocalReadFile,
+  "local.list_tree": handleLocalListTree,
+  "local.search_code": handleLocalSearchCode,
+
+  "mcp.call_tool": handleMcpCallTool,
+  "mcp.list_tools": handleMcpListTools,
+
+  "codebase.search": handleCodebaseSearch,
+  "codebase.stats": handleCodebaseStats,
+
+  "graph.add_node": handleGraphAddNode,
+  "graph.add_edge": handleGraphAddEdge,
+  "graph.get_node": handleGraphGetNode,
+  "graph.query": handleGraphQuery,
+  "graph.neighbors": handleGraphNeighbors,
+  "graph.update_node": handleGraphUpdateNode,
+  "graph.delete_node": handleGraphDeleteNode,
+  "graph.summary": handleGraphSummary,
 };
+
+const SYSTEM_TOOLS = new Set([
+  "discover_tools",
+  "system.approve_action",
+  "system.reject_action",
+  "system.list_approvals",
+  "engineering.workflow_brief",
+  "engineering.architecture_proposal",
+  "engineering.scaffolding_plan",
+  "productivity.generate_daily_plan",
+]);
 
 export async function dispatchToolCall(
   toolName: string,
@@ -2409,7 +3467,7 @@ export async function dispatchToolCall(
     return { success: false, error: `Unknown tool: ${toolName}` };
   }
 
-  if (!skipPolicyCheck) {
+  if (!skipPolicyCheck && !SYSTEM_TOOLS.has(toolName)) {
     const toolDef = getToolByName(
       toolName,
       (params._mode as string) || "productivity",

@@ -1,0 +1,129 @@
+.tool-progress {
+  margin-bottom: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f9fafb;
+}
+
+.tool-progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: #555;
+  transition: background 0.15s;
+}
+
+.tool-progress-header:hover {
+  background: #f0f1f3;
+}
+
+.tool-progress-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+
+.tool-progress-toggle {
+  font-size: 10px;
+  transition: transform 0.2s;
+  color: #999;
+}
+
+.tool-progress-toggle.expanded {
+  transform: rotate(90deg);
+}
+
+.tool-progress-count {
+  font-size: 11px;
+  color: #999;
+}
+
+.tool-progress-body {
+  display: none;
+  border-top: 1px solid #e5e7eb;
+  background: white;
+}
+
+.tool-progress-body.expanded {
+  display: block;
+}
+
+.tool-call-item {
+  padding: 8px 12px;
+  border-bottom: 1px solid #f3f4f6;
+  font-size: 12px;
+}
+
+.tool-call-item:last-child {
+  border-bottom: none;
+}
+
+.tool-call-name {
+  font-weight: 600;
+  color: #333;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tool-call-status {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tool-call-status.running {
+  background: #f59e0b;
+  animation: pulse 1s infinite;
+}
+
+.tool-call-status.done {
+  background: #4ade80;
+}
+
+.tool-call-status.error {
+  background: #f87171;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.tool-call-params {
+  margin-top: 4px;
+  color: #666;
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-size: 11px;
+  max-height: 60px;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.tool-call-result {
+  margin-top: 4px;
+  padding: 4px 6px;
+  background: #f9fafb;
+  border-radius: 4px;
+  color: #555;
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-size: 11px;
+  max-height: 80px;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

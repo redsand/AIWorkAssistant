@@ -102,13 +102,67 @@ describe("Policy Engine", () => {
       expect(decision.result).toBe("blocked");
     });
 
-    it("should require approval for unknown actions", async () => {
+    it("should allow unknown actions by default", async () => {
       testAction.type = "unknown.action";
       testAction.description = "Unknown action";
 
       const decision = await policyEngine.evaluate(testAction);
 
-      expect(decision.result).toBe("approval_required");
+      expect(decision.result).toBe("allow");
+    });
+
+    it("should allow GitHub PR creation", async () => {
+      testAction.type = "github.pr.create";
+      testAction.description = "Create pull request";
+
+      const decision = await policyEngine.evaluate(testAction);
+
+      expect(decision.result).toBe("allow");
+    });
+
+    it("should allow GitHub issue creation", async () => {
+      testAction.type = "github.issue.create";
+      testAction.description = "Create GitHub issue";
+
+      const decision = await policyEngine.evaluate(testAction);
+
+      expect(decision.result).toBe("allow");
+    });
+
+    it("should allow GitLab MR creation", async () => {
+      testAction.type = "gitlab.mr.create";
+      testAction.description = "Create GitLab merge request";
+
+      const decision = await policyEngine.evaluate(testAction);
+
+      expect(decision.result).toBe("allow");
+    });
+
+    it("should allow GitLab MR merge", async () => {
+      testAction.type = "gitlab.mr.merge";
+      testAction.description = "Merge GitLab merge request";
+
+      const decision = await policyEngine.evaluate(testAction);
+
+      expect(decision.result).toBe("allow");
+    });
+
+    it("should allow roadmap writes", async () => {
+      testAction.type = "roadmap.write";
+      testAction.description = "Create roadmap item";
+
+      const decision = await policyEngine.evaluate(testAction);
+
+      expect(decision.result).toBe("allow");
+    });
+
+    it("should allow engineering tools", async () => {
+      testAction.type = "engineering.workflow.brief";
+      testAction.description = "Generate workflow brief";
+
+      const decision = await policyEngine.evaluate(testAction);
+
+      expect(decision.result).toBe("allow");
     });
   });
 

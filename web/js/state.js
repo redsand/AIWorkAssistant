@@ -1,0 +1,61 @@
+const API_BASE = window.location.origin;
+let currentMode = "productivity";
+let currentSessionId = localStorage.getItem("currentSessionId") || null;
+let authToken = localStorage.getItem("authToken") || null;
+let messageHistory = [];
+let historyIndex = -1;
+let draftBeforeHistory = "";
+let activeStreamController = null;
+let autoAcceptDeletes = false;
+let activeToolCalls = {};
+let toolsPanelLoaded = false;
+let todoPanelLoaded = false;
+
+export {
+  API_BASE,
+  currentMode,
+  currentSessionId,
+  authToken,
+  messageHistory,
+  historyIndex,
+  draftBeforeHistory,
+  activeStreamController,
+  autoAcceptDeletes,
+  activeToolCalls,
+  toolsPanelLoaded,
+  todoPanelLoaded,
+};
+
+export function setCurrentMode(v) {
+  currentMode = v;
+}
+export function setCurrentSessionId(v) {
+  currentSessionId = v;
+}
+export function setAuthToken(v) {
+  authToken = v;
+}
+export function setMessageHistory(v) {
+  messageHistory = v;
+}
+export function setHistoryIndex(v) {
+  historyIndex = v;
+}
+export function setDraftBeforeHistory(v) {
+  draftBeforeHistory = v;
+}
+export function setActiveStreamController(v) {
+  activeStreamController = v;
+}
+export function setAutoAcceptDeletes(v) {
+  autoAcceptDeletes = v;
+}
+export function setActiveToolCalls(v) {
+  activeToolCalls = v;
+}
+export function setToolsPanelLoaded(v) {
+  toolsPanelLoaded = v;
+}
+export function setTodoPanelLoaded(v) {
+  todoPanelLoaded = v;
+}

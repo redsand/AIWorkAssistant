@@ -7,6 +7,7 @@ import {
   Client,
   GatewayIntentBits,
   Message,
+  Partials,
   SlashCommandBuilder,
   REST,
   Routes,
@@ -49,7 +50,9 @@ class DiscordAgentBot {
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.DirectMessages,
+        GatewayIntentBits.DirectMessageReactions,
       ],
+      partials: [Partials.Channel, Partials.Message, Partials.Reaction],
     });
   }
 
@@ -198,6 +201,14 @@ class DiscordAgentBot {
    */
   private async onMessage(message: Message): Promise<void> {
     if (message.author.bot) return;
+
+    if (message.partial) {
+      try {
+        message = await message.fetch();
+      } catch {
+        return;
+      }
+    }
 
     if (
       this.config.allowedUserId &&

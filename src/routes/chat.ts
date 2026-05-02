@@ -5,7 +5,15 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getSystemPrompt, aiClient } from "../agent";
-import { getTools, getToolsByCategory } from "../agent/tool-registry";
+import {
+  getTools,
+  getToolsByCategory,
+  getToolCategories,
+} from "../agent/tool-registry";
+import { todoManager } from "../agent/todo-manager";
+import { knowledgeStore } from "../agent/knowledge-store";
+import { knowledgeGraph } from "../agent/knowledge-graph";
+import { codebaseIndexer } from "../agent/codebase-indexer";
 import { dispatchToolCall } from "../agent/tool-dispatcher";
 import { AGENT_MODES } from "../config/constants";
 import type { Tool, ChatMessage } from "../agent/opencode-client";
@@ -37,6 +45,259 @@ const createSessionSchema = z.object({
 
 const MAX_TOOL_LOOPS = 25;
 
+interface ProcessingJob {
+  sessionId: string;
+  status: "processing" | "completed" | "failed";
+  startedAt: Date;
+  completedAt?: Date;
+  events: Array<{ event: string; data: unknown }>;
+  subscribers: Set<(event: string, data: unknown) => void>;
+}
+
+const processingJobs = new Map<string, ProcessingJob>();
+
+function getOrCreateJob(sessionId: string): ProcessingJob {
+  let job = processingJobs.get(sessionId);
+  if (!job) {
+    job = {
+      sessionId,
+      status: "processing",
+      startedAt: new Date(),
+      events: [],
+      subscribers: new Set(),
+    };
+    processingJobs.set(sessionId, job);
+  }
+  return job;
+}
+
+function emitJobEvent(sessionId: string, event: string, data: unknown) {
+  const job = processingJobs.get(sessionId);
+  if (!job) return;
+  job.events.push({ event, data });
+  for (const subscriber of job.subscribers) {
+    try {
+      subscriber(event, data);
+    } catch {}
+  }
+}
+
+async function runChatJob(
+  sessionId: string,
+  messages: ChatMessage[],
+  tools: Tool[] | undefined,
+  mode: string,
+  userId: string,
+) {
+  const job = getOrCreateJob(sessionId);
+  job.status = "processing";
+  job.events = [];
+
+  try {
+    let response = await aiClient.chat({
+      messages: messages,
+      tools,
+      temperature: 0.7,
+      top_p: 0.95,
+    });
+
+    let allToolResults: Record<string, unknown> = {};
+    let expandedTools = [...(tools || [])];
+    let loopCount = 0;
+
+    while (response.toolCalls && response.toolCalls.length > 0) {
+      loopCount++;
+
+      if (loopCount > MAX_TOOL_LOOPS) {
+        console.warn(
+          `[Chat/Job] Tool loop limit (${MAX_TOOL_LOOPS}) reached for ${sessionId}`,
+        );
+        break;
+      }
+
+      if (response.content && response.content.trim()) {
+        emitJobEvent(sessionId, "content", { content: response.content });
+      }
+      if (response.thinking) {
+        emitJobEvent(sessionId, "thinking", { thinking: response.thinking });
+      }
+
+      conversationManager.addMessage(sessionId, {
+        role: "assistant",
+        content: response.content,
+        toolCalls: response.toolCalls.map((tc) => {
+          let parsedArgs: any = {};
+          try {
+            parsedArgs = JSON.parse(tc.function.arguments);
+          } catch {
+            parsedArgs = { raw: tc.function.arguments };
+          }
+          return {
+            id: tc.id,
+            name: tc.function.name,
+            params: parsedArgs,
+          };
+        }),
+      });
+
+      const toolCalls = response.toolCalls.map((tc) => {
+        let parsedArgs: any = {};
+        try {
+          parsedArgs = JSON.parse(tc.function.arguments);
+        } catch {
+          parsedArgs = { raw: tc.function.arguments };
+        }
+        return { id: tc.id, name: tc.function.name, params: parsedArgs };
+      });
+
+      const spawnCalls = toolCalls.filter((tc) => tc.name === "agent.spawn");
+      const regularCalls = toolCalls.filter((tc) => tc.name !== "agent.spawn");
+
+      for (const tc of regularCalls) {
+        emitJobEvent(sessionId, "tool_start", {
+          id: tc.id,
+          name: tc.name,
+          params: tc.params,
+        });
+
+        const dispatchParams = { ...tc.params, _mode: mode };
+        const result = await dispatchToolCall(tc.name, dispatchParams, userId);
+        allToolResults[tc.id] = result;
+
+        emitJobEvent(sessionId, "tool_result", { id: tc.id, result });
+
+        if (tc.name.startsWith("todo.")) {
+          emitJobEvent(sessionId, "todo_changed", { action: tc.name });
+        }
+
+        if (tc.name === "discover_tools" && result.success) {
+          const category = tc.params.category as string | undefined;
+          if (category) {
+            const categoryTools = getToolsByCategory(mode, category);
+            const categoryToolDefs = categoryTools.map((tool) => {
+              const properties: Record<string, unknown> = {};
+              for (const [key, param] of Object.entries(tool.params)) {
+                const { required: _, ...rest } = param as any;
+                properties[key] = rest;
+              }
+              return {
+                type: "function" as const,
+                function: {
+                  name: tool.name,
+                  description: tool.description,
+                  parameters: {
+                    type: "object",
+                    properties,
+                    required: Object.entries(tool.params)
+                      .filter(([_, param]) => (param as any).required)
+                      .map(([name]) => name),
+                  },
+                },
+              };
+            });
+
+            const existingNames = new Set(
+              expandedTools.map((t) => t.function.name),
+            );
+            for (const td of categoryToolDefs) {
+              if (!existingNames.has(td.function.name)) {
+                expandedTools.push(td);
+                existingNames.add(td.function.name);
+              }
+            }
+          }
+        }
+
+        conversationManager.addMessage(sessionId, {
+          role: "tool",
+          content: JSON.stringify(result),
+          tool_call_id: tc.id,
+        });
+      }
+
+      if (spawnCalls.length > 0) {
+        for (const tc of spawnCalls) {
+          emitJobEvent(sessionId, "tool_start", {
+            id: tc.id,
+            name: tc.name,
+            params: tc.params,
+          });
+        }
+
+        const spawnPromises = spawnCalls.map(async (tc) => {
+          const dispatchParams = { ...tc.params, _mode: mode };
+          const result = await dispatchToolCall(
+            tc.name,
+            dispatchParams,
+            userId,
+          );
+          return { id: tc.id, result };
+        });
+
+        const spawnResults = await Promise.all(spawnPromises);
+
+        for (const { id, result } of spawnResults) {
+          allToolResults[id] = result;
+          emitJobEvent(sessionId, "tool_result", { id, result });
+
+          conversationManager.addMessage(sessionId, {
+            role: "tool",
+            content: JSON.stringify(result),
+            tool_call_id: id,
+          });
+        }
+      }
+
+      messages = [
+        ...messages,
+        {
+          role: "assistant",
+          content: response.content,
+          tool_calls: response.toolCalls,
+        },
+        ...toolCalls.map((tc) => ({
+          role: "tool" as const,
+          content: JSON.stringify(allToolResults[tc.id]),
+          tool_call_id: tc.id,
+        })),
+      ];
+
+      response = await aiClient.chat({
+        messages: messages,
+        tools: expandedTools.length > 0 ? expandedTools : undefined,
+        temperature: 0.7,
+        top_p: 0.95,
+      });
+    }
+
+    conversationManager.addMessage(sessionId, {
+      role: "assistant",
+      content: response.content,
+    });
+
+    if (response.thinking) {
+      emitJobEvent(sessionId, "thinking", { thinking: response.thinking });
+    }
+    emitJobEvent(sessionId, "content", { content: response.content });
+    emitJobEvent(sessionId, "done", {
+      usage: response.usage,
+      model: response.model,
+    });
+
+    job.status = "completed";
+    job.completedAt = new Date();
+  } catch (error) {
+    console.error(`[Chat/Job] Failed for session ${sessionId}:`, error);
+    emitJobEvent(sessionId, "error", {
+      error: "Failed to process request",
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+
+    job.status = "failed";
+    job.completedAt = new Date();
+  }
+}
+
 export async function chatRoutes(fastify: FastifyInstance) {
   /**
    * Main chat endpoint
@@ -67,7 +328,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         ? conversationManager.getSession(sessionId)
         : null;
 
-      const systemPrompt = getSystemPrompt(body.mode);
+      const systemPrompt = getSystemPrompt(body.mode, body.message);
 
       if (existingSession) {
         conversationManager.addMessage(sessionId!, {
@@ -320,11 +581,13 @@ export async function chatRoutes(fastify: FastifyInstance) {
     reply.raw.setHeader("X-Accel-Buffering", "no");
 
     const sendEvent = (event: string, data: unknown) => {
-      reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      try {
+        reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      } catch {}
     };
 
     try {
-      const systemPrompt = getSystemPrompt(body.mode);
+      const systemPrompt = getSystemPrompt(body.mode, body.message);
       let sessionId = body.sessionId;
 
       const existingSession = sessionId
@@ -383,162 +646,47 @@ export async function chatRoutes(fastify: FastifyInstance) {
         });
       }
 
-      let response = await aiClient.chat({
-        messages: messages,
-        tools,
-        temperature: 0.7,
-        top_p: 0.95,
-      });
+      const job = getOrCreateJob(sessionId!);
 
-      let allToolResults: Record<string, unknown> = {};
-      let expandedTools = [...(tools || [])];
-      let loopCount = 0;
-
-      while (response.toolCalls && response.toolCalls.length > 0) {
-        loopCount++;
-
-        if (loopCount > MAX_TOOL_LOOPS) {
-          console.warn(
-            `[Chat/Stream] Tool loop limit (${MAX_TOOL_LOOPS}) reached, breaking`,
-          );
-          break;
+      if (job.status === "processing") {
+        const pendingEvents = job.events;
+        for (const evt of pendingEvents) {
+          sendEvent(evt.event, evt.data);
         }
-
-        if (response.content && response.content.trim()) {
-          sendEvent("content", { content: response.content });
+        if (job.status !== "processing") {
+          reply.raw.end();
+          return reply;
         }
-        if (response.thinking) {
-          sendEvent("thinking", { thinking: response.thinking });
+      }
+
+      const subscriber = (event: string, data: unknown) => {
+        sendEvent(event, data);
+        if (event === "done" || event === "error") {
+          setTimeout(() => {
+            try {
+              reply.raw.end();
+            } catch {}
+          }, 100);
         }
+      };
+      job.subscribers.add(subscriber);
 
-        if (sessionId) {
-          conversationManager.addMessage(sessionId, {
-            role: "assistant",
-            content: response.content,
-            toolCalls: response.toolCalls.map((tc) => {
-              let parsedArgs: any = {};
-              try {
-                parsedArgs = JSON.parse(tc.function.arguments);
-              } catch {
-                parsedArgs = { raw: tc.function.arguments };
-              }
-              return {
-                id: tc.id,
-                name: tc.function.name,
-                params: parsedArgs,
-              };
-            }),
-          });
-        }
-
-        const toolCalls = response.toolCalls.map((tc) => {
-          let parsedArgs: any = {};
-          try {
-            parsedArgs = JSON.parse(tc.function.arguments);
-          } catch {
-            parsedArgs = { raw: tc.function.arguments };
-          }
-          return { id: tc.id, name: tc.function.name, params: parsedArgs };
-        });
-
-        for (const tc of toolCalls) {
-          sendEvent("tool_start", {
-            id: tc.id,
-            name: tc.name,
-            params: tc.params,
-          });
-
-          const dispatchParams = { ...tc.params, _mode: body.mode };
-          const result = await dispatchToolCall(
-            tc.name,
-            dispatchParams,
-            body.userId,
-          );
-          allToolResults[tc.id] = result;
-
-          sendEvent("tool_result", { id: tc.id, result });
-
-          if (tc.name === "discover_tools" && result.success) {
-            const category = tc.params.category as string | undefined;
-            if (category) {
-              const categoryTools = getToolsByCategory(body.mode, category);
-              const categoryToolDefs = categoryTools.map((tool) => {
-                const properties: Record<string, unknown> = {};
-                for (const [key, param] of Object.entries(tool.params)) {
-                  const { required: _, ...rest } = param as any;
-                  properties[key] = rest;
-                }
-                return {
-                  type: "function" as const,
-                  function: {
-                    name: tool.name,
-                    description: tool.description,
-                    parameters: {
-                      type: "object",
-                      properties,
-                      required: Object.entries(tool.params)
-                        .filter(([_, param]) => (param as any).required)
-                        .map(([name]) => name),
-                    },
-                  },
-                };
-              });
-
-              const existingNames = new Set(
-                expandedTools.map((t) => t.function.name),
-              );
-              for (const td of categoryToolDefs) {
-                if (!existingNames.has(td.function.name)) {
-                  expandedTools.push(td);
-                  existingNames.add(td.function.name);
-                }
-              }
+      runChatJob(sessionId!, messages, tools, body.mode, body.userId)
+        .catch((err) => {
+          console.error("[Chat/Stream] Background job error:", err);
+        })
+        .finally(() => {
+          job.subscribers.delete(subscriber);
+          setTimeout(() => {
+            if (job.subscribers.size === 0) {
+              processingJobs.delete(sessionId!);
             }
-          }
-
-          if (sessionId) {
-            conversationManager.addMessage(sessionId, {
-              role: "tool",
-              content: JSON.stringify(result),
-              tool_call_id: tc.id,
-            });
-          }
-        }
-
-        messages = [
-          ...messages,
-          {
-            role: "assistant",
-            content: response.content,
-            tool_calls: response.toolCalls,
-          },
-          ...toolCalls.map((tc) => ({
-            role: "tool" as const,
-            content: JSON.stringify(allToolResults[tc.id]),
-            tool_call_id: tc.id,
-          })),
-        ];
-
-        response = await aiClient.chat({
-          messages: messages,
-          tools: expandedTools.length > 0 ? expandedTools : undefined,
-          temperature: 0.7,
-          top_p: 0.95,
+          }, 5000);
         });
-      }
 
-      if (sessionId) {
-        conversationManager.addMessage(sessionId, {
-          role: "assistant",
-          content: response.content,
-        });
-      }
-
-      if (response.thinking) {
-        sendEvent("thinking", { thinking: response.thinking });
-      }
-      sendEvent("content", { content: response.content });
-      sendEvent("done", { usage: response.usage, model: response.model });
+      request.raw.on("close", () => {
+        job.subscribers.delete(subscriber);
+      });
     } catch (error) {
       fastify.log.error(error);
       sendEvent("error", {
@@ -547,7 +695,116 @@ export async function chatRoutes(fastify: FastifyInstance) {
       });
     }
 
-    reply.raw.end();
+    return reply;
+  });
+
+  fastify.get("/chat/sessions/:sessionId/status", async (request) => {
+    const { sessionId } = request.params as { sessionId: string };
+    const job = processingJobs.get(sessionId);
+
+    if (!job) {
+      const session = conversationManager.getSession(sessionId);
+      return {
+        sessionId,
+        processing: false,
+        exists: session !== null,
+      };
+    }
+
+    return {
+      sessionId,
+      processing: job.status === "processing",
+      status: job.status,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+      eventCount: job.events.length,
+    };
+  });
+
+  fastify.get("/chat/sessions/:sessionId/stream", async (request, reply) => {
+    const { sessionId } = request.params as { sessionId: string };
+    const session = conversationManager.getSession(sessionId);
+
+    if (!session) {
+      reply.code(404);
+      return { error: "Session not found" };
+    }
+
+    reply.raw.setHeader("Content-Type", "text/event-stream");
+    reply.raw.setHeader("Cache-Control", "no-cache");
+    reply.raw.setHeader("Connection", "keep-alive");
+    reply.raw.setHeader("X-Accel-Buffering", "no");
+
+    const sendEvent = (event: string, data: unknown) => {
+      try {
+        reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      } catch {}
+    };
+
+    const heartbeat = setInterval(() => {
+      try {
+        reply.raw.write(": heartbeat\n\n");
+      } catch {
+        clearInterval(heartbeat);
+      }
+    }, 15000);
+
+    const job = processingJobs.get(sessionId);
+    if (job && job.status === "processing") {
+      for (const evt of job.events) {
+        sendEvent(evt.event, evt.data);
+      }
+
+      const subscriber = (event: string, data: unknown) => {
+        sendEvent(event, data);
+        if (event === "done" || event === "error") {
+          setTimeout(() => {
+            try {
+              reply.raw.end();
+            } catch {}
+          }, 100);
+        }
+      };
+      job.subscribers.add(subscriber);
+
+      request.raw.on("close", () => {
+        job.subscribers.delete(subscriber);
+        clearInterval(heartbeat);
+      });
+    } else {
+      sendEvent("state", { processing: false, sessionId });
+
+      const waitInterval = setInterval(() => {
+        const currentJob = processingJobs.get(sessionId);
+        if (currentJob && currentJob.status === "processing") {
+          clearInterval(waitInterval);
+          for (const evt of currentJob.events) {
+            sendEvent(evt.event, evt.data);
+          }
+          const subscriber = (event: string, data: unknown) => {
+            sendEvent(event, data);
+            if (event === "done" || event === "error") {
+              setTimeout(() => {
+                try {
+                  reply.raw.end();
+                } catch {}
+              }, 100);
+            }
+          };
+          currentJob.subscribers.add(subscriber);
+          request.raw.on("close", () => {
+            currentJob.subscribers.delete(subscriber);
+            clearInterval(heartbeat);
+          });
+        }
+      }, 500);
+
+      request.raw.on("close", () => {
+        clearInterval(waitInterval);
+        clearInterval(heartbeat);
+      });
+    }
+
     return reply;
   });
 
@@ -823,5 +1080,180 @@ export async function chatRoutes(fastify: FastifyInstance) {
         message: error instanceof Error ? error.message : "Unknown error",
       };
     }
+  });
+
+  fastify.get("/chat/tools", async (request) => {
+    const { mode } = request.query as { mode?: string };
+    const toolMode = mode || "productivity";
+    const categories = getToolCategories(toolMode);
+
+    const toolsByCategory: Record<
+      string,
+      Array<{ name: string; description: string; params: string[] }>
+    > = {};
+
+    for (const [category] of Object.entries(categories)) {
+      const categoryTools = getToolsByCategory(toolMode, category);
+      toolsByCategory[category] = categoryTools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        params: Object.keys(t.params),
+      }));
+    }
+
+    return { success: true, mode: toolMode, categories: toolsByCategory };
+  });
+
+  fastify.get("/chat/todos", async (request) => {
+    const { sessionId } = request.query as { sessionId?: string };
+    const lists = todoManager.getLists(sessionId);
+    return {
+      success: true,
+      lists: lists.map((l) => ({
+        id: l.id,
+        title: l.title,
+        itemCount: l.items.length,
+        progress: todoManager.getProgress(l.id),
+        items: l.items,
+        createdAt: l.createdAt,
+        updatedAt: l.updatedAt,
+      })),
+    };
+  });
+
+  fastify.get("/chat/knowledge/search", async (request) => {
+    const { query, limit, source } = request.query as {
+      query?: string;
+      limit?: string;
+      source?: string;
+    };
+    if (!query) return { success: true, results: [], count: 0 };
+
+    const results = knowledgeStore.search(query, {
+      limit: limit ? parseInt(limit) : 5,
+      source: source as any,
+    });
+
+    return {
+      success: true,
+      results: results.map((r) => ({
+        id: r.entry.id,
+        title: r.entry.title,
+        content: r.entry.content.substring(0, 500),
+        source: r.entry.source,
+        tags: r.entry.tags,
+        score: r.score,
+        matchType: r.matchType,
+        createdAt: r.entry.createdAt,
+      })),
+      count: results.length,
+    };
+  });
+
+  fastify.get("/chat/knowledge/recent", async (request) => {
+    const { limit, source } = request.query as {
+      limit?: string;
+      source?: string;
+    };
+    const entries = knowledgeStore.getRecent({
+      limit: limit ? parseInt(limit) : 10,
+      source: source as any,
+    });
+    return {
+      success: true,
+      entries: entries.map((e) => ({
+        id: e.id,
+        title: e.title,
+        source: e.source,
+        tags: e.tags,
+        createdAt: e.createdAt,
+        accessCount: e.accessCount,
+      })),
+      count: entries.length,
+    };
+  });
+
+  fastify.get("/chat/knowledge/stats", async () => {
+    return { success: true, stats: knowledgeStore.getStats() };
+  });
+
+  fastify.get("/chat/graph/summary", async () => {
+    return { success: true, summary: knowledgeGraph.getGraphSummary() };
+  });
+
+  fastify.get("/chat/graph/nodes", async (request) => {
+    const { type, status, search, limit } = request.query as {
+      type?: string;
+      status?: string;
+      search?: string;
+      limit?: string;
+    };
+
+    const nodes = knowledgeGraph.queryNodes({
+      type: type as any,
+      status: status as any,
+      search,
+      limit: limit ? parseInt(limit) : 20,
+    });
+
+    return {
+      success: true,
+      count: nodes.length,
+      nodes: nodes.map((n) => ({
+        id: n.id,
+        type: n.type,
+        title: n.title,
+        status: n.status,
+        tags: n.tags,
+        createdAt: n.createdAt,
+      })),
+    };
+  });
+
+  fastify.get("/chat/graph/nodes/:nodeId", async (request, reply) => {
+    const { nodeId } = request.params as { nodeId: string };
+    const node = knowledgeGraph.getNode(nodeId);
+    if (!node) {
+      reply.code(404);
+      return { error: "Node not found" };
+    }
+
+    const edges = knowledgeGraph.getEdgesForNode(nodeId);
+    return { success: true, node, edges };
+  });
+
+  fastify.get("/chat/codebase/stats", async () => {
+    return { success: true, stats: codebaseIndexer.getStats() };
+  });
+
+  fastify.get("/chat/codebase/search", async (request) => {
+    const { query, language, filePath, limit } = request.query as {
+      query?: string;
+      language?: string;
+      filePath?: string;
+      limit?: string;
+    };
+
+    if (!query) return { success: true, results: [], count: 0 };
+
+    const results = await codebaseIndexer.searchWithEmbeddings(query, {
+      limit: limit ? parseInt(limit) : 10,
+      language,
+      filePath,
+    });
+
+    return {
+      success: true,
+      results: results.map((r) => ({
+        filePath: r.filePath,
+        startLine: r.startLine,
+        endLine: r.endLine,
+        language: r.language,
+        content: r.content.substring(0, 300),
+        score: Math.round(r.score * 100) / 100,
+        matchType: r.matchType,
+      })),
+      count: results.length,
+    };
   });
 }

@@ -56,7 +56,6 @@ export class ConversationManager {
   // Configuration thresholds — compact early to keep context lean
   private readonly MAX_MESSAGES_BEFORE_COMPACT = 40;
   private readonly MIN_RECENT_MESSAGES = 10;
-  private readonly MAX_TOOL_RESULT_LENGTH = 3000;
   private readonly SESSION_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
 
   constructor() {
@@ -154,20 +153,7 @@ export class ConversationManager {
       throw new Error(`Session ${sessionId} not found`);
     }
 
-    const truncatedContent =
-      message.role === "tool" &&
-      message.content.length > this.MAX_TOOL_RESULT_LENGTH
-        ? message.content.substring(0, this.MAX_TOOL_RESULT_LENGTH) +
-          "\n...[truncated]"
-        : message.content;
-
-    // Also truncate large assistant responses
-    const content =
-      message.role === "assistant" &&
-      truncatedContent.length > this.MAX_TOOL_RESULT_LENGTH
-        ? truncatedContent.substring(0, this.MAX_TOOL_RESULT_LENGTH) +
-          "\n...[truncated]"
-        : truncatedContent;
+    const content = message.content;
 
     const messageWithTimestamp: Message = {
       ...message,
@@ -177,6 +163,24 @@ export class ConversationManager {
 
     session.messages.push(messageWithTimestamp);
     session.updatedAt = new Date();
+
+    if (
+      message.role === "user" &&
+      (!session.metadata.title ||
+        session.metadata.title.startsWith("Session") ||
+        session.metadata.title.startsWith("Chat on"))
+    ) {
+      const fallback = message.content
+        .substring(0, 60)
+        .replace(/\n/g, " ")
+        .trim();
+      session.metadata.title =
+        fallback.length < message.content.replace(/\n/g, " ").trim().length
+          ? fallback + "..."
+          : fallback;
+
+      this.generateTitleLLM(sessionId, message.content).catch(() => {});
+    }
 
     this.saveActiveSession(session);
   }
@@ -404,6 +408,34 @@ export class ConversationManager {
    * Build a structured summary preserving key facts, decisions, and actions
    */
   private cachedSummary: string | null = null;
+
+  private async generateTitleLLM(
+    sessionId: string,
+    firstMessage: string,
+  ): Promise<void> {
+    try {
+      const response = await aiClient.chat({
+        messages: [
+          {
+            role: "system",
+            content:
+              "Generate a very short title (max 6 words) for a chat conversation that starts with this user message. Reply with ONLY the title text, no quotes, no punctuation, no explanation.",
+          },
+          { role: "user", content: firstMessage.substring(0, 500) },
+        ],
+        temperature: 0.3,
+      });
+
+      const title = response.content?.trim();
+      if (title && title.length > 0 && title.length <= 80) {
+        const session = this.sessions.get(sessionId);
+        if (session) {
+          session.metadata.title = title;
+          this.saveActiveSession(session);
+        }
+      }
+    } catch {}
+  }
 
   private async buildCompactSummaryLLM(messages: Message[]): Promise<string> {
     const conversationText = this.serializeMessagesForSummary(messages);

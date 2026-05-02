@@ -1,0 +1,92 @@
+.header {
+  background: white;
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo {
+  font-size: 24px;
+  font-weight: bold;
+  color: #667eea;
+}
+
+.logo-emoji {
+  margin-right: 8px;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4ade80;
+}
+
+.status-text {
+  font-size: 14px;
+  color: #666;
+}
+
+.logout-btn {
+  padding: 6px 16px;
+  background: transparent;
+  color: #666;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.logout-btn:hover {
+  background: #f3f4f6;
+  color: #333;
+}
+
+.logout-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.header-icon-btn {
+  padding: 6px 10px;
+  background: transparent;
+  color: #666;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.header-icon-btn:hover {
+  background: #f3f4f6;
+  color: #333;
+}
+
+.header-icon-btn svg {
+  width: 14px;
+  height: 14px;
+}

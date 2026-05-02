@@ -69,7 +69,7 @@ export interface ProviderCapabilities {
 export type OpenCodeConfig = ProviderConfig;
 
 const DEFAULT_MAX_CONTEXT_TOKENS = 64000;
-const MAX_TOOL_RESULT_CHARS = 3000;
+const MAX_TOOL_RESULT_CHARS = 100000;
 const CHARS_PER_TOKEN = 4;
 
 export abstract class AIProvider {

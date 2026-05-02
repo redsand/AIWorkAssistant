@@ -1757,6 +1757,719 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "high",
   },
 
+  // ==================== Web Search Tools ====================
+  {
+    name: "web.search",
+    description:
+      "Search the web for information using Tavily (primary) or Google Custom Search (fallback). Returns search results with titles, URLs, snippets, and optionally an AI-generated answer. Use for research, looking up documentation, finding solutions, checking current information.",
+    params: {
+      query: {
+        type: "string",
+        description: "Search query",
+        required: true,
+      },
+      maxResults: {
+        type: "number",
+        description: "Maximum number of results (default 5, max 20)",
+        required: false,
+      },
+      searchDepth: {
+        type: "string",
+        description:
+          'Search depth: "basic" (fast, 1 credit) or "advanced" (thorough, 2 credits). Default: basic.',
+        required: false,
+      },
+      topic: {
+        type: "string",
+        description:
+          'Search topic: "general", "news", or "finance". Use "news" for current events.',
+        required: false,
+      },
+    },
+    actionType: "web.search",
+    riskLevel: "low",
+  },
+  {
+    name: "web.fetch_page",
+    description:
+      "Fetch and extract text content from a web page URL. Returns cleaned text content (HTML tags removed). Use to read documentation, articles, or any web page content.",
+    params: {
+      url: {
+        type: "string",
+        description: "URL of the page to fetch",
+        required: true,
+      },
+    },
+    actionType: "web.fetch",
+    riskLevel: "low",
+  },
+
+  // ==================== Todo Management Tools ====================
+  {
+    name: "todo.create_list",
+    description:
+      "Create a new todo/task list for tracking multi-step work. Returns the list with its ID. Use when starting a complex multi-step task that needs progress tracking.",
+    params: {
+      title: {
+        type: "string",
+        description: "Title for the todo list",
+        required: true,
+      },
+      items: {
+        type: "array",
+        description:
+          'Array of items to add, each with "content" and optional "priority" (high/medium/low)',
+        required: false,
+      },
+    },
+    actionType: "todo.manage",
+    riskLevel: "low",
+  },
+  {
+    name: "todo.add_item",
+    description:
+      "Add items to an existing todo list. Use when new subtasks are discovered during execution.",
+    params: {
+      listId: {
+        type: "string",
+        description: "ID of the todo list",
+        required: true,
+      },
+      items: {
+        type: "array",
+        description:
+          'Array of items to add, each with "content" and optional "priority"',
+        required: true,
+      },
+    },
+    actionType: "todo.manage",
+    riskLevel: "low",
+  },
+  {
+    name: "todo.update_item",
+    description:
+      "Update a todo item status, result, or priority. Use to mark items as in_progress, completed, or cancelled.",
+    params: {
+      listId: {
+        type: "string",
+        description: "ID of the todo list",
+        required: true,
+      },
+      itemId: {
+        type: "string",
+        description: "ID of the todo item",
+        required: true,
+      },
+      status: {
+        type: "string",
+        description:
+          'New status: "pending", "in_progress", "completed", "cancelled"',
+        required: false,
+      },
+      result: {
+        type: "string",
+        description: "Result or output of the task",
+        required: false,
+      },
+      priority: {
+        type: "string",
+        description: "New priority: high, medium, low",
+        required: false,
+      },
+    },
+    actionType: "todo.manage",
+    riskLevel: "low",
+  },
+  {
+    name: "todo.get_list",
+    description:
+      "Get a todo list with all items and their statuses. Use to check progress or find the next pending item.",
+    params: {
+      listId: {
+        type: "string",
+        description: "ID of the todo list",
+        required: true,
+      },
+    },
+    actionType: "todo.manage",
+    riskLevel: "low",
+  },
+  {
+    name: "todo.list_lists",
+    description: "List all todo lists with progress summaries.",
+    params: {
+      sessionId: {
+        type: "string",
+        description: "Filter by session ID",
+        required: false,
+      },
+    },
+    actionType: "todo.manage",
+    riskLevel: "low",
+  },
+  {
+    name: "todo.delete_list",
+    description: "Delete an entire todo list.",
+    params: {
+      listId: {
+        type: "string",
+        description: "ID of the todo list to delete",
+        required: true,
+      },
+    },
+    actionType: "todo.manage",
+    riskLevel: "low",
+  },
+  {
+    name: "todo.clear_completed",
+    description:
+      "Remove completed and cancelled items from a todo list, keeping only pending and in_progress items.",
+    params: {
+      listId: {
+        type: "string",
+        description: "ID of the todo list",
+        required: true,
+      },
+    },
+    actionType: "todo.manage",
+    riskLevel: "low",
+  },
+
+  // ==================== Knowledge Store Tools ====================
+  {
+    name: "knowledge.store",
+    description:
+      "Store important information in the knowledge base for later retrieval. Use for research findings, important documentation, architecture decisions, or any information worth remembering across sessions.",
+    params: {
+      title: {
+        type: "string",
+        description: "Short title for the knowledge entry",
+        required: true,
+      },
+      content: {
+        type: "string",
+        description: "The content to store",
+        required: true,
+      },
+      source: {
+        type: "string",
+        description:
+          'Source type: "web_search", "web_page", "file_read", "conversation", "manual"',
+        required: false,
+      },
+      tags: {
+        type: "array",
+        description: "Tags for categorization",
+        required: false,
+      },
+      url: {
+        type: "string",
+        description: "Source URL if applicable",
+        required: false,
+      },
+    },
+    actionType: "knowledge.manage",
+    riskLevel: "low",
+  },
+  {
+    name: "knowledge.search",
+    description:
+      "Search the knowledge base for previously stored information. Returns matching entries ranked by relevance. Use before doing new research to avoid duplicating work.",
+    params: {
+      query: {
+        type: "string",
+        description: "Search query",
+        required: true,
+      },
+      limit: {
+        type: "number",
+        description: "Max results (default 5)",
+        required: false,
+      },
+      source: {
+        type: "string",
+        description: "Filter by source type",
+        required: false,
+      },
+      tags: {
+        type: "array",
+        description: "Filter by tags",
+        required: false,
+      },
+    },
+    actionType: "knowledge.read",
+    riskLevel: "low",
+  },
+  {
+    name: "knowledge.recent",
+    description:
+      "Get recently stored knowledge entries. Useful for reviewing what has been learned or stored recently.",
+    params: {
+      limit: {
+        type: "number",
+        description: "Max entries to return (default 10)",
+        required: false,
+      },
+      source: {
+        type: "string",
+        description: "Filter by source type",
+        required: false,
+      },
+    },
+    actionType: "knowledge.read",
+    riskLevel: "low",
+  },
+  {
+    name: "knowledge.get",
+    description: "Get a specific knowledge entry by ID with full content.",
+    params: {
+      id: {
+        type: "string",
+        description: "Knowledge entry ID",
+        required: true,
+      },
+    },
+    actionType: "knowledge.read",
+    riskLevel: "low",
+  },
+  {
+    name: "knowledge.delete",
+    description: "Delete a knowledge entry by ID.",
+    params: {
+      id: {
+        type: "string",
+        description: "Knowledge entry ID to delete",
+        required: true,
+      },
+    },
+    actionType: "knowledge.manage",
+    riskLevel: "low",
+  },
+  {
+    name: "knowledge.stats",
+    description:
+      "Get knowledge base statistics: total entries, breakdown by source, date range.",
+    params: {},
+    actionType: "knowledge.read",
+    riskLevel: "low",
+  },
+
+  // ==================== Agent Spawn Tool ====================
+  {
+    name: "agent.spawn",
+    description:
+      "Spawn a sub-agent to execute a focused task in parallel. The sub-agent runs independently and returns its result. Use for parallel execution of independent subtasks (e.g., research one topic while creating a ticket for another). The main agent can spawn multiple sub-agents and collect results.",
+    params: {
+      task: {
+        type: "string",
+        description:
+          "Clear, self-contained task description for the sub-agent. Include all context needed since the sub-agent starts fresh.",
+        required: true,
+      },
+      systemPrompt: {
+        type: "string",
+        description:
+          'Optional custom system prompt for the sub-agent. Use to specialize: "You are a researcher...", "You are a Jira expert..."',
+        required: false,
+      },
+    },
+    actionType: "agent.spawn",
+    riskLevel: "medium",
+  },
+
+  // ==================== Workflow Orchestration Tools ====================
+  {
+    name: "workflow.create",
+    description:
+      "Create a new end-to-end workflow for autonomous task execution. The workflow progresses through phases: research → document → implement → review → approve → complete. Each phase is executed by spawning sub-agents. Use for complex tasks that need full autonomy.",
+    params: {
+      title: {
+        type: "string",
+        description: "Title of the workflow/task",
+        required: true,
+      },
+      jiraKey: {
+        type: "string",
+        description: "Associated Jira ticket key (e.g., PROJ-123)",
+        required: false,
+      },
+      roadmapItemId: {
+        type: "string",
+        description: "Associated roadmap item ID",
+        required: false,
+      },
+      skipPhases: {
+        type: "array",
+        description:
+          'Phases to skip (e.g., ["document", "review"] to skip docs and review)',
+        required: false,
+      },
+    },
+    actionType: "workflow.manage",
+    riskLevel: "medium",
+  },
+  {
+    name: "workflow.advance",
+    description:
+      "Advance a workflow to the next phase. Provide the result of the current phase. The workflow will move to the next phase and return the updated state.",
+    params: {
+      workflowId: {
+        type: "string",
+        description: "ID of the workflow",
+        required: true,
+      },
+      result: {
+        type: "string",
+        description: "Result or output from the current phase",
+        required: true,
+      },
+    },
+    actionType: "workflow.manage",
+    riskLevel: "low",
+  },
+  {
+    name: "workflow.get",
+    description:
+      "Get the current state of a workflow including all phases, their statuses, and results.",
+    params: {
+      workflowId: {
+        type: "string",
+        description: "ID of the workflow",
+        required: true,
+      },
+    },
+    actionType: "workflow.manage",
+    riskLevel: "low",
+  },
+  {
+    name: "workflow.list",
+    description: "List all workflows with their current phase and progress.",
+    params: {},
+    actionType: "workflow.manage",
+    riskLevel: "low",
+  },
+  {
+    name: "workflow.execute_phase",
+    description:
+      "Execute the current phase of a workflow by spawning a sub-agent with the appropriate system prompt. The sub-agent will use research/document/implement/review tools as needed. Returns the sub-agent's output.",
+    params: {
+      workflowId: {
+        type: "string",
+        description: "ID of the workflow",
+        required: true,
+      },
+    },
+    actionType: "workflow.execute",
+    riskLevel: "medium",
+  },
+
+  // ==================== Local Filesystem Tools ====================
+  {
+    name: "local.read_file",
+    description:
+      "Read a file from the local filesystem. Returns file content as text. Use to inspect source code, configs, docs, and any local files.",
+    params: {
+      path: {
+        type: "string",
+        description:
+          "Absolute or relative path to the file (relative to project root)",
+        required: true,
+      },
+      offset: {
+        type: "number",
+        description:
+          "Line number to start reading from (1-indexed). Useful for large files.",
+        required: false,
+      },
+      limit: {
+        type: "number",
+        description: "Maximum number of lines to read. Defaults to 500.",
+        required: false,
+      },
+    },
+    actionType: "local.file.read",
+    riskLevel: "low",
+  },
+  {
+    name: "local.list_tree",
+    description:
+      "List files and directories in a local path. Returns a tree of files. Use to explore project structure, find files, understand codebase layout.",
+    params: {
+      path: {
+        type: "string",
+        description:
+          "Directory path to list. Defaults to project root if not specified.",
+        required: false,
+      },
+      maxDepth: {
+        type: "number",
+        description:
+          "Maximum directory depth to traverse. Defaults to 3. Use 1 for shallow listing.",
+        required: false,
+      },
+    },
+    actionType: "local.tree.read",
+    riskLevel: "low",
+  },
+  {
+    name: "local.search_code",
+    description:
+      "Search for a text pattern in local files using regex. Returns matching file paths and line numbers. Use to find where functions, classes, or strings are defined or used.",
+    params: {
+      pattern: {
+        type: "string",
+        description:
+          "Regex pattern to search for (e.g., 'function handleClick', 'class UserService', 'import.*axios')",
+        required: true,
+      },
+      path: {
+        type: "string",
+        description: "Directory to search in. Defaults to project root.",
+        required: false,
+      },
+      include: {
+        type: "string",
+        description:
+          'File glob pattern to include (e.g., "*.ts", "*.tsx", "*.{ts,js}")',
+        required: false,
+      },
+    },
+    actionType: "local.code.search",
+    riskLevel: "low",
+  },
+
+  {
+    name: "codebase.search",
+    description:
+      "Search the indexed codebase using semantic (vector) or keyword (TF-IDF) search. Returns relevant code chunks with file paths, line numbers, and content. Use for finding related code, understanding architecture, or locating implementations. Faster than local.search_code for conceptual queries.",
+    params: {
+      query: {
+        type: "string",
+        description:
+          "Search query — can be a concept ('error handling'), function name ('handleAuth'), or any text",
+        required: true,
+      },
+      language: {
+        type: "string",
+        description:
+          'Filter by programming language (e.g., "typescript", "python")',
+        required: false,
+      },
+      filePath: {
+        type: "string",
+        description: "Filter by file path substring (e.g., 'src/agent/')",
+        required: false,
+      },
+      limit: {
+        type: "number",
+        description: "Max results (default 10)",
+        required: false,
+      },
+    },
+    actionType: "codebase.search",
+    riskLevel: "low",
+  },
+  {
+    name: "codebase.stats",
+    description:
+      "Get statistics about the indexed codebase: total files, chunks, languages, and embedding status.",
+    params: {},
+    actionType: "codebase.stats",
+    riskLevel: "low",
+  },
+
+  {
+    name: "graph.add_node",
+    description:
+      "Add a node to the knowledge graph for tracking architecture decisions, ADRs, components, requirements, assumptions, risks, tradeoffs, and reasoning chains. Each node has a type, title, content, status, and tags.",
+    params: {
+      type: {
+        type: "string",
+        description:
+          'Node type: "decision", "adr", "component", "api_endpoint", "data_model", "requirement", "assumption", "risk", "tradeoff", "pattern", "reasoning"',
+        required: true,
+      },
+      title: {
+        type: "string",
+        description: "Short title for this graph node",
+        required: true,
+      },
+      content: {
+        type: "string",
+        description: "Full content/description of the node",
+        required: true,
+      },
+      status: {
+        type: "string",
+        description:
+          'Status: "proposed", "accepted", "deprecated", "superseded". Default: proposed',
+        required: false,
+      },
+      context: {
+        type: "string",
+        description: "Context or background for this decision/node",
+        required: false,
+      },
+      tags: {
+        type: "array",
+        description: "Tags for categorization",
+        required: false,
+      },
+    },
+    actionType: "graph.manage",
+    riskLevel: "low",
+  },
+  {
+    name: "graph.add_edge",
+    description:
+      "Add a relationship between two knowledge graph nodes. Use to model dependencies, alternatives, tradeoffs, etc.",
+    params: {
+      sourceId: {
+        type: "string",
+        description: "Source node ID",
+        required: true,
+      },
+      targetId: {
+        type: "string",
+        description: "Target node ID",
+        required: true,
+      },
+      type: {
+        type: "string",
+        description:
+          'Edge type: "depends_on", "implements", "alternative_to", "supersedes", "related_to", "constrains", "enables", "blocks", "derives_from", "tested_by"',
+        required: true,
+      },
+      description: {
+        type: "string",
+        description: "Description of this relationship",
+        required: false,
+      },
+    },
+    actionType: "graph.manage",
+    riskLevel: "low",
+  },
+  {
+    name: "graph.get_node",
+    description: "Get a knowledge graph node by ID.",
+    params: {
+      id: {
+        type: "string",
+        description: "Node ID",
+        required: true,
+      },
+    },
+    actionType: "graph.read",
+    riskLevel: "low",
+  },
+  {
+    name: "graph.query",
+    description:
+      "Query knowledge graph nodes by type, status, tags, or text search.",
+    params: {
+      type: {
+        type: "string",
+        description: "Filter by node type",
+        required: false,
+      },
+      status: {
+        type: "string",
+        description: "Filter by status",
+        required: false,
+      },
+      tags: {
+        type: "array",
+        description: "Filter by tags",
+        required: false,
+      },
+      search: {
+        type: "string",
+        description: "Text search across title, content, and context",
+        required: false,
+      },
+      limit: {
+        type: "number",
+        description: "Max results (default 20)",
+        required: false,
+      },
+    },
+    actionType: "graph.read",
+    riskLevel: "low",
+  },
+  {
+    name: "graph.neighbors",
+    description:
+      "Get the neighborhood of a node — its connected nodes and relationships, up to a specified depth.",
+    params: {
+      nodeId: {
+        type: "string",
+        description: "Node ID to explore from",
+        required: true,
+      },
+      depth: {
+        type: "number",
+        description: "Max traversal depth (default 2)",
+        required: false,
+      },
+    },
+    actionType: "graph.read",
+    riskLevel: "low",
+  },
+  {
+    name: "graph.update_node",
+    description: "Update a knowledge graph node's fields.",
+    params: {
+      id: {
+        type: "string",
+        description: "Node ID",
+        required: true,
+      },
+      title: {
+        type: "string",
+        description: "New title",
+        required: false,
+      },
+      content: {
+        type: "string",
+        description: "New content",
+        required: false,
+      },
+      status: {
+        type: "string",
+        description: "New status",
+        required: false,
+      },
+      tags: {
+        type: "array",
+        description: "New tags",
+        required: false,
+      },
+    },
+    actionType: "graph.manage",
+    riskLevel: "low",
+  },
+  {
+    name: "graph.delete_node",
+    description: "Delete a knowledge graph node and all its relationships.",
+    params: {
+      id: {
+        type: "string",
+        description: "Node ID to delete",
+        required: true,
+      },
+    },
+    actionType: "graph.manage",
+    riskLevel: "low",
+  },
+  {
+    name: "graph.summary",
+    description:
+      "Get knowledge graph summary statistics: total nodes, edges, breakdowns by type and status.",
+    params: {},
+    actionType: "graph.read",
+    riskLevel: "low",
+  },
+
   // Planning tools
   {
     name: "productivity.generate_daily_plan",
@@ -2065,6 +2778,68 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     },
     actionType: "roadmap.write",
     riskLevel: "high",
+  },
+
+  // ==================== Codex CLI Tools ====================
+  {
+    name: "codex.run",
+    description:
+      "Run the Codex CLI coding agent with a prompt to implement code changes. Codex will analyze the codebase, plan changes, write code, and run tests. Use this for autonomous implementation of tasks described in tickets or plans. Returns the output of the coding session.",
+    params: {
+      prompt: {
+        type: "string",
+        description:
+          "Detailed implementation prompt for Codex. Include what to build, which files to modify, acceptance criteria, and any constraints.",
+        required: true,
+      },
+      cwd: {
+        type: "string",
+        description: "Working directory for Codex. Defaults to project root.",
+        required: false,
+      },
+      model: {
+        type: "string",
+        description:
+          'Model to use (e.g., "o4-mini", "gpt-4o"). Defaults to CODEX_MODEL env var or "o4-mini".',
+        required: false,
+      },
+      approvalMode: {
+        type: "string",
+        description:
+          'Approval mode: "suggest" (shows changes for review), "auto-edit" (auto-applies edits), "full-auto" (full autonomy). Defaults to "suggest".',
+        required: false,
+      },
+    },
+    actionType: "codex.run",
+    riskLevel: "high",
+  },
+
+  {
+    name: "mcp.call_tool",
+    description:
+      "Call a tool from a connected MCP (Model Context Protocol) server. MCP provides standardized access to external tool providers like Tavily. Use mcp.list_tools to see available MCP tools.",
+    params: {
+      toolName: {
+        type: "string",
+        description: "Name of the MCP tool to call",
+        required: true,
+      },
+      args: {
+        type: "object",
+        description: "Arguments to pass to the MCP tool",
+        required: true,
+      },
+    },
+    actionType: "mcp.call",
+    riskLevel: "low",
+  },
+  {
+    name: "mcp.list_tools",
+    description:
+      "List all available tools from connected MCP (Model Context Protocol) servers. Returns tool names, descriptions, and required parameters.",
+    params: {},
+    actionType: "mcp.list",
+    riskLevel: "low",
   },
 ];
 

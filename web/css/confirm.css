@@ -1,0 +1,83 @@
+.confirm-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.confirm-dialog {
+  background: white;
+  border-radius: 12px;
+  padding: 24px;
+  width: 380px;
+  max-width: 90vw;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.confirm-dialog h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.confirm-dialog p {
+  font-size: 14px;
+  color: #555;
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
+.confirm-auto-accept {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: #555;
+}
+
+.confirm-auto-accept input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #667eea;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.confirm-actions button {
+  padding: 8px 20px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid #d1d5db;
+  transition: all 0.2s;
+}
+
+.confirm-cancel {
+  background: white;
+  color: #555;
+}
+
+.confirm-cancel:hover {
+  background: #f3f4f6;
+}
+
+.confirm-danger {
+  background: #e53e3e;
+  color: white;
+  border-color: #e53e3e;
+}
+
+.confirm-danger:hover {
+  background: #c53030;
+}

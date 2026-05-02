@@ -132,6 +132,26 @@ const envSchema = z.object({
     .url()
     .default("http://localhost:3050/auth/google/callback"),
   GOOGLE_CALENDAR_CALENDAR_ID: z.string().default("primary"),
+
+  // Web Search (Tavily - primary, Google Custom Search - fallback)
+  TAVILY_API_KEY: z.string().default(""),
+  GOOGLE_SEARCH_API_KEY: z.string().default(""),
+  GOOGLE_SEARCH_ENGINE_ID: z.string().default(""),
+
+  // Codex CLI
+  CODEX_CLI_PATH: z.string().default("codex"),
+  CODEX_API_KEY: z.string().default(""),
+  CODEX_MODEL: z.string().default("o4-mini"),
+
+  // RAG / Codebase Indexing
+  RAG_INDEX_ON_STARTUP: z
+    .string()
+    .transform((s) => s === "true")
+    .default("true"),
+  RAG_EMBEDDING_MODEL: z.string().default(""),
+  RAG_MAX_FILE_SIZE_KB: z.coerce.number().default(256),
+  RAG_CHUNK_SIZE: z.coerce.number().default(500),
+  RAG_CHUNK_OVERLAP: z.coerce.number().default(50),
 });
 
 export type Env = z.infer<typeof envSchema>;

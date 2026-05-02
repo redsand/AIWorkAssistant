@@ -4,6 +4,8 @@
 
 import { AGENT_NAME, AGENT_VERSION } from "../config/constants";
 import { getToolInventory } from "./tool-registry";
+import { knowledgeStore } from "./knowledge-store";
+import { codebaseIndexer } from "./codebase-indexer";
 
 const TASK_COMPLETION_RULES = `
 
@@ -198,20 +200,59 @@ BE OPINIONATED BUT COLLABORATIVE:
 /**
  * Get system prompt for mode
  */
-export function getSystemPrompt(mode: "productivity" | "engineering"): string {
+export function getSystemPrompt(
+  mode: "productivity" | "engineering",
+  contextQuery?: string,
+): string {
   const toolInventory = getToolInventory(mode);
+
+  let knowledgeSection = "";
+  if (contextQuery) {
+    const relevant = knowledgeStore.search(contextQuery, { limit: 3 });
+    if (relevant.length > 0) {
+      knowledgeSection = "\n\nRELEVANT KNOWLEDGE FROM PREVIOUS SESSIONS:\n";
+      for (const r of relevant) {
+        knowledgeSection += `- [${r.entry.source}] ${r.entry.title}: ${r.entry.content.substring(0, 300)}\n`;
+      }
+      knowledgeSection +=
+        "Use this knowledge if relevant to the current request. Do not repeat it verbatim.\n";
+    }
+  }
+
+  const recentKnowledge = knowledgeStore.getRecent({ limit: 5 });
+  if (recentKnowledge.length > 0) {
+    knowledgeSection += "\n\nRECENTLY STORED KNOWLEDGE:\n";
+    for (const entry of recentKnowledge) {
+      knowledgeSection += `- [${entry.source}] ${entry.title} (${entry.tags.join(", ")})\n`;
+    }
+  }
+
+  if (contextQuery && codebaseIndexer.isIndexed()) {
+    try {
+      const codeResults = codebaseIndexer.search(contextQuery, { limit: 3 });
+      if (codeResults.length > 0) {
+        knowledgeSection += "\n\nRELEVANT CODE FROM INDEXED CODEBASE:\n";
+        for (const r of codeResults) {
+          knowledgeSection += `- ${r.filePath}:${r.startLine}-${r.endLine} (${r.language}, score=${Math.round(r.score * 100) / 100})\n  ${r.content.substring(0, 200).replace(/\n/g, " ")}\n`;
+        }
+        knowledgeSection +=
+          "Use codebase.search tool for more detailed code search.\n";
+      }
+    } catch {}
+  }
+
   switch (mode) {
     case "productivity":
       return `${PRODUCTIVITY_SYSTEM_PROMPT}
 
-${toolInventory}`;
+${toolInventory}${knowledgeSection}`;
     case "engineering":
       return `${ENGINEERING_SYSTEM_PROMPT}
 
-${toolInventory}`;
+${toolInventory}${knowledgeSection}`;
     default:
       return `${PRODUCTIVITY_SYSTEM_PROMPT}
 
-${toolInventory}`;
+${toolInventory}${knowledgeSection}`;
   }
 }

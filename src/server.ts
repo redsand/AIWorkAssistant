@@ -25,6 +25,8 @@ import {
 } from "./middleware/auth";
 import { startTunnel } from "./integrations/file/tunnel";
 import { startCalendarScheduler } from "./scheduler/calendar-midnight";
+import { initializeMCP } from "./integrations/mcp";
+import { codebaseIndexer } from "./agent/codebase-indexer";
 import path from "path";
 
 export async function buildServer() {
@@ -205,6 +207,27 @@ async function start() {
     );
     console.log(`   Policy Mode: ${env.POLICY_APPROVAL_MODE}`);
     console.log("");
+
+    initializeMCP();
+
+    if (env.RAG_INDEX_ON_STARTUP) {
+      codebaseIndexer
+        .indexCodebase()
+        .then((result) => {
+          console.log(
+            `[RAG] Codebase indexed: ${result.totalFiles} files, ${result.totalChunks} chunks (${result.embedded ? "embeddings" : "TF-IDF"}) in ${result.duration}ms`,
+          );
+          if (result.errors.length > 0) {
+            console.warn(
+              `[RAG] ${result.errors.length} indexing errors:`,
+              result.errors.slice(0, 5),
+            );
+          }
+        })
+        .catch((err) => {
+          console.error("[RAG] Indexing failed:", err);
+        });
+    }
 
     const tunnelUrl = await startTunnel();
     startCalendarScheduler();
