@@ -21,3 +21,16 @@ body {
   display: flex;
   flex-direction: column;
 }
+
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.status-ok { background-color: #22c55e; }
+.status-error { background-color: #ef4444; }
+.status-warning { background-color: #f59e0b; }

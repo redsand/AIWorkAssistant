@@ -137,21 +137,32 @@ function addCompletionMarker() {
 
 export async function initializeChat() {
   try {
-    const response = await fetch(`${API_BASE}/health`, {
+    const response = await fetch(`${API_BASE}/chat/health`, {
       headers: authHeaders(),
     });
     const data = await response.json();
 
-    if (data.status === "ok") {
-      console.log("Connected to AI Assistant");
-    } else {
-      showError("Failed to connect to AI Assistant");
+    const statusText = document.querySelector(".status-text");
+    const statusIndicator = document.querySelector(".status-indicator");
+
+    if (statusText && statusIndicator) {
+      if (data.provider?.valid) {
+        statusText.textContent = `Connected · ${data.provider.active}`;
+        statusIndicator.className = "status-indicator status-ok";
+      } else if (data.provider?.configured) {
+        statusText.textContent = "Configured · Invalid credentials";
+        statusIndicator.className = "status-indicator status-error";
+      } else {
+        statusText.textContent = "Not configured";
+        statusIndicator.className = "status-indicator status-error";
+      }
     }
   } catch (error) {
     console.error("Health check failed:", error);
-    showError(
-      "Unable to connect to AI Assistant. Please ensure the server is running.",
-    );
+    const statusText = document.querySelector(".status-text");
+    const statusIndicator = document.querySelector(".status-indicator");
+    if (statusText) statusText.textContent = "Disconnected";
+    if (statusIndicator) statusIndicator.className = "status-indicator status-error";
   }
 
   await loadChatHistory();

@@ -1,6 +1,11 @@
 import { knowledgeStore } from "../agent/knowledge-store";
 import { codebaseIndexer } from "../agent/codebase-indexer";
 import { knowledgeGraph } from "../agent/knowledge-graph";
+import { aiClient } from "../agent/opencode-client";
+import { githubClient } from "../integrations/github/github-client";
+import { gitlabClient } from "../integrations/gitlab/gitlab-client";
+import { jiraClient } from "../integrations/jira/jira-client";
+import { env } from "../config/env";
 import { getSystemPrompt } from "../agent/prompts";
 import type { ChatMessage } from "../agent/providers/types";
 import type {
@@ -59,12 +64,21 @@ export async function assembleContextPacket(
   const knowledgeSection = formatDocumentsSection(compressedDocs);
   const graphSection = trimmedGraph;
 
+  const healthText = await buildHealthStatus();
+  const healthSection: ContextSection | null = healthText
+    ? { name: "health", content: healthText, tokens: estimateTokens(healthText) }
+    : null;
+
   const sections: ContextSection[] = [
     { name: "system", content: baseSystemPrompt, tokens: systemTokens },
     { name: "history", content: "", tokens: historyTokens },
     { name: "documents", content: knowledgeSection, tokens: estimateTokens(knowledgeSection), sourceCount: compressedDocs.length },
     { name: "graph", content: graphSection, tokens: estimateTokens(graphSection) },
   ];
+
+  if (healthSection) {
+    sections.push(healthSection);
+  }
 
   const enforced = enforceBudget(sections, budget);
 
@@ -83,6 +97,14 @@ export async function assembleContextPacket(
     messages.push({
       role: "system",
       content: `=== KNOWLEDGE GRAPH ===\n${enforced[3].content}`,
+    });
+  }
+
+  const healthEnforced = enforced.find((s) => s.name === "health");
+  if (healthEnforced && healthEnforced.content.trim()) {
+    messages.push({
+      role: "system",
+      content: healthEnforced.content,
     });
   }
 
@@ -249,4 +271,46 @@ function formatDocumentsSection(docs: ScoredDocument[]): string {
   }
 
   return parts.join("\n\n");
+}
+
+async function buildHealthStatus(): Promise<string | null> {
+  try {
+    const providerConfigured = aiClient.isConfigured();
+    const providerValid = providerConfigured
+      ? await aiClient.validateConfig().catch(() => false)
+      : false;
+
+    const [githubConfigured, gitlabConfigured, jiraConfigured] =
+      await Promise.all([
+        githubClient.isConfigured(),
+        gitlabClient.isConfigured(),
+        jiraClient.isConfigured(),
+      ]);
+
+    const [githubValid, gitlabValid, jiraValid] = await Promise.all([
+      githubConfigured ? githubClient.validateConfig().catch(() => false) : false,
+      gitlabConfigured ? gitlabClient.validateConfig().catch(() => false) : false,
+      jiraConfigured ? jiraClient.validateConfig().catch(() => false) : false,
+    ]);
+
+    const lines: string[] = ["CURRENT SYSTEM HEALTH:"];
+
+    const providerIcon = providerValid ? "OK" : providerConfigured ? "INVALID" : "NOT CONFIGURED";
+    lines.push(`- AI Provider: ${env.AI_PROVIDER} (${providerIcon})`);
+
+    const integrations: Array<{ name: string; configured: boolean; valid: boolean }> = [
+      { name: "GitHub", configured: githubConfigured, valid: githubValid },
+      { name: "GitLab", configured: gitlabConfigured, valid: gitlabValid },
+      { name: "Jira", configured: jiraConfigured, valid: jiraValid },
+    ];
+
+    for (const intg of integrations) {
+      const icon = intg.valid ? "OK" : intg.configured ? "INVALID" : "NOT CONFIGURED";
+      lines.push(`- ${intg.name}: ${icon}`);
+    }
+
+    return lines.join("\n");
+  } catch {
+    return null;
+  }
 }

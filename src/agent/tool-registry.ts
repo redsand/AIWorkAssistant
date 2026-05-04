@@ -2872,6 +2872,23 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "low",
   },
 
+  // ==================== System Tools ====================
+  {
+    name: "system.check_health",
+    description:
+      "Check the health and integration status of the AI Assistant. Returns provider status (configured, valid, active model) and integration status (GitHub, GitLab, Jira — configured and valid). Use this to verify connections are working or to report status to the user.",
+    params: {
+      includeDetails: {
+        type: "boolean",
+        description:
+          "Include detailed status for each integration (API URLs, error messages). Default: false.",
+        required: false,
+      },
+    },
+    actionType: "system.check_health",
+    riskLevel: "low",
+  },
+
   // ==================== LSP Tools ====================
   {
     name: "lsp.diagnostics",
@@ -3114,6 +3131,9 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "lsp.definition")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "lsp.references")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "lsp.symbols")!,
+
+  // System health
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "system.check_health")!,
 ];
 
 const APPROVAL_TOOLS: Tool[] = [

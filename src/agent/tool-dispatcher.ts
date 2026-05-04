@@ -2277,6 +2277,79 @@ async function handleListApprovals(
   }
 }
 
+async function handleSystemCheckHealth(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const includeDetails = params.includeDetails === true;
+
+  try {
+    const providerConfigured = aiClient.isConfigured();
+    const providerValid = providerConfigured
+      ? await aiClient.validateConfig().catch(() => false)
+      : false;
+
+    const [githubConfigured, gitlabConfigured, jiraConfigured] =
+      await Promise.all([
+        githubClient.isConfigured(),
+        gitlabClient.isConfigured(),
+        jiraClient.isConfigured(),
+      ]);
+
+    const [githubValid, gitlabValid, jiraValid] = await Promise.all([
+      githubConfigured
+        ? githubClient.validateConfig().catch(() => false)
+        : false,
+      gitlabConfigured
+        ? gitlabClient.validateConfig().catch(() => false)
+        : false,
+      jiraConfigured
+        ? jiraClient.validateConfig().catch(() => false)
+        : false,
+    ]);
+
+    const result: Record<string, unknown> = {
+      provider: {
+        active: env.AI_PROVIDER,
+        configured: providerConfigured,
+        valid: providerValid,
+      },
+      integrations: {
+        github: { configured: githubConfigured, valid: githubValid },
+        gitlab: { configured: gitlabConfigured, valid: gitlabValid },
+        jira: { configured: jiraConfigured, valid: jiraValid },
+      },
+    };
+
+    if (includeDetails) {
+      const providerKeyMap: Record<string, { key: string; url: string }> = {
+        opencode: {
+          key: env.OPENCODE_API_KEY,
+          url: env.OPENCODE_API_URL,
+        },
+        zai: { key: env.ZAI_API_KEY, url: env.ZAI_API_URL },
+        ollama: {
+          key: env.OLLAMA_API_KEY || "local",
+          url: env.OLLAMA_API_URL,
+        },
+      };
+      const info = providerKeyMap[env.AI_PROVIDER] || providerKeyMap.opencode;
+      const providerObj = result.provider as Record<string, unknown>;
+      result.provider = {
+        ...providerObj,
+        baseUrl: info.url,
+        hasApiKey: !!info.key,
+      };
+    }
+
+    return { success: true, data: result };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Health check failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
 async function handleRoadmapDeleteItem(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -3702,6 +3775,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "system.approve_action": handleApproveAction,
   "system.reject_action": handleRejectAction,
   "system.list_approvals": handleListApprovals,
+  "system.check_health": handleSystemCheckHealth,
 
   discover_tools: handleDiscoverTools,
 
@@ -3758,6 +3832,7 @@ const SYSTEM_TOOLS = new Set([
   "system.approve_action",
   "system.reject_action",
   "system.list_approvals",
+  "system.check_health",
   "engineering.workflow_brief",
   "engineering.architecture_proposal",
   "engineering.scaffolding_plan",

@@ -101,9 +101,10 @@ export const DEFAULT_RERANK_OPTIONS: RerankOptions = {
 
 export const DEFAULT_SLOT_DEFINITIONS: BudgetSlotDefinition[] = [
   { name: "system", priority: 100, fraction: 0.3, overflowTarget: "history" },
-  { name: "history", priority: 80, fraction: 0.4, overflowTarget: "documents" },
+  { name: "history", priority: 80, fraction: 0.35, overflowTarget: "documents" },
   { name: "documents", priority: 60, fraction: 0.2, overflowTarget: "graph" },
-  { name: "graph", priority: 40, fraction: 0.1, overflowTarget: null },
+  { name: "graph", priority: 40, fraction: 0.1, overflowTarget: "health" },
+  { name: "health", priority: 20, fraction: 0.05, overflowTarget: null },
 ];
 
 export const CHARS_PER_TOKEN = 1.8;

@@ -900,6 +900,18 @@ export async function chatRoutes(fastify: FastifyInstance) {
     const isConfigured = aiClient.isConfigured();
     const isValid = isConfigured ? await aiClient.validateConfig() : false;
 
+    const [githubConfigured, gitlabConfigured, jiraConfigured] = await Promise.all([
+      githubClient.isConfigured(),
+      gitlabClient.isConfigured(),
+      jiraClient.isConfigured(),
+    ]);
+
+    const [githubValid, gitlabValid, jiraValid] = await Promise.all([
+      githubConfigured ? githubClient.validateConfig().catch(() => false) : false,
+      gitlabConfigured ? gitlabClient.validateConfig().catch(() => false) : false,
+      jiraConfigured ? jiraClient.validateConfig().catch(() => false) : false,
+    ]);
+
     const providerKeyMap: Record<string, { key: string; url: string }> = {
       opencode: { key: env.OPENCODE_API_KEY, url: env.OPENCODE_API_URL },
       zai: { key: env.ZAI_API_KEY, url: env.ZAI_API_URL },
@@ -916,15 +928,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
         baseUrl: info.url,
       },
       integrations: {
-        github: {
-          configured: githubClient.isConfigured(),
-        },
-        gitlab: {
-          configured: gitlabClient.isConfigured(),
-        },
-        jira: {
-          configured: jiraClient.isConfigured(),
-        },
+        github: { configured: githubConfigured, valid: githubValid },
+        gitlab: { configured: gitlabConfigured, valid: gitlabValid },
+        jira: { configured: jiraConfigured, valid: jiraValid },
       },
     };
   });

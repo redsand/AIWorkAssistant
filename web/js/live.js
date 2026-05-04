@@ -12,6 +12,10 @@ import { loadConversations } from "./conversations.js";
 let activeReader = null;
 let activeAbortController = null;
 
+const MAX_RECONNECT_ATTEMPTS = 5;
+const RECONNECT_BASE_DELAY = 1000;
+let reconnectAttempts = 0;
+
 export function disconnectLive() {
   if (activeAbortController) {
     activeAbortController.abort();
@@ -25,6 +29,7 @@ export function disconnectLive() {
 
 export function subscribeLive(sessionId) {
   disconnectLive();
+  reconnectAttempts = 0;
 
   if (!sessionId) return;
 
@@ -47,6 +52,7 @@ export function subscribeLive(sessionId) {
 
       const reader = response.body.getReader();
       activeReader = reader;
+      reconnectAttempts = 0;
       const decoder = new TextDecoder();
       let buffer = "";
       let currentThinking = "";
@@ -200,6 +206,12 @@ export function subscribeLive(sessionId) {
               processChunk("\n", true);
             }
             cleanup();
+            if (sessionId && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+              reconnectAttempts++;
+              const delay = RECONNECT_BASE_DELAY * Math.pow(2, reconnectAttempts - 1);
+              console.log(`[SSE] Stream ended, reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+              setTimeout(() => subscribeLive(sessionId), delay);
+            }
             break;
           }
           const chunkResult = processChunk(
