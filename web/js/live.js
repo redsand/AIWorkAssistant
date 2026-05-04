@@ -185,11 +185,11 @@ export function subscribeLive(sessionId) {
             cleanup();
             break;
           }
-          const result = processChunk(
+          const chunkResult = processChunk(
             decoder.decode(value, { stream: true }),
             false,
           );
-          if (result.stop) break;
+          if (chunkResult.stop) break;
         }
       };
 

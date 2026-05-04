@@ -151,4 +151,86 @@ describe("LSPManager", () => {
     const diags = manager.getDiagnostics("/unknown/file.ts", "error");
     expect(diags).toEqual([]);
   });
+
+  it("getClient returns undefined for unconfigured language", () => {
+    expect(manager.getClient("typescript")).toBeUndefined();
+    expect(manager.getClient("python")).toBeUndefined();
+  });
+
+  it("shutdown succeeds even with no clients", async () => {
+    await expect(manager.shutdown()).resolves.toBeUndefined();
+  });
+
+  it("diagnostic summary returns zero counts when no clients", () => {
+    const summary = manager.getDiagnosticSummary();
+    expect(summary.errors).toBe(0);
+    expect(summary.warnings).toBe(0);
+    expect(summary.total).toBe(0);
+    expect(summary.files).toBe(0);
+    expect(summary.items).toEqual([]);
+  });
+});
+
+describe("LSPClient methods", () => {
+  const config = {
+    command: "typescript-language-server",
+    args: ["--stdio"],
+    languageId: "typescript",
+    extensions: [".ts", ".tsx"],
+  };
+
+  it("has hover method", () => {
+    const client = new LSPClient("/project", config);
+    expect(typeof client.hover).toBe("function");
+  });
+
+  it("has gotoDefinition method", () => {
+    const client = new LSPClient("/project", config);
+    expect(typeof client.gotoDefinition).toBe("function");
+  });
+
+  it("has references method", () => {
+    const client = new LSPClient("/project", config);
+    expect(typeof client.references).toBe("function");
+  });
+
+  it("has workspaceSymbols method", () => {
+    const client = new LSPClient("/project", config);
+    expect(typeof client.workspaceSymbols).toBe("function");
+  });
+
+  it("has shutdown method", () => {
+    const client = new LSPClient("/project", config);
+    expect(typeof client.shutdown).toBe("function");
+  });
+
+  it("getLanguageId returns configured language", () => {
+    const client = new LSPClient("/project", config);
+    expect(client.getLanguageId()).toBe("typescript");
+  });
+
+  it("getExtensions returns configured extensions", () => {
+    const client = new LSPClient("/project", config);
+    expect(client.getExtensions()).toEqual([".ts", ".tsx"]);
+  });
+});
+
+describe("LSPManager edge cases", () => {
+  it("handles files with no extension", () => {
+    const manager = new LSPManager("/test/project");
+    expect(manager.getClientForFile("Makefile")).toBeUndefined();
+    expect(manager.getClientForFile("README")).toBeUndefined();
+  });
+
+  it("handles dotfiles correctly", () => {
+    const manager = new LSPManager("/test/project");
+    expect(manager.getClientForFile(".eslintrc.js")).toBeUndefined();
+    expect(manager.getClientForFile(".gitignore")).toBeUndefined();
+  });
+
+  it("getDiagnostics returns empty array for non-ts file", () => {
+    const manager = new LSPManager("/test/project");
+    const diags = manager.getDiagnostics("/test/project/src/main.py");
+    expect(diags).toEqual([]);
+  });
 });
