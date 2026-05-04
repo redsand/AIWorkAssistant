@@ -28,7 +28,13 @@ class DailyPlanner {
   async generatePlan(date: Date, userId: string): Promise<DailyPlan> {
     const dayPlan = await weeklyPlanner.generateDayPlan(date, userId);
 
-    const assignedIssues = await jiraService.getAssignedIssues(userId).catch(() => []);
+    const assignedIssues = (await jiraService.getAssignedIssues(userId).catch(() => []))
+      .filter((i: any) => {
+        const statusCategory = i.fields?.status?.statusCategory?.key;
+        if (statusCategory === "done") return false;
+        const statusName = (i.fields?.status?.name || "").toLowerCase();
+        return !["done", "closed", "resolved"].includes(statusName);
+      });
     const urgentCount = assignedIssues.filter((i: any) => {
       const p = i.fields?.priority?.name?.toLowerCase() || "";
       return p.includes("highest") || p.includes("high");

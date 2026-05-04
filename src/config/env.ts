@@ -168,6 +168,14 @@ const envSchema = z.object({
   RAG_MAX_FILE_SIZE_KB: z.coerce.number().default(256),
   RAG_CHUNK_SIZE: z.coerce.number().default(500),
   RAG_CHUNK_OVERLAP: z.coerce.number().default(50),
+
+  // Nightly calendar planning
+  NIGHTLY_PLAN_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("true"),
+  NIGHTLY_PLAN_WEEKS: z.coerce.number().default(2),
+  NIGHTLY_PLAN_USER: z.string().default("user"),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -77,14 +77,22 @@ interface JiraIssue {
 }
 
 function extractJiraIssues(raw: any[]): JiraIssue[] {
-  return raw.map((issue: any) => ({
-    key: issue.key || "UNKNOWN",
-    summary:
-      issue.fields?.summary || issue.summary || `Issue ${issue.key || "UNKNOWN"}`,
-    priority: issue.fields?.priority?.name?.toLowerCase() || "medium",
-    status: issue.fields?.status?.name?.toLowerCase() || "open",
-    updated: issue.fields?.updated || new Date().toISOString(),
-  }));
+  return raw
+    .filter((issue: any) => {
+      const statusCategory = issue.fields?.status?.statusCategory?.key;
+      if (statusCategory === "done") return false;
+      const statusName = (issue.fields?.status?.name || "").toLowerCase();
+      if (["done", "closed", "resolved"].includes(statusName)) return false;
+      return true;
+    })
+    .map((issue: any) => ({
+      key: issue.key || "UNKNOWN",
+      summary:
+        issue.fields?.summary || issue.summary || `Issue ${issue.key || "UNKNOWN"}`,
+      priority: issue.fields?.priority?.name?.toLowerCase() || "medium",
+      status: issue.fields?.status?.name?.toLowerCase() || "open",
+      updated: issue.fields?.updated || new Date().toISOString(),
+    }));
 }
 
 function sortIssuesByPriority(issues: JiraIssue[]): JiraIssue[] {

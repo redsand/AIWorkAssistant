@@ -229,6 +229,9 @@ export class JiraClient {
         let jql = `assignee = "${user.accountId}"`;
         if (status) {
           jql += ` AND status = "${status}"`;
+        } else {
+          // Default: exclude completed issues so they don't appear in planner/calendar views
+          jql += ` AND statusCategory != Done`;
         }
         jql += " ORDER BY created DESC";
 
