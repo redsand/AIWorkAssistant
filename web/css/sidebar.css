@@ -211,6 +211,22 @@
   color: #e53e3e;
 }
 
+.conversation-link {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #999;
+  font-size: 12px;
+  padding: 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: color 0.2s;
+}
+
+.conversation-link:hover {
+  color: #4299e1;
+}
+
 .stop-btn {
   padding: 4px 12px;
   background: #e53e3e;

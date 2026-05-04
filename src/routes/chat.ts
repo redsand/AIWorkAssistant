@@ -588,10 +588,29 @@ export async function chatRoutes(fastify: FastifyInstance) {
     reply.raw.setHeader("Cache-Control", "no-cache");
     reply.raw.setHeader("Connection", "keep-alive");
     reply.raw.setHeader("X-Accel-Buffering", "no");
+    reply.raw.flushHeaders();
+    if (reply.raw.socket) {
+      reply.raw.socket.setNoDelay(true);
+    }
 
     const sendEvent = (event: string, data: unknown) => {
       try {
         reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      } catch {}
+    };
+
+    const heartbeat = setInterval(() => {
+      try {
+        reply.raw.write(": heartbeat\n\n");
+      } catch {
+        clearInterval(heartbeat);
+      }
+    }, 15000);
+
+    const cleanupConnection = () => {
+      clearInterval(heartbeat);
+      try {
+        reply.raw.end();
       } catch {}
     };
 
@@ -663,8 +682,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
           sendEvent(evt.event, evt.data);
         }
         if (job.status !== "processing") {
-          reply.raw.end();
-          return reply;
+          cleanupConnection();
+          return;
         }
       }
 
@@ -672,9 +691,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         sendEvent(event, data);
         if (event === "done" || event === "error") {
           setTimeout(() => {
-            try {
-              reply.raw.end();
-            } catch {}
+            cleanupConnection();
           }, 100);
         }
       };
@@ -695,6 +712,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       request.raw.on("close", () => {
         job.subscribers.delete(subscriber);
+        cleanupConnection();
       });
     } catch (error) {
       fastify.log.error(error);
@@ -702,9 +720,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
         error: "Failed to process stream request",
         message: error instanceof Error ? error.message : "Unknown error",
       });
+      cleanupConnection();
     }
-
-    return reply;
   });
 
   fastify.get("/chat/sessions/:sessionId/status", async (request) => {
@@ -745,6 +762,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
     reply.raw.setHeader("Cache-Control", "no-cache");
     reply.raw.setHeader("Connection", "keep-alive");
     reply.raw.setHeader("X-Accel-Buffering", "no");
+    reply.raw.flushHeaders();
+    if (reply.raw.socket) {
+      reply.raw.socket.setNoDelay(true);
+    }
 
     const sendEvent = (event: string, data: unknown) => {
       try {
@@ -760,6 +781,13 @@ export async function chatRoutes(fastify: FastifyInstance) {
       }
     }, 15000);
 
+    const cleanupConnection = () => {
+      clearInterval(heartbeat);
+      try {
+        reply.raw.end();
+      } catch {}
+    };
+
     const job = processingJobs.get(sessionId);
     if (job && job.status === "processing") {
       for (const evt of job.events) {
@@ -770,9 +798,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         sendEvent(event, data);
         if (event === "done" || event === "error") {
           setTimeout(() => {
-            try {
-              reply.raw.end();
-            } catch {}
+            cleanupConnection();
           }, 100);
         }
       };
@@ -780,7 +806,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       request.raw.on("close", () => {
         job.subscribers.delete(subscriber);
-        clearInterval(heartbeat);
+        cleanupConnection();
       });
     } else {
       sendEvent("state", { processing: false, sessionId });
@@ -796,27 +822,23 @@ export async function chatRoutes(fastify: FastifyInstance) {
             sendEvent(event, data);
             if (event === "done" || event === "error") {
               setTimeout(() => {
-                try {
-                  reply.raw.end();
-                } catch {}
+                cleanupConnection();
               }, 100);
             }
           };
           currentJob.subscribers.add(subscriber);
           request.raw.on("close", () => {
             currentJob.subscribers.delete(subscriber);
-            clearInterval(heartbeat);
+            cleanupConnection();
           });
         }
       }, 500);
 
       request.raw.on("close", () => {
         clearInterval(waitInterval);
-        clearInterval(heartbeat);
+        cleanupConnection();
       });
     }
-
-    return reply;
   });
 
   fastify.get("/chat/health", async (_request, _reply) => {

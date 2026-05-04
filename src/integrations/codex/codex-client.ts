@@ -16,7 +16,27 @@ class CodexClient {
   }
 
   isConfigured(): boolean {
-    return !!(process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY);
+    // Configured if either an API key is set OR Ollama is available as a fallback
+    return !!(
+      process.env.OPENAI_API_KEY ||
+      process.env.CODEX_API_KEY ||
+      process.env.OLLAMA_API_URL
+    );
+  }
+
+  private getEffectiveEnv(): Record<string, string> {
+    const env: Record<string, string> = {};
+
+    if (process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY) {
+      env.OPENAI_API_KEY =
+        process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY || "";
+    } else if (process.env.OLLAMA_API_URL) {
+      // Route through Ollama's OpenAI-compatible endpoint
+      env.OPENAI_API_KEY = "ollama";
+      env.OPENAI_BASE_URL = `${process.env.OLLAMA_API_URL}/v1`;
+    }
+
+    return env;
   }
 
   async runPrompt(
@@ -29,7 +49,11 @@ class CodexClient {
     } = {},
   ): Promise<CodexResult> {
     const cwd = options.cwd || process.cwd();
-    const model = options.model || process.env.CODEX_MODEL || "o4-mini";
+    const model =
+      options.model ||
+      process.env.CODEX_MODEL ||
+      process.env.OLLAMA_MODEL ||
+      "o4-mini";
     const approvalMode = options.approvalMode || "suggest";
 
     const args: string[] = [];
@@ -44,14 +68,14 @@ class CodexClient {
     args.push("-q", prompt);
 
     const startTime = Date.now();
+    const extraEnv = this.getEffectiveEnv();
 
     return new Promise((resolve) => {
       const proc = spawn(this.codexPath, args, {
         cwd,
         env: {
           ...process.env,
-          OPENAI_API_KEY:
-            process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY || "",
+          ...extraEnv,
         },
         stdio: ["pipe", "pipe", "pipe"],
         shell: true,

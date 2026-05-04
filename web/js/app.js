@@ -29,6 +29,7 @@ import {
   deleteConversation,
   showChatView,
   showPanelView,
+  copyChatLink,
 } from "./conversations.js";
 import {
   openToolsModal,
@@ -42,6 +43,7 @@ import {
   copyWebcalUrl,
 } from "./actions.js";
 import { autoResizeTextarea } from "./utils.js";
+import { readSessionHash } from "./state.js";
 
 window.login = login;
 window.logout = logout;
@@ -62,6 +64,7 @@ window.quickAction = quickAction;
 window.newChat = newChat;
 window.deleteConversation = deleteConversation;
 window.switchConversation = switchConversation;
+window.copyChatLink = copyChatLink;
 window.showChatView = showChatView;
 window.showPanelView = showPanelView;
 window.toggleTodoPanel = toggleTodoPanel;
@@ -86,6 +89,19 @@ document.addEventListener("click", function (e) {
 });
 
 document.addEventListener("DOMContentLoaded", () => {
+  // Handle URL hash navigation: #/chat/SESSION_ID
+  const hashSessionId = readSessionHash();
+  if (hashSessionId) {
+    // Import and call switchConversation after auth check
+    const originalCheckAuth = checkAuth;
+    checkAuth = async function () {
+      await originalCheckAuth();
+      if (hashSessionId) {
+        switchConversation(hashSessionId);
+      }
+    };
+  }
+
   checkAuth();
 
   document.querySelectorAll(".mode-btn").forEach((btn) => {
@@ -164,5 +180,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("toolsModal").addEventListener("click", (e) => {
     if (e.target.id === "toolsModal") closeToolsModal();
+  });
+
+  // Handle browser back/forward via hash changes
+  window.addEventListener("hashchange", () => {
+    const hashId = readSessionHash();
+    if (hashId) {
+      switchConversation(hashId);
+    } else {
+      newChat();
+    }
   });
 });

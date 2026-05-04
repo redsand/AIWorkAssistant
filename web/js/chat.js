@@ -11,6 +11,7 @@ import {
   setDraftBeforeHistory,
   setMessageHistory,
   setActiveStreamController,
+  updateSessionHash,
 } from "./state.js";
 import { authHeaders } from "./auth.js";
 import { autoResizeTextarea } from "./utils.js";
@@ -61,6 +62,7 @@ async function handleStreamResponse(response, progressElRef, onError) {
           if (data.sessionId) {
             setCurrentSessionId(data.sessionId);
             localStorage.setItem("currentSessionId", data.sessionId);
+            updateSessionHash(data.sessionId);
           }
           if (eventType === "tool_start") {
             ensureProgressEl();
@@ -170,6 +172,7 @@ async function loadChatHistory() {
       if (data.sessions && data.sessions.length > 0) {
         setCurrentSessionId(data.sessions[0].id);
         localStorage.setItem("currentSessionId", data.sessions[0].id);
+        updateSessionHash(data.sessions[0].id);
       }
     } catch {
       return;
