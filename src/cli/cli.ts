@@ -6,6 +6,8 @@
 
 import { Command } from "commander";
 import { loadEnv } from "../config/env";
+import { OllamaLauncher } from "../integrations/ollama-launcher";
+import type { LaunchOptions } from "../integrations/ollama-launcher";
 import axios from "axios";
 
 // Load environment variables
@@ -30,15 +32,12 @@ interface ChatResponse {
 // Store active session for CLI
 let currentSessionId: string | null = null;
 
-/**
- * Chat with the agent
- */
 async function chatWithAgent(
   message: string,
   mode: "productivity" | "engineering" = "productivity",
 ): Promise<void> {
   try {
-    console.log("🤖 Agent:", message);
+    console.log("Agent:", message);
 
     const response = await axios.post(`${API_BASE_URL}/chat`, {
       message,
@@ -51,19 +50,18 @@ async function chatWithAgent(
 
     const data = response.data as ChatResponse;
 
-    // Store session ID for continued conversation
     if (data.sessionId) {
       currentSessionId = data.sessionId;
-      console.log(`💾 Session: ${data.sessionId.substring(0, 8)}...`);
+      console.log(`Session: ${data.sessionId.substring(0, 8)}...`);
     }
 
     console.log("");
-    console.log("📋 Response:");
+    console.log("Response:");
     console.log(data.content);
 
     if (data.toolCalls && data.toolCalls.length > 0) {
       console.log("");
-      console.log("🔧 Tool Calls:");
+      console.log("Tool Calls:");
       data.toolCalls.forEach((tool, index) => {
         console.log(`  ${index + 1}. ${tool.name}`);
         console.log(`     Params: ${JSON.stringify(tool.params, null, 2)}`);
@@ -72,7 +70,7 @@ async function chatWithAgent(
 
     if (data.usage) {
       console.log("");
-      console.log("📊 Token Usage:", data.usage.totalTokens);
+      console.log("Token Usage:", data.usage.totalTokens);
     }
   } catch (error) {
     if (axios.isAxiosError(error)) {
@@ -80,29 +78,26 @@ async function chatWithAgent(
       const data = error.response?.data as any;
 
       if (status === 503) {
-        console.error("❌ Agent not available. Is the server running?");
+        console.error("Agent not available. Is the server running?");
         console.log("   Start the server with: npm run dev");
       } else if (data?.error) {
-        console.error("❌ Error:", data.error);
+        console.error("Error:", data.error);
       } else {
-        console.error("❌ Request failed:", error.message);
+        console.error("Request failed:", error.message);
       }
     } else {
-      console.error("❌ Error:", error);
+      console.error("Error:", error);
     }
   }
 }
 
-/**
- * Stream chat with the agent
- */
 async function streamChatWithAgent(
   message: string,
   mode: "productivity" | "engineering" = "productivity",
 ): Promise<void> {
   try {
-    console.log("🤖 Agent:", message);
-    console.log("📡 Streaming response...");
+    console.log("Agent:", message);
+    console.log("Streaming response...");
     console.log("");
 
     const response = await axios.post(
@@ -117,8 +112,6 @@ async function streamChatWithAgent(
       },
     );
 
-    let fullContent = "";
-
     for await (const chunk of response.data) {
       if (chunk.toString().startsWith("data: ")) {
         const data = chunk.toString().slice(6);
@@ -131,9 +124,8 @@ async function streamChatWithAgent(
           const parsed = JSON.parse(data);
           if (parsed.content) {
             process.stdout.write(parsed.content);
-            fullContent += parsed.content;
           }
-        } catch (e) {
+        } catch {
           // Skip invalid JSON
         }
       }
@@ -143,19 +135,16 @@ async function streamChatWithAgent(
   } catch (error) {
     if (axios.isAxiosError(error)) {
       if (error.response?.status === 503) {
-        console.error("❌ Agent not available. Is the server running?");
+        console.error("Agent not available. Is the server running?");
       } else {
-        console.error("❌ Request failed:", error.message);
+        console.error("Request failed:", error.message);
       }
     } else {
-      console.error("❌ Error:", error);
+      console.error("Error:", error);
     }
   }
 }
 
-/**
- * Get pending approvals
- */
 async function getApprovals(): Promise<void> {
   try {
     const response = await axios.get(
@@ -164,11 +153,11 @@ async function getApprovals(): Promise<void> {
     const approvals = response.data.approvals || [];
 
     if (approvals.length === 0) {
-      console.log("✅ No pending approvals");
+      console.log("No pending approvals");
       return;
     }
 
-    console.log(`📋 Pending Approvals (${approvals.length}):`);
+    console.log(`Pending Approvals (${approvals.length}):`);
     approvals.forEach((approval: any, index: number) => {
       console.log(`  ${index + 1}. ${approval.action.description}`);
       console.log(`     Risk: ${approval.decision.riskLevel}`);
@@ -179,119 +168,93 @@ async function getApprovals(): Promise<void> {
       console.log(`     ID: ${approval.id}`);
       console.log("");
     });
-    console.log(
-      `💡 Approve: curl -X POST ${API_BASE_URL}/approvals/${approvals[0].id}/approve -H "Content-Type: application/json" -d '{"userId":"cli-user"}'`,
-    );
-    console.log(
-      `   Reject: curl -X POST ${API_BASE_URL}/approvals/${approvals[0].id}/reject -H "Content-Type: application/json" -d '{"userId":"cli-user"}'`,
-    );
   } catch (error) {
-    console.error("❌ Failed to get approvals:", error);
+    console.error("Failed to get approvals:", error);
   }
 }
 
-/**
- * Check system health
- */
 async function checkHealth(): Promise<void> {
   try {
     const response = await axios.get(`${API_BASE_URL}/health`);
     const health = response.data;
 
-    console.log("✅ System Health Check");
+    console.log("System Health Check");
     console.log(`   Status: ${health.status}`);
     console.log(`   Version: ${health.version}`);
     console.log(`   Server: ${API_BASE_URL}`);
 
     if (health.provider) {
       console.log("");
-      console.log(`🤖 AI Provider (${health.provider.active}):`);
+      console.log(`AI Provider (${health.provider.active}):`);
       console.log(
         `   Configured: ${health.provider.configured ? "Yes" : "No"}`,
       );
       console.log(`   Valid: ${health.provider.valid ? "Yes" : "No"}`);
     }
-  } catch (error) {
-    console.error("❌ Agent not available");
+  } catch {
+    console.error("Agent not available");
     console.log("   Start the server with: npm run dev");
   }
 }
 
-/**
- * Plan the day
- */
 async function planDay(date?: string): Promise<void> {
   const targetDate = date || new Date().toISOString().split("T")[0];
   await chatWithAgent(`Plan my day for ${targetDate}`, "productivity");
 }
 
-/**
- * Generate engineering strategy
- */
 async function generateEngineeringStrategy(idea: string): Promise<void> {
   await chatWithAgent(
-    `I want to build: ${idea}
-
-Please help me design this properly by starting with workflow analysis.`,
+    `I want to build: ${idea}\n\nPlease help me design this properly by starting with workflow analysis.`,
     "engineering",
   );
 }
 
-/**
- * Generate workflow brief
- */
 async function generateWorkflowBrief(idea: string): Promise<void> {
   await chatWithAgent(
-    `Generate a workflow brief for: ${idea}
-
-Focus on:
-- Users and actors
-- Jobs-to-be-done
-- Current vs desired workflow
-- Friction points
-- Decisions the system must support
-- Automation opportunities`,
+    `Generate a workflow brief for: ${idea}\n\nFocus on:\n- Users and actors\n- Jobs-to-be-done\n- Current vs desired workflow\n- Friction points\n- Decisions the system must support\n- Automation opportunities`,
     "engineering",
   );
 }
 
-/**
- * Generate architecture proposal
- */
 async function generateArchitecture(idea: string): Promise<void> {
   await chatWithAgent(
-    `Generate an architecture proposal for: ${idea}
-
-Recommend:
-- Tech stack (with justification)
-- System boundaries
-- Data model
-- API design
-- Security considerations`,
+    `Generate an architecture proposal for: ${idea}\n\nRecommend:\n- Tech stack (with justification)\n- System boundaries\n- Data model\n- API design\n- Security considerations`,
     "engineering",
   );
 }
 
-/**
- * Generate implementation plan
- */
 async function generateImplementationPlan(idea: string): Promise<void> {
   await chatWithAgent(
-    `Generate an implementation plan for: ${idea}
-
-Include:
-- Milestones
-- First vertical slice
-- Jira ticket breakdown
-- Acceptance criteria
-- Testing strategy`,
+    `Generate an implementation plan for: ${idea}\n\nInclude:\n- Milestones\n- First vertical slice\n- Jira ticket breakdown\n- Acceptance criteria\n- Testing strategy`,
     "engineering",
   );
 }
 
-/**
- * Create main CLI program
- */
+// ==================== Helper: launch provider ====================
+
+const launcher = new OllamaLauncher();
+
+async function launchProvider(options: LaunchOptions): Promise<void> {
+  try {
+    const child = await launcher.launchStream(options);
+    const code = await launcher.waitForExit(child);
+    process.exit(code ?? 0);
+  } catch (err: any) {
+    console.error("Launch failed:", err.message);
+    process.exit(1);
+  }
+}
+
+function requirePrompt(opts: { prompt?: string }): string {
+  if (!opts.prompt) {
+    console.error("Error: --prompt is required");
+    process.exit(1);
+  }
+  return opts.prompt;
+}
+
+// ==================== Build CLI program ====================
+
 const program = new Command();
 
 program
@@ -396,9 +359,12 @@ program
     await chatWithAgent(`Schedule a ${duration} break`, "productivity");
   });
 
-// Session management commands
-program
-  .command("session start")
+// ==================== Session subcommands ====================
+
+const sessionCmd = program.command("session").description("Manage conversation sessions");
+
+sessionCmd
+  .command("start")
   .description("Start a new conversation session")
   .option(
     "-m, --mode <mode>",
@@ -414,37 +380,36 @@ program
       });
 
       currentSessionId = response.data.sessionId;
-      console.log("✅ Session started:", currentSessionId);
-      console.log("💾 Use this session ID for continued conversations");
+      console.log("Session started:", currentSessionId);
     } catch (error) {
-      console.error("❌ Failed to start session:", error);
+      console.error("Failed to start session:", error);
     }
   });
 
-program
-  .command("session end")
+sessionCmd
+  .command("end")
   .description("End current conversation session")
   .action(async () => {
     if (!currentSessionId) {
-      console.log("ℹ️ No active session");
+      console.log("No active session");
       return;
     }
 
     try {
       await axios.post(`${API_BASE_URL}/chat/sessions/${currentSessionId}/end`);
-      console.log("✅ Session ended and saved to long-term memory");
+      console.log("Session ended and saved to long-term memory");
       currentSessionId = null;
     } catch (error) {
-      console.error("❌ Failed to end session:", error);
+      console.error("Failed to end session:", error);
     }
   });
 
-program
-  .command("session info")
+sessionCmd
+  .command("info")
   .description("Show current session information")
   .action(async () => {
     if (!currentSessionId) {
-      console.log("ℹ️ No active session");
+      console.log("No active session");
       return;
     }
 
@@ -454,7 +419,7 @@ program
       );
       const session = response.data.session;
 
-      console.log("📋 Session Information:");
+      console.log("Session Information:");
       console.log(`   ID: ${session.id}`);
       console.log(`   Mode: ${session.mode}`);
       console.log(`   Messages: ${session.messageCount}`);
@@ -465,13 +430,16 @@ program
         `   Updated: ${new Date(session.updatedAt).toLocaleString()}`,
       );
     } catch (error) {
-      console.error("❌ Failed to get session info:", error);
+      console.error("Failed to get session info:", error);
     }
   });
 
-// Memory management commands
-program
-  .command("memory search <query>")
+// ==================== Memory subcommands ====================
+
+const memoryCmd = program.command("memory").description("Long-term memory operations");
+
+memoryCmd
+  .command("search <query>")
   .description("Search long-term memory")
   .option("-l, --limit <number>", "Number of results", "10")
   .action(async (options, query) => {
@@ -487,11 +455,11 @@ program
       const results = response.data.results;
 
       if (results.length === 0) {
-        console.log("ℹ️ No memories found");
+        console.log("No memories found");
         return;
       }
 
-      console.log(`🔍 Found ${results.length} memories:`);
+      console.log(`Found ${results.length} memories:`);
       results.forEach((memory: any, index: number) => {
         console.log(`\n${index + 1}. ${memory.title}`);
         console.log(
@@ -501,25 +469,186 @@ program
         console.log(`   Summary: ${memory.summary.substring(0, 150)}...`);
       });
     } catch (error) {
-      console.error("❌ Failed to search memory:", error);
+      console.error("Failed to search memory:", error);
     }
   });
 
-program
-  .command("memory stats")
+memoryCmd
+  .command("stats")
   .description("Show memory statistics")
   .action(async () => {
     try {
       const response = await axios.get(`${API_BASE_URL}/chat/memory/stats`);
       const stats = response.data.stats;
 
-      console.log("📊 Memory Statistics:");
+      console.log("Memory Statistics:");
       console.log(`   Active Sessions: ${stats.activeSessions}`);
       console.log(`   Total Summaries: ${stats.totalSummaries}`);
       console.log(`   Users: ${stats.usersCount}`);
     } catch (error) {
-      console.error("❌ Failed to get memory stats:", error);
+      console.error("Failed to get memory stats:", error);
     }
+  });
+
+// ==================== Ollama Launcher Commands ====================
+
+const ollamaCmd = program.command("ollama").description("Ollama launcher commands");
+
+ollamaCmd
+  .command("status")
+  .description("Check Ollama server and launcher status")
+  .action(async () => {
+    console.log("Checking Ollama launcher status...\n");
+
+    const [ollamaCheck, codexInstalled, claudeInstalled, opencodeInstalled] =
+      await Promise.all([
+        launcher.checkOllama(),
+        launcher.checkCliInstalled("codex"),
+        launcher.checkCliInstalled("claude"),
+        launcher.checkCliInstalled("opencode"),
+      ]);
+
+    if (ollamaCheck.reachable) {
+      console.log("  Ollama: reachable at", process.env.OLLAMA_API_URL || "http://localhost:11434");
+      const models = ollamaCheck.models.map((m) => m.name);
+      if (models.length > 0) {
+        console.log(`  Models: ${models.join(", ")}`);
+      } else {
+        console.log("  Models: (none found)");
+      }
+    } else {
+      console.log("  Ollama: NOT reachable -", ollamaCheck.error);
+      console.log("    Start with: ollama serve");
+    }
+
+    console.log("");
+    console.log("  Provider CLIs:");
+    console.log(`    codex:    ${codexInstalled ? "installed" : "NOT installed"}`);
+    console.log(`    claude:   ${claudeInstalled ? "installed" : "NOT installed"}`);
+    console.log(`    opencode: ${opencodeInstalled ? "installed" : "NOT installed"}`);
+
+    console.log("");
+    console.log("  Default model:", process.env.OLLAMA_LAUNCHER_DEFAULT_MODEL || process.env.OLLAMA_MODEL || "glm-5.1:cloud");
+  });
+
+const launchCmd = ollamaCmd.command("launch").description("Launch an AI coding tool via Ollama");
+
+launchCmd
+  .command("codex")
+  .description("Launch Codex CLI routed through Ollama")
+  .option("--model <model>", "Ollama model to use", process.env.OLLAMA_LAUNCHER_DEFAULT_MODEL || process.env.OLLAMA_MODEL || "glm-5.1:cloud")
+  .option("--prompt <prompt>", "Prompt to send")
+  .option("--approval-mode <mode>", "Codex approval mode", "full-auto")
+  .option("--ollama-url <url>", "Ollama base URL", process.env.OLLAMA_API_URL || "http://localhost:11434")
+  .option("--cwd <path>", "Working directory")
+  .action(async (opts) => {
+    requirePrompt(opts);
+    const options: LaunchOptions = {
+      provider: "codex",
+      prompt: opts.prompt,
+      model: opts.model,
+      ollamaUrl: opts.ollamaUrl,
+      codexApprovalMode: opts.approvalMode,
+      cwd: opts.cwd,
+    };
+    console.log(`Launching Codex (model: ${opts.model}, approval: ${opts.approvalMode})...\n`);
+    await launchProvider(options);
+  });
+
+launchCmd
+  .command("claude")
+  .description("Launch Claude CLI with --dangerously-skip-permissions")
+  .option("--model <model>", "Claude model to use")
+  .option("--prompt <prompt>", "Prompt to send")
+  .option("--cwd <path>", "Working directory")
+  .action(async (opts) => {
+    requirePrompt(opts);
+    const options: LaunchOptions = {
+      provider: "claude",
+      prompt: opts.prompt,
+      model: opts.model,
+      cwd: opts.cwd,
+    };
+    console.log("Launching Claude (with --dangerously-skip-permissions)...\n");
+    await launchProvider(options);
+  });
+
+launchCmd
+  .command("opencode")
+  .description("Launch OpenCode CLI")
+  .option("--prompt <prompt>", "Prompt to send")
+  .option("--ollama-url <url>", "Ollama base URL (routes through Ollama if set)")
+  .option("--cwd <path>", "Working directory")
+  .action(async (opts) => {
+    requirePrompt(opts);
+    const options: LaunchOptions = {
+      provider: "opencode",
+      prompt: opts.prompt,
+      ollamaUrl: opts.ollamaUrl,
+      cwd: opts.cwd,
+    };
+    console.log("Launching OpenCode...\n");
+    await launchProvider(options);
+  });
+
+// ==================== Direct Provider Shortcuts ====================
+
+program
+  .command("codex")
+  .description("Launch Codex CLI via Ollama (shortcut for 'ollama launch codex')")
+  .option("--model <model>", "Ollama model to use", process.env.OLLAMA_LAUNCHER_DEFAULT_MODEL || process.env.OLLAMA_MODEL || "glm-5.1:cloud")
+  .option("--prompt <prompt>", "Prompt to send")
+  .option("--approval-mode <mode>", "Codex approval mode", "full-auto")
+  .option("--ollama-url <url>", "Ollama base URL", process.env.OLLAMA_API_URL || "http://localhost:11434")
+  .option("--cwd <path>", "Working directory")
+  .action(async (opts) => {
+    requirePrompt(opts);
+    const options: LaunchOptions = {
+      provider: "codex",
+      prompt: opts.prompt,
+      model: opts.model,
+      ollamaUrl: opts.ollamaUrl,
+      codexApprovalMode: opts.approvalMode,
+      cwd: opts.cwd,
+    };
+    console.log(`Launching Codex (model: ${opts.model}, approval: ${opts.approvalMode})...\n`);
+    await launchProvider(options);
+  });
+
+program
+  .command("claude")
+  .description("Launch Claude CLI with --dangerously-skip-permissions (shortcut for 'ollama launch claude')")
+  .option("--model <model>", "Claude model to use")
+  .option("--prompt <prompt>", "Prompt to send")
+  .option("--cwd <path>", "Working directory")
+  .action(async (opts) => {
+    requirePrompt(opts);
+    const options: LaunchOptions = {
+      provider: "claude",
+      prompt: opts.prompt,
+      model: opts.model,
+      cwd: opts.cwd,
+    };
+    console.log("Launching Claude (with --dangerously-skip-permissions)...\n");
+    await launchProvider(options);
+  });
+
+program
+  .command("opencode")
+  .description("Launch OpenCode CLI (shortcut for 'ollama launch opencode')")
+  .option("--prompt <prompt>", "Prompt to send")
+  .option("--ollama-url <url>", "Ollama base URL (routes through Ollama if set)")
+  .option("--cwd <path>", "Working directory")
+  .action(async (opts) => {
+    requirePrompt(opts);
+    const options: LaunchOptions = {
+      provider: "opencode",
+      prompt: opts.prompt,
+      ollamaUrl: opts.ollamaUrl,
+      cwd: opts.cwd,
+    };
+    console.log("Launching OpenCode...\n");
+    await launchProvider(options);
   });
 
 // Parse and execute

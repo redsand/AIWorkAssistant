@@ -147,6 +147,15 @@ const envSchema = z.object({
   CODEX_API_KEY: z.string().default(""),
   CODEX_MODEL: z.string().default("o4-mini"),
 
+  // Ollama Launcher (meta-launcher for AI coding tools)
+  OLLAMA_LAUNCHER_DEFAULT_MODEL: z.string().default("glm-5.1:cloud"),
+  OLLAMA_LAUNCHER_CLAUDE_CLI_PATH: z.string().default("claude"),
+  OLLAMA_LAUNCHER_CODEX_CLI_PATH: z.string().default("codex"),
+  OLLAMA_LAUNCHER_OPENCODE_CLI_PATH: z.string().default("opencode"),
+
+  // Claude CLI
+  ANTHROPIC_API_KEY: z.string().default(""),
+
   // RAG / Codebase Indexing
   RAG_INDEX_ON_STARTUP: z
     .string()
