@@ -1,0 +1,108 @@
+name: Bug Report
+description: Report a bug with a coding prompt for automated agent handoff
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Bug Report with Coding Prompt
+
+        This template requires a **coding prompt** — a self-contained specification with exact file paths, line numbers, current code, replacement code, and reasoning. Coding agents (Codex, Devin, Cursor Agent) rely on this to produce correct changes without exploring the codebase.
+
+        **Without a coding prompt, your issue will be auto-labeled `missing-coding-prompt`.**
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: What's broken? What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this bug?
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should happen instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happens?
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node version, browser, etc.
+      placeholder: |
+        - OS: 
+        - Node: 
+        - Browser: 
+    validations:
+      required: false
+
+  - type: textarea
+    id: coding_prompt
+    attributes:
+      label: Coding Prompt
+      description: |
+        **Required.** Self-contained specification for coding agents. Include:
+        - **File path** — exact file(s) to modify
+        - **Current code** — the code as it exists now (with line numbers)
+        - **Replacement code** — the new code
+        - **Reasoning** — why this change fixes the bug
+
+        Example:
+        ```markdown
+        ## File: src/routes/chat.ts (line 45-52)
+
+        ### Current Code
+        ```typescript
+        const health = await checkHealth();
+        console.log(health);
+        // Missing: UI update
+        ```
+
+        ### Replacement Code
+        ```typescript
+        const health = await checkHealth();
+        updateStatusIndicator(health);
+        await renderIntegrationStatus(health);
+        ```
+
+        ### Reasoning
+        The health check response is logged but never used to update the UI.
+        Calling `updateStatusIndicator()` and `renderIntegrationStatus()` ensures
+        the status bar and tools modal reflect the actual connection state.
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: How do we know this bug is fixed?
+      placeholder: |
+        - [ ] Bug no longer reproduces
+        - [ ] No regressions in related features
+    validations:
+      required: true
