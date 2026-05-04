@@ -10,7 +10,8 @@ import {
 } from "./state.js";
 import { authHeaders } from "./auth.js";
 import { addMessage } from "./messages.js";
-import { escapeHtml } from "./utils.js";
+
+import { escapeHtml, escapeAttr } from "./utils.js";
 import { readSessionHash } from "./state.js";
 
 export function isMobile() {
@@ -50,12 +51,12 @@ export async function loadConversations() {
                 })
               : date.toLocaleDateString();
           return `
-            <div class="conversation-item${isActive ? " active" : ""}" data-session-id="${s.id}" onclick="switchConversation('${s.id}')">
+            <div class="conversation-item${isActive ? " active" : ""}" data-session-id="${escapeAttr(s.id)}" onclick="switchConversation('${escapeAttr(s.id)}')">
               <div class="conversation-info">
                 <div class="conversation-title">${escapeHtml(s.title || "Untitled")} <span style="font-size: 10px; color: #888;">(${timeStr})</span></div>
                 <div class="conversation-preview">${escapeHtml(s.preview || s.mode + " mode")}</div>
               </div>
-              <button class="conversation-delete" onclick="event.stopPropagation(); deleteConversation('${s.id}')" title="Delete conversation">&#10005;</button>
+              <button class="conversation-delete" onclick="event.stopPropagation(); deleteConversation('${escapeAttr(s.id)}')" title="Delete conversation">&#10005;</button>
               <button class="conversation-link" onclick="event.stopPropagation(); copyChatLink('${s.id}')" title="Copy link to this chat">&#128279;</button>
             </div>
           `;
@@ -226,6 +227,7 @@ async function performDeleteConversation(sessionId) {
   }
 
   loadConversations();
+
 }
 
 export function copyChatLink(sessionId) {
