@@ -60,7 +60,7 @@ export interface WorkspaceSymbol {
   containerName?: string;
 }
 
-interface LSPServerConfig {
+export interface LSPServerConfig {
   command: string;
   args: string[];
   languageId: string;
@@ -74,7 +74,39 @@ const SERVER_CONFIGS: LSPServerConfig[] = [
     languageId: "typescript",
     extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs"],
   },
+  {
+    command: "pyright-langserver",
+    args: ["--stdio"],
+    languageId: "python",
+    extensions: [".py", ".pyi", ".pyw"],
+  },
+  {
+    command: "gopls",
+    args: ["mode", "stdio"],
+    languageId: "go",
+    extensions: [".go"],
+  },
+  {
+    command: "rust-analyzer",
+    args: [],
+    languageId: "rust",
+    extensions: [".rs"],
+  },
+  {
+    command: "jdtls",
+    args: [],
+    languageId: "java",
+    extensions: [".java"],
+  },
+  {
+    command: "clangd",
+    args: [],
+    languageId: "c",
+    extensions: [".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx"],
+  },
 ];
+
+export { SERVER_CONFIGS };
 
 export function severityToString(severity: number): DiagnosticItem["severity"] {
   switch (severity) {
@@ -101,6 +133,10 @@ export function uriToFilePath(uri: string): string {
   return uri;
 }
 
+function filePathToUri(filePath: string): string {
+  return "file:///" + filePath.replace(/\\/g, "/").replace(/^\/?/, "");
+}
+
 export class LSPClient extends EventEmitter {
   private process: ChildProcess | null = null;
   private requestId = 0;
@@ -111,6 +147,10 @@ export class LSPClient extends EventEmitter {
   private config: LSPServerConfig;
   private diagnostics = new Map<string, DiagnosticItem[]>();
   private shuttingDown = false;
+  private documentVersions = new Map<string, number>();
+  private restartAttempts = 0;
+  private maxRestartAttempts = 3;
+  private restartDelay = 5000;
 
   constructor(rootPath: string, config: LSPServerConfig) {
     super();
@@ -118,6 +158,10 @@ export class LSPClient extends EventEmitter {
       "file:///" + rootPath.replace(/\\/g, "/").replace(/^\/?/, "");
     if (!this.rootUri.endsWith("/")) this.rootUri += "/";
     this.config = config;
+  }
+
+  private backoffDelay(): number {
+    return this.restartDelay * Math.pow(2, this.restartAttempts - 1);
   }
 
   async start(): Promise<void> {
@@ -147,7 +191,31 @@ export class LSPClient extends EventEmitter {
         this.process.on("exit", () => {
           if (!this.shuttingDown) {
             this.initialized = false;
-            this.emit("stopped");
+            if (this.restartAttempts < this.maxRestartAttempts) {
+              this.restartAttempts++;
+              const delay = this.backoffDelay();
+              console.log(
+                `[LSP] ${this.config.languageId} server crashed, restarting (attempt ${this.restartAttempts}/${this.maxRestartAttempts})...`,
+              );
+              setTimeout(async () => {
+                try {
+                  await this.start();
+                  this.restartAttempts = 0;
+                } catch {
+                  if (this.restartAttempts >= this.maxRestartAttempts) {
+                    console.error(
+                      `[LSP] ${this.config.languageId} server crashed too many times, giving up`,
+                    );
+                    this.emit("stopped");
+                  }
+                }
+              }, delay);
+            } else {
+              console.error(
+                `[LSP] ${this.config.languageId} server crashed too many times, giving up`,
+              );
+              this.emit("stopped");
+            }
           }
         });
 
@@ -295,6 +363,12 @@ export class LSPClient extends EventEmitter {
           documentSymbol: {
             hierarchicalDocumentSymbolSupport: true,
           },
+          synchronization: {
+            dynamicRegistration: false,
+            willSave: false,
+            willSaveWaitUntil: false,
+            didSave: true,
+          },
         },
         workspace: {
           symbol: {},
@@ -309,7 +383,9 @@ export class LSPClient extends EventEmitter {
 
   async openFile(filePath: string, content: string): Promise<void> {
     if (!this.initialized) return;
-    const uri = "file:///" + filePath.replace(/\\/g, "/").replace(/^\/?/, "");
+    const absPath = path.resolve(filePath);
+    const uri = filePathToUri(absPath);
+    this.documentVersions.set(absPath, 1);
     this.sendNotification("textDocument/didOpen", {
       textDocument: {
         uri,
@@ -318,6 +394,30 @@ export class LSPClient extends EventEmitter {
         text: content,
       },
     });
+  }
+
+  async changeFile(filePath: string, content: string): Promise<void> {
+    if (!this.initialized) return;
+    const absPath = path.resolve(filePath);
+    const uri = filePathToUri(absPath);
+    const currentVersion = this.documentVersions.get(absPath) || 1;
+    const nextVersion = currentVersion + 1;
+    this.documentVersions.set(absPath, nextVersion);
+    this.sendNotification("textDocument/didChange", {
+      textDocument: { uri, version: nextVersion },
+      contentChanges: [{ text: content }],
+    });
+  }
+
+  async closeFile(filePath: string): Promise<void> {
+    if (!this.initialized) return;
+    const absPath = path.resolve(filePath);
+    const uri = filePathToUri(absPath);
+    this.sendNotification("textDocument/didClose", {
+      textDocument: { uri },
+    });
+    this.diagnostics.delete(absPath);
+    this.documentVersions.delete(absPath);
   }
 
   async getDiagnostics(filePath?: string): Promise<DiagnosticItem[]> {
@@ -338,7 +438,7 @@ export class LSPClient extends EventEmitter {
     character: number,
   ): Promise<HoverResult | null> {
     if (!this.initialized) return null;
-    const uri = "file:///" + filePath.replace(/\\/g, "/").replace(/^\/?/, "");
+    const uri = filePathToUri(path.resolve(filePath));
     try {
       const result = (await this.sendRequest("textDocument/hover", {
         textDocument: { uri },
@@ -372,7 +472,7 @@ export class LSPClient extends EventEmitter {
     character: number,
   ): Promise<DefinitionResult[]> {
     if (!this.initialized) return [];
-    const uri = "file:///" + filePath.replace(/\\/g, "/").replace(/^\/?/, "");
+    const uri = filePathToUri(path.resolve(filePath));
     try {
       const result = await this.sendRequest("textDocument/definition", {
         textDocument: { uri },
@@ -418,7 +518,7 @@ export class LSPClient extends EventEmitter {
     includeDeclaration = true,
   ): Promise<ReferenceResult[]> {
     if (!this.initialized) return [];
-    const uri = "file:///" + filePath.replace(/\\/g, "/").replace(/^\/?/, "");
+    const uri = filePathToUri(path.resolve(filePath));
     try {
       const result = (await this.sendRequest("textDocument/references", {
         textDocument: { uri },
@@ -487,6 +587,7 @@ export class LSPClient extends EventEmitter {
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    this.restartAttempts = this.maxRestartAttempts; // prevent auto-restart during intentional shutdown
     if (this.process) {
       try {
         await this.sendRequest("shutdown", null);
@@ -509,6 +610,10 @@ export class LSPClient extends EventEmitter {
   getExtensions(): string[] {
     return this.config.extensions;
   }
+
+  getDocumentVersion(filePath: string): number | undefined {
+    return this.documentVersions.get(path.resolve(filePath));
+  }
 }
 
 export class LSPManager extends EventEmitter {
@@ -521,8 +626,22 @@ export class LSPManager extends EventEmitter {
     this.rootPath = rootPath || process.cwd();
   }
 
-  async initialize(): Promise<void> {
-    for (const config of SERVER_CONFIGS) {
+  async initialize(customConfigs?: LSPServerConfig[]): Promise<void> {
+    const configs = [...SERVER_CONFIGS, ...(customConfigs || [])];
+
+    // Deduplicate by languageId — custom configs take precedence
+    const seen = new Set<string>();
+    const deduped = configs
+      .filter((c) => {
+        if (seen.has(c.languageId)) return false;
+        seen.add(c.languageId);
+        return true;
+      })
+      .reverse() // reverse so custom (appended) configs override built-in
+      .filter((c, i, arr) => arr.findIndex((x) => x.languageId === c.languageId) === i)
+      .reverse(); // restore original order
+
+    for (const config of deduped) {
       const command = config.command;
       const available = await this.isCommandAvailable(command);
       if (!available) {
@@ -586,6 +705,53 @@ export class LSPManager extends EventEmitter {
     const absPath = path.resolve(filePath);
     const fileContent = content || fs.readFileSync(absPath, "utf-8");
     await client.openFile(absPath, fileContent);
+  }
+
+  async changeFile(filePath: string, content: string): Promise<void> {
+    const client = this.getClientForFile(filePath);
+    if (!client) return;
+    await client.changeFile(path.resolve(filePath), content);
+  }
+
+  async closeFile(filePath: string): Promise<void> {
+    const client = this.getClientForFile(filePath);
+    if (!client) return;
+    await client.closeFile(path.resolve(filePath));
+  }
+
+  async restart(languageId: string): Promise<boolean> {
+    const client = this.clients.get(languageId);
+    if (!client) return false;
+
+    const config = {
+      command: client.getLanguageId() === "typescript" ? "typescript-language-server" : client.getLanguageId(),
+      args: [],
+      languageId: client.getLanguageId(),
+      extensions: client.getExtensions(),
+    };
+
+    // Get actual config from SERVER_CONFIGS
+    const serverConfig = SERVER_CONFIGS.find((c) => c.languageId === languageId);
+    if (serverConfig) {
+      config.command = serverConfig.command;
+      config.args = serverConfig.args;
+    }
+
+    await client.shutdown();
+
+    const newClient = new LSPClient(this.rootPath, config);
+    newClient.on("diagnostics", ({ filePath, diagnostics }) => {
+      this.allDiagnostics.set(filePath, diagnostics);
+      this.emit("diagnostics", { filePath, diagnostics });
+    });
+
+    try {
+      await newClient.start();
+      this.clients.set(languageId, newClient);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   getDiagnostics(

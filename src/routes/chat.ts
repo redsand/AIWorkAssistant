@@ -115,11 +115,11 @@ async function runChatJob(
         break;
       }
 
-      if (response.content && response.content.trim()) {
-        emitJobEvent(sessionId, "content", { content: response.content });
-      }
       if (response.thinking) {
         emitJobEvent(sessionId, "thinking", { thinking: response.thinking });
+      }
+      if (response.content && response.content.trim()) {
+        emitJobEvent(sessionId, "content", { content: response.content });
       }
 
       conversationManager.addMessage(sessionId, {
@@ -564,7 +564,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
   /**
    * Stream chat endpoint
    */
-  fastify.post("/chat/stream", async (request, reply) => {
+  fastify.post("/chat/stream", async (request, reply): Promise<void> => {
     const body = chatRequestSchema.parse(request.body);
 
     if (!aiClient.isConfigured()) {
@@ -576,10 +576,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
           : provider === "ollama"
             ? "OLLAMA_API_URL"
             : "OPENCODE_API_KEY";
-      return {
+      return reply.send({
         error: `AI provider (${provider}) not configured`,
         message: `Please set the ${keyHint} environment variable`,
-      };
+      });
     }
 
     reply.hijack();
@@ -747,13 +747,13 @@ export async function chatRoutes(fastify: FastifyInstance) {
     };
   });
 
-  fastify.get("/chat/sessions/:sessionId/stream", async (request, reply) => {
+  fastify.get("/chat/sessions/:sessionId/stream", async (request, reply): Promise<void> => {
     const { sessionId } = request.params as { sessionId: string };
     const session = conversationManager.getSession(sessionId);
 
     if (!session) {
       reply.code(404);
-      return { error: "Session not found" };
+      return reply.send({ error: "Session not found" });
     }
 
     reply.hijack();

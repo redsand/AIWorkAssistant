@@ -49,7 +49,7 @@ export class OllamaProvider extends AIProvider {
 
         const result: ChatResponse = {
           content: message.content || "",
-          thinking: message.reasoning_content || undefined,
+          thinking: message.reasoning_content || message.thinking || message.reasoning || undefined,
           toolCalls: message.tool_calls
             ? this.parseToolCalls(message.tool_calls)
             : undefined,
@@ -67,6 +67,10 @@ export class OllamaProvider extends AIProvider {
           thinkingLength: result.thinking?.length || 0,
           toolCallCount: result.toolCalls?.length || 0,
           tokensUsed: result.usage?.totalTokens || 0,
+          hasReasoningContent: !!message.reasoning_content,
+          hasThinking: !!message.thinking,
+          hasReasoning: !!message.reasoning,
+          messageKeys: Object.keys(message),
         });
 
         if (result.usage?.promptTokens) {
@@ -233,6 +237,9 @@ export class OllamaProvider extends AIProvider {
           const parsed = JSON.parse(data);
           const delta = parsed.choices[0]?.delta;
 
+          if (delta?.reasoning_content || delta?.thinking) {
+            yield `<<THINKING>>${delta.reasoning_content || delta.thinking}<<//THINKING>>`;
+          }
           if (delta?.content) {
             yield delta.content;
           }

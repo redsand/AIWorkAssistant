@@ -156,7 +156,7 @@ export async function initializeChat() {
 
   await loadChatHistory();
 
-  const { subscribeLive } = await import("./live.js");
+  const { subscribeLive } = await import("./live.js?v=8");
   if (currentSessionId) {
     subscribeLive(currentSessionId);
   }
@@ -250,7 +250,7 @@ export async function sendMessage() {
 
   if (!message) return;
 
-  const { disconnectLive } = await import("./live.js");
+  const { disconnectLive } = await import("./live.js?v=8");
   disconnectLive();
 
   input.value = "";
@@ -341,7 +341,7 @@ export async function sendMessage() {
 }
 
 export async function resendMessage(message) {
-  const { disconnectLive } = await import("./live.js");
+  const { disconnectLive } = await import("./live.js?v=8");
   disconnectLive();
 
   setHistoryIndex(-1);

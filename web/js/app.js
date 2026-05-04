@@ -88,21 +88,14 @@ document.addEventListener("click", function (e) {
   }
 });
 
-document.addEventListener("DOMContentLoaded", () => {
-  // Handle URL hash navigation: #/chat/SESSION_ID
+document.addEventListener("DOMContentLoaded", async () => {
+  await checkAuth();
+
+  // If URL hash points to a specific chat, navigate to it
   const hashSessionId = readSessionHash();
   if (hashSessionId) {
-    // Import and call switchConversation after auth check
-    const originalCheckAuth = checkAuth;
-    checkAuth = async function () {
-      await originalCheckAuth();
-      if (hashSessionId) {
-        switchConversation(hashSessionId);
-      }
-    };
+    switchConversation(hashSessionId);
   }
-
-  checkAuth();
 
   document.querySelectorAll(".mode-btn").forEach((btn) => {
     btn.addEventListener("click", () => {

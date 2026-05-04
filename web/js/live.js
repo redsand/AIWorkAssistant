@@ -9,12 +9,17 @@ import {
 import { loadRoadmaps } from "./sidebar.js";
 import { loadConversations } from "./conversations.js";
 
-let liveEventSource = null;
+let activeReader = null;
+let activeAbortController = null;
 
 export function disconnectLive() {
-  if (liveEventSource) {
-    liveEventSource.close();
-    liveEventSource = null;
+  if (activeAbortController) {
+    activeAbortController.abort();
+    activeAbortController = null;
+  }
+  if (activeReader) {
+    activeReader.cancel().catch(() => {});
+    activeReader = null;
   }
 }
 
@@ -25,12 +30,23 @@ export function subscribeLive(sessionId) {
 
   const url = `${API_BASE}/chat/sessions/${sessionId}/stream`;
   const headers = authHeaders();
+  const abortController = new AbortController();
+  activeAbortController = abortController;
 
-  fetch(url, { headers })
+  fetch(url, { headers, signal: abortController.signal })
     .then((response) => {
-      if (!response.ok) return;
+      if (abortController.signal.aborted) return;
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          setCurrentSessionId(null);
+          localStorage.removeItem("currentSessionId");
+        }
+        return;
+      }
 
       const reader = response.body.getReader();
+      activeReader = reader;
       const decoder = new TextDecoder();
       let buffer = "";
       let currentThinking = "";
@@ -40,6 +56,8 @@ export function subscribeLive(sessionId) {
       let contentCount = 0;
 
       const cleanup = () => {
+        if (activeReader === reader) activeReader = null;
+        if (activeAbortController === abortController) activeAbortController = null;
         const processingEl = document.getElementById("processingIndicator");
         processingEl.classList.remove("active");
         if (progressEl) {
@@ -96,8 +114,7 @@ export function subscribeLive(sessionId) {
                     "processingIndicator",
                   );
                   processingEl.classList.add("active");
-                  const result = createToolProgress();
-                  progressEl = result.progressEl;
+                  progressEl = createToolProgress().progressEl;
                   document
                     .getElementById("chatMessages")
                     .appendChild(progressEl);
@@ -128,8 +145,7 @@ export function subscribeLive(sessionId) {
                     "processingIndicator",
                   );
                   processingEl.classList.add("active");
-                  const result = createToolProgress();
-                  progressEl = result.progressEl;
+                  progressEl = createToolProgress().progressEl;
                   document
                     .getElementById("chatMessages")
                     .appendChild(progressEl);
@@ -170,11 +186,12 @@ export function subscribeLive(sessionId) {
 
       const pump = async () => {
         while (true) {
+          if (abortController.signal.aborted) break;
           let result;
           try {
             result = await reader.read();
           } catch (err) {
-            cleanup();
+            if (!abortController.signal.aborted) cleanup();
             break;
           }
           const { done, value } = result;

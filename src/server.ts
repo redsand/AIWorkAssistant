@@ -88,6 +88,16 @@ export async function buildServer() {
     etag: false,
   });
 
+  // Force no-cache on static assets so Cloudflare doesn't cache them
+  server.addHook("onSend", async (_request, reply) => {
+    const route = reply.request.url;
+    if (route.match(/\.(js|css|html|ico|png|jpg|svg|woff2?)$/)) {
+      reply.header("Cache-Control", "no-cache, no-store, must-revalidate");
+      reply.header("Pragma", "no-cache");
+      reply.header("Expires", "0");
+    }
+  });
+
   // Initialize roadmap templates
   try {
     initializeTemplates();
