@@ -4,6 +4,15 @@ export function escapeHtml(str) {
   return div.innerHTML;
 }
 
+export function escapeAttr(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 export function truncate(str, max) {
   return str.length > max ? str.slice(0, max) + "..." : str;
 }
