@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 Ticket Creation Guide
+    url: https://github.com/redsand/AIWorkAssistant/blob/main/docs/creating-tickets.md
+    about: Learn how to write effective coding prompts for automated agent handoff
+  - name: 💬 Discussions
+    url: https://github.com/redsand/AIWorkAssistant/discussions
+    about: Ask questions and discuss ideas before creating an issue
