@@ -6,7 +6,7 @@ import {
 } from "./state.js";
 import { authHeaders } from "./auth.js";
 import { addMessage, showError } from "./messages.js";
-import { escapeHtml } from "./utils.js";
+import { escapeHtml, escapeAttr } from "./utils.js";
 
 export async function loadRoadmaps() {
   const API_BASE = window.location.origin;
@@ -21,14 +21,14 @@ export async function loadRoadmaps() {
     if (data.roadmaps && data.roadmaps.length > 0) {
       roadmapList.innerHTML = data.roadmaps
         .map(
-          (roadmap) => `
-                <div class="roadmap-item" style="cursor:pointer" onclick="viewRoadmap('${roadmap.id}','${roadmap.name.replace(/'/g, "\\'")}')">
-                    <div class="roadmap-name">${roadmap.name}</div>
-                    <div class="roadmap-meta">
-                        ${roadmap.type} • ${roadmap.status} • ${new Date(roadmap.createdAt).toLocaleDateString()}
-                    </div>
-                </div>
-            `,
+          (roadmap) =>
+            `<div class="roadmap-item" style="cursor:pointer" onclick="viewRoadmap('${escapeAttr(roadmap.id)}','${escapeAttr(roadmap.name)}')">
+              <div class="roadmap-name">${escapeHtml(roadmap.name)}</div>
+              <div class="roadmap-meta">
+                  ${escapeHtml(roadmap.type)} • ${escapeHtml(roadmap.status)} • ${new Date(roadmap.createdAt).toLocaleDateString()}
+              </div>
+            </div>
+            `
         )
         .join("");
     } else {
@@ -50,14 +50,14 @@ export async function viewRoadmap(id, name) {
     });
     const data = await response.json();
     if (!data.success) {
-      addMessage(`Failed to load roadmap: ${data.error}`, "assistant");
+      addMessage(`Failed to load roadmap: ${escapeHtml(data.error)}`, "assistant");
       return;
     }
     const r = data.roadmap;
-    let md = `## ${r.name}\n`;
-    md += `**${r.type}** · ${r.status}\n\n`;
-    if (r.description) md += `*${r.description}*\n\n`;
-    md += `Start: ${r.startDate}${r.endDate ? " — End: " + r.endDate : ""}\n`;
+    let md = `## ${escapeHtml(r.name)}\n`;
+    md += `**${escapeHtml(r.type)}** ∙ ${escapeHtml(r.status)}\n\n`;
+    if (r.description) md += `${escapeHtml(r.description)}*\n\n`;
+    md += `Start: ${escapeHtml(r.startDate)}${r.endDate ? " ∙ End: " + escapeHtml(r.endDate) : ""}\n`;
     if (r.milestones && r.milestones.length > 0) {
       md += `\n### Milestones\n`;
       for (const m of r.milestones) {
@@ -66,19 +66,19 @@ export async function viewRoadmap(id, name) {
             ? "✅"
             : m.status === "blocked"
               ? "🚫"
-              : "⬜";
-        md += `- ${icon} **${m.name}** — ${m.status} (target: ${m.targetDate ? new Date(m.targetDate).toLocaleDateString() : "TBD"})\n`;
+              : "⏳";
+        md += `- ${icon} **${escapeHtml(m.name)}** ∙ ${escapeHtml(m.status)} (target: ${m.targetDate ? new Date(m.targetDate).toLocaleDateString() : "TBD"})\n`;
         if (m.items && m.items.length > 0) {
           for (const item of m.items) {
             const ic =
               item.status === "done"
-                ? "✅"
+                ? "✔️"
                 : item.status === "blocked"
                   ? "🚫"
                   : item.status === "in_progress"
                     ? "🔄"
-                    : "⬜";
-            md += `  - ${ic} ${item.title} [${item.priority}]${item.jiraKey ? " (" + item.jiraKey + ")" : ""}\n`;
+                    : "⏸️";
+            md += `  - ${ic} ${escapeHtml(item.title)} [${escapeHtml(item.priority)}]${item.jiraKey ? " (" + escapeHtml(item.jiraKey) + ")" : ""}\n`;
           }
         }
       }
@@ -114,11 +114,11 @@ export function renderToolsHtml(data) {
   let html = "";
   for (const [category, tools] of Object.entries(data.categories)) {
     const toolArr = tools;
-    const catId = `tool-cat-${category.replace(/\s+/g, '-').toLowerCase()}`;
+    const catId = `tool-cat-${escapeAttr(category.replace(/\s+/g, '-').toLowerCase())}`;
     html += `<div style="margin-bottom:8px">`;
     html += `<div style="font-weight:600;color:#555;margin-bottom:4px;text-transform:capitalize;cursor:pointer;display:flex;justify-content:space-between;align-items:center" onclick="toggleToolCategory('${catId}')">`;
     html += `<span>${escapeHtml(category)}</span>`;
-    html += `<span style="font-size:11px;color:#999">${toolArr.length} tools ▶</span>`;
+    html += `<span style="font-size:11px;color:#999">${toolArr.length} tools ↕</span>`;
     html += `</div>`;
     html += `<div id="${catId}" style="display:none">`;
     for (const tool of toolArr) {
@@ -126,7 +126,7 @@ export function renderToolsHtml(data) {
         tool.description.length > 80
           ? tool.description.substring(0, 80) + "..."
           : tool.description;
-      html += `<div style="padding:2px 0 2px 8px;color:#666;border-left:2px solid #e5e7eb;margin-bottom:2px" title="${escapeHtml(tool.description)}">`;
+      html += `<div style="padding:2px 0 2px 8px;color:#666;border-left:2px solid #e5e7eb;margin-bottom:2px" title="${escapeAttr(tool.description)}">`;
       html += `<span style="color:#333;font-weight:500">${escapeHtml(tool.name)}</span>`;
       html += `<div style="font-size:11px;color:#999">${escapeHtml(desc)}</div>`;
       html += `</div>`;
