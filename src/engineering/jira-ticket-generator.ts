@@ -9,6 +9,7 @@ interface ImplementationPlan {
     issueType: string;
     acceptanceCriteria: string[];
     estimationPoints?: number;
+    codingPrompt?: string;
   }>;
 }
 
@@ -30,12 +31,37 @@ class JiraTicketGenerator {
 
     for (const ticket of plan.tickets) {
       try {
-        const description = [
+        const descriptionParts = [
           ticket.description,
           "",
           "## Acceptance Criteria",
           ...ticket.acceptanceCriteria.map((c) => `- ${c}`),
-        ].join("\n");
+        ];
+
+        // Include coding prompt if provided, otherwise add placeholder
+        if (ticket.codingPrompt) {
+          descriptionParts.push(
+            "",
+            "## Coding Prompt",
+            "",
+            ticket.codingPrompt,
+          );
+        } else {
+          descriptionParts.push(
+            "",
+            "## Coding Prompt",
+            "",
+            "⚠️ **No coding prompt provided.** Add a self-contained specification with:",
+            "- **File path** — exact file(s) to modify",
+            "- **Current code** — the code as it exists now (with line numbers)",
+            "- **Replacement code** — the new code",
+            "- **Reasoning** — why this change solves the problem",
+            "",
+            "See [docs/creating-tickets.md](../docs/creating-tickets.md) for guidance.",
+          );
+        }
+
+        const description = descriptionParts.join("\n");
 
         const result = await jiraService.createIssue(
           {
@@ -47,7 +73,7 @@ class JiraTicketGenerator {
           userId,
         );
 
-        if ("approval" in result) {
+        if ("approve" in result) {
           tickets.push({
             summary: ticket.summary,
             status: "pending_approval",
