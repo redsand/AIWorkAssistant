@@ -2490,6 +2490,36 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     actionType: "productivity.plan.generate",
     riskLevel: "low",
   },
+  {
+    name: "productivity.generate_weekly_plan",
+    description:
+      "Generate a weekly productivity plan covering 1 or 2 weeks. Distributes Jira tasks intelligently across days by priority, fills afternoons with focus blocks, includes health breaks, and provides an encouraging schedule with a big-picture overview. Use this when the user asks for a weekly view, wants to see their schedule at a distance, or says 'plan my week'.",
+    params: {
+      startDate: {
+        type: "string",
+        description:
+          "Start date for the plan (ISO 8601). Defaults to next Monday if not provided.",
+        required: false,
+      },
+      weeks: {
+        type: "number",
+        description: "Number of weeks to plan: 1 or 2. Defaults to 1.",
+        required: false,
+      },
+      includeJira: {
+        type: "boolean",
+        description: "Include Jira tickets",
+        required: false,
+      },
+      includeGitLab: {
+        type: "boolean",
+        description: "Include GitLab activity",
+        required: false,
+      },
+    },
+    actionType: "productivity.plan.generate",
+    riskLevel: "low",
+  },
 
   // ── Roadmap Tools ──────────────────────────────────────────────
   {
@@ -2950,6 +2980,9 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   // Planning
   PRODUCTIVITY_TOOLS.find(
     (t) => t.name === "productivity.generate_daily_plan",
+  )!,
+  PRODUCTIVITY_TOOLS.find(
+    (t) => t.name === "productivity.generate_weekly_plan",
   )!,
 
   // Roadmap core

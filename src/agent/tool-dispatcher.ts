@@ -6,6 +6,7 @@ import { jiraClient } from "../integrations/jira/jira-client";
 import { gitlabClient } from "../integrations/gitlab/gitlab-client";
 import { githubClient } from "../integrations/github/github-client";
 import { dailyPlanner } from "../productivity/daily-planner";
+import { weeklyPlanner } from "../productivity/weekly-planner";
 import { roadmapDatabase } from "../roadmap/database";
 import { auditLogger } from "../audit/logger";
 import { env } from "../config/env";
@@ -1828,6 +1829,29 @@ async function handleDailyPlan(
   return { success: true, data: plan };
 }
 
+async function handleWeeklyPlan(
+  params: Record<string, unknown>,
+  userId: string,
+): Promise<ToolCallResult> {
+  const startDateParam = params.startDate as string | undefined;
+  const weeks = (params.weeks as number) || 1;
+  const validatedWeeks: 1 | 2 = weeks === 2 ? 2 : 1;
+
+  let startDate: Date;
+  if (startDateParam) {
+    startDate = new Date(startDateParam);
+  } else {
+    startDate = new Date();
+    const day = startDate.getDay();
+    const daysUntilMonday = day === 0 ? 1 : day === 1 ? 0 : 8 - day;
+    startDate.setDate(startDate.getDate() + daysUntilMonday);
+  }
+  startDate.setHours(0, 0, 0, 0);
+
+  const plan = await weeklyPlanner.generateWeeklyPlan(startDate, validatedWeeks, userId);
+  return { success: true, data: plan };
+}
+
 async function handleDiscoverTools(
   params: Record<string, unknown>,
   _userId: string,
@@ -3376,6 +3400,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "github.list_releases": handleGithubListReleases,
   "github.create_release": handleGithubCreateRelease,
   "productivity.generate_daily_plan": handleDailyPlan,
+  "productivity.generate_weekly_plan": handleWeeklyPlan,
   "web.search": handleWebSearch,
   "web.fetch_page": handleWebFetchPage,
 
@@ -3454,6 +3479,7 @@ const SYSTEM_TOOLS = new Set([
   "engineering.architecture_proposal",
   "engineering.scaffolding_plan",
   "productivity.generate_daily_plan",
+  "productivity.generate_weekly_plan",
 ]);
 
 export async function dispatchToolCall(

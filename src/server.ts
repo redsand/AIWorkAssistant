@@ -167,6 +167,7 @@ async function start() {
 ║     GET    /calendar/export/ics                           ║
 ║     GET    /calendar/subscribe                            ║
 ║     GET    /productivity/daily-plan                       ║
+║     GET    /productivity/weekly-plan                       ║
 ║     GET    /productivity/focus-blocks/recommend             ║
 ║     POST   /productivity/focus-blocks                      ║
 ║     GET    /productivity/health-breaks/recommend            ║
