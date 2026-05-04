@@ -43,6 +43,10 @@ class OpenCodeClient {
   pruneMessages(messages: ChatMessage[], tools?: Tool[]): ChatMessage[] {
     return this.provider.pruneMessages(messages, tools);
   }
+
+  getMaxContextTokens(): number {
+    return this.provider.getMaxContextTokens();
+  }
 }
 
 export const aiClient = new OpenCodeClient();

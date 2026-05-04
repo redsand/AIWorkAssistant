@@ -723,23 +723,17 @@ export class LSPManager extends EventEmitter {
     const client = this.clients.get(languageId);
     if (!client) return false;
 
-    const config = {
-      command: client.getLanguageId() === "typescript" ? "typescript-language-server" : client.getLanguageId(),
-      args: [],
-      languageId: client.getLanguageId(),
+    // Find the original server config
+    const serverConfig = SERVER_CONFIGS.find((c) => c.languageId === languageId) || {
+      command: languageId,
+      args: [] as string[],
+      languageId,
       extensions: client.getExtensions(),
     };
 
-    // Get actual config from SERVER_CONFIGS
-    const serverConfig = SERVER_CONFIGS.find((c) => c.languageId === languageId);
-    if (serverConfig) {
-      config.command = serverConfig.command;
-      config.args = serverConfig.args;
-    }
-
     await client.shutdown();
 
-    const newClient = new LSPClient(this.rootPath, config);
+    const newClient = new LSPClient(this.rootPath, serverConfig);
     newClient.on("diagnostics", ({ filePath, diagnostics }) => {
       this.allDiagnostics.set(filePath, diagnostics);
       this.emit("diagnostics", { filePath, diagnostics });

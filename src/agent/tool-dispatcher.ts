@@ -31,6 +31,7 @@ import { mcpClient } from "../integrations/mcp";
 import { codebaseIndexer } from "./codebase-indexer";
 import { knowledgeGraph } from "./knowledge-graph";
 import { lspManager } from "../integrations/lsp/index.js";
+import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
 
 export interface ToolCallResult {
   success: boolean;
@@ -38,6 +39,30 @@ export interface ToolCallResult {
   error?: string;
   requiresApproval?: boolean;
   approvalId?: string;
+}
+
+const recentDiagnostics = new Map<string, DiagnosticItem[]>();
+const MAX_DIAGNOSTIC_FILES = 50;
+
+lspManager.on("diagnostics", ({ filePath, diagnostics }: { filePath: string; diagnostics: DiagnosticItem[] }) => {
+  const errors = diagnostics.filter((d: DiagnosticItem) => d.severity === "error");
+  if (errors.length > 0) {
+    recentDiagnostics.set(filePath, errors);
+    if (recentDiagnostics.size > MAX_DIAGNOSTIC_FILES) {
+      const oldestKey = recentDiagnostics.keys().next().value;
+      if (oldestKey !== undefined) recentDiagnostics.delete(oldestKey);
+    }
+  } else {
+    recentDiagnostics.delete(filePath);
+  }
+});
+
+export function getRecentDiagnosticAlerts(): { filePath: string; errorCount: number }[] {
+  const alerts: { filePath: string; errorCount: number }[] = [];
+  for (const [filePath, errors] of recentDiagnostics) {
+    alerts.push({ filePath, errorCount: errors.length });
+  }
+  return alerts;
 }
 
 async function handleCalendarListEvents(

@@ -68,11 +68,11 @@ export interface ProviderCapabilities {
 
 export type OpenCodeConfig = ProviderConfig;
 
-const DEFAULT_MAX_CONTEXT_TOKENS = 64000;
-const MAX_TOOL_RESULT_CHARS = 100000;
-const CHARS_PER_TOKEN = 1.8; // Calibrated: GLM tokenizer produces ~1.5-2 chars per token for mixed content
-const TOOL_SCHEMA_CHARS_PER_TOKEN = 1.5; // Tool schemas tokenize very densely
-const CONTEXT_SAFETY_MARGIN = 0.7; // Use 70% of max context - char-based estimates are inherently imprecise
+export const DEFAULT_MAX_CONTEXT_TOKENS = 64000;
+export const MAX_TOOL_RESULT_CHARS = 100000;
+export const CHARS_PER_TOKEN = 1.8; // Calibrated: GLM tokenizer produces ~1.5-2 chars per token for mixed content
+export const TOOL_SCHEMA_CHARS_PER_TOKEN = 1.5; // Tool schemas tokenize very densely
+export const CONTEXT_SAFETY_MARGIN = 0.7; // Use 70% of max context - char-based estimates are inherently imprecise
 
 export abstract class AIProvider {
   abstract readonly name: string;
@@ -108,6 +108,10 @@ export abstract class AIProvider {
     request: ChatRequest,
   ): AsyncGenerator<string, void, unknown>;
   abstract isConfigured(): boolean;
+
+  getMaxContextTokens(): number {
+    return this.config.maxContextTokens || DEFAULT_MAX_CONTEXT_TOKENS;
+  }
   abstract validateConfig(): Promise<boolean>;
 
   protected buildRequestBody(request: ChatRequest): Record<string, unknown> {

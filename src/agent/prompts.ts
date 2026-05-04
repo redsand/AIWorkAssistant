@@ -252,8 +252,33 @@ BE OPINIONATED BUT COLLABORATIVE:
 export function getSystemPrompt(
   mode: "productivity" | "engineering",
   contextQuery?: string,
+  contextMode?: "rag" | "engine",
 ): string {
   const toolInventory = getToolInventory(mode);
+
+  // In engine mode, the context engine handles knowledge injection separately.
+  // Return only the base prompt + tool inventory.
+  if (contextMode === "engine") {
+    switch (mode) {
+      case "productivity":
+        return `${PRODUCTIVITY_SYSTEM_PROMPT}\n\n${toolInventory}`;
+      case "engineering":
+        return `${ENGINEERING_SYSTEM_PROMPT}\n\n${toolInventory}`;
+      default:
+        return `${PRODUCTIVITY_SYSTEM_PROMPT}\n\n${toolInventory}`;
+    }
+  }
+
+  // RAG mode: inject knowledge directly into the system prompt (original behavior)
+  return getSystemPromptRAG(mode, contextQuery, toolInventory);
+}
+
+function getSystemPromptRAG(
+  mode: "productivity" | "engineering",
+  contextQuery?: string,
+  toolInventory?: string,
+): string {
+  const inventory = toolInventory || getToolInventory(mode);
 
   let knowledgeSection = "";
   if (contextQuery) {
@@ -292,16 +317,10 @@ export function getSystemPrompt(
 
   switch (mode) {
     case "productivity":
-      return `${PRODUCTIVITY_SYSTEM_PROMPT}
-
-${toolInventory}${knowledgeSection}`;
+      return `${PRODUCTIVITY_SYSTEM_PROMPT}\n\n${inventory}${knowledgeSection}`;
     case "engineering":
-      return `${ENGINEERING_SYSTEM_PROMPT}
-
-${toolInventory}${knowledgeSection}`;
+      return `${ENGINEERING_SYSTEM_PROMPT}\n\n${inventory}${knowledgeSection}`;
     default:
-      return `${PRODUCTIVITY_SYSTEM_PROMPT}
-
-${toolInventory}${knowledgeSection}`;
+      return `${PRODUCTIVITY_SYSTEM_PROMPT}\n\n${inventory}${knowledgeSection}`;
   }
 }

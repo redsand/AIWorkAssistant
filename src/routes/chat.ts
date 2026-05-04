@@ -5,6 +5,7 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getSystemPrompt, aiClient } from "../agent";
+import { shouldUseContextEngine, assembleContext } from "../context-engine";
 import {
   getTools,
   getToolsByCategory,
@@ -343,14 +344,40 @@ export async function chatRoutes(fastify: FastifyInstance) {
           content: body.message,
         });
 
-        const sessionMessages = await conversationManager.getSessionMessages(
-          sessionId!,
-          body.includeMemory,
-        );
-        messages = [
-          { role: "system", content: systemPrompt },
-          ...sessionMessages,
-        ];
+        if (shouldUseContextEngine()) {
+          const sessionMessages = await conversationManager.getSessionMessages(
+            sessionId!,
+            body.includeMemory,
+            "engine",
+          );
+          const estimatedToolTokens = body.includeTools
+            ? Math.min(aiClient.estimateTokens([], getTools(body.mode) as any) || 12000, 12000)
+            : 0;
+          const packet = await assembleContext({
+            mode: body.mode,
+            query: body.message,
+            sessionMessages,
+            sessionId: sessionId!,
+            includeMemory: body.includeMemory,
+            toolInventory: "",
+            providerMaxTokens: aiClient.getMaxContextTokens(),
+            toolTokens: estimatedToolTokens,
+            userId: body.userId,
+          });
+          messages = packet.messages;
+          console.log(
+            `[ContextEngine] Packet assembled: ${packet.diagnostics.finalMessageCount} messages, ${packet.totalTokens} tokens, compression=${packet.diagnostics.compressionRatio.toFixed(2)}, budget=${JSON.stringify(packet.diagnostics.budgetUtilization)}`,
+          );
+        } else {
+          const sessionMessages = await conversationManager.getSessionMessages(
+            sessionId!,
+            body.includeMemory,
+          );
+          messages = [
+            { role: "system", content: systemPrompt },
+            ...sessionMessages,
+          ];
+        }
       } else {
         if (sessionId) {
           console.log(
@@ -625,14 +652,41 @@ export async function chatRoutes(fastify: FastifyInstance) {
       let messages: ChatMessage[];
 
       if (existingSession) {
-        const sessionMessages = await conversationManager.getSessionMessages(
-          sessionId!,
-        );
-        messages = [
-          { role: "system", content: systemPrompt },
-          ...sessionMessages,
-          { role: "user", content: body.message },
-        ];
+        if (shouldUseContextEngine()) {
+          const sessionMessages = await conversationManager.getSessionMessages(
+            sessionId!,
+            true,
+            "engine",
+          );
+          const estimatedToolTokens = body.includeTools
+            ? Math.min(aiClient.estimateTokens([], getTools(body.mode) as any) || 12000, 12000)
+            : 0;
+          const packet = await assembleContext({
+            mode: body.mode,
+            query: body.message,
+            sessionMessages,
+            sessionId: sessionId!,
+            includeMemory: body.includeMemory,
+            toolInventory: "",
+            providerMaxTokens: aiClient.getMaxContextTokens(),
+            toolTokens: estimatedToolTokens,
+            userId: body.userId,
+          });
+          messages = packet.messages;
+          messages.push({ role: "user", content: body.message });
+          console.log(
+            `[ContextEngine] Packet assembled: ${packet.diagnostics.finalMessageCount} messages, ${packet.totalTokens} tokens, compression=${packet.diagnostics.compressionRatio.toFixed(2)}, budget=${JSON.stringify(packet.diagnostics.budgetUtilization)}`,
+          );
+        } else {
+          const sessionMessages = await conversationManager.getSessionMessages(
+            sessionId!,
+          );
+          messages = [
+            { role: "system", content: systemPrompt },
+            ...sessionMessages,
+            { role: "user", content: body.message },
+          ];
+        }
       } else {
         sessionId = conversationManager.startSession(body.userId, body.mode);
         messages = [

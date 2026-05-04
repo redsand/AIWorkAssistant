@@ -28,6 +28,9 @@ data/
 .idea/
 *.swp
 *.swo
+
+# LSP
+.lspconfig.json
 *~
 
 # OS

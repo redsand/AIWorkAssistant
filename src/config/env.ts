@@ -156,6 +156,9 @@ const envSchema = z.object({
   // Claude CLI
   ANTHROPIC_API_KEY: z.string().default(""),
 
+  // Context assembly mode: "rag" (current behavior) or "engine" (budget-aware context engine)
+  CONTEXT_MODE: z.enum(["rag", "engine"]).default("rag"),
+
   // RAG / Codebase Indexing
   RAG_INDEX_ON_STARTUP: z
     .string()
