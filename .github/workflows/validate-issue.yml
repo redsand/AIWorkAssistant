@@ -1,0 +1,56 @@
+name: Validate Coding Prompt
+
+on:
+  issues:
+    types: [opened, edited]
+
+jobs:
+  validate-coding-prompt:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Check for coding prompt
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body || '';
+            const hasCodingPrompt = 
+              body.includes('Coding Prompt') ||
+              body.includes('coding prompt') ||
+              body.includes('coding_prompt') ||
+              body.includes('## Coding Prompt') ||
+              body.includes('## File:') ||
+              body.includes('### Replacement Code') ||
+              body.includes('### Current Code');
+
+            if (!hasCodingPrompt) {
+              // Add missing-coding-prompt label
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: ['missing-coding-prompt']
+              });
+
+              // Post reminder comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `⚠️ **Missing Coding Prompt**\n\nThis issue doesn't include a coding prompt — a self-contained specification with exact file paths, current code, replacement code, and reasoning.\n\nCoding agents (Codex, Devin, Cursor Agent) rely on coding prompts to produce correct changes without exploring the codebase.\n\n**Please add a coding prompt** using this template:\n\n\`\`\`markdown\n## Coding Prompt\n\n### File: [path/to/file.ts] (line X-Y)\n\n### Current Code\n\`\`\`typescript\n// paste current code here\n\`\`\`\n\n### Replacement Code\n\`\`\`typescript\n// paste new code here\n\`\`\`\n\n### Reasoning\nExplain why this change solves the problem.\n\`\`\`\n\nSee [docs/creating-tickets.md](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/docs/creating-tickets.md) for detailed guidance.`
+              });
+            } else {
+              // Remove missing-coding-prompt label if it exists
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  name: 'missing-coding-prompt'
+                });
+              } catch (e) {
+                // Label doesn't exist, ignore
+              }
+            }
