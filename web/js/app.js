@@ -66,6 +66,13 @@ window.showChatView = showChatView;
 window.showPanelView = showPanelView;
 window.toggleTodoPanel = toggleTodoPanel;
 
+window.toggleToolCategory = function(catId) {
+  const el = document.getElementById(catId);
+  if (el) {
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  }
+};
+
 document.addEventListener("click", function (e) {
   if (e.target.classList && e.target.classList.contains("result-toggle")) {
     const resultId = e.target.getAttribute("data-result-id");

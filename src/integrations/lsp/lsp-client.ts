@@ -76,7 +76,7 @@ const SERVER_CONFIGS: LSPServerConfig[] = [
   },
 ];
 
-function severityToString(severity: number): DiagnosticItem["severity"] {
+export function severityToString(severity: number): DiagnosticItem["severity"] {
   switch (severity) {
     case 1:
       return "error";
@@ -91,7 +91,7 @@ function severityToString(severity: number): DiagnosticItem["severity"] {
   }
 }
 
-function uriToFilePath(uri: string): string {
+export function uriToFilePath(uri: string): string {
   if (uri.startsWith("file:///")) {
     return decodeURIComponent(uri.slice(7)).replace(/^\/([A-Z]:)/, "$1");
   }

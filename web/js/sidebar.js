@@ -114,8 +114,13 @@ export function renderToolsHtml(data) {
   let html = "";
   for (const [category, tools] of Object.entries(data.categories)) {
     const toolArr = tools;
+    const catId = `tool-cat-${category.replace(/\s+/g, '-').toLowerCase()}`;
     html += `<div style="margin-bottom:8px">`;
-    html += `<div style="font-weight:600;color:#555;margin-bottom:4px;text-transform:capitalize">${escapeHtml(category)}</div>`;
+    html += `<div style="font-weight:600;color:#555;margin-bottom:4px;text-transform:capitalize;cursor:pointer;display:flex;justify-content:space-between;align-items:center" onclick="toggleToolCategory('${catId}')">`;
+    html += `<span>${escapeHtml(category)}</span>`;
+    html += `<span style="font-size:11px;color:#999">${toolArr.length} tools ▶</span>`;
+    html += `</div>`;
+    html += `<div id="${catId}" style="display:none">`;
     for (const tool of toolArr) {
       const desc =
         tool.description.length > 80
@@ -127,16 +132,14 @@ export function renderToolsHtml(data) {
       html += `</div>`;
     }
     html += `</div>`;
+    html += `</div>`;
   }
 
   const totalTools = Object.values(data.categories).reduce(
     (sum, t) => sum + t.length,
     0,
   );
-  html =
-    `<div style="margin-bottom:8px;color:#888;font-size:11px">${totalTools} tools in ${Object.keys(data.categories).length} categories</div>` +
-    html;
-
+  html = `<div style="margin-bottom:8px;color:#888;font-size:11px">${totalTools} tools in ${Object.keys(data.categories).length} categories (click to expand)</div>` + html;
   return html;
 }
 

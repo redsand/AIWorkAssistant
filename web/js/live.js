@@ -170,7 +170,14 @@ export function subscribeLive(sessionId) {
 
       const pump = async () => {
         while (true) {
-          const { done, value } = await reader.read();
+          let result;
+          try {
+            result = await reader.read();
+          } catch (err) {
+            cleanup();
+            break;
+          }
+          const { done, value } = result;
           if (done) {
             if (buffer.trim()) {
               processChunk("\n", true);

@@ -28,7 +28,7 @@ async function loadToolsModal() {
 
 export function stopGeneration() {
   if (activeStreamController) {
-    activeStreamController.abort();
+    activeStreamController?.abort();
     setActiveStreamController(null);
   }
   const processingEl = document.getElementById("processingIndicator");

@@ -2871,6 +2871,114 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     actionType: "mcp.list",
     riskLevel: "low",
   },
+
+  // ==================== LSP Tools ====================
+  {
+    name: "lsp.diagnostics",
+    description:
+      "Get code diagnostics (errors, warnings) for a file using Language Server Protocol. Returns a list of diagnostic items with severity, message, line, and column.",
+    params: {
+      filePath: {
+        type: "string",
+        description: "Path to the file to get diagnostics for",
+        required: true,
+      },
+      severity: {
+        type: "string",
+        description:
+          'Filter by severity: "error", "warning", "information", or "hint". Omit for all.',
+        required: false,
+      },
+    },
+    actionType: "lsp.diagnostics",
+    riskLevel: "low",
+  },
+  {
+    name: "lsp.hover",
+    description:
+      "Get hover information for a symbol at a position in a file using Language Server Protocol.",
+    params: {
+      filePath: {
+        type: "string",
+        description: "Path to the file",
+        required: true,
+      },
+      line: {
+        type: "number",
+        description: "Line number (1-based)",
+        required: true,
+      },
+      character: {
+        type: "number",
+        description: "Column number (1-based)",
+        required: true,
+      },
+    },
+    actionType: "lsp.hover",
+    riskLevel: "low",
+  },
+  {
+    name: "lsp.definition",
+    description:
+      "Go to definition of a symbol at a position in a file using Language Server Protocol.",
+    params: {
+      filePath: {
+        type: "string",
+        description: "Path to the file",
+        required: true,
+      },
+      line: {
+        type: "number",
+        description: "Line number (1-based)",
+        required: true,
+      },
+      character: {
+        type: "number",
+        description: "Column number (1-based)",
+        required: true,
+      },
+    },
+    actionType: "lsp.definition",
+    riskLevel: "low",
+  },
+  {
+    name: "lsp.references",
+    description:
+      "Find all references to a symbol at a position in a file using Language Server Protocol.",
+    params: {
+      filePath: {
+        type: "string",
+        description: "Path to the file",
+        required: true,
+      },
+      line: {
+        type: "number",
+        description: "Line number (1-based)",
+        required: true,
+      },
+      character: {
+        type: "number",
+        description: "Column number (1-based)",
+        required: true,
+      },
+    },
+    actionType: "lsp.references",
+    riskLevel: "low",
+  },
+  {
+    name: "lsp.symbols",
+    description:
+      "Search for workspace symbols matching a query using Language Server Protocol.",
+    params: {
+      query: {
+        type: "string",
+        description: "Search query for symbol names",
+        required: true,
+      },
+    },
+    actionType: "lsp.symbols",
+    riskLevel: "low",
+  },
 ];
 
 /**
@@ -2999,6 +3107,13 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   // Roadmap core
   PRODUCTIVITY_TOOLS.find((t) => t.name === "roadmap.list")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "roadmap.get")!,
+
+  // LSP core
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "lsp.diagnostics")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "lsp.hover")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "lsp.definition")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "lsp.references")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "lsp.symbols")!,
 ];
 
 const APPROVAL_TOOLS: Tool[] = [

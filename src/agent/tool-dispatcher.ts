@@ -30,6 +30,7 @@ import { workflowExecutor } from "./workflow-executor";
 import { mcpClient } from "../integrations/mcp";
 import { codebaseIndexer } from "./codebase-indexer";
 import { knowledgeGraph } from "./knowledge-graph";
+import { lspManager } from "../integrations/lsp/index.js";
 
 export interface ToolCallResult {
   success: boolean;
@@ -3368,6 +3369,199 @@ async function handleWorkflowExecutePhase(
   }
 }
 
+// ── LSP Handlers ──────────────────────────────────────────────────
+
+async function handleLspDiagnostics(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!lspManager.isReady()) {
+    return {
+      success: false,
+      error: "LSP is not available. Ensure LSP_ENABLED=true and that the language server is installed.",
+    };
+  }
+  const filePath = params.filePath as string;
+  if (!filePath) {
+    return { success: false, error: "filePath is required" };
+  }
+  const severity = params.severity as string | undefined;
+  const diagnostics = lspManager.getDiagnostics(
+    filePath,
+    severity as "error" | "warning" | "information" | "hint" | undefined,
+  );
+  return {
+    success: true,
+    data: {
+      filePath,
+      severity: severity || "all",
+      count: diagnostics.length,
+      diagnostics: diagnostics.map((d) => ({
+        severity: d.severity,
+        message: d.message,
+        line: d.line,
+        col: d.col,
+        endLine: d.endLine,
+        endCol: d.endCol,
+        source: d.source,
+        code: d.code,
+      })),
+    },
+  };
+}
+
+async function handleLspHover(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!lspManager.isReady()) {
+    return {
+      success: false,
+      error: "LSP is not available. Ensure LSP_ENABLED=true and that the language server is installed.",
+    };
+  }
+  const filePath = params.filePath as string;
+  const line = params.line as number;
+  const character = params.character as number;
+  if (!filePath || line === undefined || character === undefined) {
+    return {
+      success: false,
+      error: "filePath, line, and character are required",
+    };
+  }
+  const client = lspManager.getClientForFile(filePath);
+  if (!client) {
+    return {
+      success: false,
+      error: `No LSP client available for file: ${filePath}`,
+    };
+  }
+  const result = await client.hover(filePath, line, character);
+  if (!result) {
+    return { success: true, data: { filePath, line, character, hover: null } };
+  }
+  return {
+    success: true,
+    data: {
+      filePath,
+      line,
+      character,
+      contents: result.contents,
+      range: result.range,
+    },
+  };
+}
+
+async function handleLspDefinition(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!lspManager.isReady()) {
+    return {
+      success: false,
+      error: "LSP is not available. Ensure LSP_ENABLED=true and that the language server is installed.",
+    };
+  }
+  const filePath = params.filePath as string;
+  const line = params.line as number;
+  const character = params.character as number;
+  if (!filePath || line === undefined || character === undefined) {
+    return {
+      success: false,
+      error: "filePath, line, and character are required",
+    };
+  }
+  const client = lspManager.getClientForFile(filePath);
+  if (!client) {
+    return {
+      success: false,
+      error: `No LSP client available for file: ${filePath}`,
+    };
+  }
+  const definitions = await client.gotoDefinition(filePath, line, character);
+  return {
+    success: true,
+    data: {
+      filePath,
+      line,
+      character,
+      definitions: definitions.map((d) => ({
+        filePath: d.filePath,
+        uri: d.uri,
+        range: d.range,
+      })),
+    },
+  };
+}
+
+async function handleLspReferences(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!lspManager.isReady()) {
+    return {
+      success: false,
+      error: "LSP is not available. Ensure LSP_ENABLED=true and that the language server is installed.",
+    };
+  }
+  const filePath = params.filePath as string;
+  const line = params.line as number;
+  const character = params.character as number;
+  if (!filePath || line === undefined || character === undefined) {
+    return {
+      success: false,
+      error: "filePath, line, and character are required",
+    };
+  }
+  const client = lspManager.getClientForFile(filePath);
+  if (!client) {
+    return {
+      success: false,
+      error: `No LSP client available for file: ${filePath}`,
+    };
+  }
+  const references = await client.references(filePath, line, character);
+  return {
+    success: true,
+    data: {
+      filePath,
+      line,
+      character,
+      references: references.map((r) => ({
+        filePath: r.filePath,
+        uri: r.uri,
+        range: r.range,
+      })),
+    },
+  };
+}
+
+async function handleLspSymbols(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!lspManager.isReady()) {
+    return {
+      success: false,
+      error: "LSP is not available. Ensure LSP_ENABLED=true and that the language server is installed.",
+    };
+  }
+  const query = params.query as string;
+  if (!query) {
+    return { success: false, error: "query is required" };
+  }
+  const symbols = await lspManager.getClient("typescript")?.workspaceSymbols(query) || [];
+  return {
+    success: true,
+    data: {
+      query,
+      count: symbols.length,
+      symbols: symbols.map((s) => ({
+        name: s.name,
+        kind: s.kind,
+        filePath: s.filePath,
+        range: s.range,
+        containerName: s.containerName,
+      })),
+    },
+  };
+}
+
 const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "calendar.list_events": handleCalendarListEvents,
   "calendar.create_focus_block": handleCalendarCreateFocusBlock,
@@ -3519,6 +3713,12 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "graph.update_node": handleGraphUpdateNode,
   "graph.delete_node": handleGraphDeleteNode,
   "graph.summary": handleGraphSummary,
+
+  "lsp.diagnostics": handleLspDiagnostics,
+  "lsp.hover": handleLspHover,
+  "lsp.definition": handleLspDefinition,
+  "lsp.references": handleLspReferences,
+  "lsp.symbols": handleLspSymbols,
 };
 
 const SYSTEM_TOOLS = new Set([
