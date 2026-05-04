@@ -10,29 +10,29 @@ See `PROJECT_STATUS.md` for module-by-module status and `docs/GAP_AUDIT.md` for 
 
 ```
 src/
-├── server.ts                    # Fastify server, route registration, tunnel startup
-├── config/env.ts                # Zod-validated .env configuration
-├── agent/                       # Chat orchestration, OpenCode client, tool registry/dispatcher
-├── policy/                      # Pattern-based policy engine (strict/balanced/permissive)
-├── approvals/                   # SQLite-persisted approval queue with execution dispatch
-├── audit/logger.ts              # JSONL audit log — write + query
-├── guardrails/                  # 15 critical actions, rate limiting, action registry
-├── middleware/auth.ts            # API key auth (Bearer / X-API-Key / query param)
-├── memory/                      # Conversation sessions with auto-compaction
-├── integrations/
-│   ├── jira/                    # Jira Cloud REST client + service layer (policy-gated)
-│   ├── gitlab/                  # GitLab REST client + webhook handler
-│   ├── file/calendar-service.ts # Local calendar with RFC 5545 ICS export
-│   ├── file/tunnel.ts           # Cloudflare/localtunnel for external ICS access
-│   ├── google/                  # Google Calendar OAuth2 + API
-│   ├── discord/                 # Discord bot with slash commands
-│   └── signal/                  # Signal bot (broken polling, depends on signal-cli)
-├── productivity/                # Daily planner, focus blocks, health breaks
-├── engineering/                 # Workflow brief, architecture planner, scaffold, Jira ticket gen
-├── roadmap/                     # SQLite-backed roadmap CRUD + REST API + templates
-├── routes/                      # Fastify route handlers (one file per domain)
-├── scheduler/                   # Calendar midnight scheduler
-└── types/                       # Shared TypeScript interfaces
+├── server.ts                        # Fastify server, route registration, tunnel startup
+├── config/env.ts                     # Zod-validated .env configuration
+├── agent/                            # Chat orchestration, OpenCode client, tool registry/dispatcher
+├── policy/                           # Pattern-based policy engine (strict/balanced/permissionless)
+│   ├── approvals/                    # SQLite-persisted approval queue with execution dispatch
+│   ├── audit/logger.ts               # JSONL audit log — write + query
+│   ├── guardrails/                   # 15 critical actions, rate limiting, action registry
+│   ├── middleware/auth.ts            # API key auth (Bearer / X-API-Key / query param)
+│   ├── memory/                      # Conversation sessions with auto-compaction
+│   ├── integrations/
+│   ├── jira/                         # Jira Cloud REST client + service layer (policy-gated)
+│   ├── gitlab/                       # GitLab REST client + webhook handler
+│   ├── file/calendar-service.ts    # Local calendar with RFC 5545 ICS export
+│   ├── file/tunnel.ts              # Cloudflare/localtunnel for external ICS access
+│   ├── google/                       # Google Calendar OAuth2 + API
+│   ├── discord/                      # Discord bot with slash commands
+│   ├── signal/                      # Signal bot (broken polling, depends on signal-cli)
+│   ├── productivity/                # Daily planner, focus blocks, health breaks
+│   ├── engineering/                  # Workflow brief, architecture planner, scaffold, Jira ticket gen
+│   ├── roadmap/                     # SQLite-backed roadmap CRUD + REST API + templates
+│   ├── routes/                      # Fastify route handlers (one file per domain)
+│   ├── scheduler/                   # Calendar midnight scheduler
+│   ├── types/                       # Shared TypeScript interfaces
 ```
 
 Key architectural flow: `Request → Auth Middleware → Route Handler → Policy Engine → Guardrails → Approval Queue (if needed) → Tool Dispatcher → Integration Client → Audit Logger`
@@ -40,21 +40,21 @@ Key architectural flow: `Request → Auth Middleware → Route Handler → Polic
 ## Build, Test, and Development Commands
 
 ```bash
-npm run dev                # tsx watch with hot-reload
-npm run build              # tsc compilation
-npx tsc --noEmit           # Type-check without emitting (run after edits)
+npm run dev                    # tsx watch with hot-reload
+npm run build                  # tsc compilation
+npx tsc --noEmit               # Type-check without emitting (run after edits)
 
-npm test                   # Vitest run (44/45 tests pass)
-npm run test:watch         # Vitest watch mode
-npm run test:coverage      # Vitest with v8 coverage reporter
-npx vitest run tests/unit/policy/engine.test.ts  # Single test file
+npm test                       # Vitest run (44/45 tests pass)
+npm run test:watch              # Vitest watch mode
+npm run test:coverage           # Vitest with v8 coverage reporters
+npx vitest run tests/unit/policy/engine.test.ts   # Single test file
 
-npm run lint               # ESLint on src/
-npm run format             # Prettier write on src/**/*.ts
+npm run lint                   # ESLint on src/
+npm run format                 # Prettier write on src/**/*.{ts,js}
 
-npm run cli                # CLI via tsx
-npm run bot:discord        # Discord bot via tsx
-npm run docker:up          # docker-compose up -d
+npm run cli                    # CLI via tsx
+npm run bot:discord             # Discord bot via tsx
+npm run docker:up               # docker-compose up -d
 ```
 
 ## Coding Style & Conventions
@@ -66,7 +66,7 @@ npm run docker:up          # docker-compose up -d
 - **Policy-gated services** — Business logic in `*-service.ts` wraps client calls with policy evaluation
 - **Error handling** — Integration clients throw descriptive errors; services catch and log
 - **Env config** — All config via `src/config/env.ts` with Zod defaults, never raw `process.env`
-- **Database** — SQLite via `better-sqlite3` for roadmap, approvals; JSONL files for audit logs
+- **Database** — SQLite via `better-sqlite3` for roadmaps, approvals; JSONL files for audit logs
 
 ## Testing Guidelines
 
@@ -74,15 +74,76 @@ npm run docker:up          # docker-compose up -d
 - **Coverage**: v8 provider, excludes node_modules, dist, tests, types
 - **Existing tests**: `tests/unit/` — 4 files, 44/45 passing (1 JQL deprecation failure)
 - **No workflow tests exist** — This is a known critical gap (see `docs/GAP_AUDIT.md`)
-- **Test naming**: `describe("Module Name", () => { it("should ...", ...) })`
+- **Test naming**: `describe("Module Name", () => { it("should ...", () => { ... }) })`
 - **Location**: `tests/unit/<domain>/<module>.test.ts`
+
+## ⚠️ MANDATORY: Coding Prompts in Tickets
+
+**Every ticket (GitHub issue, Jira issue, or any task) MUST include a coding prompt.** This is a hard requirement for all agents and humans creating tickets in this repository.
+
+A coding prompt is a self-contained specification that includes:
+
+1. **File path** — Exact file(s) to modify (e.g., `src/routes/chat.ts`, `web/js/sidebar.js`)
+2. **Current code** — The code as it exists now, with line numbers (e.g., `line 45-52`)
+3. **Replacement code** — The exact new code to write
+4. **Reasoning** — Why this change solves the problem or implements the feature
+
+### Why This Matters
+
+Without coding prompts, agents waste cycles exploring the codebase and often produce incorrect changes. With coding prompts, agents make precise, correct changes on the first attempt.
+
+### Template
+
+```markdown
+## Coding Prompt
+
+### File: [path/to/file.ts] (line X-Y)
+
+### Current Code
+[paste current code]
+
+### Replacement Code
+[paste new code]
+
+### Reasoning
+[explain why this change solves the problem]
+```
+
+### When Creating Jira Tickets
+
+The `JiraTicketGenerator` now includes a `codingPrompt` field on every ticket. Always fill it in:
+
+```typescript
+tickets: [
+  {
+    summary: "Fix SSE stream error handling in live.js",
+    description: "The pump() function doesn't handle reader.read() errors...",
+    issueType: "Bug",
+    acceptanceCriteria: ["pump() wraps reader.read() in try/catch"],
+    codingPrompt: `## Coding Prompt\n\n### File: web/js/live.js (line 45-58)\n\n### Current Code\n[...]\n\n### Replacement Code\n[...]\n\n### Reasoning\n[...]`
+  }
+]
+```
+
+If no coding prompt is available, the generator will add a placeholder reminding the assignee to add one.
+
+### Enforcement
+
+This requirement is enforced through:
+
+1. **Issue Templates** — Bug reports and feature requests require a `coding_prompt` field
+2. **GitHub Action** — `validate-issue.yml` auto-labels `missing-coding-prompt` and posts a reminder
+3. **Jira Generator** — Includes `## Coding Prompt` section in every ticket
+4. **This document** — `AGENTS.md` is read by all AI agents
+
+See `docs/creating-tickets.md` for detailed guidance and examples.
 
 ## Current Priority: Version 0.2.0
 
 See `docs/roadmap.md` for the full roadmap. Current priorities:
 
 1. Security fixes (timing-safe comparisons for auth + webhook HMAC)
-2. Persistence (wire guardrails database.ts, audit logger query)
+2. Persistence (wire guardrails to database.ts, audit logger query)
 3. Cleanup (CLI bin field, remove Microsoft stubs, fix Math.random in ticket gen)
 4. Workflow tests (approval lifecycle, calendar CRUD, chat→tool dispatch, auth middleware)
 
