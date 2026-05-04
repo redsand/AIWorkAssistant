@@ -73,15 +73,15 @@ class JiraTicketGenerator {
           userId,
         );
 
-        if ("approve" in result) {
+        if (result && typeof result === "object" && "approval" in result) {
           tickets.push({
             summary: ticket.summary,
             status: "pending_approval",
-            approvalId: result.approval.id,
+            approvalId: (result as { approval: { id: string } }).approval.id,
           });
         } else {
           tickets.push({
-            key: (result as any).key,
+            key: (result as { key: string }).key,
             summary: ticket.summary,
             status: "created",
           });
