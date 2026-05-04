@@ -1,0 +1,96 @@
+name: Feature Request
+description: Request a feature with a coding prompt for automated agent handoff
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Feature Request with Coding Prompt
+
+        This template requires a **coding prompt** — a self-contained specification with exact file paths, line numbers, current code, replacement code, and reasoning. Coding agents (Codex, Devin, Cursor Agent) rely on this to produce correct changes without exploring the codebase.
+
+        **Without a coding prompt, your issue will be auto-labeled `missing-coding-prompt`.**
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What problem does this feature solve? What's the user pain point?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed_solution
+    attributes:
+      label: Proposed Solution
+      description: How should this feature work?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What other approaches did you consider?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How important is this feature?
+      options:
+        - Low — Nice to have
+        - Medium — Important but not blocking
+        - High — Blocking or critical
+    validations:
+      required: true
+
+  - type: textarea
+    id: coding_prompt
+    attributes:
+      label: Coding Prompt
+      description: |
+        **Required.** Self-contained specification for coding agents. Include:
+        - **File path** — exact file(s) to modify
+        - **Current code** — the code as it exists now (with line numbers)
+        - **Replacement code** — the new code
+        - **Reasoning** — why this change implements the feature
+
+        Example:
+        ```markdown
+        ## File: src/routes/chat.ts (after line 120)
+
+        ### Current Code
+        (No code exists — this is a new feature)
+
+        ### Replacement Code
+        ```typescript
+        fastify.get("/chat/health", async (_request, _reply) => {
+          const provider = env.AI_PROVIDER;
+          const isConfigured = aiClient.isConfigured();
+          const isValid = isConfigured ? await aiClient.validateConfig() : false;
+          // ... returns provider and integration status
+        });
+        ```
+
+        ### Reasoning
+        The frontend needs a health endpoint to display connection status.
+        This endpoint returns provider info and integration validity so the
+        UI can show green/red/yellow status indicators.
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: How do we know this feature is complete?
+      placeholder: |
+        - [ ] Feature works as described
+        - [ ] No regressions in existing functionality
+        - [ ] Tests pass
+    validations:
+      required: true
