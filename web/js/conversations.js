@@ -6,10 +6,12 @@ import {
   setMessageHistory,
   activeStreamController,
   setActiveStreamController,
+  updateSessionHash,
 } from "./state.js";
 import { authHeaders } from "./auth.js";
 import { addMessage } from "./messages.js";
 import { escapeHtml } from "./utils.js";
+import { readSessionHash } from "./state.js";
 
 export function isMobile() {
   return window.innerWidth <= 768;
@@ -54,13 +56,16 @@ export async function loadConversations() {
                 <div class="conversation-preview">${escapeHtml(s.preview || s.mode + " mode")}</div>
               </div>
               <button class="conversation-delete" onclick="event.stopPropagation(); deleteConversation('${s.id}')" title="Delete conversation">&#10005;</button>
+              <button class="conversation-link" onclick="event.stopPropagation(); copyChatLink('${s.id}')" title="Copy link to this chat">&#128279;</button>
             </div>
           `;
         })
         .join("");
 
       if (!currentSessionId && data.sessions.length > 0) {
-        const storedId = localStorage.getItem("currentSessionId");
+        // Prefer URL hash session ID, then localStorage
+        const hashId = readSessionHash();
+        const storedId = hashId || localStorage.getItem("currentSessionId");
         if (storedId && data.sessions.find((s) => s.id === storedId)) {
           switchConversation(storedId);
         }
@@ -77,6 +82,7 @@ export async function loadConversations() {
 export async function switchConversation(sessionId) {
   setCurrentSessionId(sessionId);
   localStorage.setItem("currentSessionId", sessionId);
+  updateSessionHash(sessionId);
 
   const chatMessages = document.getElementById("chatMessages");
   chatMessages.innerHTML = "";
@@ -140,6 +146,7 @@ export async function switchConversation(sessionId) {
 export async function newChat() {
   setCurrentSessionId(null);
   localStorage.removeItem("currentSessionId");
+  updateSessionHash(null);
   const chatMessages = document.getElementById("chatMessages");
   chatMessages.innerHTML = `
     <div class="message assistant">
@@ -219,4 +226,20 @@ async function performDeleteConversation(sessionId) {
   }
 
   loadConversations();
+}
+
+export function copyChatLink(sessionId) {
+  const url = `${window.location.origin}${window.location.pathname}#/chat/${sessionId}`;
+  navigator.clipboard.writeText(url).then(() => {
+    // Brief visual feedback
+    const btn = document.querySelector(`.conversation-item[data-session-id="${sessionId}"] .conversation-link`);
+    if (btn) {
+      const original = btn.innerHTML;
+      btn.innerHTML = "&#10003;";
+      setTimeout(() => { btn.innerHTML = original; }, 1500);
+    }
+  }).catch(() => {
+    // Fallback: select from prompt
+    window.prompt("Copy this link:", url);
+  });
 }

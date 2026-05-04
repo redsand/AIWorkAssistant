@@ -32,6 +32,20 @@ export function setCurrentMode(v) {
 export function setCurrentSessionId(v) {
   currentSessionId = v;
 }
+
+export function updateSessionHash(sessionId) {
+  if (sessionId) {
+    window.history.replaceState(null, "", "#/chat/" + sessionId);
+  } else {
+    window.history.replaceState(null, "", window.location.pathname);
+  }
+}
+
+export function readSessionHash() {
+  const hash = window.location.hash;
+  const match = hash.match(/^#\/chat\/([a-f0-9-]+)$/i);
+  return match ? match[1] : null;
+}
 export function setAuthToken(v) {
   authToken = v;
 }

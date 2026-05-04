@@ -168,6 +168,16 @@ export class OllamaProvider extends AIProvider {
             await this.sleep(delay);
             continue;
           }
+
+          // Network-level failure with no HTTP status (ECONNRESET, ETIMEDOUT, etc.)
+          if (!status) {
+            const errorCode = error.code || "UNKNOWN";
+            const errorMessage = error.message || "no message";
+            const requestUrl = error.config?.url || "unknown";
+            console.error(
+              `[Ollama API] Network failure (${errorCode}) on ${requestUrl}: ${errorMessage}`,
+            );
+          }
         }
 
         if (attempt < maxAttempts) {

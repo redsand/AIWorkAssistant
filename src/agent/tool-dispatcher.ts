@@ -2375,13 +2375,20 @@ async function handleCodexRun(
     return {
       success: false,
       error:
-        "Codex CLI not configured. Set OPENAI_API_KEY or CODEX_API_KEY environment variable.",
+        "Codex CLI not configured. Set OPENAI_API_KEY, CODEX_API_KEY, or ensure OLLAMA_API_URL is available.",
     };
   }
 
+  // Default to Ollama model when routing through Ollama (no API key set)
+  const model =
+    (params.model as string | undefined) ||
+    (process.env.OLLAMA_API_URL && !process.env.OPENAI_API_KEY && !process.env.CODEX_API_KEY
+      ? process.env.OLLAMA_MODEL || "glm-5.1:cloud"
+      : undefined);
+
   const result = await codexClient.runPrompt(prompt, {
     cwd: params.cwd as string | undefined,
-    model: params.model as string | undefined,
+    model,
     approvalMode: params.approvalMode as
       | "suggest"
       | "auto-edit"
