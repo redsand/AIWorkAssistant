@@ -4,6 +4,26 @@ import { OpenCodeProvider } from "./opencode-provider";
 import { ZaiProvider } from "./zai-provider";
 import { OllamaProvider } from "./ollama-provider";
 
+/**
+ * Resolve the effective context limit for a model by checking per-model
+ * overrides before falling back to the default.
+ */
+export function getEffectiveContextLimit(
+  model: string,
+  defaultLimit: number,
+): number {
+  if (!env.OLLAMA_MODEL_CONTEXT_LIMITS) return defaultLimit;
+  try {
+    const limits = JSON.parse(env.OLLAMA_MODEL_CONTEXT_LIMITS) as Record<
+      string,
+      number
+    >;
+    return limits[model] ?? defaultLimit;
+  } catch {
+    return defaultLimit;
+  }
+}
+
 export function createProvider(): AIProvider {
   const provider = env.AI_PROVIDER;
 
@@ -29,7 +49,10 @@ export function createProvider(): AIProvider {
         topP: 0.9,
         maxRetries: env.OLLAMA_API_KEY ? 5 : 2,
         timeout: 300000,
-        maxContextTokens: env.OLLAMA_MAX_CONTEXT_TOKENS,
+        maxContextTokens: getEffectiveContextLimit(
+          env.OLLAMA_MODEL,
+          env.OLLAMA_MAX_CONTEXT_TOKENS,
+        ),
       });
 
     default:

@@ -262,6 +262,13 @@ async function runChatJob(
         })),
       ];
 
+      // Re-prune to stay within context limits during tool loops.
+      // The chat() call prunes via buildRequestBody, but messages accumulate
+      // across iterations and expandedTools can grow via discover_tools.
+      const currentTools =
+        expandedTools.length > 0 ? expandedTools : tools || undefined;
+      messages = aiClient.pruneMessages(messages, currentTools) as ChatMessage[];
+
       response = await aiClient.chat({
         messages: messages,
         tools: expandedTools.length > 0 ? expandedTools : undefined,
@@ -575,6 +582,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
       };
     }
 
+    reply.hijack();
+
     reply.raw.setHeader("Content-Type", "text/event-stream");
     reply.raw.setHeader("Cache-Control", "no-cache");
     reply.raw.setHeader("Connection", "keep-alive");
@@ -729,6 +738,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
       reply.code(404);
       return { error: "Session not found" };
     }
+
+    reply.hijack();
 
     reply.raw.setHeader("Content-Type", "text/event-stream");
     reply.raw.setHeader("Cache-Control", "no-cache");

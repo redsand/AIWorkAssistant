@@ -71,6 +71,14 @@ export class OpenCodeProvider extends AIProvider {
           tokensUsed: result.usage?.totalTokens || 0,
         });
 
+        if (result.usage?.promptTokens) {
+          this.calibrateTokenEstimate(
+            result.usage.promptTokens,
+            request.messages,
+            request.tools,
+          );
+        }
+
         return result;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -86,11 +94,29 @@ export class OpenCodeProvider extends AIProvider {
             data: data ? JSON.stringify(data).substring(0, 200) : undefined,
           });
 
-          if (status === 401) {
+          if (status === 400) {
+            const errorBody = data
+              ? JSON.stringify(data).substring(0, 500)
+              : undefined;
+
+            if (this.isContextOverflowError(errorBody)) {
+              console.error(
+                `[OpenCode API] Context length exceeded (400):`,
+                errorBody || "no response body",
+              );
+              throw new Error(
+                `OpenCode API context length exceeded for model '${this.config.model}'. ${errorBody || "Prompt exceeds model maximum context length."}`,
+              );
+            }
+
+            throw new Error(
+              `OpenCode API bad request (400): ${data?.error?.message || "Unknown error"}`,
+            );
+          } else if (status === 401) {
             throw new Error(
               "OpenCode API authentication failed. Check your API key.",
             );
-          } else if (status === 400 || status === 403 || status === 404) {
+          } else if (status === 403 || status === 404) {
             throw new Error(
               `OpenCode API error (${status}): ${data?.error?.message || "Unknown error"}`,
             );

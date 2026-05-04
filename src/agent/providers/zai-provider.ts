@@ -74,6 +74,14 @@ export class ZaiProvider extends AIProvider {
           tokensUsed: result.usage?.totalTokens || 0,
         });
 
+        if (result.usage?.promptTokens) {
+          this.calibrateTokenEstimate(
+            result.usage.promptTokens,
+            request.messages,
+            request.tools,
+          );
+        }
+
         return result;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -87,6 +95,21 @@ export class ZaiProvider extends AIProvider {
             status === 403 ||
             status === 404
           ) {
+            if (status === 400) {
+              const errorBody = error.response?.data
+                ? JSON.stringify(error.response.data).substring(0, 500)
+                : undefined;
+
+              if (this.isContextOverflowError(errorBody)) {
+                console.error(
+                  `[Z.ai API] Context length exceeded (400):`,
+                  errorBody || "no response body",
+                );
+                throw new Error(
+                  `Z.ai API context length exceeded for model '${this.config.model}'. ${errorBody || "Prompt exceeds model maximum context length."}`,
+                );
+              }
+            }
             throw this.mapError(error);
           }
 

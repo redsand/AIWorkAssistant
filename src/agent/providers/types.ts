@@ -70,7 +70,9 @@ export type OpenCodeConfig = ProviderConfig;
 
 const DEFAULT_MAX_CONTEXT_TOKENS = 64000;
 const MAX_TOOL_RESULT_CHARS = 100000;
-const CHARS_PER_TOKEN = 4;
+const CHARS_PER_TOKEN = 1.8; // Calibrated: GLM tokenizer produces ~1.5-2 chars per token for mixed content
+const TOOL_SCHEMA_CHARS_PER_TOKEN = 1.5; // Tool schemas tokenize very densely
+const CONTEXT_SAFETY_MARGIN = 0.7; // Use 70% of max context - char-based estimates are inherently imprecise
 
 export abstract class AIProvider {
   abstract readonly name: string;
@@ -78,6 +80,10 @@ export abstract class AIProvider {
 
   protected client: AxiosInstance;
   protected config: ProviderConfig;
+
+  // Calibration factor: ratio of actual promptTokens to our estimate.
+  // Updated from real API responses so estimates improve over time.
+  private tokenCalibrationFactor = 1.0;
 
   constructor(config: ProviderConfig) {
     this.config = config;
@@ -105,7 +111,10 @@ export abstract class AIProvider {
   abstract validateConfig(): Promise<boolean>;
 
   protected buildRequestBody(request: ChatRequest): Record<string, unknown> {
-    const messages = this.pruneToContextWindow(request.messages);
+    const messages = this.pruneToContextWindow(
+      request.messages,
+      request.tools,
+    );
 
     const body: Record<string, unknown> = {
       model: request.model || this.config.model,
@@ -126,18 +135,45 @@ export abstract class AIProvider {
       body.stream = true;
     }
 
+    const msgTokens = this.estimateTokens(messages);
+    const toolTokens = request.tools
+      ? this.estimateTokens([], request.tools)
+      : 0;
+    console.log(
+      `[${this.name}] Request payload estimate: ${msgTokens + toolTokens} tokens (messages: ${msgTokens}, tools: ${toolTokens}, messages: ${messages.length}, tools: ${request.tools?.length || 0}, calibration: ${this.tokenCalibrationFactor.toFixed(2)})`,
+    );
+
     return body;
   }
 
-  protected pruneToContextWindow(messages: ChatMessage[]): ChatMessage[] {
+  protected pruneToContextWindow(
+    messages: ChatMessage[],
+    tools?: Tool[],
+  ): ChatMessage[] {
     const maxTokens =
       this.config.maxContextTokens || DEFAULT_MAX_CONTEXT_TOKENS;
+
+    // Apply safety margin — our char-based estimate is imprecise, and the actual
+    // model tokenizer often produces more tokens than we estimate. Using 85% of
+    // the max context leaves headroom for this estimation error.
+    const safeLimit = Math.floor(maxTokens * CONTEXT_SAFETY_MARGIN);
+
+    // Reserve budget for tool schemas so they don't push us over the limit
+    const toolTokens = tools ? this.estimateTokens([], tools) : 0;
+    const messageBudget = safeLimit - toolTokens;
+
+    if (messageBudget < 1000) {
+      console.warn(
+        `[${this.name}] Tool schemas consume ~${toolTokens} tokens, leaving only ${messageBudget} for messages (out of ${maxTokens}). Consider reducing the number of tools.`,
+      );
+    }
+
     let estimated = this.estimateTokens(messages);
 
-    if (estimated <= maxTokens) return messages;
+    if (estimated <= messageBudget) return messages;
 
     console.warn(
-      `[${this.name}] Prompt ${estimated} tokens exceeds ${maxTokens} limit, pruning...`,
+      `[${this.name}] Prompt ${estimated} tokens exceeds ${messageBudget} limit, pruning...`,
     );
 
     const pruned = messages.map((m) => {
@@ -159,7 +195,7 @@ export abstract class AIProvider {
     });
 
     estimated = this.estimateTokens(pruned);
-    if (estimated <= maxTokens) return pruned;
+    if (estimated <= messageBudget) return pruned;
 
     if (pruned.length <= 4) return pruned;
 
@@ -175,7 +211,7 @@ export abstract class AIProvider {
       system,
       {
         role: "system",
-        content: `[Earlier conversation truncated — ${pruned.length - recentCount - 2} messages removed to fit context window of ${maxTokens} tokens]`,
+        content: `[Earlier conversation truncated — ${pruned.length - recentCount - 2} messages removed to fit context window of ${messageBudget} tokens]`,
       },
       ...recent,
       userMsg,
@@ -185,7 +221,19 @@ export abstract class AIProvider {
       `[${this.name}] Pruned ${pruned.length} messages to ${kept.length}`,
     );
 
+    estimated = this.estimateTokens(kept);
+    if (estimated <= messageBudget) return kept;
+    if (kept.length <= 4) return kept;
+
     return kept;
+  }
+
+  /**
+   * Public wrapper so callers (e.g. tool loop in chat.ts) can prune messages
+   * without going through buildRequestBody.
+   */
+  pruneMessages(messages: ChatMessage[], tools?: Tool[]): ChatMessage[] {
+    return this.pruneToContextWindow(messages, tools);
   }
 
   protected parseToolCalls(toolCalls: any[]): ToolCall[] {
@@ -199,18 +247,113 @@ export abstract class AIProvider {
     }));
   }
 
-  estimateTokens(messages: ChatMessage[]): number {
-    let totalChars = 0;
+  estimateTokens(messages: ChatMessage[], tools?: Tool[]): number {
+    let messageChars = 0;
 
     for (const message of messages) {
-      totalChars += message.content.length;
-      totalChars += 16;
+      messageChars += message.content.length;
+      messageChars += 16; // message overhead
 
       if (message.tool_calls) {
-        totalChars += JSON.stringify(message.tool_calls).length;
+        messageChars += JSON.stringify(message.tool_calls).length;
       }
     }
 
-    return Math.max(1, Math.floor(totalChars / CHARS_PER_TOKEN));
+    let toolChars = 0;
+    if (tools && tools.length > 0) {
+      toolChars += JSON.stringify(tools).length;
+      toolChars += tools.length * 8;
+    }
+
+    const messageTokens = Math.max(0, Math.floor(messageChars / CHARS_PER_TOKEN));
+    const toolTokens = Math.max(0, Math.floor(toolChars / TOOL_SCHEMA_CHARS_PER_TOKEN));
+
+    // Apply calibration factor from real API responses
+    const raw = Math.max(1, messageTokens + toolTokens);
+    return Math.ceil(raw * this.tokenCalibrationFactor);
+  }
+
+  /**
+   * Calibrate token estimation using actual promptTokens from an API response.
+   * Compares the real count to our estimate and adjusts the calibration factor
+   * so future estimates are more accurate.
+   */
+  protected calibrateTokenEstimate(
+    actualPromptTokens: number,
+    messages: ChatMessage[],
+    tools?: Tool[],
+  ) {
+    if (actualPromptTokens <= 0) return;
+
+    // Get raw (uncalibrated) estimate
+    const savedFactor = this.tokenCalibrationFactor;
+    this.tokenCalibrationFactor = 1.0;
+    const rawEstimate = this.estimateTokens(messages, tools);
+    this.tokenCalibrationFactor = savedFactor;
+
+    const measuredRatio = actualPromptTokens / rawEstimate;
+    if (measuredRatio > 0 && isFinite(measuredRatio)) {
+      // Exponential moving average — don't jump too fast, but converge over a few samples
+      const alpha = 0.5;
+      this.tokenCalibrationFactor =
+        alpha * measuredRatio + (1 - alpha) * this.tokenCalibrationFactor;
+      console.log(
+        `[${this.name}] Token calibration updated: ratio=${measuredRatio.toFixed(2)}, factor=${this.tokenCalibrationFactor.toFixed(2)}, raw=${rawEstimate}, actual=${actualPromptTokens}`,
+      );
+    }
+  }
+
+  /**
+   * Check whether an HTTP 400 error body indicates a context-length overflow
+   * rather than a generic bad request. Shared across all providers.
+   */
+  protected isContextOverflowError(errorBody: string | undefined): boolean {
+    if (!errorBody) return false;
+    const lower = errorBody.toLowerCase();
+    return (
+      lower.includes("prompt is too long") ||
+      lower.includes("context length") ||
+      lower.includes("maximum context") ||
+      lower.includes("context window") ||
+      lower.includes("token limit") ||
+      lower.includes("too many tokens") ||
+      lower.includes("exceeded max context") ||
+      lower.includes("prompt too long")
+    );
+  }
+
+  /**
+   * Extract the actual token count from an overflow error message and
+   * use it to calibrate future estimates.
+   */
+  protected calibrateFromOverflowError(
+    errorBody: string | undefined,
+    messages: ChatMessage[],
+    tools?: Tool[],
+  ) {
+    if (!errorBody) return;
+
+    // Try to extract the actual token count from error messages like:
+    // "The prompt is too long: 221782, model maximum context length: 202752"
+    // "prompt too long; exceeded max context length by 15935 tokens"
+    const match = errorBody.match(/prompt is too long:?\s*(\d+)/i) ||
+      errorBody.match(/exceeded max context length by (\d+) tokens/i);
+
+    if (match) {
+      const actualTokens = parseInt(match[1], 10);
+      // For "exceeded by X" format, we need to add the max context to get the actual count
+      if (errorBody.includes("exceeded max context length by")) {
+        const maxMatch = errorBody.match(/max context length:?\s*(\d+)/i);
+        if (maxMatch) {
+          this.calibrateTokenEstimate(
+            actualTokens + parseInt(maxMatch[1], 10),
+            messages,
+            tools,
+          );
+          return;
+        }
+      }
+      this.calibrateTokenEstimate(actualTokens, messages, tools);
+    }
   }
 }

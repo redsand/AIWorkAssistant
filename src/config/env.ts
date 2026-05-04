@@ -38,6 +38,10 @@ const envSchema = z.object({
   OLLAMA_TEMPERATURE: z.string().transform(Number).default("0.7"),
   OLLAMA_MAX_CONTEXT_TOKENS: z.coerce.number().default(128000),
 
+  // Per-model context limit overrides (JSON map of model name -> max tokens)
+  // Example: {"glm-5.1:cloud": 202752, "llama3:70b": 8192}
+  OLLAMA_MODEL_CONTEXT_LIMITS: z.string().default(""),
+
   // Microsoft 365
   MICROSOFT_TENANT_ID: z.string().default(""),
   MICROSOFT_CLIENT_ID: z.string().default(""),

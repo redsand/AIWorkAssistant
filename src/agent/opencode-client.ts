@@ -36,8 +36,12 @@ class OpenCodeClient {
     return this.provider.validateConfig();
   }
 
-  estimateTokens(messages: ChatMessage[]): number {
-    return this.provider.estimateTokens(messages);
+  estimateTokens(messages: ChatMessage[], tools?: Tool[]): number {
+    return this.provider.estimateTokens(messages, tools);
+  }
+
+  pruneMessages(messages: ChatMessage[], tools?: Tool[]): ChatMessage[] {
+    return this.provider.pruneMessages(messages, tools);
   }
 }
 

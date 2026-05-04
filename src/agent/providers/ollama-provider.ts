@@ -69,6 +69,14 @@ export class OllamaProvider extends AIProvider {
           tokensUsed: result.usage?.totalTokens || 0,
         });
 
+        if (result.usage?.promptTokens) {
+          this.calibrateTokenEstimate(
+            result.usage.promptTokens,
+            request.messages,
+            request.tools,
+          );
+        }
+
         return result;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -76,16 +84,39 @@ export class OllamaProvider extends AIProvider {
         if (axios.isAxiosError(error)) {
           const status = error.response?.status;
 
-          if (status === 400 && request.tools) {
+          if (status === 400) {
             const errorBody = error.response?.data
               ? JSON.stringify(error.response.data).substring(0, 500)
               : undefined;
-            console.error(
-              `[Ollama API] Bad request with tools (400):`,
-              errorBody || "no response body",
-            );
+
+            if (this.isContextOverflowError(errorBody)) {
+              console.error(
+                `[Ollama API] Context length exceeded (400):`,
+                errorBody || "no response body",
+              );
+              // Calibrate from the overflow so the next attempt estimates correctly
+              this.calibrateFromOverflowError(
+                errorBody,
+                request.messages,
+                request.tools,
+              );
+              throw new Error(
+                `Ollama API context length exceeded for model '${this.config.model}'. ${errorBody || "Prompt exceeds model maximum context length."}`,
+              );
+            }
+
+            if (request.tools) {
+              console.error(
+                `[Ollama API] Bad request with tools (400):`,
+                errorBody || "no response body",
+              );
+              throw new Error(
+                `Ollama API returned 400 with tools. The model '${this.config.model}' may not support function calling. Error: ${errorBody || "unknown"}`,
+              );
+            }
+
             throw new Error(
-              `Ollama API returned 400 with tools. The model '${this.config.model}' may not support function calling. Error: ${errorBody || "unknown"}`,
+              `Ollama API returned 400. Error: ${errorBody || "unknown"}`,
             );
           }
 

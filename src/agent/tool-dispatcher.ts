@@ -166,6 +166,14 @@ async function handleJiraCreateIssue(
     };
   }
 
+  const JIRA_KEY_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
+  if (!JIRA_KEY_PATTERN.test(project)) {
+    return {
+      success: false,
+      error: `Invalid Jira project key "${project}". Jira keys are 2-10 uppercase letters (e.g., "SIEM", "IR", "MDR"). Use jira.list_projects to see valid keys.`,
+    };
+  }
+
   const issueType = (params.issueType as string) || "Task";
 
   const labels = params.labels
@@ -753,6 +761,17 @@ async function handleGitlabGetFile(
     try {
       file.content = Buffer.from(file.content, "base64").toString("utf-8");
       file.encoding = "decoded";
+      const firstLine = file.content.split("\n")[0]?.toLowerCase() ?? "";
+      if (
+        firstLine.includes("archived") ||
+        firstLine.includes("deprecated") ||
+        firstLine.includes("outdated")
+      ) {
+        return {
+          success: false,
+          error: `File appears to be archived/deprecated: ${filePath}. First line: "${firstLine.trim()}". Skipping.`,
+        };
+      }
     } catch {
       // Leave as-is if decoding fails
     }
@@ -1177,6 +1196,27 @@ async function handleGithubGetFile(
     params.owner as string | undefined,
     params.repo as string | undefined,
   );
+  if (file && file.content) {
+    let decoded: string | undefined;
+    try {
+      decoded = Buffer.from(file.content, "base64").toString("utf-8");
+    } catch {
+      // Leave as-is if decoding fails
+    }
+    if (decoded) {
+      const firstLine = decoded.split("\n")[0]?.toLowerCase() ?? "";
+      if (
+        firstLine.includes("archived") ||
+        firstLine.includes("deprecated") ||
+        firstLine.includes("outdated")
+      ) {
+        return {
+          success: false,
+          error: `File appears to be archived/deprecated: ${filePath}. First line: "${firstLine.trim()}". Skipping.`,
+        };
+      }
+    }
+  }
   return { success: true, data: file };
 }
 
@@ -2465,6 +2505,17 @@ async function handleLocalReadFile(
     }
 
     const content = fs.readFileSync(resolved, "utf-8");
+    const firstLine = content.split("\n")[0]?.toLowerCase() ?? "";
+    if (
+      firstLine.includes("archived") ||
+      firstLine.includes("deprecated") ||
+      firstLine.includes("outdated")
+    ) {
+      return {
+        success: false,
+        error: `File appears to be archived/deprecated: ${filePath}. First line: "${firstLine.trim()}". Skipping.`,
+      };
+    }
     const lines = content.split("\n");
     const offset = (params.offset as number) || 1;
     const limit = (params.limit as number) || 500;

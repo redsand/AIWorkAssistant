@@ -2951,6 +2951,7 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "calendar.create_health_block")!,
 
   // Jira core
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jira.list_projects")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jira.list_assigned")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jira.get_issue")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jira.search_issues")!,
@@ -2976,6 +2977,16 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "github.get_file")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "github.search_code")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "github.list_tree")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.list_issues")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.get_issue")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.create_issue")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.update_issue")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.add_issue_comment")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.list_branches")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.create_branch")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.list_pull_requests")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.create_pull_request")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.add_pr_comment")!,
 
   // Planning
   PRODUCTIVITY_TOOLS.find(
@@ -3086,8 +3097,56 @@ export function getToolInventory(mode: string): string {
   const lines = tools.map((t) => `- ${t.name}: ${t.description}`);
   const categories = getToolCategories(mode);
   const catNames = Object.keys(categories).join(", ");
+
+  // Build platform quick reference based on what's loaded vs what needs discovery
+  const loadedNames = new Set(tools.map((t) => t.name));
+  const platformRef: string[] = [];
+
+  const platformCategories = [
+    {
+      name: "GitHub",
+      prefix: "github",
+      writeActions: ["create issue", "create PR", "create branch"],
+    },
+    {
+      name: "GitLab",
+      prefix: "gitlab",
+      writeActions: ["pipeline/merge actions"],
+    },
+    {
+      name: "Jira",
+      prefix: "jira",
+      writeActions: ["advanced fields"],
+    },
+    {
+      name: "Calendar",
+      prefix: "calendar",
+      writeActions: ["event management"],
+    },
+  ];
+
+  for (const platform of platformCategories) {
+    const catTools = categories[platform.prefix] || [];
+    const loaded = catTools.filter((name) => loadedNames.has(name)).length;
+    if (loaded > 0) {
+      if (loaded === catTools.length) {
+        platformRef.push(`- ${platform.name}: All tools loaded (${loaded}).`);
+      } else {
+        platformRef.push(
+          `- ${platform.name}: ${loaded}/${catTools.length} tools loaded. For ${platform.writeActions.join(", ")}, call discover_tools("${platform.prefix}").`,
+        );
+      }
+    }
+  }
+
+  const platformSection =
+    platformRef.length > 0
+      ? `\n\nPLATFORM QUICK REFERENCE:\n${platformRef.join("\n")}`
+      : "";
+
   return `AVAILABLE TOOLS (${tools.length} loaded, expandable via discover_tools):
 ${lines.join("\n")}
+${platformSection}
 
 EXPANDABLE CATEGORIES (use discover_tools to load): ${catNames}
 

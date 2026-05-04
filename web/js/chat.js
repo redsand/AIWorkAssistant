@@ -25,7 +25,7 @@ import { loadRoadmaps } from "./sidebar.js";
 import { loadConversations } from "./conversations.js";
 import { showLoginOverlay } from "./ui.js";
 
-async function handleStreamResponse(response, progressEl, onError) {
+async function handleStreamResponse(response, progressElRef, onError) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -33,6 +33,17 @@ async function handleStreamResponse(response, progressEl, onError) {
   let eventType = "";
   let roadmapTouched = false;
   let contentCount = 0;
+
+  function ensureProgressEl() {
+    if (!progressElRef.progressEl) {
+      const result = createToolProgress();
+      progressElRef.progressEl = result.progressEl;
+      document.getElementById("chatMessages").appendChild(result.progressEl);
+      document.getElementById("chatMessages").scrollTop =
+        document.getElementById("chatMessages").scrollHeight;
+    }
+    return progressElRef.progressEl;
+  }
 
   function processBuffer(flush) {
     const lines = buffer.split("\n");
@@ -52,6 +63,7 @@ async function handleStreamResponse(response, progressEl, onError) {
             localStorage.setItem("currentSessionId", data.sessionId);
           }
           if (eventType === "tool_start") {
+            ensureProgressEl();
             addToolCall(data.id, data.name, data.params);
             if (data.name && String(data.name).startsWith("roadmap.")) {
               roadmapTouched = true;
@@ -74,7 +86,7 @@ async function handleStreamResponse(response, progressEl, onError) {
             contentCount++;
           }
           if (data.message) {
-            progressEl.remove();
+            if (progressElRef.progressEl) progressElRef.progressEl.remove();
             addMessage(
               "Sorry, I encountered an error: " + data.message,
               "assistant",
@@ -252,10 +264,7 @@ export async function sendMessage() {
   const processingEl = document.getElementById("processingIndicator");
   processingEl.classList.add("active");
 
-  const { progressEl } = createToolProgress();
-  document.getElementById("chatMessages").appendChild(progressEl);
-  document.getElementById("chatMessages").scrollTop =
-    document.getElementById("chatMessages").scrollHeight;
+  const progressElRef = { progressEl: null };
 
   try {
     if (activeStreamController) {
@@ -279,14 +288,12 @@ export async function sendMessage() {
     });
 
     if (response.status === 401 || response.status === 403) {
-      progressEl.remove();
       processingEl.classList.remove("active");
       showLoginOverlay();
       return;
     }
 
     if (!response.ok) {
-      progressEl.remove();
       processingEl.classList.remove("active");
       let errorText = `Server returned ${response.status}`;
       try {
@@ -299,9 +306,9 @@ export async function sendMessage() {
       return;
     }
 
-    const result = await handleStreamResponse(response, progressEl);
+    const result = await handleStreamResponse(response, progressElRef);
 
-    progressEl.remove();
+    if (progressElRef.progressEl) progressElRef.progressEl.remove();
     processingEl.classList.remove("active");
 
     if (result.error) return;
@@ -316,9 +323,8 @@ export async function sendMessage() {
 
     loadConversations();
   } catch (error) {
-    progressEl.remove();
+    if (progressElRef.progressEl) progressElRef.progressEl.remove();
     processingEl.classList.remove("active");
-    progressEl.remove();
     if (error instanceof DOMException && error.name === "AbortError") return;
     console.error("Failed to send message:", error);
     const errMsg = error instanceof Error ? error.message : String(error);
@@ -353,22 +359,20 @@ export async function resendMessage(message) {
   }
 
   if (clickedMsg) {
+    // Remove only the assistant responses after the user message,
+    // keep the user message itself visible.
     let next = clickedMsg.nextElementSibling;
     while (next) {
       const current = next;
-      next = next.nextElementSibling;
+      next = current.nextElementSibling;
       current.remove();
     }
-    clickedMsg.remove();
   }
 
   const processingEl2 = document.getElementById("processingIndicator");
   processingEl2.classList.add("active");
 
-  const { progressEl } = createToolProgress();
-  document.getElementById("chatMessages").appendChild(progressEl);
-  document.getElementById("chatMessages").scrollTop =
-    document.getElementById("chatMessages").scrollHeight;
+  const progressElRef = { progressEl: null };
 
   try {
     if (activeStreamController) {
@@ -392,16 +396,13 @@ export async function resendMessage(message) {
     });
 
     if (response.status === 401 || response.status === 403) {
-      progressEl.remove();
       processingEl2.classList.remove("active");
       showLoginOverlay();
       return;
     }
 
     if (!response.ok) {
-      progressEl.remove();
       processingEl2.classList.remove("active");
-      addMessage(message, "user");
       let errorText = `Server returned ${response.status}`;
       try {
         const errBody = await response.json();
@@ -413,9 +414,9 @@ export async function resendMessage(message) {
       return;
     }
 
-    const result = await handleStreamResponse(response, progressEl);
+    const result = await handleStreamResponse(response, progressElRef);
 
-    progressEl.remove();
+    if (progressElRef.progressEl) progressElRef.progressEl.remove();
     processingEl2.classList.remove("active");
 
     if (result.error) return;
@@ -432,9 +433,8 @@ export async function resendMessage(message) {
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") return;
     console.error("Failed to send message:", error);
-    progressEl.remove();
+    if (progressElRef.progressEl) progressElRef.progressEl.remove();
     processingEl2.classList.remove("active");
-    addMessage(message, "user");
     const errMsg2 = error instanceof Error ? error.message : String(error);
     addMessage(
       "Failed to connect to the agent: " +
