@@ -21,6 +21,7 @@
 .chat-section {
   grid-column: 1;
   overflow: hidden;
+  position: relative;
 }
 
 .panel-section {
@@ -71,6 +72,30 @@
   padding: 16px;
   margin-bottom: 16px;
   background: #f9fafb;
+  scroll-behavior: smooth;
+}
+
+.jump-to-latest-btn {
+  position: absolute;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  padding: 6px 16px;
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  transition: background 0.2s, transform 0.2s;
+}
+
+.jump-to-latest-btn:hover {
+  background: #5568d3;
+  transform: translateX(-50%) scale(1.05);
 }
 
 .message {

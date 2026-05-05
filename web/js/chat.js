@@ -25,6 +25,8 @@ import {
   showError,
   showTyping,
   finalizeToolProgress,
+  scrollChatToBottom,
+  ensureScrollListener,
 } from "./messages.js";
 import { loadRoadmaps } from "./sidebar.js";
 import { loadConversations } from "./conversations.js";
@@ -44,8 +46,9 @@ async function handleStreamResponse(response, progressElRef, onError) {
       const result = createToolProgress();
       progressElRef.progressEl = result.progressEl;
       document.getElementById("chatMessages").appendChild(result.progressEl);
-      document.getElementById("chatMessages").scrollTop =
-        document.getElementById("chatMessages").scrollHeight;
+      const processingEl = document.getElementById("processingIndicator");
+      processingEl.classList.add("active");
+      scrollChatToBottom();
     }
     return progressElRef.progressEl;
   }
@@ -175,6 +178,7 @@ export async function initializeChat() {
   }
 
   await loadChatHistory();
+  ensureScrollListener();
 
   const { subscribeLive } = await import("./live.js?v=8");
   if (currentSessionId) {
@@ -228,13 +232,18 @@ async function loadChatHistory() {
         (!msg.content || msg.content.trim() === "")
       )
         continue;
-      addMessage(msg.content, msg.role);
+      addMessage(msg.content, msg.role, undefined, { scroll: false });
       if (msg.role === "user" && msg.content) {
         const hist = [...messageHistory];
         hist.push(msg.content);
         setMessageHistory(hist);
       }
     }
+
+    requestAnimationFrame(() => {
+      ensureScrollListener();
+      scrollChatToBottom(true);
+    });
   } catch {
     setCurrentSessionId(null);
     localStorage.removeItem("currentSessionId");
@@ -293,8 +302,6 @@ export async function sendMessage() {
     setActiveStreamController(null);
   }
 
-  const processingEl = document.getElementById("processingIndicator");
-  processingEl.classList.add("active");
   showTyping(true);
 
   const progressElRef = { progressEl: null };
@@ -318,14 +325,12 @@ export async function sendMessage() {
     });
 
     if (response.status === 401 || response.status === 403) {
-      processingEl.classList.remove("active");
       showTyping(false);
       showLoginOverlay();
       return;
     }
 
     if (!response.ok) {
-      processingEl.classList.remove("active");
       showTyping(false);
       let errorText = `Server returned ${response.status}`;
       try {
@@ -341,13 +346,14 @@ export async function sendMessage() {
     const result = await handleStreamResponse(response, progressElRef);
 
     finalizeToolProgress();
-    processingEl.classList.remove("active");
     showTyping(false);
 
     if (result.error) return;
 
     if (result.contentCount > 0) {
       addCompletionMarker();
+    } else {
+      await loadChatHistory();
     }
 
     if (result.roadmapTouched) {
@@ -355,6 +361,9 @@ export async function sendMessage() {
     }
 
     loadConversations();
+
+    const { subscribeLive } = await import("./live.js?v=8");
+    if (currentSessionId) subscribeLive(currentSessionId);
   } catch (error) {
     finalizeToolProgress();
     if (myGeneration === sendGeneration) {
@@ -372,6 +381,8 @@ export async function sendMessage() {
         "assistant",
       );
     }
+    const { subscribeLive } = await import("./live.js?v=8");
+    if (currentSessionId) subscribeLive(currentSessionId);
   }
 }
 
@@ -412,8 +423,6 @@ export async function resendMessage(message) {
     setActiveStreamController(null);
   }
 
-  const processingEl = document.getElementById("processingIndicator");
-  processingEl.classList.add("active");
   showTyping(true);
 
   const progressElRef = { progressEl: null };
@@ -437,14 +446,12 @@ export async function resendMessage(message) {
     });
 
     if (response.status === 401 || response.status === 403) {
-      processingEl.classList.remove("active");
       showTyping(false);
       showLoginOverlay();
       return;
     }
 
     if (!response.ok) {
-      processingEl.classList.remove("active");
       showTyping(false);
       let errorText = `Server returned ${response.status}`;
       try {
@@ -460,13 +467,14 @@ export async function resendMessage(message) {
     const result = await handleStreamResponse(response, progressElRef);
 
     finalizeToolProgress();
-    processingEl.classList.remove("active");
     showTyping(false);
 
     if (result.error) return;
 
     if (result.contentCount > 0) {
       addCompletionMarker();
+    } else {
+      await loadChatHistory();
     }
 
     if (result.roadmapTouched) {
@@ -474,6 +482,9 @@ export async function resendMessage(message) {
     }
 
     loadConversations();
+
+    const { subscribeLive } = await import("./live.js?v=8");
+    if (currentSessionId) subscribeLive(currentSessionId);
   } catch (error) {
     finalizeToolProgress();
     if (myGeneration === sendGeneration) {
@@ -491,5 +502,7 @@ export async function resendMessage(message) {
         "assistant",
       );
     }
+    const { subscribeLive } = await import("./live.js?v=8");
+    if (currentSessionId) subscribeLive(currentSessionId);
   }
 }

@@ -17,6 +17,69 @@ import { authHeaders } from "./auth.js";
 import { escapeHtml, summarizeResult, autoResizeTextarea } from "./utils.js";
 import { renderMarkdown } from "./markdown.js";
 
+const SCROLL_NEAR_BOTTOM_PX = 150;
+
+function getChatMessagesEl() {
+  return document.getElementById("chatMessages");
+}
+
+function isNearBottom() {
+  const el = getChatMessagesEl();
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_NEAR_BOTTOM_PX;
+}
+
+export function scrollChatToBottom(force = false) {
+  const el = getChatMessagesEl();
+  if (!el) return;
+  if (!force && !isNearBottom()) {
+    showJumpToLatest();
+    return;
+  }
+  hideJumpToLatest();
+  el.scrollTo({ top: el.scrollHeight, behavior: force ? "instant" : "smooth" });
+}
+
+let jumpToLatestBtn = null;
+
+function showJumpToLatest() {
+  const chatSection = document.querySelector(".chat-section");
+  if (!chatSection) return;
+  if (jumpToLatestBtn) return;
+  jumpToLatestBtn = document.createElement("button");
+  jumpToLatestBtn.className = "jump-to-latest-btn";
+  jumpToLatestBtn.textContent = "↓ Jump to latest";
+  jumpToLatestBtn.addEventListener("click", () => {
+    scrollChatToBottom(true);
+  });
+  chatSection.appendChild(jumpToLatestBtn);
+}
+
+function hideJumpToLatest() {
+  if (jumpToLatestBtn) {
+    jumpToLatestBtn.remove();
+    jumpToLatestBtn = null;
+  }
+}
+
+function setupScrollListener() {
+  const el = getChatMessagesEl();
+  if (!el) return;
+  el.addEventListener("scroll", () => {
+    if (isNearBottom()) {
+      hideJumpToLatest();
+    }
+  });
+}
+
+let scrollListenerSetup = false;
+
+export function ensureScrollListener() {
+  if (scrollListenerSetup) return;
+  setupScrollListener();
+  scrollListenerSetup = true;
+}
+
 export function showTyping(show) {
   const indicator = document.getElementById("typingIndicator");
   if (show) {
@@ -34,7 +97,7 @@ export function showError(message) {
   chatMessages.insertBefore(errorDiv, chatMessages.firstChild);
 }
 
-export function addMessage(content, type, thinking) {
+export function addMessage(content, type, thinking, { scroll = true } = {}) {
   const messagesDiv = document.getElementById("chatMessages");
   const messageDiv = document.createElement("div");
   messageDiv.className = `message ${type}`;
@@ -78,7 +141,9 @@ export function addMessage(content, type, thinking) {
 
   messageDiv.appendChild(row);
   messagesDiv.appendChild(messageDiv);
-  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+  if (scroll) {
+    scrollChatToBottom();
+  }
 }
 
 export function createToolProgress() {
@@ -145,8 +210,7 @@ export function addToolCall(id, name, params) {
   body.classList.add("expanded");
   progressEl.querySelector(".tool-progress-toggle").classList.add("expanded");
 
-  const chatMessages = document.getElementById("chatMessages");
-  chatMessages.scrollTop = chatMessages.scrollHeight;
+  scrollChatToBottom();
 }
 
 export function completeToolCall(id, result) {
@@ -177,8 +241,7 @@ export function completeToolCall(id, result) {
   }
   item.appendChild(resultDiv);
 
-  const chatMessages = document.getElementById("chatMessages");
-  chatMessages.scrollTop = chatMessages.scrollHeight;
+  scrollChatToBottom();
 
   const body = progressEl.querySelector(".tool-progress-body");
   const running = body.querySelectorAll(".tool-call-status.running");

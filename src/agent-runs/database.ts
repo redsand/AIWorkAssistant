@@ -130,6 +130,18 @@ class AgentRunDatabase {
       .run(errorMessage, now, id);
   }
 
+  markStaleRunsAsFailed(olderThanMinutes: number = 30): number {
+    const cutoff = new Date(
+      Date.now() - olderThanMinutes * 60 * 1000,
+    ).toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE agent_runs SET status = 'failed', error_message = 'Run timed out (stale)', completed_at = ? WHERE status = 'running' AND started_at < ?`,
+      )
+      .run(new Date().toISOString(), cutoff);
+    return result.changes;
+  }
+
   addStep(step: AgentRunStepCreate): AgentRunStep {
     const id = uuidv4();
     const now = new Date().toISOString();
@@ -274,6 +286,7 @@ class AgentRunDatabase {
   }
 
   cleanup(olderThanDays: number = 30): number {
+    this.markStaleRunsAsFailed();
     const cutoff = new Date(
       Date.now() - olderThanDays * 24 * 60 * 60 * 1000,
     ).toISOString();

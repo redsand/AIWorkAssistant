@@ -9,7 +9,7 @@ import {
   updateSessionHash,
 } from "./state.js";
 import { authHeaders } from "./auth.js";
-import { addMessage } from "./messages.js";
+import { addMessage, scrollChatToBottom, ensureScrollListener } from "./messages.js";
 
 import { escapeHtml, escapeAttr } from "./utils.js";
 import { readSessionHash } from "./state.js";
@@ -117,13 +117,17 @@ export async function switchConversation(sessionId) {
           (!msg.content || msg.content.trim() === "")
         )
           continue;
-        addMessage(msg.content, msg.role);
+        addMessage(msg.content, msg.role, undefined, { scroll: false });
         if (msg.role === "user" && msg.content) {
           const hist = [...messageHistory];
           hist.push(msg.content);
           setMessageHistory(hist);
         }
       }
+      requestAnimationFrame(() => {
+        scrollChatToBottom(true);
+        ensureScrollListener();
+      });
     } else {
       chatMessages.innerHTML = `
         <div class="message assistant">

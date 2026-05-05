@@ -58,7 +58,13 @@ TICKET ACTION RULES:
 - When the user asks to close, update, or act on specific tickets, FIRST search for those tickets using the appropriate search tool to confirm they exist and get their IDs.
 - "Close my tickets" → search for tickets assigned to the user FIRST, then close each one with confirmation.
 - Never assume ticket IDs. Always look up tickets before modifying them.
-- If you cannot find the tickets the user is referring to, tell them what you searched for and ask for clarification.`;
+- If you cannot find the tickets the user is referring to, tell them what you searched for and ask for clarification.
+
+GITLAB PROJECT RESOLUTION:
+- GitLab tools that accept projectId require a numeric project ID or URL-encoded path. NEVER guess or use an unverified project name as the projectId.
+- If the user mentions a project by name (e.g., "siem", "hawk-soar"), call gitlab.list_projects FIRST to find the correct numeric ID.
+- Pattern: gitlab.list_projects → find matching project → use its id for subsequent calls like gitlab.list_commits, gitlab.list_tree, etc.
+- Do NOT call gitlab.list_commits, gitlab.search_code, or other project-scoped tools until you have verified the project ID.`;
 
 const EFFICIENCY_RULES = `
 

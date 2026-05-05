@@ -353,6 +353,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       try { runId = agentRunDatabase.startRun({ sessionId: body.sessionId ?? null, userId: body.userId, mode: body.mode }).id; } catch (e) { console.error("[AgentRuns]", e); }
 
       if (!aiClient.isConfigured()) {
+        try { if (runId) agentRunDatabase.failRun(runId, "AI provider not configured"); } catch (e) { console.error("[AgentRuns]", e); }
         reply.code(503);
         const provider = env.AI_PROVIDER;
         const keyHint =

@@ -195,11 +195,13 @@ export class JiraClient {
         const data = error.response?.data as any;
 
         if (status === 400) {
-          const errorMessages =
-            data?.errorMessages ||
-            data?.errors?.join(", ") ||
-            "Invalid JQL syntax";
-          throw new Error(`Invalid JQL query: ${errorMessages}`);
+          const errors = data?.errors || {};
+          const errorMessages = data?.errorMessages || [];
+          const details = [
+            ...Object.entries(errors).map(([k, v]) => `${k}: ${v}`),
+            ...errorMessages,
+          ].join("; ");
+          throw new Error(`Invalid JQL query: ${details || "Invalid JQL syntax"}`);
         } else if (status === 401) {
           throw new Error(
             "Jira authentication failed. Check your credentials.",
@@ -524,9 +526,13 @@ export class JiraClient {
         const status = error.response?.status;
         const data = error.response?.data as any;
         if (status === 400) {
-          throw new Error(
-            `Invalid issue data: ${data?.errors?.join(", ") || "Unknown error"}`,
-          );
+          const errors = data?.errors || {};
+          const errorMessages = data?.errorMessages || [];
+          const details = [
+            ...Object.entries(errors).map(([k, v]) => `${k}: ${v}`),
+            ...errorMessages,
+          ].join("; ");
+          throw new Error(`Invalid issue data: ${details || "Unknown error"}`);
         } else if (status === 403) {
           throw new Error("No permission to create issue in this project");
         }

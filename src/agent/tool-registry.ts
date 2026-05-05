@@ -588,12 +588,12 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   },
   {
     name: "gitlab.list_commits",
-    description: "List commits for a branch in a GitLab project",
+    description: "List commits for a branch in a GitLab project. If you don't know the project ID, call gitlab.list_projects first to find it.",
     params: {
       projectId: {
         type: "string",
         description:
-          "Project ID or path. Uses GITLAB_DEFAULT_PROJECT if not specified.",
+          "Numeric project ID or URL-encoded path. If you only know the project name, call gitlab.list_projects first. Uses GITLAB_DEFAULT_PROJECT if not specified.",
         required: false,
       },
       ref: {
@@ -714,7 +714,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       projectId: {
         type: "string",
         description:
-          "Project ID or path. Uses GITLAB_DEFAULT_PROJECT if not specified.",
+          "Numeric project ID or URL-encoded path. If you only know the project name, call gitlab.list_projects first. Uses GITLAB_DEFAULT_PROJECT if not specified.",
         required: false,
       },
       query: {

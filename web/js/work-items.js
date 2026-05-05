@@ -184,11 +184,33 @@ export async function loadWorkItems() {
 // ── Detail View ──
 
 export async function viewWorkItem(id) {
-  selectedItemId = id;
-  const detailEl = document.getElementById("workItemDetail");
-  detailEl.style.display = "block";
-  detailEl.innerHTML = '<div class="loading">Loading...</div>';
+  // Close any previously expanded detail
+  closeWorkItemDetail();
 
+  selectedItemId = id;
+
+  // Find the clicked row
+  const listEl = document.getElementById("workItemsList");
+  const clickedRow = listEl.querySelector(`.work-item-row[onclick*="'${id}'"]`);
+
+  // Create detail element
+  const detailEl = document.createElement("div");
+  detailEl.className = "work-item-detail-panel";
+  detailEl.id = "activeWorkItemDetail";
+  detailEl.innerHTML = '<div class="loading">Loading...</div>';
+  detailEl.style.display = "block";
+
+  if (clickedRow) {
+    clickedRow.classList.add("expanded");
+    clickedRow.after(detailEl);
+  } else {
+    listEl.appendChild(detailEl);
+  }
+
+  await loadWorkItemDetail(id, detailEl);
+}
+
+async function loadWorkItemDetail(id, detailEl) {
   try {
     const response = await fetch(`${API_BASE}/api/work-items/${id}`, {
       headers: authHeaders(),
@@ -207,19 +229,19 @@ export async function viewWorkItem(id) {
     const resources = parseJsonArray(item.linkedResourcesJson);
 
     let html = `
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-        <h3 style="margin:0;font-size:16px;">Work Item Details</h3>
-        <button class="action-btn" onclick="window.closeWorkItemDetail()">✕ Close</button>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h3 style="margin:0;font-size:15px;">Work Item Details</h3>
+        <button class="action-btn" onclick="window.closeWorkItemDetail()" style="font-size:12px;padding:3px 10px;">✕ Close</button>
       </div>
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
         <span style="width:10px;height:10px;border-radius:50%;background:${statusColor};display:inline-block;"></span>
         <strong>${escapeHtml(item.status)}</strong>
         <span>${typeIcon} ${escapeHtml(item.type)}</span>
         <span style="color:${priorityColor};font-weight:600;">${escapeHtml(item.priority)}</span>
       </div>
-      <h4 style="margin:0 0 8px 0;">${escapeHtml(item.title)}</h4>
+      <h4 style="margin:0 0 6px 0;">${escapeHtml(item.title)}</h4>
       ${item.description
-        ? `<p style="margin:0 0 12px 0;font-size:13px;color:#555;white-space:pre-wrap;">${escapeHtml(item.description)}</p>`
+        ? `<p style="margin:0 0 10px 0;font-size:13px;color:#555;white-space:pre-wrap;">${escapeHtml(item.description)}</p>`
         : ""}
       <div style="font-size:12px;color:#888;line-height:1.8;">
         <div><strong>Owner:</strong> ${escapeHtml(item.owner || "—")}</div>
@@ -232,7 +254,7 @@ export async function viewWorkItem(id) {
     `;
 
     if (tags.length > 0) {
-      html += `<div style="margin-top:8px;display:flex;gap:4px;flex-wrap:wrap;">`;
+      html += `<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;">`;
       for (const tag of tags) {
         html += `<span style="background:#f3f4f6;border-radius:4px;padding:2px 8px;font-size:11px;color:#555;">${escapeHtml(tag)}</span>`;
       }
@@ -240,7 +262,7 @@ export async function viewWorkItem(id) {
     }
 
     if (resources.length > 0) {
-      html += `<div style="margin-top:12px;"><strong style="font-size:13px;">Linked Resources</strong>`;
+      html += `<div style="margin-top:10px;"><strong style="font-size:13px;">Linked Resources</strong>`;
       for (const r of resources) {
         html += `<div style="margin:4px 0;font-size:12px;"><a href="${escapeAttr(r.url)}" target="_blank" style="color:#667eea;">${escapeHtml(r.label)}</a> <span style="color:#888;">(${escapeHtml(r.type)})</span></div>`;
       }
@@ -248,7 +270,7 @@ export async function viewWorkItem(id) {
     }
 
     if (notes.length > 0) {
-      html += `<div style="margin-top:12px;"><strong style="font-size:13px;">Notes</strong>`;
+      html += `<div style="margin-top:10px;"><strong style="font-size:13px;">Notes</strong>`;
       for (const note of notes) {
         html += `<div style="margin:6px 0;padding:8px;background:#f9fafb;border-radius:6px;border:1px solid #e5e7eb;">
           <div style="font-size:11px;color:#888;">${escapeHtml(note.author)} · ${escapeHtml(formatDate(note.createdAt))}</div>
@@ -259,7 +281,7 @@ export async function viewWorkItem(id) {
     }
 
     html += `
-      <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;">
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
         <button class="action-btn" onclick="window.editWorkItem('${escapeAttr(item.id)}')">Edit</button>
         ${item.status !== "done"
           ? `<button class="action-btn" onclick="window.completeWorkItem('${escapeAttr(item.id)}')">✓ Mark Done</button>`
@@ -278,8 +300,17 @@ export async function viewWorkItem(id) {
 
 export async function editWorkItem(id) {
   selectedItemId = id;
-  const detailEl = document.getElementById("workItemDetail");
-  detailEl.style.display = "block";
+
+  let detailEl = document.getElementById("activeWorkItemDetail");
+  if (!detailEl) {
+    // Create one if none exists
+    const listEl = document.getElementById("workItemsList");
+    detailEl = document.createElement("div");
+    detailEl.className = "work-item-detail-panel";
+    detailEl.id = "activeWorkItemDetail";
+    detailEl.style.display = "block";
+    listEl.appendChild(detailEl);
+  }
   detailEl.innerHTML = '<div class="loading">Loading...</div>';
 
   try {
@@ -364,8 +395,10 @@ export async function updateWorkItem(id) {
 }
 
 export function closeWorkItemDetail() {
-  const detailEl = document.getElementById("workItemDetail");
-  detailEl.style.display = "none";
+  const inlineDetail = document.getElementById("activeWorkItemDetail");
+  if (inlineDetail) inlineDetail.remove();
+  const expandedRows = document.querySelectorAll(".work-item-row.expanded");
+  expandedRows.forEach(r => r.classList.remove("expanded"));
   selectedItemId = null;
 }
 

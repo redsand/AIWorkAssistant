@@ -7,6 +7,8 @@ import {
   addToolCall,
   completeToolCall,
   showTyping,
+  scrollChatToBottom,
+  ensureScrollListener,
 } from "./messages.js";
 import { loadRoadmaps } from "./sidebar.js";
 import { loadConversations } from "./conversations.js";
@@ -35,9 +37,7 @@ export function subscribeLive(sessionId) {
 
   if (!sessionId) return;
 
-  const processingEl = document.getElementById("processingIndicator");
-  processingEl.classList.add("active");
-  showTyping(true);
+  ensureScrollListener();
 
   const url = `${API_BASE}/chat/sessions/${sessionId}/stream`;
   const headers = authHeaders();

@@ -237,19 +237,20 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId =
+      typeof projectId === "string"
+        ? encodeURIComponent(projectId)
+        : projectId;
+
     try {
-      const resolvedId =
-        typeof projectId === "string"
-          ? encodeURIComponent(projectId)
-          : projectId;
-      console.log(`[GitLab] Fetching project ${projectId}`);
+      console.log(`[GitLab] Fetching project ${resolvedId}`);
       const response = await this.client.get(`/api/v4/projects/${resolvedId}`);
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
         if (status === 404) {
-          throw new Error(`Project ${projectId} not found or not accessible.`);
+          throw new Error(`Project ${resolvedId ?? projectId} not found or not accessible.`);
         }
       }
       throw new Error(
@@ -298,8 +299,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(`[GitLab] Fetching MRs for project ${resolvedId}`);
       const response = await this.client.get(
         `/api/v4/projects/${resolvedId}/merge_requests`,
@@ -322,7 +324,7 @@ export class GitlabClient {
         if (status === 401) {
           throw new Error("GitLab authentication failed.");
         } else if (status === 404) {
-          throw new Error(`Project ${projectId} not found or not accessible.`);
+          throw new Error(`Project ${resolvedId} not found or not accessible.`);
         }
       }
       throw new Error(
@@ -339,8 +341,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(`[GitLab] Fetching MR !${mrIid}`);
       const response = await this.client.get(
         `/api/v4/projects/${resolvedId}/merge_requests/${mrIid}`,
@@ -350,7 +353,7 @@ export class GitlabClient {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
         if (status === 404) {
-          throw new Error(`MR !${mrIid} not found in project ${projectId}`);
+          throw new Error(`MR !${mrIid} not found in project ${resolvedId}`);
         }
       }
       throw new Error(
@@ -375,8 +378,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(
         `[GitLab] Creating MR: ${params.sourceBranch} -> ${params.targetBranch}`,
       );
@@ -429,8 +433,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(`[GitLab] Accepting MR !${mrIid}`);
       const body: Record<string, unknown> = {};
       if (options?.squashCommitMessage)
@@ -474,8 +479,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(`[GitLab] Fetching commit ${sha} from project ${resolvedId}`);
       const response = await this.client.get(
         `/api/v4/projects/${resolvedId}/repository/commits/${sha}`,
@@ -485,7 +491,7 @@ export class GitlabClient {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
         if (status === 404) {
-          throw new Error(`Commit ${sha} not found in project ${projectId}`);
+          throw new Error(`Commit ${sha} not found in project ${resolvedId}`);
         }
       }
       throw new Error(
@@ -503,8 +509,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(
         `[GitLab] Fetching commits for ref ${ref} in project ${resolvedId}`,
       );
@@ -538,8 +545,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(`[GitLab] Adding comment to MR !${mrIid}`);
       const response = await this.client.post(
         `/api/v4/projects/${resolvedId}/merge_requests/${mrIid}/notes`,
@@ -553,7 +561,7 @@ export class GitlabClient {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
         if (status === 404) {
-          throw new Error(`MR !${mrIid} not found in project ${projectId}`);
+          throw new Error(`MR !${mrIid} not found in project ${resolvedId}`);
         }
       }
       throw new Error(
@@ -567,8 +575,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(`[GitLab] Fetching branches for project ${resolvedId}`);
       const response = await this.client.get(
         `/api/v4/projects/${resolvedId}/repository/branches`,
@@ -597,8 +606,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(`[GitLab] Fetching pipelines for project ${resolvedId}`);
       const params: Record<string, unknown> = {
         per_page: 20,
@@ -636,8 +646,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       const encodedPath = encodeURIComponent(filePath);
       console.log(
         `[GitLab] Fetching file ${filePath} from project ${resolvedId}`,
@@ -660,7 +671,7 @@ export class GitlabClient {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
         if (status === 404) {
-          throw new Error(`File ${filePath} not found in project ${projectId}`);
+          throw new Error(`File ${filePath} not found in project ${resolvedId}`);
         }
       }
       throw new Error(
@@ -687,8 +698,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(
         `[GitLab] Fetching repository tree${path ? ` at ${path}` : ""} from project ${resolvedId}`,
       );
@@ -734,7 +746,7 @@ export class GitlabClient {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
         if (status === 404) {
-          throw new Error(`Repository tree not found for project ${projectId}`);
+          throw new Error(`Repository tree not found for project ${resolvedId}`);
         }
       }
       throw new Error(
@@ -760,8 +772,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(
         `[GitLab] Searching code for "${search}" in project ${resolvedId}`,
       );
@@ -789,7 +802,7 @@ export class GitlabClient {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
         if (status === 404) {
-          throw new Error(`Project ${projectId} not found`);
+          throw new Error(`Project ${resolvedId} not found`);
         }
       }
       throw new Error(
@@ -806,8 +819,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(
         `[GitLab] Creating branch ${branchName} from ${ref} in project ${resolvedId}`,
       );
@@ -857,8 +871,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(
         `[GitLab] Fetching changes for MR !${mrIid} in project ${resolvedId}`,
       );
@@ -908,8 +923,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(
         `[GitLab] Fetching notes for MR !${mrIid} in project ${resolvedId}`,
       );
@@ -956,8 +972,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       const encodedPath = encodeURIComponent(filePath);
       console.log(
         `[GitLab] Creating file ${filePath} on ${branch} in project ${resolvedId}`,
@@ -1003,8 +1020,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       const encodedPath = encodeURIComponent(filePath);
       console.log(
         `[GitLab] Updating file ${filePath} on ${branch} in project ${resolvedId}`,
@@ -1048,8 +1066,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(`[GitLab] Fetching issues for project ${resolvedId}`);
       const params: Record<string, unknown> = {
         per_page: 50,
@@ -1071,7 +1090,7 @@ export class GitlabClient {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
         if (status === 404) {
-          throw new Error(`Project ${projectId} not found`);
+          throw new Error(`Project ${resolvedId} not found`);
         }
       }
       throw new Error(
@@ -1088,8 +1107,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(
         `[GitLab] Fetching issue #${issueIid} from project ${resolvedId}`,
       );
@@ -1125,8 +1145,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(
         `[GitLab] Creating issue: ${params.title} in project ${resolvedId}`,
       );
@@ -1176,8 +1197,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(`[GitLab] Fetching members for project ${resolvedId}`);
       const response = await this.client.get(
         `/api/v4/projects/${resolvedId}/members`,
@@ -1204,8 +1226,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(`[GitLab] Fetching tags for project ${resolvedId}`);
       const response = await this.client.get(
         `/api/v4/projects/${resolvedId}/repository/tags`,
@@ -1229,8 +1252,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(
         `[GitLab] Fetching pipeline ${pipelineId} from project ${resolvedId}`,
       );
@@ -1259,8 +1283,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(
         `[GitLab] Fetching jobs for pipeline ${pipelineId} in project ${resolvedId}`,
       );
@@ -1291,8 +1316,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(
         `[GitLab] Retrying pipeline ${pipelineId} in project ${resolvedId}`,
       );
@@ -1333,8 +1359,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       console.log(
         `[GitLab] Comparing ${from}...${to} in project ${resolvedId}`,
       );
@@ -1388,8 +1415,9 @@ export class GitlabClient {
       throw new Error("GitLab client not configured");
     }
 
+    const resolvedId = this.resolveProjectId(projectId);
+
     try {
-      const resolvedId = this.resolveProjectId(projectId);
       const encodedPath = encodeURIComponent(filePath);
       console.log(
         `[GitLab] Fetching blame for ${filePath} in project ${resolvedId}`,
