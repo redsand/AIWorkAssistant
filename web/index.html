@@ -230,9 +230,9 @@
         </div>
 
         <div class="panel-section">
-          <div class="section-header" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" onclick="toggleSection('quickActions')">
+          <div class="section-header collapsible-section-header" onclick="toggleSection('quickActions')">
             <span>Quick Actions</span>
-            <span id="quickActionsArrow" style="font-size:10px;transition:transform 0.2s;transform:rotate(90deg)">&#9654;</span>
+            <span id="quickActionsArrow" class="collapsible-section-arrow" style="transform:rotate(90deg)">&#9654;</span>
           </div>
 
           <div id="quickActionsPanel" class="quick-actions">
@@ -255,7 +255,7 @@
               </button>
             </div>
             <button class="action-btn" onclick="window._arShowPage()">Agent Runs</button>
-            <button class="action-btn" onclick="window.showCtoDailyPage()">Daily Command</button>
+            <button class="action-btn" onclick="window.showCtoDailyPage(); window.generateCtoDailyCommand()">Daily Command</button>
             <div class="action-btn-wrapper">
               <button class="action-btn" onclick="quickAction('search memory project')">Search Memory</button>
               <button class="action-edit-btn" onclick="editQuickAction('search memory project','Search Memory')" title="Edit prompt">
@@ -322,18 +322,12 @@
           </div>
 
           <div
-            class="section-header"
-            style="
-              margin-top: 16px;
-              display: flex;
-              justify-content: space-between;
-              align-items: center;
-              cursor: pointer;
-            "
+            class="section-header collapsible-section-header"
+            style="margin-top: 16px;"
             onclick="toggleSection('conversations')"
           >
             <span>Conversations</span>
-            <span id="conversationsArrow" style="font-size:10px;transition:transform 0.2s;transform:rotate(90deg)">&#9654;</span>
+            <span id="conversationsArrow" class="collapsible-section-arrow" style="transform:rotate(90deg)">&#9654;</span>
           </div>
           <div id="conversationsPanel">
             <button class="new-chat-btn" onclick="newChat()">+ New Chat</button>

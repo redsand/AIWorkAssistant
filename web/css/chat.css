@@ -37,6 +37,22 @@
   color: #333;
 }
 
+.collapsible-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.collapsible-section-arrow {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 10px;
+  transition: transform 0.2s;
+}
+
 .mode-selector {
   display: flex;
   gap: 8px;
