@@ -16,16 +16,17 @@
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  overflow: hidden;
 }
 
 .chat-section {
   grid-column: 1;
+  overflow: hidden;
 }
 
 .panel-section {
   grid-column: 2;
   gap: 20px;
+  overflow-y: auto;
 }
 
 .section-header {

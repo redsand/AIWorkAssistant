@@ -104,7 +104,7 @@ const AgentRunsPage = {
     this.state.selectedSteps = [];
     document.getElementById("ar-list-view").style.display = "";
     document.getElementById("ar-detail-view").style.display = "none";
-    this.renderList();
+    this.loadRuns();
   },
 
   showDetail() {

@@ -66,6 +66,8 @@ export class JitbitService {
   async searchTickets(
     query: string,
     params: {
+      assignedToUserId?: number;
+      fromUserId?: number;
       dateFrom?: string;
       dateTo?: string;
       categoryId?: number;

@@ -109,7 +109,7 @@ async function runChatJob(
       temperature: 0.7,
       top_p: 0.95,
     });
-    try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+    try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
     let allToolResults: Record<string, unknown> = {};
     let expandedTools = [...(tools || [])];
@@ -302,7 +302,7 @@ async function runChatJob(
         temperature: 0.7,
         top_p: 0.95,
       });
-      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
     }
 
     conversationManager.addMessage(sessionId, {
@@ -312,6 +312,10 @@ async function runChatJob(
 
     if (response.thinking) {
       emitJobEvent(sessionId, "thinking", { thinking: response.thinking });
+      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "thinking", content: { thinking: response.thinking }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+    }
+    if (response.content && response.content.trim()) {
+      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "content", content: { content: response.content }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
     }
     emitJobEvent(sessionId, "content", { content: response.content });
     emitJobEvent(sessionId, "done", {
@@ -469,7 +473,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         temperature: 0.7,
         top_p: 0.95,
       });
-      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
       let allToolCalls: Array<{ id: string; name: string; params: any }> = [];
       let allToolResults: Record<string, unknown> = {};
@@ -488,6 +492,13 @@ export async function chatRoutes(fastify: FastifyInstance) {
             `[Chat] Tool loop limit (${MAX_TOOL_LOOPS}) reached, breaking`,
           );
           break;
+        }
+
+        if (response.thinking) {
+          try { if (runId) agentRunDatabase.addStep({ runId, stepType: "thinking", content: { thinking: response.thinking }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+        }
+        if (response.content && response.content.trim()) {
+          try { if (runId) agentRunDatabase.addStep({ runId, stepType: "content", content: { content: response.content }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
         }
 
         if (sessionId) {
@@ -606,7 +617,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           temperature: 0.7,
           top_p: 0.95,
         });
-        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
       }
 
       if (sessionId) {
@@ -614,6 +625,13 @@ export async function chatRoutes(fastify: FastifyInstance) {
           role: "assistant",
           content: response.content,
         });
+      }
+
+      if (response.thinking) {
+        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "thinking", content: { thinking: response.thinking }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+      }
+      if (response.content && response.content.trim()) {
+        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "content", content: { content: response.content }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
       }
 
       try { if (runId) agentRunDatabase.completeRun(runId, { model: response.model, promptTokens: response.usage?.promptTokens, completionTokens: response.usage?.completionTokens, totalTokens: response.usage?.totalTokens, toolLoopCount: loopCount }); } catch (e) { console.error("[AgentRuns]", e); }

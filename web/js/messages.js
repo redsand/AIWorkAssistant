@@ -199,3 +199,31 @@ export function completeToolCall(id, result) {
     }
   }
 }
+
+export function finalizeToolProgress() {
+  const progressEls = document.querySelectorAll(".tool-progress");
+  progressEls.forEach((el) => {
+    const headerText = el.querySelector(".tool-progress-header-left");
+    const headerStatus = el.querySelector(
+      ".tool-progress-header-left .tool-call-status",
+    );
+    if (headerStatus) {
+      headerStatus.classList.remove("running");
+      headerStatus.classList.add("done");
+    }
+    if (headerText) {
+      headerText.innerHTML = `
+        <span class="tool-call-status done"></span>
+        Completed
+      `;
+    }
+    const body = el.querySelector(".tool-progress-body");
+    if (body) {
+      body.classList.remove("expanded");
+    }
+    const toggle = el.querySelector(".tool-progress-toggle");
+    if (toggle) {
+      toggle.classList.remove("expanded");
+    }
+  });
+}

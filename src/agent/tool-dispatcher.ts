@@ -3727,6 +3727,8 @@ async function handleJitbitSearchTickets(
   const query = params.query as string;
   if (!query) return { success: false, error: "query is required" };
   const data = await jitbitService.searchTickets(query, {
+    assignedToUserId: params.assignedToUserId as number | undefined,
+    fromUserId: params.fromUserId as number | undefined,
     dateFrom: params.dateFrom as string | undefined,
     dateTo: params.dateTo as string | undefined,
     categoryId: params.categoryId as number | undefined,

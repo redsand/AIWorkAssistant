@@ -3,6 +3,7 @@ import { authHeaders } from "./auth.js";
 import {
   addMessage,
   createToolProgress,
+  finalizeToolProgress,
   addToolCall,
   completeToolCall,
   showTyping,
@@ -77,7 +78,7 @@ export function subscribeLive(sessionId) {
         processingEl.classList.remove("active");
         showTyping(false);
         if (progressEl) {
-          progressEl.remove();
+          finalizeToolProgress();
           progressEl = null;
         }
         if (contentCount > 0) {
@@ -179,7 +180,12 @@ export function subscribeLive(sessionId) {
               }
 
               if (data.message) {
-                if (progressEl) progressEl.remove();
+                if (progressEl) {
+                  const headerText = progressEl.querySelector(".tool-progress-header-left");
+                  if (headerText) {
+                    headerText.innerHTML = `<span class="tool-call-status error"></span> Error occurred`;
+                  }
+                }
                 addMessage(
                   "Sorry, I encountered an error: " + data.message,
                   "assistant",

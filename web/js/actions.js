@@ -5,7 +5,7 @@ import {
   setActiveStreamController,
 } from "./state.js";
 import { authHeaders } from "./auth.js";
-import { addMessage, showTyping } from "./messages.js";
+import { addMessage, showTyping, finalizeToolProgress } from "./messages.js";
 
 export function openToolsModal() {
   const modal = document.getElementById("toolsModal");
@@ -45,11 +45,19 @@ export function stopGeneration() {
       headerStatus.classList.add("error");
     }
     const headerText = el.querySelector(".tool-progress-header-left");
-    if (headerText && headerStatus) {
+    if (headerText) {
       headerText.innerHTML = `
         <span class="tool-call-status error"></span>
         Stopped by user
       `;
+    }
+    const body = el.querySelector(".tool-progress-body");
+    if (body) {
+      body.classList.remove("expanded");
+    }
+    const toggle = el.querySelector(".tool-progress-toggle");
+    if (toggle) {
+      toggle.classList.remove("expanded");
     }
   });
 

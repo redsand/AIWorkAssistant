@@ -258,8 +258,8 @@
               </button>
             </div>
             <div class="action-btn-wrapper">
-              <button class="action-btn" onclick="quickAction('show my jira tickets')">My Jira Tickets</button>
-              <button class="action-edit-btn" onclick="editQuickAction('show my jira tickets','My Jira Tickets')" title="Edit prompt">
+              <button class="action-btn" onclick="quickAction('show my tickets across all platforms')">My Tickets</button>
+              <button class="action-edit-btn" onclick="editQuickAction('show my tickets across all platforms','My Tickets')" title="Edit prompt">
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
               </button>
             </div>
@@ -290,21 +290,18 @@
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                cursor: pointer;
               "
-              onclick="toggleTodoPanel()"
             >
               <span>Active Tasks</span>
               <span
                 id="todoToggleArrow"
-                style="font-size: 10px; transition: transform 0.2s"
+                style="font-size: 10px; transition: transform 0.2s; transform: rotate(90deg)"
                 >&#9654;</span
               >
             </div>
             <div
               id="todoPanel"
               style="
-                display: none;
                 max-height: 300px;
                 overflow-y: auto;
                 font-size: 12px;

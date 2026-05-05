@@ -39,11 +39,12 @@ PLATFORM RESPECT RULES:
 - When the user says "GitHub", use ONLY github.* tools. NOT jira.* or gitlab.*.
 - When the user says "Jira", use ONLY jira.* tools. NOT github.* or gitlab.*.
 - When the user says "GitLab", use ONLY gitlab.* tools. NOT github.* or jira.*.
+- When the user says "Jitbit" or "support ticket", use ONLY jitbit.* tools.
 - When the user says "issue" without specifying a platform, ask which platform before proceeding.
-- NEVER default to Jira just because the word "issue" was used. GitHub also has issues.
+- NEVER default to Jira just because the word "issue" was used. GitHub also has issues. Jitbit has support tickets.
 - NEVER fetch from all platforms when only one was requested.
 - If you are unsure which platform, ask the user rather than guessing.
-- The tool namespace prefix (github., jira., gitlab.) IS the platform. Match it to the user's intent.`;
+- The tool namespace prefix (github., jira., gitlab., jitbit.) IS the platform. Match it to the user's intent.`;
 
 const TOOL_READINESS_RULES = `
 
@@ -51,7 +52,13 @@ TOOL READINESS RULES:
 - When the user asks to CREATE something (issue, PR, file, branch, etc.), proactively call discover_tools for that platform's category BEFORE attempting the action.
 - Example: "create a GitHub issue" → call discover_tools("github") first if github.create_issue is not in your current tool set.
 - Do NOT wait for a tool-not-found error. Anticipate creation needs.
-- Available tool categories: calendar, jira, gitlab, github, web, todo, knowledge, agent, workflow, local, codebase, graph, productivity, roadmap, codex, mcp`;
+- Available tool categories: calendar, jira, gitlab, github, jitbit, web, todo, knowledge, agent, workflow, local, codebase, graph, productivity, roadmap, codex, mcp
+
+TICKET ACTION RULES:
+- When the user asks to close, update, or act on specific tickets, FIRST search for those tickets using the appropriate search tool to confirm they exist and get their IDs.
+- "Close my tickets" → search for tickets assigned to the user FIRST, then close each one with confirmation.
+- Never assume ticket IDs. Always look up tickets before modifying them.
+- If you cannot find the tickets the user is referring to, tell them what you searched for and ask for clarification.`;
 
 const EFFICIENCY_RULES = `
 

@@ -161,6 +161,10 @@ export async function loadTodos() {
     }
 
     todoSection.style.display = "block";
+    const todoPanel = document.getElementById("todoPanel");
+    if (todoPanel) todoPanel.style.display = "block";
+    const arrow = document.getElementById("todoToggleArrow");
+    if (arrow) arrow.style.transform = "rotate(90deg)";
 
     let html = "";
     for (const list of data.lists) {
@@ -206,13 +210,10 @@ export async function loadTodos() {
 export function toggleTodoPanel() {
   const panel = document.getElementById("todoPanel");
   const arrow = document.getElementById("todoToggleArrow");
-  if (panel.style.display === "none") {
+  if (panel && panel.style.display === "none") {
     panel.style.display = "block";
-    arrow.style.transform = "rotate(90deg)";
+    if (arrow) arrow.style.transform = "rotate(90deg)";
     loadTodos();
-  } else {
-    panel.style.display = "none";
-    arrow.style.transform = "rotate(0deg)";
   }
 }
 
@@ -221,6 +222,8 @@ const QUICK_ACTION_PROMPTS = {
     "Plan my next 2 weeks. Pull in my Jira tickets, calendar events, GitHub issues, and any open tasks. Build a structured day-by-day schedule for the next 14 days — prioritize deadlines and high-impact work, protect time for deep focus blocks, and flag anything that looks overloaded or at risk.",
   "close-ticket":
     "I have committed and pushed my latest code changes to the repository. Please: 1) Retrieve my active Jira ticket and its acceptance criteria, 2) Review my recent commits to verify every requirement is addressed, 3) If fully complete — close the ticket and write a concise summary of what was changed and why, 4) If anything is missing — list each gap clearly and provide a ready-to-use coding prompt for each one so I can fill them in.",
+  "show my tickets across all platforms":
+    "Show me all my open tickets and issues across every platform — Jira, Jitbit support tickets, and GitHub issues. Group them by platform, showing ticket ID, title, status, and priority for each. Highlight anything urgent or overdue.",
 };
 
 function getCustomPrompts() {

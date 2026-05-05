@@ -24,6 +24,7 @@ import {
   completeToolCall,
   showError,
   showTyping,
+  finalizeToolProgress,
 } from "./messages.js";
 import { loadRoadmaps } from "./sidebar.js";
 import { loadConversations } from "./conversations.js";
@@ -91,7 +92,12 @@ async function handleStreamResponse(response, progressElRef, onError) {
             contentCount++;
           }
           if (data.message) {
-            if (progressElRef.progressEl) progressElRef.progressEl.remove();
+            if (progressElRef.progressEl) {
+              const headerText = progressElRef.progressEl.querySelector(".tool-progress-header-left");
+              if (headerText) {
+                headerText.innerHTML = `<span class="tool-call-status error"></span> Error occurred`;
+              }
+            }
             addMessage(
               "Sorry, I encountered an error: " + data.message,
               "assistant",
@@ -334,7 +340,7 @@ export async function sendMessage() {
 
     const result = await handleStreamResponse(response, progressElRef);
 
-    if (progressElRef.progressEl) progressElRef.progressEl.remove();
+    finalizeToolProgress();
     processingEl.classList.remove("active");
     showTyping(false);
 
@@ -350,7 +356,7 @@ export async function sendMessage() {
 
     loadConversations();
   } catch (error) {
-    if (progressElRef.progressEl) progressElRef.progressEl.remove();
+    finalizeToolProgress();
     if (myGeneration === sendGeneration) {
       processingEl.classList.remove("active");
       showTyping(false);
@@ -453,7 +459,7 @@ export async function resendMessage(message) {
 
     const result = await handleStreamResponse(response, progressElRef);
 
-    if (progressElRef.progressEl) progressElRef.progressEl.remove();
+    finalizeToolProgress();
     processingEl.classList.remove("active");
     showTyping(false);
 
@@ -469,7 +475,7 @@ export async function resendMessage(message) {
 
     loadConversations();
   } catch (error) {
-    if (progressElRef.progressEl) progressElRef.progressEl.remove();
+    finalizeToolProgress();
     if (myGeneration === sendGeneration) {
       processingEl.classList.remove("active");
       showTyping(false);

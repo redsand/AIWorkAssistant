@@ -2939,12 +2939,22 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "jitbit.search_tickets",
     description:
-      "Search Jitbit support tickets by text and optional filters. Use for customer support history, incidents, and support request lookup.",
+      "Search Jitbit support tickets by text and optional filters. Use for finding tickets assigned to a user, customer support history, incidents, and support request lookup.",
     params: {
       query: {
         type: "string",
         description: "Search text",
         required: true,
+      },
+      assignedToUserId: {
+        type: "number",
+        description: "Optional user ID to filter tickets assigned to this user",
+        required: false,
+      },
+      fromUserId: {
+        type: "number",
+        description: "Optional user ID to filter tickets created by this user",
+        required: false,
       },
       dateFrom: {
         type: "string",
@@ -3852,6 +3862,8 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "system.check_health")!,
 
   // Jitbit support/customer intelligence core
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.search_tickets")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.get_ticket")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_recent_tickets")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.get_customer_snapshot")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.find_followups")!,
