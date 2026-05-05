@@ -15,6 +15,7 @@
     <link rel="stylesheet" href="/css/processing.css?v=4" />
     <link rel="stylesheet" href="/css/mobile.css?v=4" />
     <link rel="stylesheet" href="/css/agent-runs.css?v=4" />
+    <link rel="stylesheet" href="/css/work-items.css?v=4" />
   </head>
   <body>
     <div class="login-overlay" id="loginOverlay">
@@ -385,6 +386,109 @@
               <div id="ar-detail-content"></div>
             </div>
           </div>
+
+          <div id="workItemsSection" style="display:none;margin-top:16px;">
+            <div class="section-header" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;margin-bottom:0;" onclick="toggleWorkItemsPanel()">
+              <span>Work Items</span>
+              <span id="workItemsToggleArrow" style="font-size:10px;transition:transform 0.2s;">&#9654;</span>
+            </div>
+            <div id="workItemsPanel" style="display:none;margin-top:10px;">
+              <div style="margin-bottom:8px;">
+                <button class="action-btn" onclick="showCreateWorkItemForm()">+ New Item</button>
+              </div>
+              <div id="workItemCreateForm" class="work-item-create-form" style="display:none;">
+                <label>Type</label>
+                <select id="createType">
+                  <option value="task">Task</option>
+                  <option value="decision">Decision</option>
+                  <option value="code_review">Code Review</option>
+                  <option value="roadmap">Roadmap</option>
+                  <option value="customer_followup">Customer Follow-up</option>
+                  <option value="detection">Detection</option>
+                  <option value="research">Research</option>
+                  <option value="personal">Personal</option>
+                  <option value="support">Support</option>
+                  <option value="release">Release</option>
+                </select>
+                <label>Title *</label>
+                <input type="text" id="createTitle" placeholder="Enter title..." />
+                <label>Description</label>
+                <textarea id="createDescription" placeholder="Enter description..."></textarea>
+                <label>Priority</label>
+                <select id="createPriority">
+                  <option value="low">Low</option>
+                  <option value="medium" selected>Medium</option>
+                  <option value="high">High</option>
+                  <option value="critical">Critical</option>
+                </select>
+                <label>Due Date</label>
+                <input type="date" id="createDueAt" />
+                <label>Tags (comma-separated)</label>
+                <input type="text" id="createTags" placeholder="e.g. security, urgent" />
+                <div style="display:flex;gap:8px;">
+                  <button class="action-btn" onclick="createWorkItem()">Create</button>
+                  <button class="action-btn" onclick="document.getElementById('workItemCreateForm').style.display='none'" style="background:#f3f4f6;color:#333;">Cancel</button>
+                </div>
+              </div>
+              <div class="work-items-filters">
+                <select id="wiFilterStatus">
+                  <option value="">All Status</option>
+                  <option value="proposed">Proposed</option>
+                  <option value="planned">Planned</option>
+                  <option value="active">Active</option>
+                  <option value="blocked">Blocked</option>
+                  <option value="waiting">Waiting</option>
+                  <option value="done">Done</option>
+                </select>
+                <select id="wiFilterType">
+                  <option value="">All Types</option>
+                  <option value="task">Task</option>
+                  <option value="decision">Decision</option>
+                  <option value="code_review">Code Review</option>
+                  <option value="roadmap">Roadmap</option>
+                  <option value="customer_followup">Customer Follow-up</option>
+                  <option value="detection">Detection</option>
+                  <option value="research">Research</option>
+                  <option value="personal">Personal</option>
+                  <option value="support">Support</option>
+                  <option value="release">Release</option>
+                </select>
+                <select id="wiFilterPriority">
+                  <option value="">All Priorities</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="critical">Critical</option>
+                </select>
+                <select id="wiFilterSource">
+                  <option value="">All Sources</option>
+                  <option value="chat">Chat</option>
+                  <option value="jira">Jira</option>
+                  <option value="github">GitHub</option>
+                  <option value="gitlab">GitLab</option>
+                  <option value="jitbit">Jitbit</option>
+                  <option value="calendar">Calendar</option>
+                  <option value="manual">Manual</option>
+                  <option value="roadmap">Roadmap</option>
+                </select>
+                <select id="wiFilterLimit">
+                  <option value="25">25</option>
+                  <option value="50" selected>50</option>
+                  <option value="100">100</option>
+                </select>
+                <input type="text" id="wiFilterSearch" placeholder="Search..." style="width:100px;" />
+                <label style="font-size:12px;display:flex;align-items:center;gap:4px;white-space:nowrap;"><input type="checkbox" id="wiFilterArchived" /> Archived</label>
+                <button onclick="applyWorkItemsFilters()">Filter</button>
+                <button onclick="refreshWorkItems()" style="background:#f3f4f6;color:#333;">&#8635; Refresh</button>
+              </div>
+              <div class="work-items-container">
+                <div class="work-items-list-panel">
+                  <div id="workItemsList"></div>
+                </div>
+                <div id="workItemDetail" class="work-item-detail-panel"></div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -454,6 +558,7 @@
       </div>
     </div>
 
+    <script type="module" src="/js/work-items.js?v=4"></script>
     <script type="module" src="/js/app.js?v=5"></script>
   </body>
 </html>

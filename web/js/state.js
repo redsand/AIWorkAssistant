@@ -10,6 +10,7 @@ let autoAcceptDeletes = false;
 let activeToolCalls = {};
 let toolsPanelLoaded = false;
 let todoPanelLoaded = false;
+let sendGeneration = 0;
 
 export {
   API_BASE,
@@ -24,6 +25,7 @@ export {
   activeToolCalls,
   toolsPanelLoaded,
   todoPanelLoaded,
+  sendGeneration,
 };
 
 export function setCurrentMode(v) {
@@ -72,4 +74,8 @@ export function setToolsPanelLoaded(v) {
 }
 export function setTodoPanelLoaded(v) {
   todoPanelLoaded = v;
+}
+
+export function nextSendGeneration() {
+  return ++sendGeneration;
 }

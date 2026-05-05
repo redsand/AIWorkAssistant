@@ -9,7 +9,7 @@ import {
   setDraftBeforeHistory,
   setMessageHistory,
 } from "./state.js";
-import { checkAuth, login, logout } from "./auth.js";
+import { authHeaders, checkAuth, login, logout } from "./auth.js";
 import {
   sendMessage,
   resendMessage,
@@ -25,6 +25,7 @@ import {
   saveQuickActionPrompt,
   resetQuickActionPrompt,
   closeEditPromptModal,
+  toggleWorkItemsPanel,
 } from "./sidebar.js";
 import {
   loadConversations,
@@ -85,6 +86,7 @@ window.copyChatLink = copyChatLink;
 window.showChatView = showChatView;
 window.showPanelView = showPanelView;
 window.toggleTodoPanel = toggleTodoPanel;
+window.toggleWorkItemsPanel = toggleWorkItemsPanel;
 
 window._arShowPage = async function() {
   const section = document.getElementById("agentRunsSection");
@@ -131,6 +133,11 @@ document.addEventListener("click", function (e) {
 
 document.addEventListener("DOMContentLoaded", async () => {
   await checkAuth();
+
+  const workItemsSection = document.getElementById("workItemsSection");
+  if (workItemsSection && authHeaders()) {
+    workItemsSection.style.display = "block";
+  }
 
   // If URL hash points to a specific chat, navigate to it
   const hashSessionId = readSessionHash();

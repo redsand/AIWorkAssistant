@@ -279,3 +279,29 @@ export function closeEditPromptModal() {
   document.getElementById("editPromptModal").style.display = "none";
   _editingAction = null;
 }
+
+let workItemsPanelLoaded = false;
+
+export async function loadWorkItemsPanel() {
+  const section = document.getElementById("workItemsSection");
+  if (section) section.style.display = "block";
+
+  if (!workItemsPanelLoaded) {
+    const { loadWorkItems } = await import("./work-items.js");
+    await loadWorkItems();
+    workItemsPanelLoaded = true;
+  }
+}
+
+export function toggleWorkItemsPanel() {
+  const panel = document.getElementById("workItemsPanel");
+  const arrow = document.getElementById("workItemsToggleArrow");
+  if (panel.style.display === "none") {
+    panel.style.display = "block";
+    if (arrow) arrow.style.transform = "rotate(90deg)";
+    loadWorkItemsPanel();
+  } else {
+    panel.style.display = "none";
+    if (arrow) arrow.style.transform = "rotate(0deg)";
+  }
+}

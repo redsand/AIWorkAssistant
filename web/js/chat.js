@@ -12,7 +12,9 @@ import {
   setMessageHistory,
   setActiveStreamController,
   updateSessionHash,
+  sendGeneration,
 } from "./state.js";
+import { nextSendGeneration } from "./state.js";
 import { authHeaders } from "./auth.js";
 import { autoResizeTextarea } from "./utils.js";
 import {
@@ -264,6 +266,8 @@ export async function sendMessage() {
 
   if (!message) return;
 
+  const myGeneration = nextSendGeneration();
+
   const { disconnectLive } = await import("./live.js?v=8");
   disconnectLive();
 
@@ -278,6 +282,11 @@ export async function sendMessage() {
   setMessageHistory(hist);
   addMessage(message, "user");
 
+  if (activeStreamController) {
+    activeStreamController.abort();
+    setActiveStreamController(null);
+  }
+
   const processingEl = document.getElementById("processingIndicator");
   processingEl.classList.add("active");
   showTyping(true);
@@ -285,9 +294,6 @@ export async function sendMessage() {
   const progressElRef = { progressEl: null };
 
   try {
-    if (activeStreamController) {
-      activeStreamController.abort();
-    }
     const controller = new AbortController();
     setActiveStreamController(controller);
 
@@ -345,21 +351,27 @@ export async function sendMessage() {
     loadConversations();
   } catch (error) {
     if (progressElRef.progressEl) progressElRef.progressEl.remove();
-    processingEl.classList.remove("active");
-    showTyping(false);
+    if (myGeneration === sendGeneration) {
+      processingEl.classList.remove("active");
+      showTyping(false);
+    }
     if (error instanceof DOMException && error.name === "AbortError") return;
     console.error("Failed to send message:", error);
-    const errMsg = error instanceof Error ? error.message : String(error);
-    addMessage(
-      "Failed to connect to the agent: " +
-        errMsg +
-        ". Please check that the server is running and try again.",
-      "assistant",
-    );
+    if (myGeneration === sendGeneration) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      addMessage(
+        "Failed to connect to the agent: " +
+          errMsg +
+          ". Please check that the server is running and try again.",
+        "assistant",
+      );
+    }
   }
 }
 
 export async function resendMessage(message) {
+  const myGeneration = nextSendGeneration();
+
   const { disconnectLive } = await import("./live.js?v=8");
   disconnectLive();
 
@@ -381,8 +393,6 @@ export async function resendMessage(message) {
   }
 
   if (clickedMsg) {
-    // Remove only the assistant responses after the user message,
-    // keep the user message itself visible.
     let next = clickedMsg.nextElementSibling;
     while (next) {
       const current = next;
@@ -391,16 +401,18 @@ export async function resendMessage(message) {
     }
   }
 
-  const processingEl2 = document.getElementById("processingIndicator");
-  processingEl2.classList.add("active");
+  if (activeStreamController) {
+    activeStreamController.abort();
+    setActiveStreamController(null);
+  }
+
+  const processingEl = document.getElementById("processingIndicator");
+  processingEl.classList.add("active");
   showTyping(true);
 
   const progressElRef = { progressEl: null };
 
   try {
-    if (activeStreamController) {
-      activeStreamController.abort();
-    }
     const controller = new AbortController();
     setActiveStreamController(controller);
 
@@ -419,14 +431,14 @@ export async function resendMessage(message) {
     });
 
     if (response.status === 401 || response.status === 403) {
-      processingEl2.classList.remove("active");
+      processingEl.classList.remove("active");
       showTyping(false);
       showLoginOverlay();
       return;
     }
 
     if (!response.ok) {
-      processingEl2.classList.remove("active");
+      processingEl.classList.remove("active");
       showTyping(false);
       let errorText = `Server returned ${response.status}`;
       try {
@@ -442,7 +454,7 @@ export async function resendMessage(message) {
     const result = await handleStreamResponse(response, progressElRef);
 
     if (progressElRef.progressEl) progressElRef.progressEl.remove();
-    processingEl2.classList.remove("active");
+    processingEl.classList.remove("active");
     showTyping(false);
 
     if (result.error) return;
@@ -457,17 +469,21 @@ export async function resendMessage(message) {
 
     loadConversations();
   } catch (error) {
+    if (progressElRef.progressEl) progressElRef.progressEl.remove();
+    if (myGeneration === sendGeneration) {
+      processingEl.classList.remove("active");
+      showTyping(false);
+    }
     if (error instanceof DOMException && error.name === "AbortError") return;
     console.error("Failed to send message:", error);
-    if (progressElRef.progressEl) progressElRef.progressEl.remove();
-    processingEl2.classList.remove("active");
-    showTyping(false);
-    const errMsg2 = error instanceof Error ? error.message : String(error);
-    addMessage(
-      "Failed to connect to the agent: " +
-        errMsg2 +
-        ". Please check that the server is running and try again.",
-      "assistant",
-    );
+    if (myGeneration === sendGeneration) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      addMessage(
+        "Failed to connect to the agent: " +
+          errMsg +
+          ". Please check that the server is running and try again.",
+        "assistant",
+      );
+    }
   }
 }

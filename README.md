@@ -301,6 +301,10 @@ GET    /api/agent-runs/:id          # Get run with steps
 GET    /api/agent-runs/:id/steps    # Get steps for a run
 ```
 
+### Work Items
+
+The "Work Items" page in the sidebar lets you create, view, edit, complete, and archive work items. You can filter by status, type, priority, and source. Work items can link to external resources (Jira, GitHub, GitLab, Jitbit, calendar, roadmap) and include notes.
+
 ## Architecture
 
 ```
