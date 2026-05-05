@@ -23,6 +23,8 @@ import { gitlabClient } from "../integrations/gitlab/gitlab-client";
 import { jiraClient } from "../integrations/jira/jira-client";
 import { conversationManager } from "../memory/conversation-manager";
 import { env } from "../config/env";
+import { agentRunDatabase } from "../agent-runs/database";
+import { sanitizeValue } from "../agent-runs/sanitizer";
 
 const chatRequestSchema = z.object({
   message: z.string(),
@@ -94,13 +96,19 @@ async function runChatJob(
   job.status = "processing";
   job.events = [];
 
+  let runId: string | null = null;
+  try { runId = agentRunDatabase.startRun({ sessionId, userId, mode }).id; } catch (e) { console.error("[AgentRuns]", e); }
+
   try {
+    let stepOrder = 0;
+    try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
     let response = await aiClient.chat({
       messages: messages,
       tools,
       temperature: 0.7,
       top_p: 0.95,
     });
+    try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
     let allToolResults: Record<string, unknown> = {};
     let expandedTools = [...(tools || [])];
@@ -118,9 +126,11 @@ async function runChatJob(
 
       if (response.thinking) {
         emitJobEvent(sessionId, "thinking", { thinking: response.thinking });
+        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "thinking", content: { thinking: response.thinking }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
       }
       if (response.content && response.content.trim()) {
         emitJobEvent(sessionId, "content", { content: response.content });
+        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "content", content: { content: response.content }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
       }
 
       conversationManager.addMessage(sessionId, {
@@ -161,9 +171,14 @@ async function runChatJob(
           params: tc.params,
         });
 
+        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_call", toolName: tc.name, sanitizedParams: sanitizeValue(tc.params), stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+        const toolStart = Date.now();
         const dispatchParams = { ...tc.params, _mode: mode };
-        const result = await dispatchToolCall(tc.name, dispatchParams, userId);
+        const result = await dispatchToolCall(tc.name, dispatchParams, userId, false, { messages, mode });
+        const toolDuration = Date.now() - toolStart;
         allToolResults[tc.id] = result;
+
+        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: tc.name, success: result.success !== false, errorMessage: result.error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
         emitJobEvent(sessionId, "tool_result", { id: tc.id, result });
 
@@ -226,12 +241,18 @@ async function runChatJob(
         }
 
         const spawnPromises = spawnCalls.map(async (tc) => {
+          try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_call", toolName: tc.name, sanitizedParams: sanitizeValue(tc.params), stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+          const spawnStart = Date.now();
           const dispatchParams = { ...tc.params, _mode: mode };
           const result = await dispatchToolCall(
             tc.name,
             dispatchParams,
             userId,
+            false,
+            { messages, mode },
           );
+          const spawnDuration = Date.now() - spawnStart;
+          try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: tc.name, success: result.success !== false, errorMessage: result.error, durationMs: spawnDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
           return { id: tc.id, result };
         });
 
@@ -270,12 +291,14 @@ async function runChatJob(
         expandedTools.length > 0 ? expandedTools : tools || undefined;
       messages = aiClient.pruneMessages(messages, currentTools) as ChatMessage[];
 
+      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
       response = await aiClient.chat({
         messages: messages,
         tools: expandedTools.length > 0 ? expandedTools : undefined,
         temperature: 0.7,
         top_p: 0.95,
       });
+      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
     }
 
     conversationManager.addMessage(sessionId, {
@@ -294,6 +317,8 @@ async function runChatJob(
 
     job.status = "completed";
     job.completedAt = new Date();
+
+    try { if (runId) agentRunDatabase.completeRun(runId, { model: response.model, promptTokens: response.usage?.promptTokens, completionTokens: response.usage?.completionTokens, totalTokens: response.usage?.totalTokens, toolLoopCount: loopCount }); } catch (e) { console.error("[AgentRuns]", e); }
   } catch (error) {
     console.error(`[Chat/Job] Failed for session ${sessionId}:`, error);
     emitJobEvent(sessionId, "error", {
@@ -303,6 +328,8 @@ async function runChatJob(
 
     job.status = "failed";
     job.completedAt = new Date();
+
+    try { if (runId) agentRunDatabase.failRun(runId, error instanceof Error ? error.message : "Unknown error"); } catch (e) { console.error("[AgentRuns]", e); }
   }
 }
 
@@ -311,8 +338,11 @@ export async function chatRoutes(fastify: FastifyInstance) {
    * Main chat endpoint
    */
   fastify.post("/chat", async (request, reply) => {
+    let runId: string | null = null;
     try {
       const body = chatRequestSchema.parse(request.body);
+
+      try { runId = agentRunDatabase.startRun({ sessionId: body.sessionId ?? null, userId: body.userId, mode: body.mode }).id; } catch (e) { console.error("[AgentRuns]", e); }
 
       if (!aiClient.isConfigured()) {
         reply.code(503);
@@ -427,12 +457,15 @@ export async function chatRoutes(fastify: FastifyInstance) {
         });
       }
 
+      let stepOrder = 0;
+      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
       let response = await aiClient.chat({
         messages: messages,
         tools,
         temperature: 0.7,
         top_p: 0.95,
       });
+      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
       let allToolCalls: Array<{ id: string; name: string; params: any }> = [];
       let allToolResults: Record<string, unknown> = {};
@@ -483,13 +516,20 @@ export async function chatRoutes(fastify: FastifyInstance) {
         allToolCalls = allToolCalls.concat(toolCalls);
 
         for (const tc of toolCalls) {
+          try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_call", toolName: tc.name, sanitizedParams: sanitizeValue(tc.params), stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+          const toolStart = Date.now();
           const dispatchParams = { ...tc.params, _mode: body.mode };
           const result = await dispatchToolCall(
             tc.name,
             dispatchParams,
             body.userId,
+            false,
+            { messages: messages || [], mode: body.mode },
           );
+          const toolDuration = Date.now() - toolStart;
           allToolResults[tc.id] = result;
+
+          try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: tc.name, success: result.success !== false, errorMessage: result.error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
           if (tc.name === "discover_tools" && result.success) {
             const category = tc.params.category as string | undefined;
@@ -552,12 +592,14 @@ export async function chatRoutes(fastify: FastifyInstance) {
           })),
         ];
 
+        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
         response = await aiClient.chat({
           messages: messages,
           tools: expandedTools.length > 0 ? expandedTools : undefined,
           temperature: 0.7,
           top_p: 0.95,
         });
+        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
       }
 
       if (sessionId) {
@@ -566,6 +608,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
           content: response.content,
         });
       }
+
+      try { if (runId) agentRunDatabase.completeRun(runId, { model: response.model, promptTokens: response.usage?.promptTokens, completionTokens: response.usage?.completionTokens, totalTokens: response.usage?.totalTokens, toolLoopCount: loopCount }); } catch (e) { console.error("[AgentRuns]", e); }
 
       return {
         sessionId,
@@ -580,6 +624,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       };
     } catch (error) {
       fastify.log.error(error);
+      try { if (runId) agentRunDatabase.failRun(runId, error instanceof Error ? error.message : "Unknown error"); } catch (e) { console.error("[AgentRuns]", e); }
       reply.code(500);
       return {
         error: "Failed to process chat request",

@@ -15,6 +15,8 @@ import {
   getToolsByCategory,
   getToolByName,
 } from "./tool-registry";
+import { detectPlatformIntent } from "../policy/platform-intent";
+import { validatePlatformAlignment } from "../policy/platform-alignment";
 import { workflowBriefGenerator } from "../engineering/workflow-brief";
 import { architecturePlanner } from "../engineering/architecture-planner";
 import { scaffoldPlanner } from "../engineering/scaffold-planner";
@@ -3840,11 +3842,19 @@ const SYSTEM_TOOLS = new Set([
   "productivity.generate_weekly_plan",
 ]);
 
+export interface DispatchContext {
+  /** Recent conversation messages for platform intent detection */
+  messages?: import("../agent/providers/types").ChatMessage[];
+  /** Agent mode (productivity, engineering) */
+  mode?: string;
+}
+
 export async function dispatchToolCall(
   toolName: string,
   params: Record<string, unknown>,
   userId: string = "user",
   skipPolicyCheck: boolean = false,
+  context?: DispatchContext,
 ): Promise<ToolCallResult> {
   const handler = TOOL_HANDLERS[toolName];
   if (!handler) {
@@ -3910,6 +3920,88 @@ export async function dispatchToolCall(
           action: actionType,
           riskLevel: decision.riskLevel,
           reason: decision.reason,
+        },
+      };
+    }
+  }
+
+  // Platform alignment check (after policy, before execution)
+  if (context?.messages && !SYSTEM_TOOLS.has(toolName)) {
+    const intent = detectPlatformIntent(context.messages);
+    const alignment = validatePlatformAlignment(
+      toolName,
+      intent,
+      context.mode || (params._mode as string) || "productivity",
+    );
+
+    if (alignment.result === "warning") {
+      await auditLogger.log({
+        id: "",
+        timestamp: new Date(),
+        action: `platform.cross_contamination`,
+        actor: userId,
+        details: {
+          toolName,
+          toolPlatform: alignment.toolPlatform,
+          intentPlatform: alignment.intentPlatform,
+          reason: alignment.reason,
+        },
+        severity: "warn",
+      });
+
+      const toolDef = getToolByName(
+        toolName,
+        context.mode || (params._mode as string) || "productivity",
+      );
+      const actionType = toolDef?.actionType || toolName;
+
+      const action = {
+        id: `action-${Date.now()}`,
+        type: actionType,
+        description: `Execute ${toolName} (platform mismatch: ${alignment.reason})`,
+        params: { ...params },
+        userId,
+        timestamp: new Date(),
+        platformMismatch: {
+          toolPlatform: alignment.toolPlatform,
+          intentPlatform: alignment.intentPlatform,
+          source: intent.source,
+          evidence: intent.evidence,
+          suggestedAlternatives: alignment.suggestedAlternatives,
+        },
+      };
+
+      const decision = {
+        action,
+        result: "approval_required" as const,
+        riskLevel: "medium" as const,
+        reason: alignment.reason,
+        applicablePolicy: "platform.cross_contamination",
+      };
+
+      const approvalRequest = await policyEngine.createApprovalRequest(
+        action,
+        decision,
+      );
+      await approvalQueue.enqueue(approvalRequest);
+
+      const alternativesText = alignment.suggestedAlternatives?.length
+        ? `\n\n**Suggested alternatives on ${alignment.intentPlatform}:**\n${alignment.suggestedAlternatives.map((a) => `- ${a}`).join("\n")}`
+        : "";
+
+      return {
+        success: false,
+        requiresApproval: true,
+        approvalId: approvalRequest.id,
+        error: `Platform mismatch detected: ${alignment.reason}.${alternativesText}\n\n**Approval ID:** ${approvalRequest.id}\n\nSay "approve ${approvalRequest.id}" to proceed, or "reject ${approvalRequest.id}" to cancel.`,
+        data: {
+          approvalId: approvalRequest.id,
+          action: actionType,
+          riskLevel: "medium",
+          reason: alignment.reason,
+          toolPlatform: alignment.toolPlatform,
+          intentPlatform: alignment.intentPlatform,
+          suggestedAlternatives: alignment.suggestedAlternatives,
         },
       };
     }

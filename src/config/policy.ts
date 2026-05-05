@@ -498,6 +498,15 @@ export const DEFAULT_POLICIES: PolicyRule[] = [
     defaultResult: "blocked",
     description: "Shell commands (blocked in production)",
   },
+
+  // ===== PLATFORM CROSS-CONTAMINATION =====
+  {
+    pattern: "platform.cross_contamination",
+    riskLevel: "medium",
+    defaultResult: "approval_required",
+    description:
+      "Tool platform does not match user's stated platform intent (requires approval to prevent cross-platform mistakes)",
+  },
 ];
 
 export const MODE_OVERRIDES: Record<string, Partial<PolicyRule>[]> = {

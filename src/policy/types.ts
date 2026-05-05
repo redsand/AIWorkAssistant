@@ -1,6 +1,45 @@
 import { RISK_LEVELS, POLICY_RESULTS } from '../config/constants';
 
 /**
+ * Platform identifiers derived from tool namespaces
+ */
+export type Platform =
+  | 'github'
+  | 'gitlab'
+  | 'jira'
+  | 'calendar'
+  | 'web'
+  | 'local'
+  | 'lsp'
+  | 'codex'
+  | 'mcp'
+  | 'cross-platform';
+
+/**
+ * Result of detecting which platform the user's conversation is focused on
+ */
+export interface PlatformIntent {
+  /** The primary platform, or null if ambiguous */
+  platform: Platform | null;
+  /** How the platform was determined */
+  source: 'explicit' | 'inferred' | 'sticky' | 'none';
+  /** Human-readable evidence string */
+  evidence: string;
+}
+
+/**
+ * Result of validating a tool call against the user's platform intent
+ */
+export interface PlatformValidation {
+  result: 'allowed' | 'warning';
+  toolPlatform: Platform;
+  intentPlatform: Platform | null;
+  reason: string;
+  /** Suggested alternative tools on the user's intended platform */
+  suggestedAlternatives?: string[];
+}
+
+/**
  * Action type represents a requested operation
  */
 export type ActionType = string;
@@ -25,6 +64,14 @@ export interface Action {
   params: Record<string, unknown>;
   userId: string;
   timestamp: Date;
+  /** Set by platform alignment check when a mismatch is detected */
+  platformMismatch?: {
+    toolPlatform: string;
+    intentPlatform: string | null;
+    source: string;
+    evidence: string;
+    suggestedAlternatives?: string[];
+  };
 }
 
 /**

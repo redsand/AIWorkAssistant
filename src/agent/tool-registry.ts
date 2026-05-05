@@ -3,6 +3,7 @@
  */
 
 import { AGENT_MODES } from "../config/constants";
+import type { Platform } from "../policy/types";
 
 export interface Tool {
   name: string;
@@ -13,6 +14,50 @@ export interface Tool {
   >;
   actionType: string;
   riskLevel: "low" | "medium" | "high";
+  /** Optional override — if not set, platform is derived from the tool name prefix */
+  platform?: Platform;
+}
+
+const PLATFORM_PREFIX_MAP: Record<string, Platform> = {
+  github: "github",
+  gitlab: "gitlab",
+  jira: "jira",
+  calendar: "calendar",
+  web: "web",
+  local: "local",
+  lsp: "lsp",
+  codex: "codex",
+  mcp: "mcp",
+  productivity: "cross-platform",
+  engineering: "cross-platform",
+  roadmap: "cross-platform",
+  todo: "cross-platform",
+  knowledge: "cross-platform",
+  codebase: "cross-platform",
+  graph: "cross-platform",
+  system: "cross-platform",
+  agent: "cross-platform",
+  workflow: "cross-platform",
+  discover: "cross-platform",
+};
+
+export function getPlatformForToolName(toolName: string): Platform {
+  const dotIndex = toolName.indexOf(".");
+  const prefix = dotIndex > 0 ? toolName.substring(0, dotIndex) : toolName;
+  return PLATFORM_PREFIX_MAP[prefix] || "cross-platform";
+}
+
+export function getPlatformForTool(tool: Tool): Platform {
+  return tool.platform || getPlatformForToolName(tool.name);
+}
+
+export function getToolsByPlatform(
+  mode: string,
+  platform: Platform,
+): Tool[] {
+  return getAllToolsForMode(mode).filter(
+    (t) => getPlatformForTool(t) === platform,
+  );
 }
 
 /**

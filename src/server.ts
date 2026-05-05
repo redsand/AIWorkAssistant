@@ -18,6 +18,7 @@ import { googleOAuthRoutes } from "./routes/google-oauth";
 import { fileCalendarRoutes } from "./routes/file-calendar";
 import { productivityRoutes } from "./routes/productivity";
 import { engineeringRoutes } from "./routes/engineering";
+import { agentRunsRoutes } from "./agent-runs/api";
 import {
   authMiddleware,
   isAuthConfigured,
@@ -76,6 +77,7 @@ export async function buildServer() {
   await server.register(fileCalendarRoutes);
   await server.register(productivityRoutes);
   await server.register(engineeringRoutes);
+  await server.register(agentRunsRoutes, { prefix: "/api" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 
@@ -188,6 +190,10 @@ async function start() {
 ║     POST   /engineering/scaffolding-plan                   ║
 ║     POST   /engineering/jira-tickets                       ║
 ║     POST   /engineering/jira-tickets/create                 ║
+║     GET    /api/agent-runs                                  ║
+║     GET    /api/agent-runs/stats                            ║
+║     GET    /api/agent-runs/:id                              ║
+║     GET    /api/agent-runs/:id/steps                        ║
 ║                                                            ║
 ╚════════════════════════════════════════════════════════════╝
     `);

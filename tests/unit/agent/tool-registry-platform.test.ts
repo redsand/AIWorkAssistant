@@ -1,0 +1,157 @@
+import { describe, it, expect } from "vitest";
+import {
+  getPlatformForToolName,
+  getPlatformForTool,
+  getToolsByPlatform,
+} from "../../../src/agent/tool-registry";
+import type { Tool } from "../../../src/agent/tool-registry";
+
+describe("getPlatformForToolName", () => {
+  it("maps github.* tools to github platform", () => {
+    expect(getPlatformForToolName("github.list_repos")).toBe("github");
+    expect(getPlatformForToolName("github.create_issue")).toBe("github");
+    expect(getPlatformForToolName("github.merge_pull_request")).toBe("github");
+  });
+
+  it("maps gitlab.* tools to gitlab platform", () => {
+    expect(getPlatformForToolName("gitlab.list_projects")).toBe("gitlab");
+    expect(getPlatformForToolName("gitlab.merge_merge_request")).toBe("gitlab");
+  });
+
+  it("maps jira.* tools to jira platform", () => {
+    expect(getPlatformForToolName("jira.get_issue")).toBe("jira");
+    expect(getPlatformForToolName("jira.create_issue")).toBe("jira");
+  });
+
+  it("maps calendar.* tools to calendar platform", () => {
+    expect(getPlatformForToolName("calendar.list_events")).toBe("calendar");
+  });
+
+  it("maps web.* tools to web platform", () => {
+    expect(getPlatformForToolName("web.search")).toBe("web");
+  });
+
+  it("maps lsp.* tools to lsp platform", () => {
+    expect(getPlatformForToolName("lsp.diagnostics")).toBe("lsp");
+  });
+
+  it("maps codex.* to codex platform", () => {
+    expect(getPlatformForToolName("codex.run")).toBe("codex");
+  });
+
+  it("maps mcp.* to mcp platform", () => {
+    expect(getPlatformForToolName("mcp.call_tool")).toBe("mcp");
+  });
+
+  it("maps local.* to local platform", () => {
+    expect(getPlatformForToolName("local.read_file")).toBe("local");
+  });
+
+  it("maps productivity.* to cross-platform", () => {
+    expect(getPlatformForToolName("productivity.generate_daily_plan")).toBe("cross-platform");
+  });
+
+  it("maps todo.* to cross-platform", () => {
+    expect(getPlatformForToolName("todo.create_list")).toBe("cross-platform");
+  });
+
+  it("maps knowledge.* to cross-platform", () => {
+    expect(getPlatformForToolName("knowledge.store")).toBe("cross-platform");
+  });
+
+  it("maps system.* to cross-platform", () => {
+    expect(getPlatformForToolName("system.check_health")).toBe("cross-platform");
+  });
+
+  it("maps agent.* to cross-platform", () => {
+    expect(getPlatformForToolName("agent.spawn")).toBe("cross-platform");
+  });
+
+  it("maps engineering.* to cross-platform", () => {
+    expect(getPlatformForToolName("engineering.workflow_brief")).toBe("cross-platform");
+  });
+
+  it("maps roadmap.* to cross-platform", () => {
+    expect(getPlatformForToolName("roadmap.create")).toBe("cross-platform");
+  });
+
+  it("maps workflow.* to cross-platform", () => {
+    expect(getPlatformForToolName("workflow.create")).toBe("cross-platform");
+  });
+
+  it("maps graph.* to cross-platform", () => {
+    expect(getPlatformForToolName("graph.add_node")).toBe("cross-platform");
+  });
+
+  it("maps codebase.* to cross-platform", () => {
+    expect(getPlatformForToolName("codebase.search")).toBe("cross-platform");
+  });
+
+  it("maps discover_tools to cross-platform", () => {
+    expect(getPlatformForToolName("discover_tools")).toBe("cross-platform");
+  });
+
+  it("maps unknown prefixes to cross-platform", () => {
+    expect(getPlatformForToolName("foobar.something")).toBe("cross-platform");
+  });
+});
+
+describe("getPlatformForTool", () => {
+  it("uses explicit platform field when set", () => {
+    const tool: Tool = {
+      name: "custom.tool",
+      description: "Custom tool",
+      params: {},
+      actionType: "custom.action",
+      riskLevel: "low",
+      platform: "github",
+    };
+    expect(getPlatformForTool(tool)).toBe("github");
+  });
+
+  it("derives from name when platform is not set", () => {
+    const tool: Tool = {
+      name: "jira.get_issue",
+      description: "Get Jira issue",
+      params: {},
+      actionType: "jira.issue.read",
+      riskLevel: "low",
+    };
+    expect(getPlatformForTool(tool)).toBe("jira");
+  });
+});
+
+describe("getToolsByPlatform", () => {
+  it("returns only github tools for github platform", () => {
+    const tools = getToolsByPlatform("productivity", "github");
+    expect(tools.length).toBeGreaterThan(0);
+    for (const tool of tools) {
+      expect(tool.name.startsWith("github.")).toBe(true);
+    }
+  });
+
+  it("returns only jira tools for jira platform", () => {
+    const tools = getToolsByPlatform("productivity", "jira");
+    expect(tools.length).toBeGreaterThan(0);
+    for (const tool of tools) {
+      expect(tool.name.startsWith("jira.")).toBe(true);
+    }
+  });
+
+  it("returns only gitlab tools for gitlab platform", () => {
+    const tools = getToolsByPlatform("productivity", "gitlab");
+    expect(tools.length).toBeGreaterThan(0);
+    for (const tool of tools) {
+      expect(tool.name.startsWith("gitlab.")).toBe(true);
+    }
+  });
+
+  it("returns cross-platform tools for cross-platform platform", () => {
+    const tools = getToolsByPlatform("productivity", "cross-platform");
+    expect(tools.length).toBeGreaterThan(0);
+    for (const tool of tools) {
+      const prefix = tool.name.split(".")[0];
+      expect(["productivity", "todo", "knowledge", "system", "agent", "workflow", "roadmap", "engineering", "codebase", "graph", "discover"]).toContain(prefix);
+    }
+  });
+});
