@@ -400,6 +400,15 @@ export abstract class AIProvider {
   }
 
   /**
+   * Get the request timeout for a given retry attempt, doubling each time.
+   * If the first attempt times out, the next one gets more time to complete.
+   */
+  protected getAttemptTimeout(attempt: number): number {
+    const maxTimeout = this.config.timeout * 4;
+    return Math.min(this.config.timeout * Math.pow(2, attempt - 1), maxTimeout);
+  }
+
+  /**
    * Check whether an HTTP 400 error body indicates a context-length overflow
    * rather than a generic bad request. Shared across all providers.
    */

@@ -32,6 +32,7 @@ export class OllamaProvider extends AIProvider {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const requestBody = this.buildRequestBody(request);
+        const attemptTimeout = this.getAttemptTimeout(attempt);
 
         console.log("[Ollama API] Sending request:", {
           model: requestBody.model,
@@ -39,11 +40,13 @@ export class OllamaProvider extends AIProvider {
           hasTools: !!request.tools,
           toolCount: request.tools?.length || 0,
           attempt: `${attempt}/${maxAttempts}`,
+          timeout: `${Math.round(attemptTimeout / 1000)}s`,
         });
 
         const response = await this.client.post(
           "/v1/chat/completions",
           requestBody,
+          { timeout: attemptTimeout },
         );
 
         const data = response.data;

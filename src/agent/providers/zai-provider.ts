@@ -36,17 +36,20 @@ export class ZaiProvider extends AIProvider {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const requestBody = this.buildRequestBody(request);
+        const attemptTimeout = this.getAttemptTimeout(attempt);
 
         console.log("[Z.ai API] Sending request:", {
           model: requestBody.model,
           messageCount: (requestBody.messages as any[]).length,
           hasTools: !!request.tools,
           attempt: `${attempt}/${maxAttempts}`,
+          timeout: `${Math.round(attemptTimeout / 1000)}s`,
         });
 
         const response = await this.client.post(
           "/chat/completions",
           requestBody,
+          { timeout: attemptTimeout },
         );
 
         const data = response.data;
