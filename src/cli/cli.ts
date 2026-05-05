@@ -14,6 +14,16 @@ import axios from "axios";
 const env = loadEnv();
 const API_BASE_URL = `http://localhost:${env.PORT}`;
 
+function cliAuthHeaders(): Record<string, string> {
+  const providerKeys: Record<string, string> = {
+    opencode: env.OPENCODE_API_KEY,
+    zai: env.ZAI_API_KEY,
+    ollama: env.OLLAMA_API_KEY,
+  };
+  const token = providerKeys[env.AI_PROVIDER] || "";
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 interface ChatResponse {
   sessionId?: string;
   content: string;
@@ -202,6 +212,32 @@ async function planDay(date?: string): Promise<void> {
   await chatWithAgent(`Plan my day for ${targetDate}`, "productivity");
 }
 
+async function generateCtoDailyCommand(date?: string): Promise<void> {
+  const targetDate = date || new Date().toISOString().split("T")[0];
+  try {
+    const response = await axios.get(
+      `${API_BASE_URL}/api/cto/daily-command-center`,
+      {
+        params: {
+          userId: "cli-user",
+          date: targetDate,
+        },
+        headers: cliAuthHeaders(),
+      },
+    );
+    console.log(response.data.markdown);
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      console.error(
+        "Failed to generate CTO daily command center:",
+        error.response?.data?.error || error.message,
+      );
+    } else {
+      console.error("Failed to generate CTO daily command center:", error);
+    }
+  }
+}
+
 async function generateEngineeringStrategy(idea: string): Promise<void> {
   await chatWithAgent(
     `I want to build: ${idea}\n\nPlease help me design this properly by starting with workflow analysis.`,
@@ -340,6 +376,15 @@ program
   .description('Alias for "plan today"')
   .action(async () => {
     await planDay();
+  });
+
+const ctoCmd = program.command("cto").description("CTO operating brief commands");
+
+ctoCmd
+  .command("daily [date]")
+  .description("Generate the CTO Daily Command Center")
+  .action(async (date) => {
+    await generateCtoDailyCommand(date);
   });
 
 program

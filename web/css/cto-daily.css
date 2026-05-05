@@ -1,0 +1,73 @@
+.cto-daily-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.cto-daily-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.cto-daily-row label {
+  font-size: 12px;
+  color: #555;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.cto-daily-row input[type="date"],
+.cto-daily-row input[type="number"] {
+  padding: 6px 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 12px;
+  background: white;
+}
+
+.cto-daily-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.cto-daily-result {
+  max-height: calc(100vh - 210px);
+  overflow-y: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: white;
+  padding: 12px;
+}
+
+.cto-markdown h1 {
+  font-size: 18px;
+  margin: 0 0 12px;
+}
+
+.cto-markdown h2 {
+  font-size: 14px;
+  margin: 14px 0 6px;
+}
+
+.cto-markdown p,
+.cto-markdown li {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.cto-markdown ul {
+  padding-left: 18px;
+  margin: 6px 0;
+}
+
+.cto-create-status {
+  font-size: 12px;
+  color: #666;
+  min-height: 16px;
+}

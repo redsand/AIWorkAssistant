@@ -8,6 +8,7 @@ import { githubClient } from "../integrations/github/github-client";
 import { jitbitService } from "../integrations/jitbit/jitbit-service";
 import { dailyPlanner } from "../productivity/daily-planner";
 import { weeklyPlanner } from "../productivity/weekly-planner";
+import { ctoDailyCommandCenter } from "../cto/daily-command-center";
 import { roadmapDatabase } from "../roadmap/database";
 import { auditLogger } from "../audit/logger";
 import { env } from "../config/env";
@@ -1920,6 +1921,25 @@ async function handleWeeklyPlan(
 
   const plan = await weeklyPlanner.generateWeeklyPlan(startDate, validatedWeeks, userId);
   return { success: true, data: plan };
+}
+
+async function handleCtoDailyCommandCenter(
+  params: Record<string, unknown>,
+  userId: string,
+): Promise<ToolCallResult> {
+  const brief = await ctoDailyCommandCenter.generateDailyCommandCenter({
+    userId,
+    date: params.date as string | undefined,
+    includeCalendar: params.includeCalendar as boolean | undefined,
+    includeJira: params.includeJira as boolean | undefined,
+    includeGitLab: params.includeGitLab as boolean | undefined,
+    includeGitHub: params.includeGitHub as boolean | undefined,
+    includeRoadmap: params.includeRoadmap as boolean | undefined,
+    includeWorkItems: params.includeWorkItems as boolean | undefined,
+    includeJitbit: params.includeJitbit as boolean | undefined,
+    daysBack: params.daysBack as number | undefined,
+  });
+  return { success: true, data: brief };
 }
 
 async function handleDiscoverTools(
@@ -4234,6 +4254,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "jitbit.add_time_entry": handleJitbitAddTimeEntry,
   "productivity.generate_daily_plan": handleDailyPlan,
   "productivity.generate_weekly_plan": handleWeeklyPlan,
+  "cto.daily_command_center": handleCtoDailyCommandCenter,
   "web.search": handleWebSearch,
   "web.fetch_page": handleWebFetchPage,
 
@@ -4328,6 +4349,7 @@ const SYSTEM_TOOLS = new Set([
   "engineering.scaffolding_plan",
   "productivity.generate_daily_plan",
   "productivity.generate_weekly_plan",
+  "cto.daily_command_center",
 ]);
 
 export interface DispatchContext {

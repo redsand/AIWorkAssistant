@@ -308,3 +308,12 @@ export function toggleWorkItemsPanel() {
     if (arrow) arrow.style.transform = "rotate(0deg)";
   }
 }
+
+export function toggleSection(sectionId) {
+  const panel = document.getElementById(`${sectionId}Panel`);
+  const arrow = document.getElementById(`${sectionId}Arrow`);
+  if (!panel) return;
+  const isHidden = panel.style.display === "none";
+  panel.style.display = isHidden ? "" : "none";
+  if (arrow) arrow.style.transform = isHidden ? "rotate(90deg)" : "rotate(0deg)";
+}

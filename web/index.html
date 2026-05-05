@@ -16,6 +16,7 @@
     <link rel="stylesheet" href="/css/mobile.css?v=4" />
     <link rel="stylesheet" href="/css/agent-runs.css?v=4" />
     <link rel="stylesheet" href="/css/work-items.css?v=4" />
+    <link rel="stylesheet" href="/css/cto-daily.css?v=1" />
   </head>
   <body>
     <div class="login-overlay" id="loginOverlay">
@@ -229,9 +230,12 @@
         </div>
 
         <div class="panel-section">
-          <div class="section-header">Quick Actions</div>
+          <div class="section-header" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" onclick="toggleSection('quickActions')">
+            <span>Quick Actions</span>
+            <span id="quickActionsArrow" style="font-size:10px;transition:transform 0.2s;transform:rotate(90deg)">&#9654;</span>
+          </div>
 
-          <div class="quick-actions">
+          <div id="quickActionsPanel" class="quick-actions">
             <div class="action-btn-wrapper">
               <button class="action-btn" onclick="quickAction('plan-week')">Plan Week</button>
               <button class="action-edit-btn" onclick="editQuickAction('plan-week','Plan Week')" title="Edit prompt">
@@ -251,6 +255,7 @@
               </button>
             </div>
             <button class="action-btn" onclick="window._arShowPage()">Agent Runs</button>
+            <button class="action-btn" onclick="window.showCtoDailyPage()">Daily Command</button>
             <div class="action-btn-wrapper">
               <button class="action-btn" onclick="quickAction('search memory project')">Search Memory</button>
               <button class="action-edit-btn" onclick="editQuickAction('search memory project','Search Memory')" title="Edit prompt">
@@ -277,9 +282,14 @@
             </div>
           </div>
 
-          <div class="section-header">Recent Roadmaps</div>
-          <div class="roadmap-list" id="roadmapList">
-            <div class="loading">Loading roadmaps...</div>
+          <div class="section-header" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" onclick="toggleSection('roadmaps')">
+            <span>Recent Roadmaps</span>
+            <span id="roadmapsArrow" style="font-size:10px;transition:transform 0.2s;transform:rotate(90deg)">&#9654;</span>
+          </div>
+          <div id="roadmapsPanel">
+            <div class="roadmap-list" id="roadmapList">
+              <div class="loading">Loading roadmaps...</div>
+            </div>
           </div>
 
           <div id="todoSection" style="display: none">
@@ -318,13 +328,18 @@
               display: flex;
               justify-content: space-between;
               align-items: center;
+              cursor: pointer;
             "
+            onclick="toggleSection('conversations')"
           >
             <span>Conversations</span>
+            <span id="conversationsArrow" style="font-size:10px;transition:transform 0.2s;transform:rotate(90deg)">&#9654;</span>
           </div>
-          <button class="new-chat-btn" onclick="newChat()">+ New Chat</button>
-          <div class="conversation-list" id="conversationList">
-            <div style="padding: 12px; color: #666">No conversations yet</div>
+          <div id="conversationsPanel">
+            <button class="new-chat-btn" onclick="newChat()">+ New Chat</button>
+            <div class="conversation-list" id="conversationList">
+              <div style="padding: 12px; color: #666">No conversations yet</div>
+            </div>
           </div>
 
           <div id="agentRunsSection" class="agent-runs-section" style="display: none; margin-top: 16px;">
@@ -485,6 +500,36 @@
               </div>
             </div>
           </div>
+
+          <div id="ctoDailySection" style="display:none;margin-top:16px;">
+            <div class="section-header" style="display:flex;justify-content:space-between;align-items:center;margin-top:0;">
+              <span>Daily Command</span>
+              <button class="ar-back-inline" onclick="window.hideCtoDailyPage()" style="background:none;border:none;color:#667eea;cursor:pointer;font-size:12px;">Back to sidebar</button>
+            </div>
+            <div class="cto-daily-controls">
+              <div class="cto-daily-row">
+                <label>Date <input type="date" id="ctoDate" /></label>
+                <label>Days Back <input type="number" id="ctoDaysBack" min="1" max="30" value="7" /></label>
+              </div>
+              <div class="cto-daily-row">
+                <label><input type="checkbox" id="ctoIncludeCalendar" checked /> Calendar</label>
+                <label><input type="checkbox" id="ctoIncludeJira" checked /> Jira</label>
+                <label><input type="checkbox" id="ctoIncludeGitLab" checked /> GitLab</label>
+                <label><input type="checkbox" id="ctoIncludeGitHub" checked /> GitHub</label>
+                <label><input type="checkbox" id="ctoIncludeRoadmap" checked /> Roadmap</label>
+                <label><input type="checkbox" id="ctoIncludeWorkItems" checked /> Work Items</label>
+                <label><input type="checkbox" id="ctoIncludeJitbit" checked /> Jitbit</label>
+              </div>
+            </div>
+            <div class="cto-daily-actions">
+              <button class="action-btn" onclick="window.generateCtoDailyCommand()">Generate</button>
+              <button class="action-btn" id="ctoCreateWorkItemsBtn" onclick="window.createCtoSuggestedWorkItems()" disabled>Create Suggested Work Items</button>
+            </div>
+            <div id="ctoCreateStatus" class="cto-create-status"></div>
+            <div id="ctoDailyResult" class="cto-daily-result">
+              <div class="loading">Generate Tim's daily operating brief.</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -555,6 +600,7 @@
     </div>
 
     <script type="module" src="/js/work-items.js?v=4"></script>
+    <script type="module" src="/js/cto-daily.js?v=1"></script>
     <script type="module" src="/js/app.js?v=5"></script>
   </body>
 </html>

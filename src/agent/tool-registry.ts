@@ -31,6 +31,7 @@ const PLATFORM_PREFIX_MAP: Record<string, Platform> = {
   mcp: "mcp",
   productivity: "cross-platform",
   engineering: "cross-platform",
+  cto: "cross-platform",
   roadmap: "cross-platform",
   todo: "cross-platform",
   knowledge: "cross-platform",
@@ -2566,6 +2567,32 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     actionType: "productivity.plan.generate",
     riskLevel: "low",
   },
+  {
+    name: "cto.daily_command_center",
+    description:
+      "Generate Tim's CTO Daily Command Center operating brief from calendar, Jira, GitLab, GitHub, roadmap, work items, Jitbit support activity, and conversation memory. Read-only; suggests drafts and work items but does not send customer-facing updates.",
+    params: {
+      date: {
+        type: "string",
+        description: "Brief date in YYYY-MM-DD format. Defaults to today.",
+        required: false,
+      },
+      daysBack: {
+        type: "number",
+        description: "How many days back to inspect recent activity. Default 7.",
+        required: false,
+      },
+      includeCalendar: { type: "boolean", description: "Include calendar signals", required: false },
+      includeJira: { type: "boolean", description: "Include Jira signals", required: false },
+      includeGitLab: { type: "boolean", description: "Include GitLab signals", required: false },
+      includeGitHub: { type: "boolean", description: "Include GitHub signals", required: false },
+      includeRoadmap: { type: "boolean", description: "Include roadmap signals", required: false },
+      includeWorkItems: { type: "boolean", description: "Include Work Items", required: false },
+      includeJitbit: { type: "boolean", description: "Include Jitbit customer/support signals", required: false },
+    },
+    actionType: "cto.daily_command_center",
+    riskLevel: "low",
+  },
 
   // ── Roadmap Tools ──────────────────────────────────────────────
   {
@@ -3846,6 +3873,7 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find(
     (t) => t.name === "productivity.generate_weekly_plan",
   )!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "cto.daily_command_center")!,
 
   // Roadmap core
   PRODUCTIVITY_TOOLS.find((t) => t.name === "roadmap.list")!,

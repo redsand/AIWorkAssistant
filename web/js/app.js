@@ -26,6 +26,7 @@ import {
   resetQuickActionPrompt,
   closeEditPromptModal,
   toggleWorkItemsPanel,
+  toggleSection,
 } from "./sidebar.js";
 import {
   loadConversations,
@@ -87,6 +88,7 @@ window.showChatView = showChatView;
 window.showPanelView = showPanelView;
 window.toggleTodoPanel = toggleTodoPanel;
 window.toggleWorkItemsPanel = toggleWorkItemsPanel;
+window.toggleSection = toggleSection;
 
 window._arShowPage = async function() {
   const section = document.getElementById("agentRunsSection");
