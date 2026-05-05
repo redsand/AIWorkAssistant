@@ -208,6 +208,8 @@ async function loadChatHistory() {
     const data = await response.json();
     if (!data.messages || data.messages.length === 0) return;
 
+    if (activeStreamController) return;
+
     const chatMessages = document.getElementById("chatMessages");
     chatMessages.innerHTML = "";
 

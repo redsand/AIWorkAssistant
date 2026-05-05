@@ -216,11 +216,66 @@ export function toggleTodoPanel() {
   }
 }
 
+const QUICK_ACTION_PROMPTS = {
+  "plan-week":
+    "Plan my next 2 weeks. Pull in my Jira tickets, calendar events, GitHub issues, and any open tasks. Build a structured day-by-day schedule for the next 14 days — prioritize deadlines and high-impact work, protect time for deep focus blocks, and flag anything that looks overloaded or at risk.",
+  "close-ticket":
+    "I have committed and pushed my latest code changes to the repository. Please: 1) Retrieve my active Jira ticket and its acceptance criteria, 2) Review my recent commits to verify every requirement is addressed, 3) If fully complete — close the ticket and write a concise summary of what was changed and why, 4) If anything is missing — list each gap clearly and provide a ready-to-use coding prompt for each one so I can fill them in.",
+};
+
+function getCustomPrompts() {
+  try {
+    return JSON.parse(localStorage.getItem("customQuickActions") || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function resolvePrompt(action) {
+  const custom = getCustomPrompts();
+  return custom[action] ?? QUICK_ACTION_PROMPTS[action] ?? action;
+}
+
 export async function quickAction(action) {
   const { sendMessage } = await import("./chat.js");
   const { showChatView } = await import("./conversations.js");
   const input = document.getElementById("messageInput");
-  input.value = action;
+  input.value = resolvePrompt(action);
   showChatView();
   await sendMessage();
+}
+
+let _editingAction = null;
+
+export function editQuickAction(action, label) {
+  _editingAction = action;
+  document.getElementById("editPromptLabel").textContent = label;
+  document.getElementById("editPromptTextarea").value = resolvePrompt(action);
+  const isCustom = action in getCustomPrompts();
+  document.getElementById("editPromptResetBtn").style.display = isCustom ? "inline-flex" : "none";
+  document.getElementById("editPromptModal").style.display = "flex";
+  document.getElementById("editPromptTextarea").focus();
+}
+
+export function saveQuickActionPrompt() {
+  if (!_editingAction) return;
+  const value = document.getElementById("editPromptTextarea").value.trim();
+  if (!value) return;
+  const custom = getCustomPrompts();
+  custom[_editingAction] = value;
+  localStorage.setItem("customQuickActions", JSON.stringify(custom));
+  closeEditPromptModal();
+}
+
+export function resetQuickActionPrompt() {
+  if (!_editingAction) return;
+  const custom = getCustomPrompts();
+  delete custom[_editingAction];
+  localStorage.setItem("customQuickActions", JSON.stringify(custom));
+  closeEditPromptModal();
+}
+
+export function closeEditPromptModal() {
+  document.getElementById("editPromptModal").style.display = "none";
+  _editingAction = null;
 }

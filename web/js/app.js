@@ -21,6 +21,10 @@ import {
   viewRoadmap,
   quickAction,
   toggleTodoPanel,
+  editQuickAction,
+  saveQuickActionPrompt,
+  resetQuickActionPrompt,
+  closeEditPromptModal,
 } from "./sidebar.js";
 import {
   loadConversations,
@@ -45,6 +49,15 @@ import {
 import { autoResizeTextarea } from "./utils.js";
 import { readSessionHash } from "./state.js";
 
+let _agentRunsPage = null;
+async function getAgentRunsPage() {
+  if (!_agentRunsPage) {
+    const mod = await import("./agent-runs.js");
+    _agentRunsPage = mod.default;
+  }
+  return _agentRunsPage;
+}
+
 window.login = login;
 window.logout = logout;
 window.clearChat = clearChat;
@@ -61,6 +74,10 @@ window.openToolsModal = openToolsModal;
 window.closeToolsModal = closeToolsModal;
 window.viewRoadmap = viewRoadmap;
 window.quickAction = quickAction;
+window.editQuickAction = editQuickAction;
+window.saveQuickActionPrompt = saveQuickActionPrompt;
+window.resetQuickActionPrompt = resetQuickActionPrompt;
+window.closeEditPromptModal = closeEditPromptModal;
 window.newChat = newChat;
 window.deleteConversation = deleteConversation;
 window.switchConversation = switchConversation;
@@ -68,6 +85,30 @@ window.copyChatLink = copyChatLink;
 window.showChatView = showChatView;
 window.showPanelView = showPanelView;
 window.toggleTodoPanel = toggleTodoPanel;
+
+window._arShowPage = async function() {
+  const section = document.getElementById("agentRunsSection");
+  const panel = document.querySelector(".panel-section");
+  if (section && panel) {
+    panel.querySelectorAll(":scope > :not(#agentRunsSection)").forEach(el => el.style.display = "none");
+    section.style.display = "";
+    section.classList.add("active");
+    const page = await getAgentRunsPage();
+    page.init();
+  }
+};
+
+window._arHidePage = async function() {
+  const section = document.getElementById("agentRunsSection");
+  const panel = document.querySelector(".panel-section");
+  if (section && panel) {
+    section.style.display = "none";
+    section.classList.remove("active");
+    panel.querySelectorAll(":scope > :not(#agentRunsSection)").forEach(el => el.style.display = "");
+    const page = await getAgentRunsPage();
+    page.destroy();
+  }
+};
 
 window.toggleToolCategory = function(catId) {
   const el = document.getElementById(catId);

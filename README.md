@@ -80,6 +80,7 @@ To keep token usage manageable, the system sends a **core set of ~26 tools** ini
 | Audit Logger        | ✅ Real | Write + query with severity filtering and JSONL storage                                                                     |
 | Roadmap CRUD        | ✅ Real | SQLite-backed CRUD + milestones + items + delete operations + templates                                                     |
 | Web UI              | ✅ Real | Chat with thinking display, tool progress, collapsible JSON, export, stop button, conversation sidebar, delete confirmation |
+| Agent Runs UI       | ✅ Real | Inspect model/tool execution traces from the browser — list, filter, and drill into run details and step timelines |
 | Daily Planner       | ✅ Real | Jira + GitLab data wired, real issue counts and activity                                                                    |
 | Health Endpoints    | ✅ Real | `/health` reports GitHub/GitLab/Jira integration status; `/chat/health` reports active AI provider                          |
 | Discord Bot         | ✅ Real | Slash commands, sessions, API integration                                                                                   |
@@ -289,6 +290,15 @@ GET    /api/guardrails/stats             # Get stats
 ```
 GET    /health                     # System health (GitHub/GitLab/Jira integration status)
 GET    /chat/health                # AI provider + integration health check
+```
+
+### Agent Runs
+
+```
+GET    /api/agent-runs              # List runs (query: status, userId, limit, offset)
+GET    /api/agent-runs/stats        # Aggregate statistics
+GET    /api/agent-runs/:id          # Get run with steps
+GET    /api/agent-runs/:id/steps    # Get steps for a run
 ```
 
 ## Architecture

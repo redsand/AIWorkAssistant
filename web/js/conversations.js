@@ -81,6 +81,8 @@ export async function loadConversations() {
 }
 
 export async function switchConversation(sessionId) {
+  if (activeStreamController) return;
+
   setCurrentSessionId(sessionId);
   localStorage.setItem("currentSessionId", sessionId);
   updateSessionHash(sessionId);

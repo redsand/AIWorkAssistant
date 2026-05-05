@@ -153,3 +153,133 @@
 .tools-modal .close-modal-btn:hover {
   background: #f3f4f6;
 }
+
+.prompt-edit-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.prompt-edit-modal {
+  background: white;
+  border-radius: 12px;
+  padding: 24px;
+  width: 520px;
+  max-width: 90vw;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.prompt-edit-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.prompt-edit-header h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.prompt-edit-label {
+  font-size: 13px;
+  color: #667eea;
+  font-weight: 500;
+}
+
+.prompt-edit-hint {
+  margin: 0;
+  font-size: 12px;
+  color: #888;
+  line-height: 1.5;
+}
+
+.prompt-edit-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+  font-family: inherit;
+  color: #333;
+  transition: border-color 0.15s;
+}
+
+.prompt-edit-textarea:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+}
+
+.prompt-edit-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.prompt-edit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.prompt-edit-reset {
+  padding: 7px 12px;
+  background: transparent;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #888;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.prompt-edit-reset:hover {
+  border-color: #f87171;
+  color: #ef4444;
+  background: #fff5f5;
+}
+
+.prompt-edit-cancel {
+  padding: 7px 14px;
+  background: transparent;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.prompt-edit-cancel:hover {
+  background: #f3f4f6;
+}
+
+.prompt-edit-save {
+  padding: 7px 16px;
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.prompt-edit-save:hover {
+  background: #4f5cc7;
+}

@@ -107,6 +107,38 @@
   border-color: #d1d5db;
 }
 
+.action-btn-wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.action-edit-btn {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #667eea;
+  color: white;
+  border: none;
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  z-index: 1;
+  transition: background 0.15s;
+}
+
+.action-edit-btn:hover {
+  background: #4f5cc7;
+}
+
+.action-btn-wrapper:hover .action-edit-btn {
+  display: flex;
+}
+
 .loading {
   text-align: center;
   padding: 20px;
