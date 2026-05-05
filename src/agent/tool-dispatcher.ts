@@ -1926,12 +1926,20 @@ async function handleDiscoverTools(
 ): Promise<ToolCallResult> {
   const category = params.category as string | undefined;
   const mode = (params._mode as string) || "productivity";
+  const loadedNames = new Set(
+    (params._loadedTools as string[] | undefined) || [],
+  );
 
   if (!category) {
     const categories = getToolCategories(mode);
     const summary: Record<string, string> = {};
     for (const [cat, tools] of Object.entries(categories)) {
-      summary[cat] = `${tools.length} tools: ${tools.join(", ")}`;
+      const newCount = tools.filter((n) => !loadedNames.has(n)).length;
+      const label =
+        newCount < tools.length
+          ? `${newCount} new / ${tools.length} total`
+          : `${tools.length} tools`;
+      summary[cat] = `${label}: ${tools.join(", ")}`;
     }
     return {
       success: true,
@@ -1951,11 +1959,19 @@ async function handleDiscoverTools(
     };
   }
 
+  const newTools = tools.filter((t) => !loadedNames.has(t.name));
+  const alreadyLoaded = tools.length - newTools.length;
+
+  const message =
+    alreadyLoaded > 0
+      ? `Loaded ${newTools.length} new '${category}' tools (${alreadyLoaded} already loaded). You can now use them.`
+      : `Loaded ${tools.length} '${category}' tools. You can now use them.`;
+
   return {
     success: true,
     data: {
-      message: `Loaded ${tools.length} '${category}' tools. You can now use them.`,
-      tools: tools.map((t) => ({
+      message,
+      tools: newTools.map((t) => ({
         name: t.name,
         description: t.description,
         params: Object.keys(t.params),

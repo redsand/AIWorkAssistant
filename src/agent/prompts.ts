@@ -3,7 +3,7 @@
  */
 
 import { AGENT_NAME, AGENT_VERSION } from "../config/constants";
-import { getToolInventory } from "./tool-registry";
+import { getToolInventorySummary } from "./tool-registry";
 import { knowledgeStore } from "./knowledge-store";
 import { codebaseIndexer } from "./codebase-indexer";
 
@@ -270,31 +270,30 @@ export function getSystemPrompt(
   contextQuery?: string,
   contextMode?: "rag" | "engine",
 ): string {
-  const toolInventory = getToolInventory(mode);
+  const toolSummary = getToolInventorySummary(mode);
 
   // In engine mode, the context engine handles knowledge injection separately.
-  // Return only the base prompt + tool inventory.
+  // Return only the base prompt + minimal tool reference.
   if (contextMode === "engine") {
     switch (mode) {
       case "productivity":
-        return `${PRODUCTIVITY_SYSTEM_PROMPT}\n\n${toolInventory}`;
+        return `${PRODUCTIVITY_SYSTEM_PROMPT}\n\n${toolSummary}`;
       case "engineering":
-        return `${ENGINEERING_SYSTEM_PROMPT}\n\n${toolInventory}`;
+        return `${ENGINEERING_SYSTEM_PROMPT}\n\n${toolSummary}`;
       default:
-        return `${PRODUCTIVITY_SYSTEM_PROMPT}\n\n${toolInventory}`;
+        return `${PRODUCTIVITY_SYSTEM_PROMPT}\n\n${toolSummary}`;
     }
   }
 
   // RAG mode: inject knowledge directly into the system prompt (original behavior)
-  return getSystemPromptRAG(mode, contextQuery, toolInventory);
+  return getSystemPromptRAG(mode, contextQuery);
 }
 
 function getSystemPromptRAG(
   mode: "productivity" | "engineering",
   contextQuery?: string,
-  toolInventory?: string,
 ): string {
-  const inventory = toolInventory || getToolInventory(mode);
+  const toolSummary = getToolInventorySummary(mode);
 
   let knowledgeSection = "";
   if (contextQuery) {
@@ -333,10 +332,10 @@ function getSystemPromptRAG(
 
   switch (mode) {
     case "productivity":
-      return `${PRODUCTIVITY_SYSTEM_PROMPT}\n\n${inventory}${knowledgeSection}`;
+      return `${PRODUCTIVITY_SYSTEM_PROMPT}\n\n${toolSummary}${knowledgeSection}`;
     case "engineering":
-      return `${ENGINEERING_SYSTEM_PROMPT}\n\n${inventory}${knowledgeSection}`;
+      return `${ENGINEERING_SYSTEM_PROMPT}\n\n${toolSummary}${knowledgeSection}`;
     default:
-      return `${PRODUCTIVITY_SYSTEM_PROMPT}\n\n${inventory}${knowledgeSection}`;
+      return `${PRODUCTIVITY_SYSTEM_PROMPT}\n\n${toolSummary}${knowledgeSection}`;
   }
 }

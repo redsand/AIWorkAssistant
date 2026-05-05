@@ -114,6 +114,9 @@ async function runChatJob(
     let expandedTools = [...(tools || [])];
     let loopCount = 0;
 
+    const getLoadedToolNames = () =>
+      expandedTools.map((t: Tool) => t.function.name);
+
     while (response.toolCalls && response.toolCalls.length > 0) {
       loopCount++;
 
@@ -173,7 +176,7 @@ async function runChatJob(
 
         try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_call", toolName: tc.name, sanitizedParams: sanitizeValue(tc.params), stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
         const toolStart = Date.now();
-        const dispatchParams = { ...tc.params, _mode: mode };
+        const dispatchParams = { ...tc.params, _mode: mode, _loadedTools: getLoadedToolNames() };
         const result = await dispatchToolCall(tc.name, dispatchParams, userId, false, { messages, mode });
         const toolDuration = Date.now() - toolStart;
         allToolResults[tc.id] = result;
@@ -243,7 +246,7 @@ async function runChatJob(
         const spawnPromises = spawnCalls.map(async (tc) => {
           try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_call", toolName: tc.name, sanitizedParams: sanitizeValue(tc.params), stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
           const spawnStart = Date.now();
-          const dispatchParams = { ...tc.params, _mode: mode };
+          const dispatchParams = { ...tc.params, _mode: mode, _loadedTools: getLoadedToolNames() };
           const result = await dispatchToolCall(
             tc.name,
             dispatchParams,
@@ -471,6 +474,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
       let allToolResults: Record<string, unknown> = {};
       let expandedTools = [...(tools || [])];
 
+      const getLoadedToolNames = () =>
+        expandedTools.map((t: Tool) => t.function.name);
+
       let loopCount = 0;
 
       while (response.toolCalls && response.toolCalls.length > 0) {
@@ -518,7 +524,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         for (const tc of toolCalls) {
           try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_call", toolName: tc.name, sanitizedParams: sanitizeValue(tc.params), stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
           const toolStart = Date.now();
-          const dispatchParams = { ...tc.params, _mode: body.mode };
+          const dispatchParams = { ...tc.params, _mode: body.mode, _loadedTools: getLoadedToolNames() };
           const result = await dispatchToolCall(
             tc.name,
             dispatchParams,

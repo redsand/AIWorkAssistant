@@ -3272,6 +3272,70 @@ export function getTools(mode: string): Tool[] {
   }
 }
 
+/**
+ * Minimal tool reference for the system prompt.
+ * The full tool definitions are sent via the API `tools` parameter —
+ * listing them again as text would duplicate ~3K tokens per request.
+ */
+export function getToolInventorySummary(mode: string): string {
+  const tools = getTools(mode);
+  const categories = getToolCategories(mode);
+  const catNames = Object.keys(categories);
+
+  // Build platform quick reference based on what's loaded vs what needs discovery
+  const loadedNames = new Set(tools.map((t) => t.name));
+  const platformRef: string[] = [];
+
+  const platformCategories = [
+    {
+      name: "GitHub",
+      prefix: "github",
+      writeActions: ["create issue", "create PR", "create branch"],
+    },
+    {
+      name: "GitLab",
+      prefix: "gitlab",
+      writeActions: ["pipeline/merge actions"],
+    },
+    {
+      name: "Jira",
+      prefix: "jira",
+      writeActions: ["advanced fields"],
+    },
+    {
+      name: "Calendar",
+      prefix: "calendar",
+      writeActions: ["event management"],
+    },
+  ];
+
+  for (const platform of platformCategories) {
+    const catTools = categories[platform.prefix] || [];
+    const loaded = catTools.filter((name) => loadedNames.has(name)).length;
+    if (loaded > 0) {
+      if (loaded === catTools.length) {
+        platformRef.push(`- ${platform.name}: All tools loaded (${loaded}).`);
+      } else {
+        platformRef.push(
+          `- ${platform.name}: ${loaded}/${catTools.length} tools loaded. For ${platform.writeActions.join(", ")}, call discover_tools("${platform.prefix}").`,
+        );
+      }
+    }
+  }
+
+  const platformSection =
+    platformRef.length > 0
+      ? `\nPLATFORM QUICK REFERENCE:\n${platformRef.join("\n")}\n`
+      : "";
+
+  return `TOOLS: ${tools.length} loaded, expandable via discover_tools. Categories: ${catNames.join(", ")}.
+${platformSection}IMPORTANT: You MUST use these tools to take actions. Do NOT say "I don't have access" or "I cannot do that" — if a tool exists for the action, USE IT. If you need a tool not in your current set, call discover_tools to load it.`;
+}
+
+/**
+ * Full tool inventory with descriptions — kept for debugging and the /chat/tools endpoint.
+ * Do NOT embed this in the system prompt; it duplicates the structured `tools` API parameter.
+ */
 export function getToolInventory(mode: string): string {
   const tools = getTools(mode);
   const lines = tools.map((t) => `- ${t.name}: ${t.description}`);
