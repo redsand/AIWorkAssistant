@@ -69,9 +69,9 @@ export interface ProviderCapabilities {
 export type OpenCodeConfig = ProviderConfig;
 
 export const DEFAULT_MAX_CONTEXT_TOKENS = 64000;
-export const MAX_TOOL_RESULT_CHARS = 100000;
-export const CHARS_PER_TOKEN = 1.8; // Calibrated: GLM tokenizer produces ~1.5-2 chars per token for mixed content
-export const TOOL_SCHEMA_CHARS_PER_TOKEN = 1.5; // Tool schemas tokenize very densely
+export const MAX_TOOL_RESULT_CHARS = 50000;
+export const CHARS_PER_TOKEN = 2.5; // Conservative: ensures estimates ≥ actual for GLM (~1.4-2 chars/token)
+export const TOOL_SCHEMA_CHARS_PER_TOKEN = 2.5; // Tool schemas also conservative
 export const CONTEXT_SAFETY_MARGIN = 0.7; // Use 70% of max context - char-based estimates are inherently imprecise
 
 export abstract class AIProvider {
@@ -227,9 +227,23 @@ export abstract class AIProvider {
 
     estimated = this.estimateTokens(kept);
     if (estimated <= messageBudget) return kept;
-    if (kept.length <= 4) return kept;
 
-    return kept;
+    // Truncate non-system/non-user messages proportionally to fit budget
+    const perMsgBudget = Math.floor(messageBudget * 0.4 / kept.length);
+    const perMsgChars = Math.max(200, perMsgBudget * CHARS_PER_TOKEN);
+    const shrunk = kept.map((m, i) => {
+      if (i === 0 || i === kept.length - 1) return m;
+      if (m.content.length > perMsgChars) {
+        return { ...m, content: m.content.substring(0, perMsgChars) + "\n...[truncated]" };
+      }
+      return m;
+    });
+
+    estimated = this.estimateTokens(shrunk);
+    if (estimated <= messageBudget) return shrunk;
+    if (kept.length <= 4) return shrunk;
+
+    return shrunk;
   }
 
   /**
@@ -238,6 +252,79 @@ export abstract class AIProvider {
    */
   pruneMessages(messages: ChatMessage[], tools?: Tool[]): ChatMessage[] {
     return this.pruneToContextWindow(messages, tools);
+  }
+
+  protected pruneAggressively(
+    messages: ChatMessage[],
+    tools: Tool[] | undefined,
+    maxTokens: number,
+  ): ChatMessage[] {
+    const safeLimit = Math.floor(maxTokens * 0.5);
+    const toolTokens = tools ? this.estimateTokens([], tools) : 0;
+    const messageBudget = Math.max(1000, safeLimit - toolTokens);
+
+    // Step 1: truncate all tool/assistant messages to 20k chars
+    const truncated = messages.map((m) => {
+      if ((m.role === "tool" || m.role === "assistant") && m.content.length > 20000) {
+        return { ...m, content: m.content.substring(0, 20000) + "\n...[truncated]" };
+      }
+      return m;
+    });
+
+    let estimated = this.estimateTokens(truncated);
+    if (estimated <= messageBudget) return truncated;
+
+    // Step 2: keep system + last 6 messages + user
+    if (truncated.length > 4) {
+      const system = truncated[0];
+      const userMsg = truncated[truncated.length - 1];
+      const recentCount = Math.min(truncated.length - 2, 6);
+      const recent = truncated.slice(truncated.length - 1 - recentCount, truncated.length - 1);
+      const kept: ChatMessage[] = [
+        system,
+        {
+          role: "system" as const,
+          content: `[Earlier conversation truncated — ${truncated.length - recentCount - 2} messages removed]`,
+        },
+        ...recent,
+        userMsg,
+      ];
+
+      estimated = this.estimateTokens(kept);
+      if (estimated <= messageBudget) return kept;
+
+      // Step 3: truncate remaining messages proportionally
+      const perMsgBudget = Math.floor(messageBudget * 0.4 / kept.length);
+      const perMsgChars = Math.max(200, perMsgBudget * CHARS_PER_TOKEN);
+      const shrunk = kept.map((m, i) => {
+        if (i === 0 || i === kept.length - 1) return m;
+        if (m.content.length > perMsgChars) {
+          return { ...m, content: m.content.substring(0, perMsgChars) + "\n...[truncated]" };
+        }
+        return m;
+      });
+
+      estimated = this.estimateTokens(shrunk);
+      if (estimated <= messageBudget) return shrunk;
+
+      // Step 4: emergency — all non-system/user messages to 1000 chars
+      return shrunk.map((m, i) => {
+        if (i === 0 || i === kept.length - 1) return m;
+        if (m.content.length > 1000) {
+          return { ...m, content: m.content.substring(0, 1000) + "\n...[truncated]" };
+        }
+        return m;
+      });
+    }
+
+    return truncated;
+  }
+
+  protected extractModelMaxContext(errorBody: string | undefined): number | null {
+    if (!errorBody) return null;
+    const match = errorBody.match(/maximum context length:?\s*(\d+)/i) ||
+      errorBody.match(/max context length:?\s*(\d+)/i);
+    return match ? parseInt(match[1], 10) : null;
   }
 
   protected parseToolCalls(toolCalls: any[]): ToolCall[] {
@@ -297,14 +384,19 @@ export abstract class AIProvider {
 
     const measuredRatio = actualPromptTokens / rawEstimate;
     if (measuredRatio > 0 && isFinite(measuredRatio)) {
-      // Exponential moving average — don't jump too fast, but converge over a few samples
+      // Exponential moving average, but only increase — never decrease below current.
+      // This ensures we never underestimate after calibration.
       const alpha = 0.5;
-      this.tokenCalibrationFactor =
-        alpha * measuredRatio + (1 - alpha) * this.tokenCalibrationFactor;
+      const blended = alpha * measuredRatio + (1 - alpha) * this.tokenCalibrationFactor;
+      this.tokenCalibrationFactor = Math.max(this.tokenCalibrationFactor, blended);
       console.log(
         `[${this.name}] Token calibration updated: ratio=${measuredRatio.toFixed(2)}, factor=${this.tokenCalibrationFactor.toFixed(2)}, raw=${rawEstimate}, actual=${actualPromptTokens}`,
       );
     }
+  }
+
+  protected resetCalibration(): void {
+    this.tokenCalibrationFactor = 1.0;
   }
 
   /**

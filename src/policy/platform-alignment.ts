@@ -1,13 +1,9 @@
 import type { PlatformIntent, PlatformValidation } from "./types";
-import {
-  getPlatformForToolName,
-  getToolsByPlatform,
-} from "../agent/tool-registry";
+import { getPlatformForToolName } from "../agent/tool-registry";
 
 export function validatePlatformAlignment(
   toolName: string,
   intent: PlatformIntent,
-  mode: string = "productivity",
 ): PlatformValidation {
   const toolPlatform = getPlatformForToolName(toolName);
 
@@ -41,18 +37,14 @@ export function validatePlatformAlignment(
     };
   }
 
-  // Cross-contamination: tool platform differs from user intent
-  const alternatives = getToolsByPlatform(mode, intent.platform).map(
-    (t) => t.name,
-  );
-
+  // Cross-platform: tool platform differs from detected user intent.
+  // This is a legitimate multi-platform workflow (e.g., reviewing a GitLab commit
+  // related to a Jira ticket). Log it but allow it — the user explicitly asked
+  // for this tool, even if their recent messages focused on a different platform.
   return {
-    result: "warning",
+    result: "allowed",
     toolPlatform,
     intentPlatform: intent.platform,
-    reason: `User intent is "${intent.platform}" but tool "${toolName}" is on platform "${toolPlatform}" (${intent.source}: ${intent.evidence})`,
-    suggestedAlternatives: alternatives.length > 0
-      ? alternatives.slice(0, 5)
-      : undefined,
+    reason: `Cross-platform access: user intent is "${intent.platform}" but tool "${toolName}" is on platform "${toolPlatform}" (${intent.source}: ${intent.evidence})`,
   };
 }

@@ -40,7 +40,7 @@ const envSchema = z.object({
 
   // Per-model context limit overrides (JSON map of model name -> max tokens)
   // Example: {"glm-5.1:cloud": 202752, "llama3:70b": 8192}
-  OLLAMA_MODEL_CONTEXT_LIMITS: z.string().default(""),
+  OLLAMA_MODEL_CONTEXT_LIMITS: z.string().default('{"glm-5.1:cloud": 202752}'),
 
   // Microsoft 365
   MICROSOFT_TENANT_ID: z.string().default(""),

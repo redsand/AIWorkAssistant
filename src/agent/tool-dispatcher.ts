@@ -3931,7 +3931,6 @@ export async function dispatchToolCall(
     const alignment = validatePlatformAlignment(
       toolName,
       intent,
-      context.mode || (params._mode as string) || "productivity",
     );
 
     if (alignment.result === "warning") {

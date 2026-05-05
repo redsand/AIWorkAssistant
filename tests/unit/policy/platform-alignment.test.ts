@@ -39,22 +39,16 @@ describe("validatePlatformAlignment", () => {
     expect(result.result).toBe("allowed");
   });
 
-  it("warns on platform mismatch with alternatives", () => {
+  it("allows cross-platform access (e.g., GitLab from Jira context)", () => {
     const result = validatePlatformAlignment("github.create_issue", explicitJira);
-    expect(result.result).toBe("warning");
+    expect(result.result).toBe("allowed");
     expect(result.toolPlatform).toBe("github");
     expect(result.intentPlatform).toBe("jira");
-    expect(result.suggestedAlternatives).toBeDefined();
-    expect(result.suggestedAlternatives!.length).toBeGreaterThan(0);
-    // All alternatives should be jira.* tools
-    for (const alt of result.suggestedAlternatives!) {
-      expect(alt.startsWith("jira.")).toBe(true);
-    }
   });
 
-  it("warns on mismatch even without alternatives", () => {
+  it("allows cross-platform access even without alternatives", () => {
     const result = validatePlatformAlignment("github.list_repos", explicitJira);
-    expect(result.result).toBe("warning");
+    expect(result.result).toBe("allowed");
     expect(result.toolPlatform).toBe("github");
     expect(result.intentPlatform).toBe("jira");
   });

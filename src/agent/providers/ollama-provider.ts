@@ -19,6 +19,8 @@ export class OllamaProvider extends AIProvider {
     synthesizesToolCallIds: true,
   };
 
+  private isContextOverflowRetry = false;
+
   constructor(config: ProviderConfig) {
     super(config);
   }
@@ -104,6 +106,32 @@ export class OllamaProvider extends AIProvider {
                 request.messages,
                 request.tools,
               );
+
+              // Retry once with aggressive pruning if this isn't already a retry
+              if (!this.isContextOverflowRetry) {
+                const modelMax = this.extractModelMaxContext(errorBody);
+                const targetMax = modelMax || this.getMaxContextTokens();
+                this.resetCalibration();
+                const prunedMessages = this.pruneAggressively(
+                  request.messages,
+                  request.tools,
+                  targetMax,
+                );
+                console.warn(
+                  `[Ollama API] Retrying with aggressive pruning: ${request.messages.length} → ${prunedMessages.length} messages (target: ${targetMax} tokens)`,
+                );
+                this.isContextOverflowRetry = true;
+                try {
+                  const retryResult = await this.chat({
+                    ...request,
+                    messages: prunedMessages,
+                  });
+                  return retryResult;
+                } finally {
+                  this.isContextOverflowRetry = false;
+                }
+              }
+
               throw new Error(
                 `Ollama API context length exceeded for model '${this.config.model}'. ${errorBody || "Prompt exceeds model maximum context length."}`,
               );
