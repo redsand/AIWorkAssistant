@@ -3065,6 +3065,361 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     actionType: "jitbit.add_ticket_comment",
     riskLevel: "medium",
   },
+  {
+    name: "jitbit.create_ticket",
+    description:
+      "Create a new Jitbit support ticket. Requires a category ID and subject.",
+    params: {
+      categoryId: {
+        type: "number",
+        description: "Jitbit category ID (required)",
+        required: true,
+      },
+      subject: {
+        type: "string",
+        description: "Ticket subject/title",
+        required: true,
+      },
+      body: {
+        type: "string",
+        description: "Ticket body/description",
+        required: false,
+      },
+      priorityId: {
+        type: "number",
+        description: "Priority ID",
+        required: false,
+      },
+      assignedToUserId: {
+        type: "number",
+        description: "User ID to assign the ticket to",
+        required: false,
+      },
+      tags: {
+        type: "string",
+        description: "Comma-separated tags",
+        required: false,
+      },
+      companyId: {
+        type: "number",
+        description: "Company ID to associate with the ticket",
+        required: false,
+      },
+    },
+    actionType: "jitbit.create_ticket",
+    riskLevel: "medium",
+  },
+  {
+    name: "jitbit.close_ticket",
+    description:
+      "Close a Jitbit support ticket by setting its status to Closed.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+    },
+    actionType: "jitbit.close_ticket",
+    riskLevel: "medium",
+  },
+  {
+    name: "jitbit.reopen_ticket",
+    description:
+      "Reopen a closed Jitbit support ticket by setting its status to Open or New.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+    },
+    actionType: "jitbit.reopen_ticket",
+    riskLevel: "medium",
+  },
+  {
+    name: "jitbit.assign_ticket",
+    description:
+      "Assign a Jitbit support ticket to a specific user.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+      assignedUserId: {
+        type: "number",
+        description: "User ID to assign the ticket to",
+        required: true,
+      },
+    },
+    actionType: "jitbit.assign_ticket",
+    riskLevel: "medium",
+  },
+  {
+    name: "jitbit.delete_ticket",
+    description:
+      "Permanently delete a Jitbit support ticket. This action is irreversible and requires approval.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+    },
+    actionType: "jitbit.delete_ticket",
+    riskLevel: "high",
+  },
+  {
+    name: "jitbit.merge_tickets",
+    description:
+      "Merge multiple Jitbit support tickets into one. Source tickets will be merged into the target ticket.",
+    params: {
+      targetTicketId: {
+        type: "number",
+        description: "The ticket ID to merge into",
+        required: true,
+      },
+      sourceTicketIds: {
+        type: "string",
+        description: "Comma-separated ticket IDs to merge from",
+        required: true,
+      },
+    },
+    actionType: "jitbit.merge_tickets",
+    riskLevel: "medium",
+  },
+  {
+    name: "jitbit.forward_ticket",
+    description:
+      "Forward a Jitbit support ticket to an email address.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+      toEmail: {
+        type: "string",
+        description: "Email address to forward to",
+        required: true,
+      },
+      ccEmails: {
+        type: "string",
+        description: "Comma-separated CC email addresses",
+        required: false,
+      },
+      body: {
+        type: "string",
+        description: "Optional message body",
+        required: false,
+      },
+    },
+    actionType: "jitbit.forward_ticket",
+    riskLevel: "medium",
+  },
+  {
+    name: "jitbit.list_assets",
+    description:
+      "List Jitbit assets with optional filters. Use for asset inventory and management.",
+    params: {
+      search: {
+        type: "string",
+        description: "Search text for assets",
+        required: false,
+      },
+      categoryId: {
+        type: "number",
+        description: "Filter by category ID",
+        required: false,
+      },
+      companyId: {
+        type: "number",
+        description: "Filter by company ID",
+        required: false,
+      },
+      count: {
+        type: "number",
+        description: "Maximum results to return",
+        required: false,
+      },
+      page: {
+        type: "number",
+        description: "Page number for pagination",
+        required: false,
+      },
+    },
+    actionType: "jitbit.list_assets",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.get_asset",
+    description:
+      "Get details of a specific Jitbit asset by ID.",
+    params: {
+      assetId: {
+        type: "number",
+        description: "Jitbit asset ID",
+        required: true,
+      },
+    },
+    actionType: "jitbit.get_asset",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.create_asset",
+    description:
+      "Create a new Jitbit asset.",
+    params: {
+      name: {
+        type: "string",
+        description: "Asset name (required)",
+        required: true,
+      },
+      categoryId: {
+        type: "number",
+        description: "Category ID",
+        required: false,
+      },
+      companyId: {
+        type: "number",
+        description: "Company ID",
+        required: false,
+      },
+      serialNumber: {
+        type: "string",
+        description: "Serial number",
+        required: false,
+      },
+      notes: {
+        type: "string",
+        description: "Notes about the asset",
+        required: false,
+      },
+    },
+    actionType: "jitbit.create_asset",
+    riskLevel: "medium",
+  },
+  {
+    name: "jitbit.update_asset",
+    description:
+      "Update an existing Jitbit asset.",
+    params: {
+      assetId: {
+        type: "number",
+        description: "Jitbit asset ID",
+        required: true,
+      },
+      name: {
+        type: "string",
+        description: "Asset name",
+        required: false,
+      },
+      serialNumber: {
+        type: "string",
+        description: "Serial number",
+        required: false,
+      },
+      companyId: {
+        type: "number",
+        description: "Company ID",
+        required: false,
+      },
+      notes: {
+        type: "string",
+        description: "Notes about the asset",
+        required: false,
+      },
+    },
+    actionType: "jitbit.update_asset",
+    riskLevel: "medium",
+  },
+  {
+    name: "jitbit.delete_asset",
+    description:
+      "Permanently delete a Jitbit asset. This action is irreversible and requires approval.",
+    params: {
+      assetId: {
+        type: "number",
+        description: "Jitbit asset ID",
+        required: true,
+      },
+    },
+    actionType: "jitbit.delete_asset",
+    riskLevel: "high",
+  },
+  {
+    name: "jitbit.add_tag",
+    description:
+      "Add a tag to a Jitbit support ticket.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+      tagName: {
+        type: "string",
+        description: "Tag name to add",
+        required: true,
+      },
+    },
+    actionType: "jitbit.add_tag",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.remove_tag",
+    description:
+      "Remove a tag from a Jitbit support ticket.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+      tagName: {
+        type: "string",
+        description: "Tag name to remove",
+        required: true,
+      },
+    },
+    actionType: "jitbit.remove_tag",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.add_time_entry",
+    description:
+      "Add a time tracking entry to a Jitbit support ticket.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+      minutes: {
+        type: "number",
+        description: "Number of minutes spent",
+        required: true,
+      },
+      date: {
+        type: "string",
+        description: "Date for the entry, YYYY-MM-DD",
+        required: false,
+      },
+      comment: {
+        type: "string",
+        description: "Optional note about the time entry",
+        required: false,
+      },
+      billable: {
+        type: "boolean",
+        description: "Whether the time is billable",
+        required: false,
+      },
+    },
+    actionType: "jitbit.add_time_entry",
+    riskLevel: "medium",
+  },
 
   // ==================== Work Items Tools ====================
   {
@@ -3500,6 +3855,10 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_recent_tickets")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.get_customer_snapshot")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.find_followups")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.create_ticket")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.close_ticket")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.assign_ticket")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_assets")!,
 
   // Work items
   PRODUCTIVITY_TOOLS.find((t) => t.name === "work_items.create")!,
@@ -3633,7 +3992,7 @@ export function getToolInventorySummary(mode: string): string {
     {
       name: "Jitbit",
       prefix: "jitbit",
-      writeActions: ["ticket comments"],
+      writeActions: ["ticket comments", "ticket lifecycle", "asset management", "tags", "time tracking"],
     },
     {
       name: "Calendar",
@@ -3698,7 +4057,7 @@ export function getToolInventory(mode: string): string {
     {
       name: "Jitbit",
       prefix: "jitbit",
-      writeActions: ["ticket comments"],
+      writeActions: ["ticket comments", "ticket lifecycle", "asset management", "tags", "time tracking"],
     },
     {
       name: "Calendar",

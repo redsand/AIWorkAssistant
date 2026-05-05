@@ -1,17 +1,33 @@
 import axios, { AxiosError, AxiosInstance } from "axios";
 import { env } from "../../config/env";
 import type {
+  JitbitAddAttachmentParams,
+  JitbitAddTimeEntryParams,
+  JitbitAsset,
+  JitbitAttachment,
+  JitbitAutomationRule,
   JitbitCategory,
   JitbitComment,
   JitbitCompany,
+  JitbitCreateAssetParams,
+  JitbitCreateTicketParams,
+  JitbitCustomField,
+  JitbitCustomFieldValue,
+  JitbitForwardTicketParams,
+  JitbitListAssetsParams,
   JitbitListCompaniesParams,
   JitbitListTicketsParams,
   JitbitListUsersParams,
+  JitbitMergeTicketsParams,
   JitbitPriority,
   JitbitSearchTicketsParams,
+  JitbitSection,
   JitbitStatus,
+  JitbitTag,
   JitbitTicket,
+  JitbitTimeEntry,
   JitbitTicketUpdatePatch,
+  JitbitUpdateAssetParams,
   JitbitUser,
 } from "./types";
 
@@ -231,6 +247,272 @@ export class JitbitClient {
   async listPriorities(): Promise<JitbitPriority[]> {
     this.ensureConfigured();
     const response = await this.client.get("/Priorities");
+    return response.data;
+  }
+
+  // === Ticket Lifecycle ===
+
+  async createTicket(params: JitbitCreateTicketParams): Promise<JitbitTicket> {
+    this.ensureConfigured();
+    const payload = new URLSearchParams();
+    payload.set("categoryId", String(params.categoryId));
+    payload.set("subject", params.subject);
+    if (params.body !== undefined) payload.set("body", params.body);
+    if (params.priorityId !== undefined) payload.set("priorityId", String(params.priorityId));
+    if (params.userId !== undefined) payload.set("userId", String(params.userId));
+    if (params.assignedToUserId !== undefined) payload.set("assignedToUserId", String(params.assignedToUserId));
+    if (params.forTechsOnly !== undefined) payload.set("forTechsOnly", String(params.forTechsOnly));
+    if (params.tags !== undefined) payload.set("tags", params.tags);
+    if (params.companyId !== undefined) payload.set("companyId", String(params.companyId));
+    if (params.dueDate !== undefined) payload.set("dueDate", params.dueDate);
+    if (params.cc !== undefined) payload.set("cc", params.cc);
+    if (params.source !== undefined) payload.set("origin", params.source === "email" ? "0" : params.source === "widget" ? "1" : "2");
+    if (params.parentId !== undefined) payload.set("parentId", String(params.parentId));
+    if (params.customFields) {
+      for (const [key, value] of Object.entries(params.customFields)) {
+        payload.set(key, value);
+      }
+    }
+    const response = await this.client.post("/Ticket", payload, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
+    return response.data;
+  }
+
+  async deleteTicket(ticketId: number): Promise<unknown> {
+    this.ensureConfigured();
+    const response = await this.client.delete("/Ticket", {
+      params: { id: ticketId },
+    });
+    return response.data;
+  }
+
+  async mergeTickets(params: JitbitMergeTicketsParams): Promise<unknown> {
+    this.ensureConfigured();
+    const response = await this.client.post("/MergeTickets", params);
+    return response.data;
+  }
+
+  async forwardTicket(
+    ticketId: number,
+    params: JitbitForwardTicketParams,
+  ): Promise<unknown> {
+    this.ensureConfigured();
+    const payload = new URLSearchParams();
+    payload.set("id", String(ticketId));
+    payload.set("to", params.toEmail);
+    if (params.ccEmails?.length) payload.set("cc", params.ccEmails.join(","));
+    if (params.body !== undefined) payload.set("body", params.body);
+    const response = await this.client.post("/ForwardTicket", payload, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
+    return response.data;
+  }
+
+  async subscribeToTicket(ticketId: number, userId?: number): Promise<unknown> {
+    this.ensureConfigured();
+    const params: Record<string, unknown> = { id: ticketId };
+    if (userId !== undefined) params.userId = userId;
+    const response = await this.client.post("/Subscribe", null, { params });
+    return response.data;
+  }
+
+  async unsubscribeFromTicket(ticketId: number, userId?: number): Promise<unknown> {
+    this.ensureConfigured();
+    const params: Record<string, unknown> = { id: ticketId };
+    if (userId !== undefined) params.userId = userId;
+    const response = await this.client.delete("/Subscribe", { params });
+    return response.data;
+  }
+
+  // === Attachments ===
+
+  async listAttachments(ticketId: number): Promise<JitbitAttachment[]> {
+    this.ensureConfigured();
+    const response = await this.client.get(`/Ticket/${ticketId}/Attachments`);
+    return response.data;
+  }
+
+  async getAttachment(attachmentId: number): Promise<unknown> {
+    this.ensureConfigured();
+    const response = await this.client.get(`/Attachment/${attachmentId}`, {
+      responseType: "arraybuffer",
+    });
+    return response.data;
+  }
+
+  async addAttachment(
+    ticketId: number,
+    params: JitbitAddAttachmentParams,
+  ): Promise<unknown> {
+    this.ensureConfigured();
+    const formData = new FormData();
+    formData.append("file", new Blob([params.data]), params.fileName);
+    if (params.commentBody) formData.append("commentBody", params.commentBody);
+    const response = await this.client.post(
+      `/Ticket/${ticketId}/Attachments`,
+      formData,
+    );
+    return response.data;
+  }
+
+  async deleteAttachment(attachmentId: number): Promise<unknown> {
+    this.ensureConfigured();
+    const response = await this.client.delete(`/Attachment/${attachmentId}`);
+    return response.data;
+  }
+
+  // === Assets ===
+
+  async listAssets(params: JitbitListAssetsParams = {}): Promise<JitbitAsset[]> {
+    this.ensureConfigured();
+    const response = await this.client.get("/Assets", { params });
+    return response.data;
+  }
+
+  async getAsset(assetId: number): Promise<JitbitAsset> {
+    this.ensureConfigured();
+    const response = await this.client.get(`/Assets/${assetId}`);
+    return response.data;
+  }
+
+  async createAsset(params: JitbitCreateAssetParams): Promise<JitbitAsset> {
+    this.ensureConfigured();
+    const response = await this.client.post("/Assets", params);
+    return response.data;
+  }
+
+  async updateAsset(
+    assetId: number,
+    params: JitbitUpdateAssetParams,
+  ): Promise<JitbitAsset> {
+    this.ensureConfigured();
+    const response = await this.client.put(`/Assets/${assetId}`, params);
+    return response.data;
+  }
+
+  async deleteAsset(assetId: number): Promise<unknown> {
+    this.ensureConfigured();
+    const response = await this.client.delete(`/Assets/${assetId}`);
+    return response.data;
+  }
+
+  async getAssetTickets(assetId: number): Promise<JitbitTicket[]> {
+    this.ensureConfigured();
+    const response = await this.client.get(`/Assets/${assetId}/Tickets`);
+    return response.data;
+  }
+
+  // === Custom Fields ===
+
+  async listCustomFields(params?: { categoryId?: number }): Promise<JitbitCustomField[]> {
+    this.ensureConfigured();
+    const response = await this.client.get("/CustomFields", { params });
+    return response.data;
+  }
+
+  async setCustomFieldValue(
+    ticketId: number,
+    fieldId: number,
+    value: string,
+  ): Promise<unknown> {
+    this.ensureConfigured();
+    const payload = new URLSearchParams();
+    payload.set("id", String(ticketId));
+    payload.set("value", value);
+    const response = await this.client.post(
+      `/CustomFields/${fieldId}/Value`,
+      payload,
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" } },
+    );
+    return response.data;
+  }
+
+  async getCustomFieldValues(ticketId: number): Promise<JitbitCustomFieldValue[]> {
+    this.ensureConfigured();
+    const response = await this.client.get("/CustomFields/Values", {
+      params: { id: ticketId },
+    });
+    return response.data;
+  }
+
+  // === Tags ===
+
+  async listTags(): Promise<JitbitTag[]> {
+    this.ensureConfigured();
+    const response = await this.client.get("/Tags");
+    return response.data;
+  }
+
+  async addTag(ticketId: number, tagName: string): Promise<unknown> {
+    this.ensureConfigured();
+    const response = await this.client.post("/Tag", null, {
+      params: { id: ticketId, name: tagName },
+    });
+    return response.data;
+  }
+
+  async removeTag(ticketId: number, tagName: string): Promise<unknown> {
+    this.ensureConfigured();
+    const response = await this.client.delete("/Tag", {
+      params: { id: ticketId, name: tagName },
+    });
+    return response.data;
+  }
+
+  // === Sections ===
+
+  async listSections(categoryId?: number): Promise<JitbitSection[]> {
+    this.ensureConfigured();
+    const response = await this.client.get("/Sections", {
+      params: categoryId ? { categoryId } : undefined,
+    });
+    return response.data;
+  }
+
+  // === Time Tracking ===
+
+  async getTimeEntries(ticketId: number): Promise<JitbitTimeEntry[]> {
+    this.ensureConfigured();
+    const response = await this.client.get(`/Ticket/${ticketId}/TimeTracking`);
+    return response.data;
+  }
+
+  async addTimeEntry(
+    ticketId: number,
+    params: JitbitAddTimeEntryParams,
+  ): Promise<unknown> {
+    this.ensureConfigured();
+    const response = await this.client.post(
+      `/Ticket/${ticketId}/TimeTracking`,
+      params,
+    );
+    return response.data;
+  }
+
+  async deleteTimeEntry(entryId: number): Promise<unknown> {
+    this.ensureConfigured();
+    const response = await this.client.delete(`/TimeTracking/${entryId}`);
+    return response.data;
+  }
+
+  // === Automation ===
+
+  async listAutomationRules(categoryId?: number): Promise<JitbitAutomationRule[]> {
+    this.ensureConfigured();
+    const response = await this.client.get("/AutomationRules", {
+      params: categoryId ? { categoryId } : undefined,
+    });
+    return response.data;
+  }
+
+  async triggerAutomation(ticketId: number, ruleId: number): Promise<unknown> {
+    this.ensureConfigured();
+    const response = await this.client.post(
+      `/AutomationRules/${ruleId}/Execute`,
+      null,
+      { params: { id: ticketId } },
+    );
     return response.data;
   }
 

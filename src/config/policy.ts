@@ -130,6 +130,68 @@ export const DEFAULT_POLICIES: PolicyRule[] = [
     description: "Delete Jira issue (requires approval)",
   },
 
+  // ===== JITBIT: DELETES REQUIRE APPROVAL =====
+  {
+    pattern: "jitbit.ticket.create",
+    riskLevel: "low",
+    defaultResult: "allow",
+    description: "Create Jitbit ticket",
+  },
+  {
+    pattern: "jitbit.ticket.update",
+    riskLevel: "medium",
+    defaultResult: "allow",
+    description: "Update Jitbit ticket (close, reopen, assign, merge, forward)",
+  },
+  {
+    pattern: "jitbit.ticket.delete",
+    riskLevel: "high",
+    defaultResult: "approval_required",
+    description: "Delete Jitbit ticket (requires approval)",
+  },
+  {
+    pattern: "jitbit.ticket.comment",
+    riskLevel: "low",
+    defaultResult: "allow",
+    description: "Add comments to Jitbit tickets",
+  },
+  {
+    pattern: "jitbit.asset.create",
+    riskLevel: "medium",
+    defaultResult: "allow",
+    description: "Create Jitbit asset",
+  },
+  {
+    pattern: "jitbit.asset.update",
+    riskLevel: "medium",
+    defaultResult: "allow",
+    description: "Update Jitbit asset",
+  },
+  {
+    pattern: "jitbit.asset.delete",
+    riskLevel: "high",
+    defaultResult: "approval_required",
+    description: "Delete Jitbit asset (requires approval)",
+  },
+  {
+    pattern: "jitbit.tag.manage",
+    riskLevel: "low",
+    defaultResult: "allow",
+    description: "Add and remove tags on Jitbit tickets",
+  },
+  {
+    pattern: "jitbit.time.create",
+    riskLevel: "medium",
+    defaultResult: "allow",
+    description: "Add time tracking entries to Jitbit tickets",
+  },
+  {
+    pattern: "jitbit.automation.execute",
+    riskLevel: "medium",
+    defaultResult: "allow",
+    description: "Trigger Jitbit automation rules",
+  },
+
   // ===== CALENDAR: ALL ALLOWED =====
   {
     pattern: "calendar.event.create",

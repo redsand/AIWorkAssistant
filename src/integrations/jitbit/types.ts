@@ -156,3 +156,163 @@ export interface JitbitTicketUpdatePatch {
   subject?: string;
   body?: string;
 }
+
+// === Ticket Lifecycle ===
+
+export interface JitbitCreateTicketParams {
+  categoryId: number;
+  subject: string;
+  body?: string;
+  priorityId?: number;
+  userId?: number;
+  assignedToUserId?: number;
+  forTechsOnly?: boolean;
+  tags?: string;
+  companyId?: number;
+  dueDate?: string;
+  cc?: string;
+  source?: "email" | "widget" | "api";
+  customFields?: Record<string, string>;
+  parentId?: number;
+}
+
+export interface JitbitMergeTicketsParams {
+  targetTicketId: number;
+  sourceTicketIds: number[];
+}
+
+export interface JitbitForwardTicketParams {
+  toEmail: string;
+  ccEmails?: string[];
+  body?: string;
+}
+
+// === Attachments ===
+
+export interface JitbitAttachment {
+  ID: number;
+  FileName?: string;
+  FileSize?: number;
+  CreatedDate?: string;
+  UserID?: number;
+  UserName?: string;
+  ContentType?: string;
+  IssueID?: number;
+  [key: string]: unknown;
+}
+
+export interface JitbitAddAttachmentParams {
+  fileName: string;
+  data: Buffer;
+  commentBody?: string;
+}
+
+// === Assets ===
+
+export interface JitbitAsset {
+  AssetID?: number;
+  Name?: string;
+  CategoryID?: number;
+  Category?: string;
+  CompanyID?: number;
+  CompanyName?: string;
+  SerialNumber?: string;
+  Notes?: string;
+  CustomFields?: JitbitAssetCustomField[];
+  CreatedDate?: string;
+  UpdatedDate?: string;
+  [key: string]: unknown;
+}
+
+export interface JitbitAssetCustomField {
+  FieldID: number;
+  Name: string;
+  Value?: string;
+}
+
+export interface JitbitListAssetsParams {
+  companyId?: number;
+  categoryId?: number;
+  search?: string;
+  count?: number;
+  page?: number;
+}
+
+export interface JitbitCreateAssetParams {
+  name: string;
+  categoryId?: number;
+  companyId?: number;
+  serialNumber?: string;
+  notes?: string;
+  customFields?: Record<string, string>;
+}
+
+export interface JitbitUpdateAssetParams extends Partial<JitbitCreateAssetParams> {}
+
+// === Custom Fields ===
+
+export interface JitbitCustomField {
+  FieldID: number;
+  Name: string;
+  Type?: string;
+  Values?: string;
+  Required?: boolean;
+  CategoryID?: number;
+  SectionID?: number;
+  [key: string]: unknown;
+}
+
+export interface JitbitCustomFieldValue {
+  FieldID: number;
+  Name: string;
+  Value?: string;
+  Type?: string;
+}
+
+// === Tags ===
+
+export interface JitbitTag {
+  TagID?: number;
+  Name: string;
+  TagCount?: number;
+}
+
+// === Sections ===
+
+export interface JitbitSection {
+  SectionID: number;
+  Name: string;
+  CategoryID?: number;
+  [key: string]: unknown;
+}
+
+// === Time Tracking ===
+
+export interface JitbitTimeEntry {
+  TimeEntryID?: number;
+  TicketID?: number;
+  UserID?: number;
+  UserName?: string;
+  Minutes: number;
+  Date?: string;
+  Comment?: string;
+  Billable?: boolean;
+  [key: string]: unknown;
+}
+
+export interface JitbitAddTimeEntryParams {
+  minutes: number;
+  date?: string;
+  comment?: string;
+  billable?: boolean;
+}
+
+// === Automation ===
+
+export interface JitbitAutomationRule {
+  RuleID: number;
+  Name: string;
+  CategoryID?: number;
+  Enabled?: boolean;
+  [key: string]: unknown;
+}

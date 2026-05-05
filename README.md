@@ -73,7 +73,7 @@ To keep token usage manageable, the system sends a **core set of ~26 tools** ini
 | Jira Integration    | ✅ Real | Full CRUD, v2/v3 fallback, comments, transitions, list projects                                                             |
 | GitLab Integration  | ✅ Real | REST API with retry logic, commits, MRs, files, pipelines, issues, branches, tags, blame, compare, webhooks                 |
 | GitHub Integration  | ✅ Real | Repos, files, branches, PRs, issues, workflows, releases, tags, commits, blame, compare, code search                        |
-| Jitbit Integration  | ✅ Real | Customer support tickets, comments, companies, users, snapshots, follow-ups, and recent activity summaries                  |
+| Jitbit Integration  | ✅ Real | 21 tools: ticket lifecycle (create/close/reopen/assign/delete/merge/forward), assets CRUD, custom fields, tags, time tracking, automation, comments, companies, users, snapshots |
 | File Calendar + ICS | ✅ Real | CRUD, RFC 5545 ICS export, iPhone subscription via tunnel                                                                   |
 | Cloudflare Tunnel   | ✅ Real | Starts at boot for external ICS access                                                                                      |
 | Google Calendar     | ✅ Real | OAuth2 + Calendar API                                                                                                       |
@@ -105,6 +105,8 @@ To keep token usage manageable, the system sends a **core set of ~26 tools** ini
 | `tests/unit/agent/opencode-client.test.ts`           | 6     | Live AI provider chat + tool calling                                                                     |
 | `src/integrations/jitbit/__tests__/jitbit-client.test.ts` | 23  | Jitbit API client: config, tickets, comments, companies, users, retry                                   |
 | `src/integrations/jitbit/__tests__/jitbit-service.test.ts` | 18 | Jitbit service: snapshots, followups, summaries, recent activity                                         |
+| `src/integrations/jitbit/__tests__/jitbit-client-extended.test.ts` | 34 | Jitbit client: lifecycle, attachments, assets, custom fields, tags, sections, time, automation |
+| `src/integrations/jitbit/__tests__/jitbit-service-extended.test.ts` | 31 | Jitbit service: close/reopen/assign, assets, custom fields, tags, time, sections, automation |
 
 ## Quick Start
 
@@ -312,7 +314,7 @@ GET    /api/agent-runs/:id/steps    # Get steps for a run
 
 ### Jitbit
 
-Jitbit support/customer intelligence is exposed through assistant tools rather than standalone REST routes. Available tools include `jitbit.search_tickets`, `jitbit.get_ticket`, `jitbit.list_recent_tickets`, `jitbit.get_customer_snapshot`, `jitbit.find_followups`, and `jitbit.add_ticket_comment`.
+Jitbit support/customer intelligence is exposed through 21 assistant tools rather than standalone REST routes. Core tools include `jitbit.search_tickets`, `jitbit.get_ticket`, `jitbit.create_ticket`, `jitbit.close_ticket`, `jitbit.assign_ticket`, and `jitbit.list_assets`. Additional tools for merges, forwarding, asset management, tags, and time tracking are available via `discover_tools('jitbit')`.
 
 ### Work Items
 
@@ -344,7 +346,7 @@ src/
 │   ├── jira/               # Jira Cloud REST API (v2/v3)
 │   ├── gitlab/             # GitLab API with retry + webhook support
 │   ├── github/             # GitHub REST API with retry (repos, PRs, issues, workflows, releases)
-│   ├── jitbit/             # Jitbit Helpdesk API (tickets, comments, companies, users, snapshots)
+│   ├── jitbit/             # Jitbit Helpdesk API (tickets, lifecycle, comments, companies, users, snapshots, assets, tags, time tracking, automation, custom fields)
 │   ├── google/             # Google Calendar OAuth2 + Calendar API
 │   ├── discord/            # Discord bot with slash commands
 │   └── file/               # File-based calendar + ICS export + tunnel

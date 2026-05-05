@@ -3805,6 +3805,233 @@ async function handleJitbitAddTicketComment(
   return { success: true, data };
 }
 
+async function handleJitbitCreateTicket(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const categoryId = params.categoryId as number;
+  const subject = params.subject as string;
+  if (!categoryId) return { success: false, error: "categoryId is required" };
+  if (!subject) return { success: false, error: "subject is required" };
+  const data = await jitbitService.createTicket({
+    categoryId,
+    subject,
+    body: params.body as string | undefined,
+    priorityId: params.priorityId as number | undefined,
+    assignedToUserId: params.assignedToUserId as number | undefined,
+    tags: params.tags as string | undefined,
+    companyId: params.companyId as number | undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleJitbitCloseTicket(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  const data = await jitbitService.closeTicket(ticketId);
+  return { success: true, data };
+}
+
+async function handleJitbitReopenTicket(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  const data = await jitbitService.reopenTicket(ticketId);
+  return { success: true, data };
+}
+
+async function handleJitbitAssignTicket(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  const assignedUserId = params.assignedUserId as number;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  if (!assignedUserId) return { success: false, error: "assignedUserId is required" };
+  const data = await jitbitService.assignTicket(ticketId, assignedUserId);
+  return { success: true, data };
+}
+
+async function handleJitbitDeleteTicket(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  const data = await jitbitService.deleteTicket(ticketId);
+  return { success: true, data };
+}
+
+async function handleJitbitMergeTickets(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const targetTicketId = params.targetTicketId as number;
+  const sourceTicketIdsStr = params.sourceTicketIds as string;
+  if (!targetTicketId) return { success: false, error: "targetTicketId is required" };
+  if (!sourceTicketIdsStr) return { success: false, error: "sourceTicketIds is required" };
+  const sourceTicketIds = sourceTicketIdsStr.split(",").map((id: string) => Number(id.trim()));
+  const data = await jitbitService.mergeTickets({ targetTicketId, sourceTicketIds });
+  return { success: true, data };
+}
+
+async function handleJitbitForwardTicket(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  const toEmail = params.toEmail as string;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  if (!toEmail) return { success: false, error: "toEmail is required" };
+  const data = await jitbitService.forwardTicket(ticketId, {
+    toEmail,
+    ccEmails: typeof params.ccEmails === "string" ? params.ccEmails.split(",") : undefined,
+    body: params.body as string | undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleJitbitListAssets(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const data = await jitbitService.listAssets({
+    search: params.search as string | undefined,
+    categoryId: params.categoryId as number | undefined,
+    companyId: params.companyId as number | undefined,
+    count: params.count ? Number(params.count) : undefined,
+    page: params.page ? Number(params.page) : undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleJitbitGetAsset(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const assetId = params.assetId as number;
+  if (!assetId) return { success: false, error: "assetId is required" };
+  const data = await jitbitService.getAsset(assetId);
+  return { success: true, data };
+}
+
+async function handleJitbitCreateAsset(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const name = params.name as string;
+  if (!name) return { success: false, error: "name is required" };
+  const data = await jitbitService.createAsset({
+    name,
+    categoryId: params.categoryId as number | undefined,
+    companyId: params.companyId as number | undefined,
+    serialNumber: params.serialNumber as string | undefined,
+    notes: params.notes as string | undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleJitbitUpdateAsset(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const assetId = params.assetId as number;
+  if (!assetId) return { success: false, error: "assetId is required" };
+  const data = await jitbitService.updateAsset(assetId, {
+    name: params.name as string | undefined,
+    serialNumber: params.serialNumber as string | undefined,
+    companyId: params.companyId as number | undefined,
+    notes: params.notes as string | undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleJitbitDeleteAsset(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const assetId = params.assetId as number;
+  if (!assetId) return { success: false, error: "assetId is required" };
+  const data = await jitbitService.deleteAsset(assetId);
+  return { success: true, data };
+}
+
+async function handleJitbitAddTag(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  const tagName = params.tagName as string;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  if (!tagName) return { success: false, error: "tagName is required" };
+  const data = await jitbitService.addTag(ticketId, tagName);
+  return { success: true, data };
+}
+
+async function handleJitbitRemoveTag(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  const tagName = params.tagName as string;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  if (!tagName) return { success: false, error: "tagName is required" };
+  const data = await jitbitService.removeTag(ticketId, tagName);
+  return { success: true, data };
+}
+
+async function handleJitbitAddTimeEntry(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  const minutes = params.minutes as number;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  if (!minutes) return { success: false, error: "minutes is required" };
+  const data = await jitbitService.addTimeEntry(ticketId, {
+    minutes,
+    date: params.date as string | undefined,
+    comment: params.comment as string | undefined,
+    billable: params.billable === true,
+  });
+  return { success: true, data };
+}
+
 async function handleWorkItemsList(
   params: Record<string, unknown>,
   _userId: string,
@@ -3988,6 +4215,21 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "jitbit.get_customer_snapshot": handleJitbitGetCustomerSnapshot,
   "jitbit.find_followups": handleJitbitFindFollowups,
   "jitbit.add_ticket_comment": handleJitbitAddTicketComment,
+  "jitbit.create_ticket": handleJitbitCreateTicket,
+  "jitbit.close_ticket": handleJitbitCloseTicket,
+  "jitbit.reopen_ticket": handleJitbitReopenTicket,
+  "jitbit.assign_ticket": handleJitbitAssignTicket,
+  "jitbit.delete_ticket": handleJitbitDeleteTicket,
+  "jitbit.merge_tickets": handleJitbitMergeTickets,
+  "jitbit.forward_ticket": handleJitbitForwardTicket,
+  "jitbit.list_assets": handleJitbitListAssets,
+  "jitbit.get_asset": handleJitbitGetAsset,
+  "jitbit.create_asset": handleJitbitCreateAsset,
+  "jitbit.update_asset": handleJitbitUpdateAsset,
+  "jitbit.delete_asset": handleJitbitDeleteAsset,
+  "jitbit.add_tag": handleJitbitAddTag,
+  "jitbit.remove_tag": handleJitbitRemoveTag,
+  "jitbit.add_time_entry": handleJitbitAddTimeEntry,
   "productivity.generate_daily_plan": handleDailyPlan,
   "productivity.generate_weekly_plan": handleWeeklyPlan,
   "web.search": handleWebSearch,
