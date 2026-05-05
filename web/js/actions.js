@@ -5,7 +5,7 @@ import {
   setActiveStreamController,
 } from "./state.js";
 import { authHeaders } from "./auth.js";
-import { addMessage } from "./messages.js";
+import { addMessage, showTyping } from "./messages.js";
 
 export function openToolsModal() {
   const modal = document.getElementById("toolsModal");
@@ -33,6 +33,7 @@ export function stopGeneration() {
   }
   const processingEl = document.getElementById("processingIndicator");
   processingEl.classList.remove("active");
+  showTyping(false);
 
   const progressEls = document.querySelectorAll(".tool-progress");
   progressEls.forEach((el) => {

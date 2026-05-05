@@ -19,6 +19,7 @@ import { fileCalendarRoutes } from "./routes/file-calendar";
 import { productivityRoutes } from "./routes/productivity";
 import { engineeringRoutes } from "./routes/engineering";
 import { agentRunsRoutes } from "./agent-runs/api";
+import { workItemRoutes } from "./routes/work-items";
 import {
   authMiddleware,
   isAuthConfigured,
@@ -78,6 +79,7 @@ export async function buildServer() {
   await server.register(productivityRoutes);
   await server.register(engineeringRoutes);
   await server.register(agentRunsRoutes, { prefix: "/api" });
+  await server.register(workItemRoutes, { prefix: "/api/work-items" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 
@@ -194,6 +196,15 @@ async function start() {
 ║     GET    /api/agent-runs/stats                            ║
 ║     GET    /api/agent-runs/:id                              ║
 ║     GET    /api/agent-runs/:id/steps                        ║
+║     GET    /api/work-items                                   ║
+║     POST   /api/work-items                                   ║
+║     GET    /api/work-items/stats                             ║
+║     GET    /api/work-items/:id                               ║
+║     PATCH  /api/work-items/:id                               ║
+║     POST   /api/work-items/:id/notes                         ║
+║     POST   /api/work-items/:id/links                        ║
+║     POST   /api/work-items/:id/complete                      ║
+║     POST   /api/work-items/:id/archive                      ║
 ║                                                            ║
 ╚════════════════════════════════════════════════════════════╝
     `);

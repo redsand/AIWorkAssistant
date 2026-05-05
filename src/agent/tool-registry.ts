@@ -2934,6 +2934,190 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "low",
   },
 
+  // ==================== Work Items Tools ====================
+  {
+    name: "work_items.create",
+    description:
+      "Create a work item to track a task, decision, code review, customer follow-up, roadmap item, or other work. Work items persist across sessions and can link to Jira/GitHub/GitLab resources.",
+    params: {
+      type: {
+        type: "string",
+        description:
+          'Item type: task, decision, code_review, roadmap, customer_followup, detection, research, personal, support, release',
+        required: true,
+      },
+      title: {
+        type: "string",
+        description: "Short title for the work item",
+        required: true,
+      },
+      description: {
+        type: "string",
+        description: "Detailed description",
+        required: false,
+      },
+      status: {
+        type: "string",
+        description:
+          'Initial status: proposed, planned, active, blocked, waiting, done. Default: proposed',
+        required: false,
+      },
+      priority: {
+        type: "string",
+        description: 'Priority: low, medium, high, critical. Default: medium',
+        required: false,
+      },
+      owner: {
+        type: "string",
+        description: "Person responsible for this item",
+        required: false,
+      },
+      source: {
+        type: "string",
+        description:
+          'Where this item originated: chat, jira, github, gitlab, jitbit, calendar, manual, roadmap. Default: chat',
+        required: false,
+      },
+      sourceUrl: {
+        type: "string",
+        description: "URL to the source (e.g., Jira ticket, GitHub PR)",
+        required: false,
+      },
+      dueAt: {
+        type: "string",
+        description: "Due date in ISO 8601 format",
+        required: false,
+      },
+      tags: {
+        type: "array",
+        description: 'Array of tag strings, e.g. ["security","urgent"]',
+        required: false,
+      },
+    },
+    actionType: "work_items.create",
+    riskLevel: "medium",
+  },
+  {
+    name: "work_items.list",
+    description:
+      "List work items with optional filters. Returns items sorted by creation date (newest first). Excludes archived items by default.",
+    params: {
+      status: {
+        type: "string",
+        description: "Filter by status: proposed, planned, active, blocked, waiting, done, archived",
+        required: false,
+      },
+      type: {
+        type: "string",
+        description: "Filter by type: task, decision, code_review, roadmap, etc.",
+        required: false,
+      },
+      priority: {
+        type: "string",
+        description: "Filter by priority: low, medium, high, critical",
+        required: false,
+      },
+      owner: {
+        type: "string",
+        description: "Filter by owner",
+        required: false,
+      },
+      search: {
+        type: "string",
+        description: "Search title and description for this text",
+        required: false,
+      },
+      includeArchived: {
+        type: "boolean",
+        description: "Include archived items. Default: false",
+        required: false,
+      },
+    },
+    actionType: "work_items.list",
+    riskLevel: "low",
+  },
+  {
+    name: "work_items.update",
+    description:
+      "Update a work item's fields (title, description, status, priority, owner, due date, tags). Only provided fields are changed.",
+    params: {
+      id: {
+        type: "string",
+        description: "Work item ID",
+        required: true,
+      },
+      title: {
+        type: "string",
+        description: "New title",
+        required: false,
+      },
+      description: {
+        type: "string",
+        description: "New description",
+        required: false,
+      },
+      status: {
+        type: "string",
+        description: "New status",
+        required: false,
+      },
+      priority: {
+        type: "string",
+        description: "New priority",
+        required: false,
+      },
+      owner: {
+        type: "string",
+        description: "New owner",
+        required: false,
+      },
+      dueAt: {
+        type: "string",
+        description: "New due date (ISO 8601), or empty string to clear",
+        required: false,
+      },
+      tags: {
+        type: "array",
+        description: 'New set of tags, e.g. ["security","urgent"]',
+        required: false,
+      },
+    },
+    actionType: "work_items.update",
+    riskLevel: "medium",
+  },
+  {
+    name: "work_items.add_note",
+    description:
+      "Add a note to a work item. Notes track progress, context, and decisions over time.",
+    params: {
+      id: {
+        type: "string",
+        description: "Work item ID",
+        required: true,
+      },
+      content: {
+        type: "string",
+        description: "Note text",
+        required: true,
+      },
+    },
+    actionType: "work_items.add_note",
+    riskLevel: "low",
+  },
+  {
+    name: "work_items.complete",
+    description: "Mark a work item as done and set its completedAt timestamp.",
+    params: {
+      id: {
+        type: "string",
+        description: "Work item ID",
+        required: true,
+      },
+    },
+    actionType: "work_items.complete",
+    riskLevel: "low",
+  },
+
   // ==================== LSP Tools ====================
   {
     name: "lsp.diagnostics",
@@ -3179,6 +3363,13 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
 
   // System health
   PRODUCTIVITY_TOOLS.find((t) => t.name === "system.check_health")!,
+
+  // Work items
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "work_items.create")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "work_items.list")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "work_items.update")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "work_items.add_note")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "work_items.complete")!,
 ];
 
 const APPROVAL_TOOLS: Tool[] = [

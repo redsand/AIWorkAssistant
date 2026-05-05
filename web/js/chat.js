@@ -21,6 +21,7 @@ import {
   addToolCall,
   completeToolCall,
   showError,
+  showTyping,
 } from "./messages.js";
 import { loadRoadmaps } from "./sidebar.js";
 import { loadConversations } from "./conversations.js";
@@ -277,6 +278,7 @@ export async function sendMessage() {
 
   const processingEl = document.getElementById("processingIndicator");
   processingEl.classList.add("active");
+  showTyping(true);
 
   const progressElRef = { progressEl: null };
 
@@ -303,12 +305,14 @@ export async function sendMessage() {
 
     if (response.status === 401 || response.status === 403) {
       processingEl.classList.remove("active");
+      showTyping(false);
       showLoginOverlay();
       return;
     }
 
     if (!response.ok) {
       processingEl.classList.remove("active");
+      showTyping(false);
       let errorText = `Server returned ${response.status}`;
       try {
         const errBody = await response.json();
@@ -324,6 +328,7 @@ export async function sendMessage() {
 
     if (progressElRef.progressEl) progressElRef.progressEl.remove();
     processingEl.classList.remove("active");
+    showTyping(false);
 
     if (result.error) return;
 
@@ -339,6 +344,7 @@ export async function sendMessage() {
   } catch (error) {
     if (progressElRef.progressEl) progressElRef.progressEl.remove();
     processingEl.classList.remove("active");
+    showTyping(false);
     if (error instanceof DOMException && error.name === "AbortError") return;
     console.error("Failed to send message:", error);
     const errMsg = error instanceof Error ? error.message : String(error);
@@ -385,6 +391,7 @@ export async function resendMessage(message) {
 
   const processingEl2 = document.getElementById("processingIndicator");
   processingEl2.classList.add("active");
+  showTyping(true);
 
   const progressElRef = { progressEl: null };
 
@@ -411,12 +418,14 @@ export async function resendMessage(message) {
 
     if (response.status === 401 || response.status === 403) {
       processingEl2.classList.remove("active");
+      showTyping(false);
       showLoginOverlay();
       return;
     }
 
     if (!response.ok) {
       processingEl2.classList.remove("active");
+      showTyping(false);
       let errorText = `Server returned ${response.status}`;
       try {
         const errBody = await response.json();
@@ -432,6 +441,7 @@ export async function resendMessage(message) {
 
     if (progressElRef.progressEl) progressElRef.progressEl.remove();
     processingEl2.classList.remove("active");
+    showTyping(false);
 
     if (result.error) return;
 
@@ -449,6 +459,7 @@ export async function resendMessage(message) {
     console.error("Failed to send message:", error);
     if (progressElRef.progressEl) progressElRef.progressEl.remove();
     processingEl2.classList.remove("active");
+    showTyping(false);
     const errMsg2 = error instanceof Error ? error.message : String(error);
     addMessage(
       "Failed to connect to the agent: " +

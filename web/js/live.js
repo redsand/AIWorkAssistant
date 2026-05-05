@@ -5,6 +5,7 @@ import {
   createToolProgress,
   addToolCall,
   completeToolCall,
+  showTyping,
 } from "./messages.js";
 import { loadRoadmaps } from "./sidebar.js";
 import { loadConversations } from "./conversations.js";
@@ -33,6 +34,10 @@ export function subscribeLive(sessionId) {
 
   if (!sessionId) return;
 
+  const processingEl = document.getElementById("processingIndicator");
+  processingEl.classList.add("active");
+  showTyping(true);
+
   const url = `${API_BASE}/chat/sessions/${sessionId}/stream`;
   const headers = authHeaders();
   const abortController = new AbortController();
@@ -43,6 +48,10 @@ export function subscribeLive(sessionId) {
       if (abortController.signal.aborted) return;
 
       if (!response.ok) {
+        if (!abortController.signal.aborted) {
+          document.getElementById("processingIndicator").classList.remove("active");
+          showTyping(false);
+        }
         if (response.status === 404) {
           setCurrentSessionId(null);
           localStorage.removeItem("currentSessionId");
@@ -66,6 +75,7 @@ export function subscribeLive(sessionId) {
         if (activeAbortController === abortController) activeAbortController = null;
         const processingEl = document.getElementById("processingIndicator");
         processingEl.classList.remove("active");
+        showTyping(false);
         if (progressEl) {
           progressEl.remove();
           progressEl = null;
@@ -105,6 +115,9 @@ export function subscribeLive(sessionId) {
               const data = JSON.parse(dataStr);
 
               if (eventType === "state" && data.processing === false) {
+                const procEl = document.getElementById("processingIndicator");
+                procEl.classList.remove("active");
+                showTyping(false);
                 return { stop: false };
               }
 
@@ -224,5 +237,10 @@ export function subscribeLive(sessionId) {
 
       pump();
     })
-    .catch(() => {});
+    .catch(() => {
+      if (!abortController.signal.aborted) {
+        document.getElementById("processingIndicator").classList.remove("active");
+        showTyping(false);
+      }
+    });
 }

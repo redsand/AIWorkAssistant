@@ -28,6 +28,7 @@ import * as path from "path";
 import { todoManager } from "./todo-manager";
 import { knowledgeStore } from "./knowledge-store";
 import { aiClient } from "./opencode-client";
+import { workItemDatabase } from "../work-items/database";
 import { workflowExecutor } from "./workflow-executor";
 import { mcpClient } from "../integrations/mcp";
 import { codebaseIndexer } from "./codebase-indexer";
@@ -3685,6 +3686,132 @@ async function handleLspSymbols(
   };
 }
 
+// ==================== Work Items Handlers ====================
+
+async function handleWorkItemsCreate(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  try {
+    const item = workItemDatabase.createWorkItem({
+      type: params.type as any,
+      title: params.title as string,
+      description: params.description as string | undefined,
+      status: params.status as any,
+      priority: params.priority as any,
+      owner: params.owner as string | undefined,
+      source: params.source as any ?? "chat",
+      sourceUrl: params.sourceUrl as string | undefined,
+      sourceExternalId: params.sourceExternalId as string | undefined,
+      dueAt: params.dueAt as string | undefined,
+      tags: params.tags as string[] | undefined,
+      linkedResources: params.linkedResources as any[] | undefined,
+      metadata: params.metadata as Record<string, unknown> | undefined,
+    });
+    return { success: true, data: item };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleWorkItemsList(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  try {
+    const result = workItemDatabase.listWorkItems({
+      status: params.status as any,
+      type: params.type as any,
+      priority: params.priority as any,
+      source: params.source as any,
+      owner: params.owner as string | undefined,
+      search: params.search as string | undefined,
+      includeArchived: params.includeArchived === true,
+      limit: params.limit ? Number(params.limit) : undefined,
+      offset: params.offset ? Number(params.offset) : undefined,
+    });
+    return { success: true, data: result };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleWorkItemsUpdate(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  try {
+    const id = params.id as string;
+    if (!id) return { success: false, error: "id is required" };
+    const item = workItemDatabase.updateWorkItem(id, {
+      type: params.type as any,
+      title: params.title as string | undefined,
+      description: params.description as string | undefined,
+      status: params.status as any,
+      priority: params.priority as any,
+      owner: params.owner as string | undefined,
+      source: params.source as any,
+      sourceUrl: params.sourceUrl as string | null | undefined,
+      sourceExternalId: params.sourceExternalId as string | null | undefined,
+      dueAt: params.dueAt as string | null | undefined,
+      tags: params.tags as string[] | undefined,
+      linkedResources: params.linkedResources as any[] | undefined,
+      metadata: params.metadata as Record<string, unknown> | undefined,
+    });
+    if (!item) return { success: false, error: "Work item not found" };
+    return { success: true, data: item };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleWorkItemsAddNote(
+  params: Record<string, unknown>,
+  userId: string,
+): Promise<ToolCallResult> {
+  try {
+    const id = params.id as string;
+    const content = params.content as string;
+    if (!id) return { success: false, error: "id is required" };
+    if (!content) return { success: false, error: "content is required" };
+    const item = workItemDatabase.addNote(id, userId, content);
+    if (!item) return { success: false, error: "Work item not found" };
+    return { success: true, data: item };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleWorkItemsComplete(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  try {
+    const id = params.id as string;
+    if (!id) return { success: false, error: "id is required" };
+    const item = workItemDatabase.completeWorkItem(id);
+    if (!item) return { success: false, error: "Work item not found" };
+    return { success: true, data: item };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
 const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "calendar.list_events": handleCalendarListEvents,
   "calendar.create_focus_block": handleCalendarCreateFocusBlock,
@@ -3794,6 +3921,13 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "system.reject_action": handleRejectAction,
   "system.list_approvals": handleListApprovals,
   "system.check_health": handleSystemCheckHealth,
+
+  // Work Items
+  "work_items.create": handleWorkItemsCreate,
+  "work_items.list": handleWorkItemsList,
+  "work_items.update": handleWorkItemsUpdate,
+  "work_items.add_note": handleWorkItemsAddNote,
+  "work_items.complete": handleWorkItemsComplete,
 
   discover_tools: handleDiscoverTools,
 

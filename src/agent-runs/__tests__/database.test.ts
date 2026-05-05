@@ -63,7 +63,7 @@ describe('AgentRunDatabase', () => {
   describe('listRuns', () => {
     it('should filter runs by status and userId', () => {
       const run1 = db.startRun({ userId: 'user-1', mode: 'productivity' });
-      const run2 = db.startRun({ userId: 'user-2', mode: 'engineering' });
+      db.startRun({ userId: 'user-2', mode: 'engineering' });
       db.completeRun(run1.id, { toolLoopCount: 0 });
       const result = db.listRuns({ status: 'running' });
       expect(result.runs).toHaveLength(1);
@@ -87,7 +87,7 @@ describe('AgentRunDatabase', () => {
 
 describe('sanitizeValue', () => {
   it('should redact known secret field names', () => {
-    const result = sanitizeValue({ apiKey: 'sk-12345', token: 'abc', password: 'secret', authorization: 'Bearer xyz', secret: 'hidden', access_token: 'at-1', refresh_token: 'rt-1' });
+    const result = sanitizeValue({ apiKey: 'sk-12345', token: 'abc', password: 'secret', authorization: 'Bearer xyz', secret: 'hidden', access_token: 'at-1', refresh_token: 'rt-1' }) as Record<string, unknown>;
     expect(result.apiKey).toBe('[REDACTED]');
     expect(result.token).toBe('[REDACTED]');
     expect(result.password).toBe('[REDACTED]');
@@ -98,20 +98,20 @@ describe('sanitizeValue', () => {
   });
 
   it('should preserve non-secret fields', () => {
-    const result = sanitizeValue({ name: 'test', count: 5, active: true });
+    const result = sanitizeValue({ name: 'test', count: 5, active: true }) as Record<string, unknown>;
     expect(result.name).toBe('test');
     expect(result.count).toBe(5);
     expect(result.active).toBe(true);
   });
 
   it('should handle nested objects', () => {
-    const result = sanitizeValue({ config: { apiKey: 'sk-123', region: 'us-east' } });
+    const result = sanitizeValue({ config: { apiKey: 'sk-123', region: 'us-east' } }) as { config: Record<string, unknown> };
     expect(result.config.apiKey).toBe('[REDACTED]');
     expect(result.config.region).toBe('us-east');
   });
 
   it('should handle arrays', () => {
-    const result = sanitizeValue([{ apiKey: 'sk-1' }, { apiKey: 'sk-2' }]);
+    const result = sanitizeValue([{ apiKey: 'sk-1' }, { apiKey: 'sk-2' }]) as Record<string, unknown>[];
     expect(result[0].apiKey).toBe('[REDACTED]');
     expect(result[1].apiKey).toBe('[REDACTED]');
   });
