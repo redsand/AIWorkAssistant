@@ -81,11 +81,21 @@ export async function loadConversations() {
 }
 
 export async function switchConversation(sessionId) {
-  if (activeStreamController) return;
+  // Abort any active stream from the previous session before switching
+  if (activeStreamController) {
+    activeStreamController.abort();
+    setActiveStreamController(null);
+  }
 
   setCurrentSessionId(sessionId);
   localStorage.setItem("currentSessionId", sessionId);
   updateSessionHash(sessionId);
+
+  // Reset processing state from previous session
+  const processingIndicator = document.getElementById("processingIndicator");
+  if (processingIndicator) processingIndicator.classList.remove("active");
+  const typingIndicator = document.getElementById("typingIndicator");
+  if (typingIndicator) typingIndicator.classList.remove("active");
 
   const chatMessages = document.getElementById("chatMessages");
   chatMessages.innerHTML = "";
@@ -151,9 +161,22 @@ export async function switchConversation(sessionId) {
 }
 
 export async function newChat() {
+  // Abort any active stream from the previous session
+  if (activeStreamController) {
+    activeStreamController.abort();
+    setActiveStreamController(null);
+  }
+
   setCurrentSessionId(null);
   localStorage.removeItem("currentSessionId");
   updateSessionHash(null);
+
+  // Reset processing state from previous session
+  const processingIndicator = document.getElementById("processingIndicator");
+  if (processingIndicator) processingIndicator.classList.remove("active");
+  const typingIndicator = document.getElementById("typingIndicator");
+  if (typingIndicator) typingIndicator.classList.remove("active");
+
   const chatMessages = document.getElementById("chatMessages");
   chatMessages.innerHTML = `
     <div class="message assistant">
@@ -214,6 +237,12 @@ export async function deleteConversation(sessionId) {
 }
 
 async function performDeleteConversation(sessionId) {
+  // Abort any active stream if deleting the current session
+  if (activeStreamController) {
+    activeStreamController.abort();
+    setActiveStreamController(null);
+  }
+
   try {
     await fetch(`${API_BASE}/chat/sessions/${sessionId}`, {
       method: "DELETE",
@@ -224,6 +253,13 @@ async function performDeleteConversation(sessionId) {
   if (currentSessionId === sessionId) {
     setCurrentSessionId(null);
     localStorage.removeItem("currentSessionId");
+
+    // Reset processing state
+    const processingIndicator = document.getElementById("processingIndicator");
+    if (processingIndicator) processingIndicator.classList.remove("active");
+    const typingIndicator = document.getElementById("typingIndicator");
+    if (typingIndicator) typingIndicator.classList.remove("active");
+
     const chatMessages = document.getElementById("chatMessages");
     chatMessages.innerHTML = `
       <div class="message assistant">

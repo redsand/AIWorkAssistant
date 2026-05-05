@@ -253,6 +253,12 @@ async function loadChatHistory() {
 export async function clearChat() {
   if (!currentSessionId) return;
 
+  // Abort any active stream
+  if (activeStreamController) {
+    activeStreamController.abort();
+    setActiveStreamController(null);
+  }
+
   try {
     await fetch(`${API_BASE}/chat/sessions/${currentSessionId}`, {
       method: "DELETE",
@@ -262,6 +268,11 @@ export async function clearChat() {
 
   setCurrentSessionId(null);
   localStorage.removeItem("currentSessionId");
+
+  // Reset processing state
+  const processingIndicator = document.getElementById("processingIndicator");
+  if (processingIndicator) processingIndicator.classList.remove("active");
+  showTyping(false);
 
   const chatMessages = document.getElementById("chatMessages");
   chatMessages.innerHTML = `
@@ -366,8 +377,9 @@ export async function sendMessage() {
     if (currentSessionId) subscribeLive(currentSessionId);
   } catch (error) {
     finalizeToolProgress();
+    const processingIndicator = document.getElementById("processingIndicator");
+    if (processingIndicator) processingIndicator.classList.remove("active");
     if (myGeneration === sendGeneration) {
-      processingEl.classList.remove("active");
       showTyping(false);
     }
     if (error instanceof DOMException && error.name === "AbortError") return;
@@ -487,8 +499,9 @@ export async function resendMessage(message) {
     if (currentSessionId) subscribeLive(currentSessionId);
   } catch (error) {
     finalizeToolProgress();
+    const processingIndicator = document.getElementById("processingIndicator");
+    if (processingIndicator) processingIndicator.classList.remove("active");
     if (myGeneration === sendGeneration) {
-      processingEl.classList.remove("active");
       showTyping(false);
     }
     if (error instanceof DOMException && error.name === "AbortError") return;
