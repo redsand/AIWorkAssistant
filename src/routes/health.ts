@@ -6,10 +6,11 @@ import { FastifyInstance } from "fastify";
 import { githubClient } from "../integrations/github/github-client";
 import { gitlabClient } from "../integrations/gitlab/gitlab-client";
 import { jiraClient } from "../integrations/jira/jira-client";
+import { jitbitClient } from "../integrations/jitbit/jitbit-client";
 
 export async function healthRoutes(fastify: FastifyInstance) {
   fastify.get("/health", async (_request, _reply) => {
-    const [githubValid, gitlabValid, jiraValid] = await Promise.all([
+    const [githubValid, gitlabValid, jiraValid, jitbitValid] = await Promise.all([
       githubClient.isConfigured()
         ? githubClient.validateConfig().catch(() => false)
         : false,
@@ -18,6 +19,9 @@ export async function healthRoutes(fastify: FastifyInstance) {
         : false,
       jiraClient.isConfigured()
         ? jiraClient.validateConfig().catch(() => false)
+        : false,
+      jitbitClient.isConfigured()
+        ? jitbitClient.validateConfig().catch(() => false)
         : false,
     ]);
 
@@ -37,6 +41,10 @@ export async function healthRoutes(fastify: FastifyInstance) {
         jira: {
           configured: jiraClient.isConfigured(),
           valid: jiraValid,
+        },
+        jitbit: {
+          configured: jitbitClient.isConfigured(),
+          valid: jitbitValid,
         },
       },
     };

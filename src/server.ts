@@ -231,6 +231,9 @@ async function start() {
       `   GitHub: ${env.GITHUB_TOKEN ? "✅ Configured" : "⚠️  Not configured"}`,
     );
     console.log(
+      `   Jitbit: ${env.JITBIT_ENABLED && env.JITBIT_API_TOKEN ? "✅ Configured" : "⚠️  Not configured"}`,
+    );
+    console.log(
       `   Microsoft 365: ${env.MICROSOFT_CLIENT_ID ? "✅ Configured" : "⚠️  Not configured"}`,
     );
     console.log(

@@ -19,6 +19,7 @@ import { dispatchToolCall } from "../agent/tool-dispatcher";
 import { AGENT_MODES } from "../config/constants";
 import type { Tool, ChatMessage } from "../agent/opencode-client";
 import { githubClient } from "../integrations/github/github-client";
+import { jitbitClient } from "../integrations/jitbit/jitbit-client";
 import { gitlabClient } from "../integrations/gitlab/gitlab-client";
 import { jiraClient } from "../integrations/jira/jira-client";
 import { conversationManager } from "../memory/conversation-manager";
@@ -951,16 +952,18 @@ export async function chatRoutes(fastify: FastifyInstance) {
     const isConfigured = aiClient.isConfigured();
     const isValid = isConfigured ? await aiClient.validateConfig() : false;
 
-    const [githubConfigured, gitlabConfigured, jiraConfigured] = await Promise.all([
+    const [githubConfigured, gitlabConfigured, jiraConfigured, jitbitConfigured] = await Promise.all([
       githubClient.isConfigured(),
       gitlabClient.isConfigured(),
       jiraClient.isConfigured(),
+      jitbitClient.isConfigured(),
     ]);
 
-    const [githubValid, gitlabValid, jiraValid] = await Promise.all([
+    const [githubValid, gitlabValid, jiraValid, jitbitValid] = await Promise.all([
       githubConfigured ? githubClient.validateConfig().catch(() => false) : false,
       gitlabConfigured ? gitlabClient.validateConfig().catch(() => false) : false,
       jiraConfigured ? jiraClient.validateConfig().catch(() => false) : false,
+      jitbitConfigured ? jitbitClient.validateConfig().catch(() => false) : false,
     ]);
 
     const providerKeyMap: Record<string, { key: string; url: string }> = {
@@ -982,6 +985,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         github: { configured: githubConfigured, valid: githubValid },
         gitlab: { configured: gitlabConfigured, valid: gitlabValid },
         jira: { configured: jiraConfigured, valid: jiraValid },
+        jitbit: { configured: jitbitConfigured, valid: jitbitValid },
       },
     };
   });

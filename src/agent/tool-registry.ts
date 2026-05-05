@@ -22,6 +22,7 @@ const PLATFORM_PREFIX_MAP: Record<string, Platform> = {
   github: "github",
   gitlab: "gitlab",
   jira: "jira",
+  jitbit: "jitbit",
   calendar: "calendar",
   web: "web",
   local: "local",
@@ -2934,6 +2935,137 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "low",
   },
 
+  // ==================== Jitbit Tools ====================
+  {
+    name: "jitbit.search_tickets",
+    description:
+      "Search Jitbit support tickets by text and optional filters. Use for customer support history, incidents, and support request lookup.",
+    params: {
+      query: {
+        type: "string",
+        description: "Search text",
+        required: true,
+      },
+      dateFrom: {
+        type: "string",
+        description: "Optional ticket creation start date, YYYY-MM-DD",
+        required: false,
+      },
+      dateTo: {
+        type: "string",
+        description: "Optional ticket creation end date, YYYY-MM-DD",
+        required: false,
+      },
+      categoryId: {
+        type: "number",
+        description: "Optional Jitbit category ID",
+        required: false,
+      },
+      statusId: {
+        type: "number",
+        description: "Optional Jitbit status ID",
+        required: false,
+      },
+    },
+    actionType: "jitbit.search_tickets",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.get_ticket",
+    description:
+      "Get a Jitbit ticket with comments and an assistant-friendly summary.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+    },
+    actionType: "jitbit.get_ticket",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.list_recent_tickets",
+    description:
+      "List recent Jitbit customer activity from support tickets. Useful for CTO daily briefs and customer intelligence.",
+    params: {
+      days: {
+        type: "number",
+        description: "How many days back to look. Default: 7",
+        required: false,
+      },
+      limit: {
+        type: "number",
+        description: "Maximum tickets to return. Default: 25",
+        required: false,
+      },
+    },
+    actionType: "jitbit.list_recent_tickets",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.get_customer_snapshot",
+    description:
+      "Get a customer snapshot from Jitbit by company ID or company name, including users, open requests, recent activity, and high-priority tickets.",
+    params: {
+      companyId: {
+        type: "number",
+        description: "Jitbit company ID",
+        required: false,
+      },
+      companyName: {
+        type: "string",
+        description: "Company name to search",
+        required: false,
+      },
+    },
+    actionType: "jitbit.get_customer_snapshot",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.find_followups",
+    description:
+      "Find open Jitbit tickets that have not been updated recently and may need customer follow-up.",
+    params: {
+      daysSinceUpdate: {
+        type: "number",
+        description: "Minimum days since last update. Default: 3",
+        required: false,
+      },
+      limit: {
+        type: "number",
+        description: "Maximum tickets to return. Default: 25",
+        required: false,
+      },
+    },
+    actionType: "jitbit.find_followups",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.add_ticket_comment",
+    description:
+      "Add a comment to a Jitbit support ticket. Use only when the user explicitly asks to update support context or follow-up notes.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+      body: {
+        type: "string",
+        description: "Comment body",
+        required: true,
+      },
+      forTechsOnly: {
+        type: "boolean",
+        description: "Whether the comment is internal/technician-only",
+        required: false,
+      },
+    },
+    actionType: "jitbit.add_ticket_comment",
+    riskLevel: "medium",
+  },
+
   // ==================== Work Items Tools ====================
   {
     name: "work_items.create",
@@ -3364,6 +3496,11 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   // System health
   PRODUCTIVITY_TOOLS.find((t) => t.name === "system.check_health")!,
 
+  // Jitbit support/customer intelligence core
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_recent_tickets")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.get_customer_snapshot")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.find_followups")!,
+
   // Work items
   PRODUCTIVITY_TOOLS.find((t) => t.name === "work_items.create")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "work_items.list")!,
@@ -3494,6 +3631,11 @@ export function getToolInventorySummary(mode: string): string {
       writeActions: ["advanced fields"],
     },
     {
+      name: "Jitbit",
+      prefix: "jitbit",
+      writeActions: ["ticket comments"],
+    },
+    {
       name: "Calendar",
       prefix: "calendar",
       writeActions: ["event management"],
@@ -3552,6 +3694,11 @@ export function getToolInventory(mode: string): string {
       name: "Jira",
       prefix: "jira",
       writeActions: ["advanced fields"],
+    },
+    {
+      name: "Jitbit",
+      prefix: "jitbit",
+      writeActions: ["ticket comments"],
     },
     {
       name: "Calendar",

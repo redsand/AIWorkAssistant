@@ -5,6 +5,7 @@ import { jiraService } from "../integrations/jira/jira-service";
 import { jiraClient } from "../integrations/jira/jira-client";
 import { gitlabClient } from "../integrations/gitlab/gitlab-client";
 import { githubClient } from "../integrations/github/github-client";
+import { jitbitService } from "../integrations/jitbit/jitbit-service";
 import { dailyPlanner } from "../productivity/daily-planner";
 import { weeklyPlanner } from "../productivity/weekly-planner";
 import { roadmapDatabase } from "../roadmap/database";
@@ -3717,6 +3718,93 @@ async function handleWorkItemsCreate(
   }
 }
 
+async function handleJitbitSearchTickets(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const query = params.query as string;
+  if (!query) return { success: false, error: "query is required" };
+  const data = await jitbitService.searchTickets(query, {
+    dateFrom: params.dateFrom as string | undefined,
+    dateTo: params.dateTo as string | undefined,
+    categoryId: params.categoryId as number | undefined,
+    statusId: params.statusId as number | undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleJitbitGetTicket(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number | string;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  const data = await jitbitService.summarizeTicketForAssistant(ticketId);
+  return { success: true, data };
+}
+
+async function handleJitbitListRecentTickets(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const data = await jitbitService.getRecentCustomerActivity({
+    days: params.days ? Number(params.days) : undefined,
+    limit: params.limit ? Number(params.limit) : undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleJitbitGetCustomerSnapshot(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const companyIdOrName = (params.companyId as number | undefined) ?? (params.companyName as string | undefined);
+  if (!companyIdOrName) {
+    return { success: false, error: "companyId or companyName is required" };
+  }
+  const data = await jitbitService.getCustomerSnapshot(companyIdOrName);
+  return { success: true, data };
+}
+
+async function handleJitbitFindFollowups(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const data = await jitbitService.findTicketsNeedingFollowup({
+    daysSinceUpdate: params.daysSinceUpdate
+      ? Number(params.daysSinceUpdate)
+      : undefined,
+    limit: params.limit ? Number(params.limit) : undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleJitbitAddTicketComment(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number | string;
+  const body = params.body as string;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  if (!body) return { success: false, error: "body is required" };
+  const data = await jitbitService.addTicketComment(ticketId, body, {
+    forTechsOnly: params.forTechsOnly === true,
+  });
+  return { success: true, data };
+}
+
 async function handleWorkItemsList(
   params: Record<string, unknown>,
   _userId: string,
@@ -3894,6 +3982,12 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "github.rerun_workflow": handleGithubRerunWorkflow,
   "github.list_releases": handleGithubListReleases,
   "github.create_release": handleGithubCreateRelease,
+  "jitbit.search_tickets": handleJitbitSearchTickets,
+  "jitbit.get_ticket": handleJitbitGetTicket,
+  "jitbit.list_recent_tickets": handleJitbitListRecentTickets,
+  "jitbit.get_customer_snapshot": handleJitbitGetCustomerSnapshot,
+  "jitbit.find_followups": handleJitbitFindFollowups,
+  "jitbit.add_ticket_comment": handleJitbitAddTicketComment,
   "productivity.generate_daily_plan": handleDailyPlan,
   "productivity.generate_weekly_plan": handleWeeklyPlan,
   "web.search": handleWebSearch,

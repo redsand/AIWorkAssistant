@@ -7,6 +7,7 @@ export type Platform =
   | 'github'
   | 'gitlab'
   | 'jira'
+  | 'jitbit'
   | 'calendar'
   | 'web'
   | 'local'

@@ -72,6 +72,18 @@ const envSchema = z.object({
   GITHUB_DEFAULT_REPO: z.string().default(""),
   GITHUB_BASE_URL: z.string().url().default("https://api.github.com"),
 
+  // Jitbit
+  JITBIT_BASE_URL: z.string().default(""),
+  JITBIT_API_TOKEN: z.string().default(""),
+  JITBIT_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
+  JITBIT_DEFAULT_CATEGORY_ID: z
+    .string()
+    .default("")
+    .transform((s) => (s ? Number(s) : undefined)),
+
   // Policy
   POLICY_APPROVAL_MODE: z
     .enum(["strict", "balanced", "permissive"])

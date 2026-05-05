@@ -5,6 +5,7 @@ const EXPLICIT_PATTERNS: Array<{ pattern: RegExp; platform: Platform }> = [
   { pattern: /\b(?:on\s+)?github\b/i, platform: "github" },
   { pattern: /\b(?:on\s+)?gitlab\b/i, platform: "gitlab" },
   { pattern: /\b(?:in\s+)?jira\b/i, platform: "jira" },
+  { pattern: /\b(?:in\s+)?jitbit\b/i, platform: "jitbit" },
   { pattern: /\b(?:on\s+)?calendar\b/i, platform: "calendar" },
 ];
 
@@ -21,11 +22,12 @@ const INFERENCE_PATTERNS: Array<{
   { pattern: /\bgitlab\s+issue\b/i, platform: "gitlab", label: "GitLab issue" },
   { pattern: /\bjira\s+(?:ticket|issue|story|epic|bug|task)\b/i, platform: "jira", label: "Jira terminology" },
   { pattern: /\b[A-Z]{2,10}-\d{1,6}\b/, platform: "jira", label: "Jira key pattern" },
+  { pattern: /\bsupport\s+(?:ticket|request)\b|\bcustomer\s+follow-?up\b/i, platform: "jitbit", label: "support/customer terminology" },
   { pattern: /\bfocus\s*block\b/i, platform: "calendar", label: "focus block" },
   { pattern: /\bhealth\s*block\b/i, platform: "calendar", label: "health block" },
 ];
 
-const PLATFORM_PREFIXES = ["github", "gitlab", "jira", "calendar"] as const;
+const PLATFORM_PREFIXES = ["github", "gitlab", "jira", "jitbit", "calendar"] as const;
 
 const DEFAULT_SCAN_DEPTH = 10;
 
