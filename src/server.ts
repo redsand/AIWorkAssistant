@@ -26,6 +26,9 @@ import { personalOsRoutes } from "./routes/personal-os";
 import { productRoutes } from "./routes/product";
 import { memoryRoutes } from "./routes/memory";
 import { codeReviewRoutes } from "./routes/code-review";
+import { pushSubscriptionRoutes } from "./routes/push-subscriptions";
+import { pushAcknowledgeRoutes } from "./routes/push-acknowledge";
+import { initPushDispatcher } from "./push/dispatcher";
 import {
   authMiddleware,
   isAuthConfigured,
@@ -91,6 +94,8 @@ export async function buildServer() {
   await server.register(productRoutes, { prefix: "/api/product" });
   await server.register(memoryRoutes, { prefix: "/api/memory" });
   await server.register(codeReviewRoutes, { prefix: "/api/code-review" });
+  await server.register(pushSubscriptionRoutes, { prefix: "/api" });
+  await server.register(pushAcknowledgeRoutes, { prefix: "/api" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 
@@ -277,6 +282,7 @@ async function start() {
     console.log("");
 
     initializeMCP();
+    initPushDispatcher();
 
     if (env.RAG_INDEX_ON_STARTUP) {
       codebaseIndexer

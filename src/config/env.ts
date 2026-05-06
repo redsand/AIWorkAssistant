@@ -197,6 +197,14 @@ const envSchema = z.object({
     .string()
     .transform((s) => s === "true")
     .default("false"),
+
+  // Web Push (VAPID)
+  VAPID_PUBLIC_KEY: z.string().default(""),
+  VAPID_PRIVATE_KEY: z.string().default(""),
+  VAPID_ADMIN_EMAIL: z
+    .string()
+    .default("mailto:admin@ai-work-assistant.example"),
+  VAPID_SUBJECT: z.string().default(""),
 });
 
 export type Env = z.infer<typeof envSchema>;
