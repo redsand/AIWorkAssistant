@@ -83,13 +83,13 @@ describe("JitbitClient — Extended Methods", () => {
   });
 
   describe("mergeTickets", () => {
-    it("posts JSON body to /MergeTickets", async () => {
+    it("posts form-encoded id/id2 to /MergeTickets", async () => {
       mockPost.mockResolvedValue({ data: null });
-      await client.mergeTickets({ targetTicketId: 1, sourceTicketIds: [2, 3] });
-      expect(mockPost).toHaveBeenCalledWith("/MergeTickets", {
-        targetTicketId: 1,
-        sourceTicketIds: [2, 3],
-      });
+      await client.mergeTickets(1, 2);
+      const payload = mockPost.mock.calls[0][1] as URLSearchParams;
+      expect(payload.get("id")).toBe("1");
+      expect(payload.get("id2")).toBe("2");
+      expect(mockPost.mock.calls[0][0]).toBe("/MergeTickets");
     });
   });
 

@@ -18,7 +18,6 @@ import type {
   JitbitListCompaniesParams,
   JitbitListTicketsParams,
   JitbitListUsersParams,
-  JitbitMergeTicketsParams,
   JitbitPriority,
   JitbitSearchTicketsParams,
   JitbitSection,
@@ -287,9 +286,25 @@ export class JitbitClient {
     return response.data;
   }
 
-  async mergeTickets(params: JitbitMergeTicketsParams): Promise<unknown> {
+  async closeTicket(ticketId: number | string, suppressNotification = false): Promise<unknown> {
     this.ensureConfigured();
-    const response = await this.client.post("/MergeTickets", params);
+    const payload = new URLSearchParams();
+    payload.set("id", String(ticketId));
+    if (suppressNotification) payload.set("suppressNotification", "true");
+    const response = await this.client.post("/Close", payload, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
+    return response.data;
+  }
+
+  async mergeTickets(id: number, id2: number): Promise<unknown> {
+    this.ensureConfigured();
+    const payload = new URLSearchParams();
+    payload.set("id", String(id));
+    payload.set("id2", String(id2));
+    const response = await this.client.post("/MergeTickets", payload, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
     return response.data;
   }
 

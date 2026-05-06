@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const {
   mockIsConfigured,
+  mockCloseTicket,
   mockListStatuses,
   mockUpdateTicket,
   mockCreateTicket,
@@ -27,6 +28,7 @@ const {
   mockTriggerAutomation,
 } = vi.hoisted(() => ({
   mockIsConfigured: vi.fn(),
+  mockCloseTicket: vi.fn(),
   mockListStatuses: vi.fn(),
   mockUpdateTicket: vi.fn(),
   mockCreateTicket: vi.fn(),
@@ -55,6 +57,7 @@ const {
 vi.mock("../jitbit-client", () => ({
   JitbitClient: vi.fn(() => ({
     isConfigured: mockIsConfigured,
+    closeTicket: mockCloseTicket,
     listStatuses: mockListStatuses,
     updateTicket: mockUpdateTicket,
     createTicket: mockCreateTicket,
@@ -82,6 +85,7 @@ vi.mock("../jitbit-client", () => ({
   })),
   jitbitClient: {
     isConfigured: mockIsConfigured,
+    closeTicket: mockCloseTicket,
     listStatuses: mockListStatuses,
     updateTicket: mockUpdateTicket,
     createTicket: mockCreateTicket,
@@ -133,33 +137,18 @@ describe("JitbitService — Extended Methods", () => {
   });
 
   describe("closeTicket", () => {
-    it("finds Closed status and updates ticket", async () => {
-      mockListStatuses.mockResolvedValue([
-        { StatusID: 1, Name: "New" },
-        { StatusID: 3, Name: "Closed" },
-      ] as JitbitStatus[]);
-      mockUpdateTicket.mockResolvedValue({});
+    it("calls client.closeTicket directly via POST /Close", async () => {
+      mockCloseTicket.mockResolvedValue({});
       await service.closeTicket(42);
-      expect(mockListStatuses).toHaveBeenCalled();
-      expect(mockUpdateTicket).toHaveBeenCalledWith(42, { statusId: 3 });
+      expect(mockCloseTicket).toHaveBeenCalledWith(42, false);
+      expect(mockListStatuses).not.toHaveBeenCalled();
+      expect(mockUpdateTicket).not.toHaveBeenCalled();
     });
 
-    it("also matches Resolved status", async () => {
-      mockListStatuses.mockResolvedValue([
-        { StatusID: 1, Name: "New" },
-        { StatusID: 5, Name: "Resolved" },
-      ] as JitbitStatus[]);
-      mockUpdateTicket.mockResolvedValue({});
-      await service.closeTicket(42);
-      expect(mockUpdateTicket).toHaveBeenCalledWith(42, { statusId: 5 });
-    });
-
-    it("throws if no Closed/Resolved status found", async () => {
-      mockListStatuses.mockResolvedValue([
-        { StatusID: 1, Name: "New" },
-        { StatusID: 2, Name: "In Progress" },
-      ] as JitbitStatus[]);
-      await expect(service.closeTicket(42)).rejects.toThrow("Could not find Closed status");
+    it("passes suppressNotification flag", async () => {
+      mockCloseTicket.mockResolvedValue({});
+      await service.closeTicket(42, true);
+      expect(mockCloseTicket).toHaveBeenCalledWith(42, true);
     });
   });
 
@@ -209,10 +198,12 @@ describe("JitbitService — Extended Methods", () => {
   });
 
   describe("mergeTickets", () => {
-    it("delegates to client", async () => {
+    it("calls client.mergeTickets once per source ticket (API is one-at-a-time)", async () => {
       mockMergeTickets.mockResolvedValue(null);
       await service.mergeTickets({ targetTicketId: 1, sourceTicketIds: [2, 3] });
-      expect(mockMergeTickets).toHaveBeenCalledWith({ targetTicketId: 1, sourceTicketIds: [2, 3] });
+      expect(mockMergeTickets).toHaveBeenCalledTimes(2);
+      expect(mockMergeTickets).toHaveBeenNthCalledWith(1, 1, 2);
+      expect(mockMergeTickets).toHaveBeenNthCalledWith(2, 1, 3);
     });
   });
 

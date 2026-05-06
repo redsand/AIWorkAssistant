@@ -190,13 +190,8 @@ export class JitbitService {
     return this.client.createTicket(params);
   }
 
-  async closeTicket(ticketId: number | string): Promise<unknown> {
-    const statuses = await this.client.listStatuses();
-    const closedStatus = statuses.find(
-      (s) => s.Name.toLowerCase() === "closed" || s.Name.toLowerCase() === "resolved",
-    );
-    if (!closedStatus) throw new Error("Could not find Closed status");
-    return this.client.updateTicket(ticketId, { statusId: closedStatus.StatusID });
+  async closeTicket(ticketId: number | string, suppressNotification = false): Promise<unknown> {
+    return this.client.closeTicket(ticketId, suppressNotification);
   }
 
   async reopenTicket(ticketId: number | string): Promise<unknown> {
@@ -216,8 +211,13 @@ export class JitbitService {
     return this.client.deleteTicket(ticketId);
   }
 
-  async mergeTickets(params: JitbitMergeTicketsParams): Promise<unknown> {
-    return this.client.mergeTickets(params);
+  async mergeTickets(params: JitbitMergeTicketsParams): Promise<unknown[]> {
+    // API only accepts one merge at a time: id (keep) + id2 (deleted)
+    const results: unknown[] = [];
+    for (const sourceId of params.sourceTicketIds) {
+      results.push(await this.client.mergeTickets(params.targetTicketId, sourceId));
+    }
+    return results;
   }
 
   async forwardTicket(ticketId: number, params: JitbitForwardTicketParams): Promise<unknown> {

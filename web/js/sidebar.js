@@ -224,6 +224,14 @@ const QUICK_ACTION_PROMPTS = {
     "I have committed and pushed my latest code changes to the repository. Please: 1) Retrieve my active Jira ticket and its acceptance criteria, 2) Review my recent commits to verify every requirement is addressed, 3) If fully complete — close the ticket and write a concise summary of what was changed and why, 4) If anything is missing — list each gap clearly and provide a ready-to-use coding prompt for each one so I can fill them in.",
   "show my tickets across all platforms":
     "Show me all my open tickets and issues across every platform — Jira, Jitbit support tickets, and GitHub issues. Group them by platform, showing ticket ID, title, status, and priority for each. Highlight anything urgent or overdue.",
+  "hawk-ir-cases":
+    "Pull the HAWK IR incident response security signals. List all high-risk and critical open cases that have not been escalated, active nodes, and any recent cases from the last 7 days. Group by risk level (critical first, then high). For each case show the name, risk level, status, owner, and how long it has been open. Flag any that are unowned or stale.",
+  "open-work-items":
+    "Show me all my open work items. Group them by status: blocked first, then active, then planned, then proposed. Within each group sort by priority (critical → high → medium → low). Highlight anything overdue. Also show a brief count summary at the top.",
+  "entity-memory":
+    "Search entity memory and show me what we know. List the 20 most recently updated entities across all types — customers, repos, Jira issues, decisions, and preferences. For each one show the type, name, summary, and how many facts we have stored. If any customers or companies have open facts, surface those first.",
+  "ir-node-status":
+    "List all active HAWK IR nodes. For each node show the hostname, platform, IP address, last seen timestamp, number of available tasks, and whether hybrid tools are registered. Flag any nodes that haven't been seen in the last 24 hours.",
 };
 
 function getCustomPrompts() {
