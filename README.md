@@ -85,6 +85,7 @@ To keep token usage manageable, the system sends a **core set of ~26 tools** ini
 | Daily Planner       | ✅ Real | Jira + GitLab data wired, real issue counts and activity                                                                    |
 | CTO Command Center | ✅ Real | Daily brief from calendar, Jira, GitLab, GitHub, roadmap, work items, Jitbit, memory                                       |
 | Personal OS         | ✅ Real | Brief, open loops, pattern detection, delegation suggestions, focus blocks — all with graceful fallbacks                  |
+| Product Chief of Staff | ✅ Real | Workflow briefs, roadmap proposals, drift analysis, customer signals, weekly updates, work item creation               |
 | Health Endpoints    | ✅ Real | `/health` reports GitHub/GitLab/Jira integration status; `/chat/health` reports active AI provider                          |
 | Discord Bot         | ✅ Real | Slash commands, sessions, API integration                                                                                   |
 
@@ -109,6 +110,7 @@ To keep token usage manageable, the system sends a **core set of ~26 tools** ini
 | `src/integrations/jitbit/__tests__/jitbit-service.test.ts` | 18 | Jitbit service: snapshots, followups, summaries, recent activity                                         |
 | `src/integrations/jitbit/__tests__/jitbit-client-extended.test.ts` | 34 | Jitbit client: lifecycle, attachments, assets, custom fields, tags, sections, time, automation |
 | `src/integrations/jitbit/__tests__/jitbit-service-extended.test.ts` | 31 | Jitbit service: close/reopen/assign, assets, custom fields, tags, time, sections, automation |
+| `tests/unit/product/product-chief-of-staff.test.ts` | 13 | Workflow brief, roadmap proposal, drift analysis, customer signals, work items, weekly update |
 
 ## Personal OS
 
@@ -136,6 +138,35 @@ The Personal OS module provides a holistic daily operating brief that aggregates
 - No health/fitness decisions — only suggests protecting focus time
 - Uses existing policy engine for approval gates on `create_work_items`
 - All read-only endpoints are `low` risk; `create_work_items` is `medium` risk
+
+## Product/Roadmap Chief of Staff
+
+The Product Chief of Staff turns ideas, customer signals, support trends, roadmap data, and engineering status into clear product direction.
+
+- **Workflow Brief** (`product.workflow_brief`) — Turns a vague product idea into a structured workflow-first brief: problem, users, actors, job-to-be-done, trigger, desired outcome, current/proposed workflows, friction, automation opportunities, human-in-the-loop, MVP scope, non-goals, risks, and success criteria.
+- **Roadmap Proposal** (`product.roadmap_proposal`) — Generates a roadmap proposal from a theme: why now, customer evidence, engineering impact, proposed milestones with target dates, work items, dependencies, risks, cut line, and demo criteria.
+- **Roadmap Drift** (`product.roadmap_drift`) — Analyzes active roadmaps for shipped-vs-planned drift: completion rates, overdue milestones, at-risk items, and a drift score.
+- **Customer Signals** (`product.customer_signals`) — Extracts customer signals from Jitbit support tickets: repeated asks, high-friction areas, stale support themes, and customers waiting on roadmap promises.
+- **Weekly Update** (`product.weekly_update`) — Generates a weekly product update from roadmap progress, work items, and customer signals: shipped, in-progress, blocked, customer signals, roadmap changes, decisions needed, and next week priorities.
+- **Create Work Items** (`product.create_work_items`) — Creates work items from product proposals or signals. Requires explicit user approval (medium risk, policy-checked).
+
+### API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/product/workflow-brief` | Turn an idea into a workflow brief |
+| POST | `/api/product/roadmap-proposal` | Generate a roadmap proposal |
+| GET  | `/api/product/roadmap-drift` | Analyze roadmap drift |
+| GET  | `/api/product/customer-signals` | Extract customer signals from Jitbit |
+| POST | `/api/product/weekly-update` | Generate weekly product update |
+| POST | `/api/product/work-items` | Create work items from proposals |
+
+### Design Constraints
+
+- No roadmap mutation — drift analysis and proposals are read-only; work items are only created when explicitly requested
+- Read-only endpoints are `low` risk; `create_work_items` is `medium` risk
+- Falls back to structured templates when AI is not configured
+- Jitbit signals degrade gracefully when Jitbit is not configured
 
 ## Quick Start
 

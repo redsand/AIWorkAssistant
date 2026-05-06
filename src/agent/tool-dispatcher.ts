@@ -37,6 +37,8 @@ import { workflowExecutor } from "./workflow-executor";
 import { mcpClient } from "../integrations/mcp";
 import { codebaseIndexer } from "./codebase-indexer";
 import { knowledgeGraph } from "./knowledge-graph";
+import { entityMemory } from "../memory/entity-memory";
+import type { EntityType, FindEntitiesQuery } from "../memory/entity-types";
 import { lspManager } from "../integrations/lsp/index.js";
 import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
 
@@ -1923,6 +1925,72 @@ async function handleWeeklyPlan(
 
   const plan = await weeklyPlanner.generateWeeklyPlan(startDate, validatedWeeks, userId);
   return { success: true, data: plan };
+}
+
+async function handleMemoryFindEntities(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const query: FindEntitiesQuery = {
+      query: params.query as string | undefined,
+      type: params.type as EntityType | undefined,
+      source: params.source as string | undefined,
+      minConfidence: params.minConfidence as number | undefined,
+      limit: Math.min(Number(params.limit ?? 10), 50),
+    };
+    const entities = query.query || query.type || query.source || query.minConfidence !== undefined
+      ? entityMemory.findEntities(query)
+      : entityMemory.listRecentEntities(query.limit);
+    return {
+      success: true,
+      data: { entities, total: entities.length },
+    };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
+}
+
+async function handleMemoryGetEntityContext(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const type = params.type as EntityType;
+    const name = params.name as string;
+    if (!type || !name) {
+      return { success: false, error: "type and name are required" };
+    }
+    const context = entityMemory.getEntityContext(type, name);
+    if (!context) {
+      return {
+        success: true,
+        data: { found: false, message: `No entity of type '${type}' named '${name}' found in memory.` },
+      };
+    }
+    return { success: true, data: { found: true, ...context } };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
+}
+
+async function handleMemoryAddEntityFact(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const type = params.type as EntityType;
+    const name = params.name as string;
+    const fact = params.fact as string;
+    if (!type || !name || !fact) {
+      return { success: false, error: "type, name, and fact are required" };
+    }
+    const entity = entityMemory.upsertEntity({ type, name, source: (params.source as string) ?? "conversation" });
+    const stored = entityMemory.addFact(entity.id, fact, {
+      source: (params.source as string) ?? "conversation",
+      confidence: 0.9,
+    });
+    return { success: true, data: { entity, fact: stored } };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
 }
 
 async function handleCtoDailyCommandCenter(
@@ -4494,6 +4562,10 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "knowledge.delete": handleKnowledgeDelete,
   "knowledge.stats": handleKnowledgeStats,
   "agent.spawn": handleAgentSpawn,
+
+  "memory.find_entities": handleMemoryFindEntities,
+  "memory.get_entity_context": handleMemoryGetEntityContext,
+  "memory.add_entity_fact": handleMemoryAddEntityFact,
 
   "workflow.create": handleWorkflowCreate,
   "workflow.advance": handleWorkflowAdvance,

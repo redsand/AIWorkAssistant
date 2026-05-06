@@ -2596,6 +2596,56 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "low",
   },
 
+  // ── Entity Memory Tools ─────────────────────────────────────────
+  {
+    name: "memory.find_entities",
+    description:
+      "Search entity memory for people, customers, companies, repos, Jira issues, PRs, decisions, and preferences. Use this when Tim asks what we know about someone or something.",
+    params: {
+      query: { type: "string", description: "Text to search across entity names and summaries" },
+      type: {
+        type: "string",
+        description:
+          "Filter by entity type: person, customer, company, project, repo, jira_issue, gitlab_mr, github_pr, roadmap, work_item, decision, preference, system, vendor",
+      },
+      limit: { type: "number", description: "Max results to return (default 10, max 50)" },
+    },
+    actionType: "memory.find_entities",
+    riskLevel: "low",
+  },
+  {
+    name: "memory.get_entity_context",
+    description:
+      "Get everything known about a specific entity: its summary, all facts collected, and its links to other entities. Best for 'What do we know about customer ACME?' or 'Tell me about repo hawk-soar-cloud-v3'.",
+    params: {
+      type: {
+        type: "string",
+        description: "Entity type (person, customer, company, repo, jira_issue, etc.)",
+        required: true,
+      },
+      name: { type: "string", description: "Entity name to look up", required: true },
+    },
+    actionType: "memory.get_entity_context",
+    riskLevel: "low",
+  },
+  {
+    name: "memory.add_entity_fact",
+    description:
+      "Store a new fact about a named entity. Creates the entity if it does not exist. Use this to remember something specific: a customer preference, a decision made, a person's role.",
+    params: {
+      type: {
+        type: "string",
+        description: "Entity type (person, customer, company, repo, jira_issue, etc.)",
+        required: true,
+      },
+      name: { type: "string", description: "Entity name", required: true },
+      fact: { type: "string", description: "The fact to store about this entity", required: true },
+      source: { type: "string", description: "Where this fact came from (e.g. 'conversation', 'jitbit')" },
+    },
+    actionType: "memory.add_entity_fact",
+    riskLevel: "low",
+  },
+
   // ── Personal OS Tools ──────────────────────────────────────────
   {
     name: "personal_os.brief",

@@ -24,6 +24,7 @@ import { workItemRoutes } from "./routes/work-items";
 import { ctoRoutes } from "./routes/cto";
 import { personalOsRoutes } from "./routes/personal-os";
 import { productRoutes } from "./routes/product";
+import { memoryRoutes } from "./routes/memory";
 import {
   authMiddleware,
   isAuthConfigured,
@@ -87,6 +88,7 @@ export async function buildServer() {
   await server.register(ctoRoutes, { prefix: "/api/cto" });
   await server.register(personalOsRoutes, { prefix: "/api/personal-os" });
   await server.register(productRoutes, { prefix: "/api/product" });
+  await server.register(memoryRoutes, { prefix: "/api/memory" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 

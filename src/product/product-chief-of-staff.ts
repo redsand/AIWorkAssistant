@@ -574,7 +574,7 @@ Respond with ONLY the JSON object, no markdown fences.`,
       if (!subject) continue;
 
       // Extract first few meaningful words as a group key
-      const keywords = subject.split(/\s+/).filter((w: string) => w.length > 3).slice(0, 3).join(" ");
+      const keywords = subject.split(/\s+/).filter((w: string) => w.length > 3).slice(0, 2).join(" ");
       if (!keywords) continue;
 
       const group = subjectGroups.get(keywords) || [];
