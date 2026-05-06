@@ -1,5 +1,37 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// Mock WebSocket — instances are pushed to mockWsInstances for test access
+const mockWsInstances: any[] = [];
+
+vi.mock("ws", () => {
+  return {
+    default: class MockWebSocket {
+      url: string;
+      options: any;
+      private handlers: Record<string, Function[]> = {};
+      send = vi.fn();
+      close = vi.fn();
+      readyState = 1;
+      constructor(url: string, protocolsOrOptions?: any, options?: any) {
+        this.url = url;
+        // ws(url, options) — options passed as second arg when no protocols
+        this.options = protocolsOrOptions && !Array.isArray(protocolsOrOptions) && typeof protocolsOrOptions === 'object'
+          ? protocolsOrOptions
+          : options;
+        mockWsInstances.push(this);
+      }
+      on(event: string, handler: Function) {
+        if (!this.handlers[event]) this.handlers[event] = [];
+        this.handlers[event].push(handler);
+      }
+      emit(event: string, ...args: any[]) {
+        (this.handlers[event] || []).forEach(h => h(...args));
+      }
+    },
+    __esModule: true,
+  };
+});
+
 vi.mock("axios", () => {
   const mockPost = vi.fn();
   const mockCreate = vi.fn(() => ({
@@ -15,22 +47,6 @@ vi.mock("axios", () => {
     },
   };
 });
-
-vi.mock("ws", () => ({
-  default: class MockWebSocket {
-    static instances: MockWebSocket[] = [];
-    onopen: (() => void) | null = null;
-    onmessage: ((e: { data: string }) => void) | null = null;
-    onerror: ((e: Error) => void) | null = null;
-    onclose: (() => void) | null = null;
-    send = vi.fn();
-    close = vi.fn();
-    constructor() {
-      MockWebSocket.instances.push(this);
-    }
-  },
-  __esModule: true,
-}));
 
 vi.mock("../../../src/config/env", () => ({
   env: {
@@ -65,9 +81,23 @@ function createMockedClient(): {
   return { client, mockGet, mockPost };
 }
 
+// Helper to simulate server events on a mock WebSocket (uses EventEmitter pattern)
+function simulateMessage(ws: any, data: any) {
+  ws.emit("message", Buffer.from(JSON.stringify(data)));
+}
+
+function simulateOpen(ws: any) {
+  ws.emit("open");
+}
+
+function simulateError(ws: any, error: Error) {
+  ws.emit("error", error);
+}
+
 describe("HawkIrClient", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockWsInstances.length = 0;
   });
 
   describe("isConfigured()", () => {
@@ -87,7 +117,6 @@ describe("HawkIrClient", () => {
   describe("validateConfig()", () => {
     it("returns true when getCaseCount succeeds", async () => {
       const { client, mockGet } = createMockedClient();
-      // Simulate auth succeeding + case count
       vi.mocked(axios.post).mockResolvedValueOnce({
         data: { status: true },
         headers: { "set-cookie": ["hawk_session=abc123; Path=/"] },
@@ -137,7 +166,6 @@ describe("HawkIrClient", () => {
         { access_token: "test-access-token", secret_key: "test-secret-key" },
         { timeout: 15000 },
       );
-      // Both cookies should be joined with "; "
       expect((client as any).sessionCookie).toBe("user_id=abc123; hawk_id=s%3Axyz789.sig");
     });
 
@@ -281,79 +309,307 @@ describe("HawkIrClient", () => {
     });
   });
 
+  // === WebSocket message format tests ===
+
   describe("addCaseNote", () => {
-    it("should send addNote WebSocket message with correct format", async () => {
+    it("should send addNote with cmd: 'cases' and /websocket path", async () => {
       const { client } = createMockedClient();
       (client as any).sessionCookie = "hawk_session=test";
-      const wsSpy = vi.spyOn(client as any, "wsRequest").mockResolvedValue({ status: true, data: {} });
-      await client.addCaseNote("#635:1069", "Linked to Jira MDR-1");
-      expect(wsSpy).toHaveBeenCalledWith({
+
+      const promise = client.addCaseNote("635:1069", "Linked to Jira MDR-1");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+
+      // Verify URL includes /websocket path
+      expect(ws.url).toBe("wss://ir.hawk.io/websocket");
+
+      // Simulate connection open — client sends message
+      simulateOpen(ws);
+
+      // Verify sent message has cmd: "cases"
+      expect(ws.send).toHaveBeenCalledWith(
+        expect.stringContaining('"cmd":"cases"'),
+      );
+      expect(ws.send).toHaveBeenCalledWith(
+        expect.stringContaining('"route":"addNote"'),
+      );
+      expect(ws.send).toHaveBeenCalledWith(
+        expect.stringContaining('"id":"#635:1069"'),
+      );
+
+      // Simulate server response
+      simulateMessage(ws, {
+        cmd: "cases",
         route: "addNote",
+        status: true,
         data: { id: "#635:1069", note: "Linked to Jira MDR-1" },
       });
+
+      const result = await promise;
+      expect(result).toBeDefined();
     });
 
     it("should normalize case ID by adding # prefix if missing", async () => {
       const { client } = createMockedClient();
       (client as any).sessionCookie = "hawk_session=test";
-      const wsSpy = vi.spyOn(client as any, "wsRequest").mockResolvedValue({ status: true, data: {} });
-      await client.addCaseNote("635:1069", "Test note");
-      expect(wsSpy).toHaveBeenCalledWith({
+
+      const promise = client.addCaseNote("635:1069", "Test note");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      expect(ws.send).toHaveBeenCalledWith(
+        expect.stringContaining('"id":"#635:1069"'),
+      );
+
+      simulateMessage(ws, {
+        cmd: "cases",
         route: "addNote",
-        data: { id: "#635:1069", note: "Test note" },
+        status: true,
+        data: { id: "#635:1069" },
       });
+
+      await promise;
+    });
+
+    it("should skip hello messages before the actual response", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.addCaseNote("635:1069", "Test note");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      // Server sends hello first (no route field) — should be skipped
+      simulateMessage(ws, { cmd: "hello", status: true, details: "real-time communication channel ready" });
+
+      // Then the actual response with matching route
+      simulateMessage(ws, {
+        cmd: "cases",
+        route: "addNote",
+        status: true,
+        data: { id: "#635:1069" },
+      });
+
+      const result = await promise;
+      expect(result).toBeDefined();
+    });
+
+    it("should reject on WebSocket error", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.addCaseNote("635:1069", "Test note");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+
+      simulateError(ws, new Error("Unexpected server response: 200"));
+
+      await expect(promise).rejects.toThrow("Unexpected server response: 200");
     });
   });
 
   describe("updateCaseStatus", () => {
-    it("should send setStatus WebSocket message with correct format", async () => {
+    it("should send setStatus with cmd: 'cases'", async () => {
       const { client } = createMockedClient();
       (client as any).sessionCookie = "hawk_session=test";
-      const wsSpy = vi.spyOn(client as any, "wsRequest").mockResolvedValue({ status: true, data: {} });
-      await client.updateCaseStatus("#635:1069", "Closed");
-      expect(wsSpy).toHaveBeenCalledWith({
+
+      const promise = client.updateCaseStatus("635:1069", "Closed");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      expect(ws.send).toHaveBeenCalledWith(
+        expect.stringContaining('"cmd":"cases"'),
+      );
+      expect(ws.send).toHaveBeenCalledWith(
+        expect.stringContaining('"route":"setStatus"'),
+      );
+
+      simulateMessage(ws, {
+        cmd: "cases",
         route: "setStatus",
-        case: "#635:1069",
-        data: "Closed",
+        status: true,
+        data: {},
       });
+
+      await promise;
     });
 
     it("should normalize case ID by adding # prefix if missing", async () => {
       const { client } = createMockedClient();
       (client as any).sessionCookie = "hawk_session=test";
-      const wsSpy = vi.spyOn(client as any, "wsRequest").mockResolvedValue({ status: true, data: {} });
-      await client.updateCaseStatus("635:1069", "In Progress");
-      expect(wsSpy).toHaveBeenCalledWith({
+
+      const promise = client.updateCaseStatus("635:1069", "In Progress");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      expect(ws.send).toHaveBeenCalledWith(
+        expect.stringContaining('"case":"#635:1069"'),
+      );
+
+      simulateMessage(ws, {
+        cmd: "cases",
         route: "setStatus",
-        case: "#635:1069",
-        data: "In Progress",
+        status: true,
+        data: {},
       });
+
+      await promise;
     });
   });
 
   describe("updateCaseRisk", () => {
-    it("should send setRisk WebSocket message with correct format", async () => {
+    it("should send setRisk with cmd: 'cases'", async () => {
       const { client } = createMockedClient();
       (client as any).sessionCookie = "hawk_session=test";
-      const wsSpy = vi.spyOn(client as any, "wsRequest").mockResolvedValue({ status: true, data: {} });
-      await client.updateCaseRisk("#635:1069", "Low");
-      expect(wsSpy).toHaveBeenCalledWith({
+
+      const promise = client.updateCaseRisk("635:1069", "Low");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      expect(ws.send).toHaveBeenCalledWith(
+        expect.stringContaining('"cmd":"cases"'),
+      );
+      expect(ws.send).toHaveBeenCalledWith(
+        expect.stringContaining('"route":"setRisk"'),
+      );
+
+      simulateMessage(ws, {
+        cmd: "cases",
         route: "setRisk",
-        case: "#635:1069",
-        data: "Low",
+        status: true,
+        data: {},
       });
+
+      await promise;
     });
 
     it("should normalize case ID by adding # prefix if missing", async () => {
       const { client } = createMockedClient();
       (client as any).sessionCookie = "hawk_session=test";
-      const wsSpy = vi.spyOn(client as any, "wsRequest").mockResolvedValue({ status: true, data: {} });
-      await client.updateCaseRisk("635:1069", "Critical");
-      expect(wsSpy).toHaveBeenCalledWith({
+
+      const promise = client.updateCaseRisk("635:1069", "Critical");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      expect(ws.send).toHaveBeenCalledWith(
+        expect.stringContaining('"case":"#635:1069"'),
+      );
+
+      simulateMessage(ws, {
+        cmd: "cases",
         route: "setRisk",
-        case: "#635:1069",
-        data: "Critical",
+        status: true,
+        data: {},
       });
+
+      await promise;
+    });
+  });
+
+  // === WebSocket URL path tests ===
+
+  describe("WebSocket URL construction", () => {
+    it("uses /websocket path for wsRequest", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.addCaseNote("1", "note");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      expect(ws.url).toBe("wss://ir.hawk.io/websocket");
+
+      simulateOpen(ws);
+      simulateMessage(ws, { cmd: "cases", route: "addNote", status: true, data: {} });
+      await promise;
+    });
+
+    it("uses /websocket path for executeHybrid", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.executeHybrid({ groupId: "group1", cmd: "ping" });
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      expect(ws.url).toBe("wss://ir.hawk.io/websocket");
+
+      simulateOpen(ws);
+      simulateMessage(ws, { route: "execute", status: true });
+      simulateMessage(ws, { route: "execute", status: true, data: { result: "ok" } });
+
+      await promise;
+    });
+
+    it("sends session cookie in WebSocket headers", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_id=abc123";
+
+      const promise = client.addCaseNote("1", "note");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      // The ws library receives options as the second arg when no protocols are provided
+      expect(ws.options?.headers?.Cookie).toBe("hawk_id=abc123");
+
+      simulateOpen(ws);
+      simulateMessage(ws, { cmd: "cases", route: "addNote", status: true, data: {} });
+      await promise;
+    });
+  });
+
+  // === WebSocket error handling ===
+
+  describe("WebSocket error handling", () => {
+    it("rejects on WebSocket connection error", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.addCaseNote("1", "note");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+
+      simulateError(ws, new Error("Connection refused"));
+
+      await expect(promise).rejects.toThrow("Connection refused");
+    });
+
+    it("resolves with error data when server returns status: false", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.addCaseNote("1", "note");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      // Server responds with error matching the route
+      simulateMessage(ws, {
+        route: "addNote",
+        status: false,
+        code: 404,
+        details: "No handler specified for given command: undefined",
+      });
+
+      // wsRequest resolves with parsed.data ?? parsed, so status: false is in the resolved value
+      const result = await promise;
+      expect(result.status).toBe(false);
     });
   });
 
@@ -576,6 +832,159 @@ describe("HawkIrClient", () => {
 
       const cats = await client.getCategories();
       expect(cats).toEqual([]);
+    });
+  });
+
+  // === Artefacts and Nodes WebSocket tests ===
+
+  describe("getArtefacts", () => {
+    it("sends cmd: 'artefacts' with route: 'get'", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.getArtefacts({ group: "group1" });
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      const sentData = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(sentData.cmd).toBe("artefacts");
+      expect(sentData.route).toBe("get");
+
+      simulateMessage(ws, {
+        cmd: "artefacts",
+        route: "get",
+        status: true,
+        data: [{ id: "a1" }],
+      });
+
+      const result = await promise;
+      expect(result).toEqual([{ id: "a1" }]);
+    });
+
+    it("uses /websocket URL path", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.getArtefacts({ group: "group1" });
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      expect(mockWsInstances[0].url).toBe("wss://ir.hawk.io/websocket");
+
+      simulateOpen(mockWsInstances[0]);
+      simulateMessage(mockWsInstances[0], {
+        cmd: "artefacts",
+        route: "get",
+        status: true,
+        data: [],
+      });
+
+      await promise;
+    });
+  });
+
+  describe("listNodes", () => {
+    it("sends cmd: 'nodes' with route: 'get'", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.listNodes(["group1"]);
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      const sentData = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(sentData.cmd).toBe("nodes");
+      expect(sentData.route).toBe("get");
+
+      simulateMessage(ws, {
+        cmd: "nodes",
+        route: "get",
+        status: true,
+        data: [{ id: "n1", hostname: "node1" }],
+      });
+
+      const result = await promise;
+      expect(result).toEqual([{ id: "n1", hostname: "node1" }]);
+    });
+  });
+
+  describe("executeHybrid", () => {
+    it("sends hybrid execute message with correct format", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.executeHybrid({
+        groupId: "group1",
+        cmd: "ping",
+        data: { target: "10.0.0.1" },
+      });
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      const sentData = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(sentData.route).toBe("execute");
+      expect(sentData.cmd).toBe("ping");
+      expect(sentData.group_id).toBe("group1");
+      expect(sentData.data).toEqual({ target: "10.0.0.1" });
+
+      // ACK
+      simulateMessage(ws, { route: "execute", status: true });
+      // Result
+      simulateMessage(ws, { route: "execute", status: true, data: { alive: true } });
+
+      const result = await promise;
+      expect(result.data).toEqual({ alive: true });
+    });
+
+    it("skips hello messages before dispatch ACK", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.executeHybrid({ groupId: "g1", cmd: "ping" });
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      // Hello message (no route) should be skipped
+      simulateMessage(ws, { cmd: "hello", status: true, details: "ready" });
+
+      // ACK
+      simulateMessage(ws, { route: "execute", status: true });
+      // Result
+      simulateMessage(ws, { route: "execute", data: { result: "ok" } });
+
+      const result = await promise;
+      expect(result.data).toEqual({ result: "ok" });
+    });
+
+    it("includes target_node_id when provided", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.executeHybrid({
+        groupId: "g1",
+        cmd: "nslookup",
+        targetNodeId: "node-42",
+      });
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      const sentData = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(sentData.target_node_id).toBe("node-42");
+
+      // ACK + result
+      simulateMessage(ws, { route: "execute", status: true });
+      simulateMessage(ws, { route: "execute", data: {} });
+
+      await promise;
     });
   });
 });

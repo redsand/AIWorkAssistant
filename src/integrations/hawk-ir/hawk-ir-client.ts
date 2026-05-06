@@ -161,7 +161,7 @@ export class HawkIrClient {
       return this.authenticate().then(() => this.wsRequest(message, timeoutMs));
     }
 
-    const wsUrl = this.baseUrl.replace(/^http/, "ws");
+    const wsUrl = this.baseUrl.replace(/^http/, "ws") + "/websocket";
     const id = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const msg = { ...message, id };
 
@@ -183,6 +183,8 @@ export class HawkIrClient {
       ws.on("message", (raw) => {
         try {
           const parsed = JSON.parse(raw.toString());
+          // Skip server hello/pong messages that arrive before the actual response
+          if (!parsed.route) return;
           if (parsed.route === message.route) done(parsed.data ?? parsed);
         } catch { /* skip malformed frames */ }
       });
@@ -206,7 +208,7 @@ export class HawkIrClient {
     this.ensureConfigured();
     if (!this.sessionCookie) await this.authenticate();
 
-    const wsUrl = this.baseUrl.replace(/^http/, "ws");
+    const wsUrl = this.baseUrl.replace(/^http/, "ws") + "/websocket";
     const id = `hybrid-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const msg: Record<string, unknown> = {
       route: "execute",
@@ -236,12 +238,12 @@ export class HawkIrClient {
       ws.on("message", (raw) => {
         try {
           const parsed = JSON.parse(raw.toString());
+          // Skip server hello/pong messages
+          if (!parsed.route) return;
           if (!dispatched && parsed.route === "execute" && parsed.status) {
-            // Dispatch ACK received — now wait for the actual result
             dispatched = true;
             return;
           }
-          // Collect the first non-ACK message as the tool result
           if (dispatched) done(parsed);
         } catch { /* skip malformed */ }
       });
@@ -295,19 +297,19 @@ export class HawkIrClient {
   async addCaseNote(caseId: string, body: string): Promise<any> {
     this.ensureConfigured();
     const id = caseId.replace(/^#/, "");
-    return this.wsRequest({ route: "addNote", data: { id: "#" + id, note: body } });
+    return this.wsRequest({ cmd: "cases", route: "addNote", data: { id: "#" + id, note: body } });
   }
 
   async updateCaseStatus(caseId: string, status: string): Promise<any> {
     this.ensureConfigured();
     const id = caseId.replace(/^#/, "");
-    return this.wsRequest({ route: "setStatus", case: "#" + id, data: status });
+    return this.wsRequest({ cmd: "cases", route: "setStatus", case: "#" + id, data: status });
   }
 
   async updateCaseRisk(caseId: string, riskLevel: string): Promise<any> {
     this.ensureConfigured();
     const id = caseId.replace(/^#/, "");
-    return this.wsRequest({ route: "setRisk", case: "#" + id, data: riskLevel });
+    return this.wsRequest({ cmd: "cases", route: "setRisk", case: "#" + id, data: riskLevel });
   }
 
   // === Explore (REST) ===
@@ -365,14 +367,14 @@ export class HawkIrClient {
   // === Artefacts (WebSocket) ===
 
   async getArtefacts(params: HawkArtefactsParams = {}): Promise<HawkArtefact[]> {
-    const result = await this.wsRequest({ route: "artefacts", cmd: "get", data: params });
+    const result = await this.wsRequest({ cmd: "artefacts", route: "get", data: params });
     return Array.isArray(result) ? result : [];
   }
 
   // === Nodes (WebSocket — Admin/SysOp only) ===
 
   async listNodes(groupIds?: string[]): Promise<HawkNode[]> {
-    const result = await this.wsRequest({ route: "nodes", cmd: "get", data: groupIds });
+    const result = await this.wsRequest({ cmd: "nodes", route: "get", data: groupIds });
     return Array.isArray(result) ? result : [];
   }
 
