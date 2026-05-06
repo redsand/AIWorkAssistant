@@ -14,6 +14,7 @@ export type Platform =
   | 'lsp'
   | 'codex'
   | 'mcp'
+  | 'hawk-ir'
   | 'cross-platform';
 
 /**

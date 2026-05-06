@@ -4425,7 +4425,7 @@ async function handleJitbitAddAttachment(
   if (!ticketId) return { success: false, error: "ticketId is required" };
   const data = await jitbitService.addAttachment(ticketId, {
     fileName: params.fileName as string,
-    data: params.data as string,
+    data: Buffer.from(params.data as string, "base64"),
   });
   return { success: true, data };
 }
@@ -4500,27 +4500,39 @@ async function handleJitbitGetTimeEntries(
   return { success: true, data };
 }
 
-async function handleJitbitListAutomationRules(
+async function handleJitbitGetAutomationRule(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
   if (!jitbitService.isConfigured()) {
     return { success: false, error: "Jitbit client not configured" };
   }
-  const data = await jitbitService.listAutomationRules(params.categoryId as number | undefined);
+  const ruleId = params.ruleId as number;
+  if (!ruleId) return { success: false, error: "ruleId is required" };
+  const data = await jitbitService.getAutomationRule(ruleId);
   return { success: true, data };
 }
 
-async function handleJitbitTriggerAutomation(
+async function handleJitbitEnableAutomationRule(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
   if (!jitbitService.isConfigured()) {
     return { success: false, error: "Jitbit client not configured" };
   }
-  const ticketId = params.ticketId as number;
   const ruleId = params.ruleId as number;
-  if (!ticketId) return { success: false, error: "ticketId is required" };
   if (!ruleId) return { success: false, error: "ruleId is required" };
-  const data = await jitbitService.triggerAutomation(ticketId, ruleId);
+  const data = await jitbitService.enableAutomationRule(ruleId);
+  return { success: true, data };
+}
+
+async function handleJitbitDisableAutomationRule(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ruleId = params.ruleId as number;
+  if (!ruleId) return { success: false, error: "ruleId is required" };
+  const data = await jitbitService.disableAutomationRule(ruleId);
   return { success: true, data };
 }
 
@@ -4910,6 +4922,43 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "jitbit.add_tag": handleJitbitAddTag,
   "jitbit.remove_tag": handleJitbitRemoveTag,
   "jitbit.add_time_entry": handleJitbitAddTimeEntry,
+  "jitbit.update_ticket": handleJitbitUpdateTicket,
+  "jitbit.list_users": handleJitbitListUsers,
+  "jitbit.search_users": handleJitbitSearchUsers,
+  "jitbit.list_companies": handleJitbitListCompanies,
+  "jitbit.search_companies": handleJitbitSearchCompanies,
+  "jitbit.list_categories": handleJitbitListCategories,
+  "jitbit.list_priorities": handleJitbitListPriorities,
+  "jitbit.subscribe_to_ticket": handleJitbitSubscribeToTicket,
+  "jitbit.unsubscribe_from_ticket": handleJitbitUnsubscribeFromTicket,
+  "jitbit.list_attachments": handleJitbitListAttachments,
+  "jitbit.add_attachment": handleJitbitAddAttachment,
+  "jitbit.list_custom_fields": handleJitbitListCustomFields,
+  "jitbit.get_custom_field_values": handleJitbitGetCustomFieldValues,
+  "jitbit.set_custom_field_value": handleJitbitSetCustomFieldValue,
+  "jitbit.list_tags": handleJitbitListTags,
+  "jitbit.list_sections": handleJitbitListSections,
+  "jitbit.get_time_entries": handleJitbitGetTimeEntries,
+  "jitbit.get_automation_rule": handleJitbitGetAutomationRule,
+  "jitbit.enable_automation_rule": handleJitbitEnableAutomationRule,
+  "jitbit.disable_automation_rule": handleJitbitDisableAutomationRule,
+
+  // HAWK IR
+  "hawk_ir.get_cases": handleHawkIrGetCases,
+  "hawk_ir.get_case": handleHawkIrGetCase,
+  "hawk_ir.get_case_summary": handleHawkIrGetCaseSummary,
+  "hawk_ir.get_risky_open_cases": handleHawkIrGetRiskyOpenCases,
+  "hawk_ir.deescalate_case": handleHawkIrDeescalateCase,
+  "hawk_ir.search_logs": handleHawkIrSearchLogs,
+  "hawk_ir.get_available_indexes": handleHawkIrGetAvailableIndexes,
+  "hawk_ir.get_assets": handleHawkIrGetAssets,
+  "hawk_ir.get_asset_summary": handleHawkIrGetAssetSummary,
+  "hawk_ir.get_identities": handleHawkIrGetIdentities,
+  "hawk_ir.get_identity_summary": handleHawkIrGetIdentitySummary,
+  "hawk_ir.list_nodes": handleHawkIrListNodes,
+  "hawk_ir.get_active_nodes": handleHawkIrGetActiveNodes,
+  "hawk_ir.list_dashboards": handleHawkIrListDashboards,
+  "hawk_ir.run_dashboard": handleHawkIrRunDashboard,
   "productivity.generate_daily_plan": handleDailyPlan,
   "productivity.generate_weekly_plan": handleWeeklyPlan,
   "cto.daily_command_center": handleCtoDailyCommandCenter,
@@ -5034,6 +5083,19 @@ const SYSTEM_TOOLS = new Set([
   "product.roadmap_drift",
   "product.customer_signals",
   "product.weekly_update",
+  "hawk_ir.get_cases",
+  "hawk_ir.get_case",
+  "hawk_ir.get_case_summary",
+  "hawk_ir.get_risky_open_cases",
+  "hawk_ir.search_logs",
+  "hawk_ir.get_available_indexes",
+  "hawk_ir.get_assets",
+  "hawk_ir.get_asset_summary",
+  "hawk_ir.get_identities",
+  "hawk_ir.get_identity_summary",
+  "hawk_ir.list_nodes",
+  "hawk_ir.get_active_nodes",
+  "hawk_ir.list_dashboards",
 ]);
 
 export interface DispatchContext {

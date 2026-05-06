@@ -3956,36 +3956,45 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "low",
   },
   {
-    name: "jitbit.list_automation_rules",
+    name: "jitbit.get_automation_rule",
     description:
-      "List Jitbit automation rules (optionally filtered by category).",
+      "Get details of a specific Jitbit automation rule by ID.",
     params: {
-      categoryId: {
-        type: "number",
-        description: "Filter automation rules by category ID",
-        required: false,
-      },
-    },
-    actionType: "jitbit.list_automation_rules",
-    riskLevel: "low",
-  },
-  {
-    name: "jitbit.trigger_automation",
-    description:
-      "Trigger a Jitbit automation rule on a ticket.",
-    params: {
-      ticketId: {
-        type: "number",
-        description: "Jitbit ticket ID",
-        required: true,
-      },
       ruleId: {
         type: "number",
         description: "Automation rule ID",
         required: true,
       },
     },
-    actionType: "jitbit.trigger_automation",
+    actionType: "jitbit.get_automation_rule",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.enable_automation_rule",
+    description:
+      "Enable a Jitbit automation rule.",
+    params: {
+      ruleId: {
+        type: "number",
+        description: "Automation rule ID to enable",
+        required: true,
+      },
+    },
+    actionType: "jitbit.enable_automation_rule",
+    riskLevel: "medium",
+  },
+  {
+    name: "jitbit.disable_automation_rule",
+    description:
+      "Disable a Jitbit automation rule.",
+    params: {
+      ruleId: {
+        type: "number",
+        description: "Automation rule ID to disable",
+        required: true,
+      },
+    },
+    actionType: "jitbit.disable_automation_rule",
     riskLevel: "medium",
   },
 
@@ -4696,7 +4705,7 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_tags")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_sections")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.get_time_entries")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_automation_rules")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.get_automation_rule")!,
 
   // Roadmap core
   PRODUCTIVITY_TOOLS.find((t) => t.name === "roadmap.list")!,
@@ -4830,38 +4839,19 @@ export function getTools(mode: string): Tool[] {
 export function getToolInventorySummary(mode: string): string {
   const tools = getTools(mode);
   const categories = getToolCategories(mode);
-  const catNames = Object.keys(categories);
+  const catNames = Object.keys(categories).sort();
 
   // Build platform quick reference based on what's loaded vs what needs discovery
   const loadedNames = new Set(tools.map((t) => t.name));
   const platformRef: string[] = [];
 
   const platformCategories = [
-    {
-      name: "GitHub",
-      prefix: "github",
-      writeActions: ["create issue", "create PR", "create branch"],
-    },
-    {
-      name: "GitLab",
-      prefix: "gitlab",
-      writeActions: ["pipeline/merge actions"],
-    },
-    {
-      name: "Jira",
-      prefix: "jira",
-      writeActions: ["advanced fields"],
-    },
-    {
-      name: "Jitbit",
-      prefix: "jitbit",
-      writeActions: ["ticket comments", "ticket lifecycle", "asset management", "tags", "time tracking"],
-    },
-    {
-      name: "Calendar",
-      prefix: "calendar",
-      writeActions: ["event management"],
-    },
+    { name: "Calendar", prefix: "calendar", writeActions: ["event management"] },
+    { name: "GitHub", prefix: "github", writeActions: ["create issue", "create PR", "create branch"] },
+    { name: "GitLab", prefix: "gitlab", writeActions: ["pipeline/merge actions"] },
+    { name: "HAWK IR", prefix: "hawk_ir", writeActions: ["case de-escalation"] },
+    { name: "Jira", prefix: "jira", writeActions: ["advanced fields"] },
+    { name: "Jitbit", prefix: "jitbit", writeActions: ["ticket comments", "ticket lifecycle", "asset management", "tags", "time tracking", "custom fields", "automation"] },
   ];
 
   for (const platform of platformCategories) {
@@ -4903,14 +4893,24 @@ export function getToolInventory(mode: string): string {
 
   const platformCategories = [
     {
-      name: "GitHub",
-      prefix: "github",
-      writeActions: ["create issue", "create PR", "create branch"],
+      name: "Calendar",
+      prefix: "calendar",
+      writeActions: ["event management"],
     },
     {
       name: "GitLab",
       prefix: "gitlab",
       writeActions: ["pipeline/merge actions"],
+    },
+    {
+      name: "GitHub",
+      prefix: "github",
+      writeActions: ["create issue", "create PR", "create branch"],
+    },
+    {
+      name: "HAWK IR",
+      prefix: "hawk_ir",
+      writeActions: ["case de-escalation"],
     },
     {
       name: "Jira",
@@ -4920,12 +4920,7 @@ export function getToolInventory(mode: string): string {
     {
       name: "Jitbit",
       prefix: "jitbit",
-      writeActions: ["ticket comments", "ticket lifecycle", "asset management", "tags", "time tracking"],
-    },
-    {
-      name: "Calendar",
-      prefix: "calendar",
-      writeActions: ["event management"],
+      writeActions: ["ticket comments", "ticket lifecycle", "asset management", "tags", "time tracking", "custom fields", "automation"],
     },
   ];
 

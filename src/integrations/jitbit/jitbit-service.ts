@@ -5,6 +5,7 @@ import type {
   JitbitAsset,
   JitbitAttachment,
   JitbitAutomationRule,
+  JitbitCategory,
   JitbitComment,
   JitbitCompany,
   JitbitCreateAssetParams,
@@ -14,6 +15,7 @@ import type {
   JitbitForwardTicketParams,
   JitbitListAssetsParams,
   JitbitMergeTicketsParams,
+  JitbitPriority,
   JitbitSection,
   JitbitTag,
   JitbitTicket,
@@ -380,6 +382,36 @@ export class JitbitService {
   private compact(value: string, max: number): string {
     const normalized = value.replace(/\s+/g, " ").trim();
     return normalized.length > max ? `${normalized.slice(0, max)}...` : normalized;
+  }
+
+  // === Ticket Updates ===
+
+  async updateTicket(ticketId: number | string, fields: Record<string, unknown>): Promise<unknown> {
+    return this.client.updateTicket(ticketId, fields);
+  }
+
+  async listUsers(params?: { companyId?: number; count?: number }): Promise<JitbitUser[]> {
+    return this.client.listUsers(params ?? {});
+  }
+
+  async searchUsers(query: string): Promise<JitbitUser[]> {
+    return this.client.searchUsers(query);
+  }
+
+  async listCompanies(): Promise<JitbitCompany[]> {
+    return this.client.listCompanies();
+  }
+
+  async searchCompanies(query: string): Promise<JitbitCompany[]> {
+    return this.client.searchCompanies(query);
+  }
+
+  async listCategories(): Promise<JitbitCategory[]> {
+    return this.client.listCategories();
+  }
+
+  async listPriorities(): Promise<JitbitPriority[]> {
+    return this.client.listPriorities();
   }
 }
 
