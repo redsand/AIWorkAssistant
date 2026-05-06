@@ -140,6 +140,108 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     actionType: "calendar.health_block.create",
     riskLevel: "medium",
   },
+  {
+    name: "calendar.create_event",
+    description: "Create a generic calendar event (meeting, appointment, etc.)",
+    params: {
+      summary: {
+        type: "string",
+        description: "Event title/summary",
+        required: true,
+      },
+      startTime: {
+        type: "string",
+        description: "Start time (ISO 8601)",
+        required: true,
+      },
+      endTime: {
+        type: "string",
+        description: "End time (ISO 8601)",
+        required: true,
+      },
+      description: {
+        type: "string",
+        description: "Event description",
+        required: false,
+      },
+      location: {
+        type: "string",
+        description: "Event location",
+        required: false,
+      },
+      type: {
+        type: "string",
+        description: "Event type: meeting, focus, fitness, meal, mental_health, other. Default: meeting",
+        required: false,
+      },
+    },
+    actionType: "calendar.event.create",
+    riskLevel: "medium",
+  },
+  {
+    name: "calendar.update_event",
+    description: "Update an existing calendar event",
+    params: {
+      eventId: {
+        type: "string",
+        description: "Event ID to update",
+        required: true,
+      },
+      summary: {
+        type: "string",
+        description: "Updated event title",
+        required: false,
+      },
+      startTime: {
+        type: "string",
+        description: "Updated start time (ISO 8601)",
+        required: false,
+      },
+      endTime: {
+        type: "string",
+        description: "Updated end time (ISO 8601)",
+        required: false,
+      },
+      description: {
+        type: "string",
+        description: "Updated description",
+        required: false,
+      },
+      location: {
+        type: "string",
+        description: "Updated location",
+        required: false,
+      },
+    },
+    actionType: "calendar.event.update",
+    riskLevel: "medium",
+  },
+  {
+    name: "calendar.delete_event",
+    description: "Delete a calendar event by ID",
+    params: {
+      eventId: {
+        type: "string",
+        description: "Event ID to delete",
+        required: true,
+      },
+    },
+    actionType: "calendar.event.delete",
+    riskLevel: "high",
+  },
+  {
+    name: "calendar.get_event",
+    description: "Get a single calendar event by ID",
+    params: {
+      eventId: {
+        type: "string",
+        description: "Event ID to retrieve",
+        required: true,
+      },
+    },
+    actionType: "calendar.event.read",
+    riskLevel: "low",
+  },
 
   // Jira tools
   {
@@ -2596,6 +2698,25 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     actionType: "cto.daily_command_center",
     riskLevel: "low",
   },
+  {
+    name: "cto.create_suggested_work_items",
+    description:
+      "Create work items from the CTO Daily Command Center's suggested drafts and follow-ups. Only creates items the user explicitly approves.",
+    params: {
+      items: {
+        type: "string",
+        description: "JSON array of work item objects with type, title, description, priority, tags",
+        required: true,
+      },
+      source: {
+        type: "string",
+        description: "Source for the work items. Default 'cto_brief'.",
+        required: false,
+      },
+    },
+    actionType: "cto.create_suggested_work_items",
+    riskLevel: "medium",
+  },
 
   // ── Entity Memory Tools ─────────────────────────────────────────
   {
@@ -2836,6 +2957,20 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     },
     actionType: "product.create_work_items",
     riskLevel: "medium",
+  },
+  {
+    name: "product.shipped_vs_planned",
+    description:
+      "Summarize shipped vs planned items across roadmaps. Compares completed milestones/items against planned ones to show delivery velocity.",
+    params: {
+      roadmapId: {
+        type: "string",
+        description: "Optional roadmap ID to scope the comparison. If omitted, analyzes all roadmaps.",
+        required: false,
+      },
+    },
+    actionType: "product.shipped_vs_planned",
+    riskLevel: "low",
   },
 
   // ── Roadmap Tools ──────────────────────────────────────────────
@@ -3630,6 +3765,34 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "high",
   },
   {
+    name: "jitbit.search_assets",
+    description:
+      "Search Jitbit assets by text query.",
+    params: {
+      query: {
+        type: "string",
+        description: "Search query for assets",
+        required: true,
+      },
+    },
+    actionType: "jitbit.search_assets",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.disable_asset",
+    description:
+      "Disable a Jitbit asset by ID (soft delete — the asset is retained but marked inactive).",
+    params: {
+      assetId: {
+        type: "number",
+        description: "Asset ID to disable",
+        required: true,
+      },
+    },
+    actionType: "jitbit.disable_asset",
+    riskLevel: "medium",
+  },
+  {
     name: "jitbit.add_tag",
     description:
       "Add a tag to a Jitbit support ticket.",
@@ -3651,7 +3814,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "jitbit.remove_tag",
     description:
-      "Remove a tag from a Jitbit support ticket.",
+      "Remove a tag from a Jitbit support ticket. NOTE: The Jitbit API does not support removing individual tags; use updateTicket with the tags field to replace all tags instead.",
     params: {
       ticketId: {
         type: "number",
@@ -3866,6 +4029,48 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     },
     actionType: "jitbit.add_attachment",
     riskLevel: "medium",
+  },
+  {
+    name: "jitbit.get_attachment",
+    description:
+      "Get a specific Jitbit attachment by ID.",
+    params: {
+      attachmentId: {
+        type: "number",
+        description: "Attachment ID",
+        required: true,
+      },
+    },
+    actionType: "jitbit.get_attachment",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.delete_attachment",
+    description:
+      "Delete a Jitbit attachment by ID.",
+    params: {
+      attachmentId: {
+        type: "number",
+        description: "Attachment ID to delete",
+        required: true,
+      },
+    },
+    actionType: "jitbit.delete_attachment",
+    riskLevel: "medium",
+  },
+  {
+    name: "jitbit.summarize_ticket",
+    description:
+      "Get a Jitbit ticket with its comments and an AI-ready summary. Useful for quickly understanding a ticket's current state.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+    },
+    actionType: "jitbit.summarize_ticket",
+    riskLevel: "low",
   },
   {
     name: "jitbit.list_custom_fields",
@@ -4243,6 +4448,118 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     },
     actionType: "hawk_ir.run_dashboard",
     riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.get_case_count",
+    description:
+      "Get the total count of HAWK IR incident response cases.",
+    params: {},
+    actionType: "hawk_ir.get_case_count",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.get_recent_cases",
+    description:
+      "Get recent HAWK IR incident response cases (convenience method with default limit).",
+    params: {
+      limit: {
+        type: "number",
+        description: "Maximum number of cases to return. Default: 20",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.get_recent_cases",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.get_log_histogram",
+    description:
+      "Get histogram data for HAWK IR log explore queries. Returns time-bucketed counts for visualization.",
+    params: {
+      q: {
+        type: "string",
+        description: "Search query string",
+        required: true,
+      },
+      idx: {
+        type: "string",
+        description: "Index to search",
+        required: false,
+      },
+      from: {
+        type: "string",
+        description: "Start date/time filter",
+        required: false,
+      },
+      to: {
+        type: "string",
+        description: "End date/time filter",
+        required: false,
+      },
+      interval: {
+        type: "string",
+        description: "Histogram interval (e.g. '1h', '1d')",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.get_log_histogram",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.get_saved_searches",
+    description:
+      "Get saved search configurations from HAWK IR.",
+    params: {},
+    actionType: "hawk_ir.get_saved_searches",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.get_artefacts",
+    description:
+      "Get HAWK IR artefacts (forensic artifacts) with optional asset filter.",
+    params: {
+      asset: {
+        type: "string",
+        description: "Filter artefacts by asset identifier",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.get_artefacts",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.execute_hybrid_tool",
+    description:
+      "Dispatch a hybrid investigation command to a HAWK IR node. Requires Admin or SOC privileges. Use to run forensic commands on remote sensors.",
+    params: {
+      groupId: {
+        type: "string",
+        description: "Group ID to target",
+        required: true,
+      },
+      cmd: {
+        type: "string",
+        description: "Command to execute on the node",
+        required: true,
+      },
+      data: {
+        type: "object",
+        description: "Optional data payload for the command",
+        required: false,
+      },
+      targetNodeId: {
+        type: "string",
+        description: "Optional specific node ID to target",
+        required: false,
+      },
+      timeoutMs: {
+        type: "number",
+        description: "Optional timeout in milliseconds",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.execute_hybrid_tool",
+    riskLevel: "high",
   },
 
   // ==================== Work Items Tools ====================
@@ -4885,43 +5202,19 @@ export function getToolInventory(mode: string): string {
   const tools = getTools(mode);
   const lines = tools.map((t) => `- ${t.name}: ${t.description}`);
   const categories = getToolCategories(mode);
-  const catNames = Object.keys(categories).join(", ");
+  const catNames = Object.keys(categories).sort().join(", ");
 
   // Build platform quick reference based on what's loaded vs what needs discovery
   const loadedNames = new Set(tools.map((t) => t.name));
   const platformRef: string[] = [];
 
   const platformCategories = [
-    {
-      name: "Calendar",
-      prefix: "calendar",
-      writeActions: ["event management"],
-    },
-    {
-      name: "GitLab",
-      prefix: "gitlab",
-      writeActions: ["pipeline/merge actions"],
-    },
-    {
-      name: "GitHub",
-      prefix: "github",
-      writeActions: ["create issue", "create PR", "create branch"],
-    },
-    {
-      name: "HAWK IR",
-      prefix: "hawk_ir",
-      writeActions: ["case de-escalation"],
-    },
-    {
-      name: "Jira",
-      prefix: "jira",
-      writeActions: ["advanced fields"],
-    },
-    {
-      name: "Jitbit",
-      prefix: "jitbit",
-      writeActions: ["ticket comments", "ticket lifecycle", "asset management", "tags", "time tracking", "custom fields", "automation"],
-    },
+    { name: "Calendar", prefix: "calendar", writeActions: ["event management"] },
+    { name: "GitHub", prefix: "github", writeActions: ["create issue", "create PR", "create branch"] },
+    { name: "GitLab", prefix: "gitlab", writeActions: ["pipeline/merge actions"] },
+    { name: "HAWK IR", prefix: "hawk_ir", writeActions: ["case de-escalation"] },
+    { name: "Jira", prefix: "jira", writeActions: ["advanced fields"] },
+    { name: "Jitbit", prefix: "jitbit", writeActions: ["ticket comments", "ticket lifecycle", "asset management", "tags", "time tracking", "custom fields", "automation"] },
   ];
 
   for (const platform of platformCategories) {

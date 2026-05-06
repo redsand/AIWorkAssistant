@@ -111,8 +111,9 @@ export function renderToolsHtml(data) {
     return '<div style="color:#888">Failed to load tools</div>';
   }
 
+  const sortedCategories = Object.entries(data.categories).sort(([a], [b]) => a.localeCompare(b));
   let html = "";
-  for (const [category, tools] of Object.entries(data.categories)) {
+  for (const [category, tools] of sortedCategories) {
     const toolArr = tools;
     const catId = `tool-cat-${escapeAttr(category.replace(/\s+/g, '-').toLowerCase())}`;
     html += `<div style="margin-bottom:8px">`;

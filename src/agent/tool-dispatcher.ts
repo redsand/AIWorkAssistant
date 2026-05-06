@@ -4251,6 +4251,18 @@ async function handleJitbitDisableAsset(
   return { success: true, data };
 }
 
+async function handleJitbitSearchAssets(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const query = params.query as string;
+  if (!query) return { success: false, error: "query is required" };
+  const data = await jitbitService.searchAssets(query);
+  return { success: true, data };
+}
+
 async function handleJitbitAddTag(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -4427,6 +4439,42 @@ async function handleJitbitAddAttachment(
     fileName: params.fileName as string,
     data: Buffer.from(params.data as string, "base64"),
   });
+  return { success: true, data };
+}
+
+async function handleJitbitGetAttachment(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const attachmentId = params.attachmentId as number;
+  if (!attachmentId) return { success: false, error: "attachmentId is required" };
+  const data = await jitbitService.getAttachment(attachmentId);
+  return { success: true, data };
+}
+
+async function handleJitbitDeleteAttachment(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const attachmentId = params.attachmentId as number;
+  if (!attachmentId) return { success: false, error: "attachmentId is required" };
+  const data = await jitbitService.deleteAttachment(attachmentId);
+  return { success: true, data };
+}
+
+async function handleJitbitSummarizeTicket(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  const data = await jitbitService.summarizeTicketForAssistant(ticketId);
   return { success: true, data };
 }
 

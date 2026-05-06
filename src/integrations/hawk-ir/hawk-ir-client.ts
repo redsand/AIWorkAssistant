@@ -125,8 +125,8 @@ export class HawkIrClient {
     }
     const setCookie = resp.headers["set-cookie"];
     if (setCookie) {
-      const raw = Array.isArray(setCookie) ? setCookie[0] : setCookie;
-      this.sessionCookie = raw.split(";")[0];
+      const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
+      this.sessionCookie = cookies.map((c: string) => c.split(";")[0]).join("; ");
     }
   }
 

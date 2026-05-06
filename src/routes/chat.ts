@@ -1259,7 +1259,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       Array<{ name: string; description: string; params: string[] }>
     > = {};
 
-    for (const [category] of Object.entries(categories)) {
+    for (const [category] of Object.entries(categories).sort(([a], [b]) => a.localeCompare(b))) {
       const categoryTools = getToolsByCategory(toolMode, category);
       toolsByCategory[category] = categoryTools.map((t) => ({
         name: t.name,

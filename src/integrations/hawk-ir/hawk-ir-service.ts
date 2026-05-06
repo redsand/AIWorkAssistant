@@ -180,6 +180,46 @@ export class HawkIrService {
     return this.client.runDashboardWidget(dashboardId, body);
   }
 
+  /**
+   * Run an ad-hoc dashboard query without needing a saved dashboard.
+   * Sends a widget definition with the given query, index, and time range
+   * to the first matching dashboard. This is the primary method for
+   * answering data aggregation questions.
+   */
+  async runDashboardQuery(params: {
+    query?: string;
+    index?: string;
+    from: string;
+    to?: string;
+    type?: "table" | "bar" | "line" | "pie" | "count" | "metric";
+    columns?: string[];
+    groupBy?: string[];
+    metrics?: { field: string; operator: string }[];
+    size?: number;
+    sort?: { field: string; direction: "asc" | "desc" };
+  }): Promise<HawkDashboardRunResult> {
+    const dashboards = await this.client.listDashboards();
+    if (!dashboards.length) {
+      throw new Error("No dashboards available for running queries");
+    }
+    const dashboardId = dashboards[0].id;
+    return this.client.runDashboardWidget(dashboardId, {
+      widget: {
+        id: `ad-hoc-${Date.now()}`,
+        title: "Ad-hoc Query",
+        type: params.type ?? "table",
+        query: params.query ?? "*",
+        columns: params.columns ?? [],
+        groupBy: params.groupBy ?? [],
+        metrics: params.metrics ?? [{ field: "@timestamp", operator: "count" }],
+        size: params.size ?? 25,
+        sort: params.sort ?? { field: "@timestamp", direction: "desc" },
+      },
+      index: params.index,
+      timeRange: { from: params.from, to: params.to },
+    });
+  }
+
   // === Formatting ===
 
   formatCaseLabel(c: HawkCase | any): string {
