@@ -11,7 +11,9 @@ export interface AgentRun {
   totalTokens: number | null;
   toolLoopCount: number;
   startedAt: string;
+  lastActivityAt: string;
   completedAt: string | null;
+  cancelledAt: string | null;
 }
 
 export interface AgentRunStep {

@@ -407,6 +407,61 @@ class GuardrailsRegistry {
       impacts: ["roadmap", "planning", "projects"],
     });
 
+    // HAWK IR case management operations
+    this.registerAction({
+      id: "hawk_ir.add_case_note",
+      category: ActionCategory.DATA_MODIFICATION,
+      riskLevel: RiskLevel.MEDIUM,
+      operation: "hawk_ir.add_case_note",
+      description: "Add a note to a HAWK IR case",
+      requiresApproval: true,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 5000,
+      rateLimits: { maxPerHour: 30, maxPerDay: 100 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "soc", "analyst"],
+      requiresConfirmation: false,
+      requiresJustification: false,
+      impacts: ["hawk_ir", "security_incidents"],
+    });
+
+    this.registerAction({
+      id: "hawk_ir.update_case_status",
+      category: ActionCategory.SECURITY_CHANGE,
+      riskLevel: RiskLevel.HIGH,
+      operation: "hawk_ir.update_case_status",
+      description: "Update the status of a HAWK IR case (New, Open, In Progress, Closed, Resolved)",
+      requiresApproval: true,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 10000,
+      rateLimits: { maxPerHour: 20, maxPerDay: 50 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "soc"],
+      requiresConfirmation: true,
+      requiresJustification: true,
+      impacts: ["hawk_ir", "security_incidents", "workflow"],
+    });
+
+    this.registerAction({
+      id: "hawk_ir.update_case_risk",
+      category: ActionCategory.SECURITY_CHANGE,
+      riskLevel: RiskLevel.HIGH,
+      operation: "hawk_ir.update_case_risk",
+      description: "Update the risk level of a HAWK IR case (Informational, Low, Moderate, High, Critical)",
+      requiresApproval: true,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 10000,
+      rateLimits: { maxPerHour: 20, maxPerDay: 50 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "soc"],
+      requiresConfirmation: true,
+      requiresJustification: true,
+      impacts: ["hawk_ir", "security_incidents", "prioritization"],
+    });
+
     // System configuration
     this.registerAction({
       id: "system.config_change",

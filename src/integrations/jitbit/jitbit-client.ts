@@ -571,7 +571,8 @@ export class JitbitClient {
     }
   }
 
-  private normalizeBaseUrl(url: string): string {
+  private normalizeBaseUrl(url: string | undefined): string {
+    if (!url) return "";
     const trimmed = url.trim().replace(/\/$/, "");
     if (!trimmed) return "";
     return trimmed.toLowerCase().endsWith("/api") ? trimmed : `${trimmed}/api`;

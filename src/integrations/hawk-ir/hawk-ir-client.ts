@@ -290,6 +290,26 @@ export class HawkIrClient {
     return this.httpPost(`/api/cases/deescalate/${caseId.replace(/^#/, "")}`, { reason, note });
   }
 
+  // === Case Management (WebSocket) ===
+
+  async addCaseNote(caseId: string, body: string): Promise<any> {
+    this.ensureConfigured();
+    const id = caseId.replace(/^#/, "");
+    return this.wsRequest({ route: "addNote", data: { id: "#" + id, note: body } });
+  }
+
+  async updateCaseStatus(caseId: string, status: string): Promise<any> {
+    this.ensureConfigured();
+    const id = caseId.replace(/^#/, "");
+    return this.wsRequest({ route: "setStatus", case: "#" + id, data: status });
+  }
+
+  async updateCaseRisk(caseId: string, riskLevel: string): Promise<any> {
+    this.ensureConfigured();
+    const id = caseId.replace(/^#/, "");
+    return this.wsRequest({ route: "setRisk", case: "#" + id, data: riskLevel });
+  }
+
   // === Explore (REST) ===
 
   async search(params: HawkExploreSearchParams): Promise<HawkExploreResult[]> {

@@ -139,6 +139,47 @@ export class HawkIrService {
     return this.client.deescalateCase(caseId, reason, note);
   }
 
+  // === Case Management (Write) ===
+
+  async addCaseNote(caseId: string, body: string): Promise<any> {
+    return this.client.addCaseNote(caseId, body);
+  }
+
+  async updateCaseStatus(caseId: string, status: string): Promise<any> {
+    const validStatuses = ["New", "Open", "In Progress", "Closed", "Resolved"];
+    const statusMap: Record<string, string> = {
+      new: "New",
+      open: "Open",
+      in_progress: "In Progress",
+      inprogress: "In Progress",
+      "in progress": "In Progress",
+      closed: "Closed",
+      resolved: "Resolved",
+    };
+    const mapped = statusMap[status.toLowerCase()] ?? status;
+    if (!validStatuses.includes(mapped)) {
+      throw new Error(`Invalid case status: "${status}". Valid statuses: ${validStatuses.join(", ")}`);
+    }
+    return this.client.updateCaseStatus(caseId, mapped);
+  }
+
+  async updateCaseRisk(caseId: string, riskLevel: string): Promise<any> {
+    const validRiskLevels = ["Informational", "Low", "Moderate", "High", "Critical"];
+    const riskMap: Record<string, string> = {
+      informational: "Informational",
+      low: "Low",
+      medium: "Moderate",
+      moderate: "Moderate",
+      high: "High",
+      critical: "Critical",
+    };
+    const mapped = riskMap[riskLevel.toLowerCase()];
+    if (!mapped) {
+      throw new Error(`Invalid risk level: "${riskLevel}". Valid levels: ${validRiskLevels.join(", ")}`);
+    }
+    return this.client.updateCaseRisk(caseId, mapped);
+  }
+
   // === Explore ===
 
   async searchLogs(params: HawkExploreSearchParams): Promise<HawkExploreResult[]> {

@@ -933,6 +933,82 @@ describe("E2E: Chat Session CRUD", () => {
     expect(body.messages.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("should return recovery data for a partially completed session", async () => {
+    const { conversationManager } =
+      await import("../../src/memory/conversation-manager");
+    const { agentRunDatabase } =
+      await import("../../src/agent-runs/database");
+    const sessionId = conversationManager.startSession(
+      "e2e-recovery-test",
+      "engineering",
+      { title: "Recovery Test" },
+    );
+    conversationManager.addMessage(sessionId, {
+      role: "user",
+      content: "Research this and create an issue",
+    });
+    conversationManager.addMessage(sessionId, {
+      role: "assistant",
+      content: "I found the likely failure mode.",
+    });
+    conversationManager.addMessage(sessionId, {
+      role: "tool",
+      content: JSON.stringify({ success: true, issueKey: "OPS-123" }),
+      tool_call_id: "tool-1",
+    });
+    const run = agentRunDatabase.startRun({
+      sessionId,
+      userId: "e2e-recovery-test",
+      mode: "engineering",
+    });
+    agentRunDatabase.addStep({
+      runId: run.id,
+      stepType: "tool_result",
+      toolName: "jira.createIssue",
+      success: true,
+      stepOrder: 0,
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: `/chat/sessions/${sessionId}/recovery`,
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+    expect(body.session.id).toBe(sessionId);
+    expect(body.assistantMessages[0].content).toContain("failure mode");
+    expect(body.toolResults[0].result.issueKey).toBe("OPS-123");
+    expect(body.latestRun.id).toBe(run.id);
+  });
+
+  it("should report no active run when cancelling an idle session", async () => {
+    const { conversationManager } =
+      await import("../../src/memory/conversation-manager");
+    const sessionId = conversationManager.startSession(
+      "e2e-cancel-idle-test",
+      "productivity",
+      { title: "Cancel Idle Test" },
+    );
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/chat/sessions/${sessionId}/cancel`,
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+    expect(body.cancelled).toBe(false);
+  });
+
   it("should get memory stats", async () => {
     const response = await server.inject({
       method: "GET",

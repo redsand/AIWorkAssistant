@@ -48,7 +48,9 @@ class AgentRunDatabase {
         total_tokens INTEGER,
         tool_loop_count INTEGER NOT NULL DEFAULT 0,
         started_at TEXT NOT NULL,
-        completed_at TEXT
+        last_activity_at TEXT,
+        completed_at TEXT,
+        cancelled_at TEXT
       );
 
       CREATE TABLE IF NOT EXISTS agent_run_steps (
@@ -68,10 +70,21 @@ class AgentRunDatabase {
 
       CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status);
       CREATE INDEX IF NOT EXISTS idx_agent_runs_user_id ON agent_runs(user_id);
+      CREATE INDEX IF NOT EXISTS idx_agent_runs_session_id ON agent_runs(session_id);
       CREATE INDEX IF NOT EXISTS idx_agent_runs_started_at ON agent_runs(started_at);
       CREATE INDEX IF NOT EXISTS idx_agent_run_steps_run_id ON agent_run_steps(run_id);
       CREATE INDEX IF NOT EXISTS idx_agent_run_steps_tool_name ON agent_run_steps(tool_name);
     `);
+    this.ensureColumn("agent_runs", "last_activity_at", "TEXT");
+    this.ensureColumn("agent_runs", "cancelled_at", "TEXT");
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_agent_runs_last_activity_at ON agent_runs(last_activity_at);
+    `);
+    this.db
+      .prepare(
+        "UPDATE agent_runs SET last_activity_at = started_at WHERE last_activity_at IS NULL",
+      )
+      .run();
   }
 
   startRun(params: AgentRunCreateParams): AgentRun {
@@ -79,10 +92,10 @@ class AgentRunDatabase {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO agent_runs (id, session_id, user_id, mode, status, started_at)
-         VALUES (?, ?, ?, ?, 'running', ?)`,
+        `INSERT INTO agent_runs (id, session_id, user_id, mode, status, started_at, last_activity_at)
+         VALUES (?, ?, ?, ?, 'running', ?, ?)`,
       )
-      .run(id, params.sessionId ?? null, params.userId, params.mode, now);
+      .run(id, params.sessionId ?? null, params.userId, params.mode, now, now);
 
     return {
       id,
@@ -97,7 +110,9 @@ class AgentRunDatabase {
       totalTokens: null,
       toolLoopCount: 0,
       startedAt: now,
+      lastActivityAt: now,
       completedAt: null,
+      cancelledAt: null,
     };
   }
 
@@ -107,7 +122,7 @@ class AgentRunDatabase {
       .prepare(
         `UPDATE agent_runs
          SET status = 'completed', model = ?, prompt_tokens = ?, completion_tokens = ?,
-             total_tokens = ?, tool_loop_count = ?, completed_at = ?
+             total_tokens = ?, tool_loop_count = ?, last_activity_at = ?, completed_at = ?
          WHERE id = ?`,
       )
       .run(
@@ -117,6 +132,7 @@ class AgentRunDatabase {
         data.totalTokens ?? null,
         data.toolLoopCount,
         now,
+        now,
         id,
       );
   }
@@ -125,9 +141,28 @@ class AgentRunDatabase {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        `UPDATE agent_runs SET status = 'failed', error_message = ?, completed_at = ? WHERE id = ?`,
+        `UPDATE agent_runs SET status = 'failed', error_message = ?, last_activity_at = ?, completed_at = ? WHERE id = ?`,
       )
-      .run(errorMessage, now, id);
+      .run(errorMessage, now, now, id);
+  }
+
+  cancelRun(id: string, errorMessage = "Run cancelled by user"): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE agent_runs
+         SET status = 'failed', error_message = ?, last_activity_at = ?, completed_at = ?, cancelled_at = ?
+         WHERE id = ? AND status = 'running'`,
+      )
+      .run(errorMessage, now, now, now, id);
+  }
+
+  touchRun(id: string): void {
+    this.db
+      .prepare(
+        "UPDATE agent_runs SET last_activity_at = ? WHERE id = ? AND status = 'running'",
+      )
+      .run(new Date().toISOString(), id);
   }
 
   markStaleRunsAsFailed(olderThanMinutes: number = 30): number {
@@ -136,9 +171,11 @@ class AgentRunDatabase {
     ).toISOString();
     const result = this.db
       .prepare(
-        `UPDATE agent_runs SET status = 'failed', error_message = 'Run timed out (stale)', completed_at = ? WHERE status = 'running' AND started_at < ?`,
+        `UPDATE agent_runs
+         SET status = 'failed', error_message = 'Run timed out (stale)', completed_at = ?, last_activity_at = ?
+         WHERE status = 'running' AND COALESCE(last_activity_at, started_at) < ?`,
       )
-      .run(new Date().toISOString(), cutoff);
+      .run(new Date().toISOString(), new Date().toISOString(), cutoff);
     return result.changes;
   }
 
@@ -170,6 +207,7 @@ class AgentRunDatabase {
         step.stepOrder,
         now,
       );
+    this.touchRun(step.runId);
 
     return {
       id,
@@ -189,6 +227,7 @@ class AgentRunDatabase {
   listRuns(filters?: {
     status?: string;
     userId?: string;
+    sessionId?: string;
     limit?: number;
     offset?: number;
   }): AgentRunListResult {
@@ -205,6 +244,10 @@ class AgentRunDatabase {
     if (filters?.userId) {
       conditions.push("user_id = ?");
       params.push(filters.userId);
+    }
+    if (filters?.sessionId) {
+      conditions.push("session_id = ?");
+      params.push(filters.sessionId);
     }
 
     const whereClause =
@@ -310,8 +353,20 @@ class AgentRunDatabase {
       totalTokens: row.total_tokens as number | null,
       toolLoopCount: row.tool_loop_count as number,
       startedAt: row.started_at as string,
+      lastActivityAt:
+        (row.last_activity_at as string | null) ?? (row.started_at as string),
       completedAt: row.completed_at as string | null,
+      cancelledAt: row.cancelled_at as string | null,
     };
+  }
+
+  private ensureColumn(table: string, column: string, type: string): void {
+    const rows = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string;
+    }>;
+    if (!rows.some((row) => row.name === column)) {
+      this.db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`).run();
+    }
   }
 
   close(): void {

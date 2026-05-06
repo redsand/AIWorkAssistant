@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
-import { enforceMaxRange, todayRange } from "../../../src/integrations/hawk-ir/hawk-ir-service";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { enforceMaxRange, todayRange, HawkIrService } from "../../../src/integrations/hawk-ir/hawk-ir-service";
+import { HawkIrClient } from "../../../src/integrations/hawk-ir/hawk-ir-client";
 
 describe("HawkIrService helpers", () => {
   describe("todayRange", () => {
@@ -73,6 +74,66 @@ describe("HawkIrService helpers", () => {
       } catch (err) {
         expect((err as Error).message).toContain("weeklyReport() or monthlySummary()");
       }
+    });
+  });
+});
+
+describe("HawkIrService write operations", () => {
+  let service: HawkIrService;
+  let mockClient: HawkIrClient;
+
+  beforeEach(() => {
+    mockClient = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      addCaseNote: vi.fn().mockResolvedValue({ status: true }),
+      updateCaseStatus: vi.fn().mockResolvedValue({ status: true }),
+      updateCaseRisk: vi.fn().mockResolvedValue({ status: true }),
+    } as unknown as HawkIrClient;
+    service = new HawkIrService(mockClient);
+  });
+
+  describe("addCaseNote", () => {
+    it("should delegate to client.addCaseNote", async () => {
+      await service.addCaseNote("#635:1069", "Linked to Jira MDR-1");
+      expect(mockClient.addCaseNote).toHaveBeenCalledWith("#635:1069", "Linked to Jira MDR-1");
+    });
+  });
+
+  describe("updateCaseStatus", () => {
+    it("should normalize status and delegate to client", async () => {
+      await service.updateCaseStatus("#635:1069", "in_progress");
+      expect(mockClient.updateCaseStatus).toHaveBeenCalledWith("#635:1069", "In Progress");
+    });
+
+    it("should throw on invalid status", async () => {
+      await expect(service.updateCaseStatus("#635:1069", "Invalid"))
+        .rejects.toThrow("Invalid case status");
+    });
+
+    it("should accept all valid statuses", async () => {
+      for (const status of ["New", "Open", "In Progress", "Closed", "Resolved"]) {
+        await service.updateCaseStatus("#635:1069", status);
+      }
+      expect(mockClient.updateCaseStatus).toHaveBeenCalledTimes(5);
+    });
+  });
+
+  describe("updateCaseRisk", () => {
+    it("should map 'medium' to 'Moderate' and delegate to client", async () => {
+      await service.updateCaseRisk("#635:1069", "medium");
+      expect(mockClient.updateCaseRisk).toHaveBeenCalledWith("#635:1069", "Moderate");
+    });
+
+    it("should throw on invalid risk level", async () => {
+      await expect(service.updateCaseRisk("#635:1069", "Extreme"))
+        .rejects.toThrow("Invalid risk level");
+    });
+
+    it("should accept all valid risk levels", async () => {
+      for (const level of ["Informational", "Low", "Moderate", "High", "Critical"]) {
+        await service.updateCaseRisk("#635:1069", level);
+      }
+      expect(mockClient.updateCaseRisk).toHaveBeenCalledTimes(5);
     });
   });
 });

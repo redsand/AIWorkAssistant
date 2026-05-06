@@ -281,6 +281,82 @@ describe("HawkIrClient", () => {
     });
   });
 
+  describe("addCaseNote", () => {
+    it("should send addNote WebSocket message with correct format", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      const wsSpy = vi.spyOn(client as any, "wsRequest").mockResolvedValue({ status: true, data: {} });
+      await client.addCaseNote("#635:1069", "Linked to Jira MDR-1");
+      expect(wsSpy).toHaveBeenCalledWith({
+        route: "addNote",
+        data: { id: "#635:1069", note: "Linked to Jira MDR-1" },
+      });
+    });
+
+    it("should normalize case ID by adding # prefix if missing", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      const wsSpy = vi.spyOn(client as any, "wsRequest").mockResolvedValue({ status: true, data: {} });
+      await client.addCaseNote("635:1069", "Test note");
+      expect(wsSpy).toHaveBeenCalledWith({
+        route: "addNote",
+        data: { id: "#635:1069", note: "Test note" },
+      });
+    });
+  });
+
+  describe("updateCaseStatus", () => {
+    it("should send setStatus WebSocket message with correct format", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      const wsSpy = vi.spyOn(client as any, "wsRequest").mockResolvedValue({ status: true, data: {} });
+      await client.updateCaseStatus("#635:1069", "Closed");
+      expect(wsSpy).toHaveBeenCalledWith({
+        route: "setStatus",
+        case: "#635:1069",
+        data: "Closed",
+      });
+    });
+
+    it("should normalize case ID by adding # prefix if missing", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      const wsSpy = vi.spyOn(client as any, "wsRequest").mockResolvedValue({ status: true, data: {} });
+      await client.updateCaseStatus("635:1069", "In Progress");
+      expect(wsSpy).toHaveBeenCalledWith({
+        route: "setStatus",
+        case: "#635:1069",
+        data: "In Progress",
+      });
+    });
+  });
+
+  describe("updateCaseRisk", () => {
+    it("should send setRisk WebSocket message with correct format", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      const wsSpy = vi.spyOn(client as any, "wsRequest").mockResolvedValue({ status: true, data: {} });
+      await client.updateCaseRisk("#635:1069", "Low");
+      expect(wsSpy).toHaveBeenCalledWith({
+        route: "setRisk",
+        case: "#635:1069",
+        data: "Low",
+      });
+    });
+
+    it("should normalize case ID by adding # prefix if missing", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      const wsSpy = vi.spyOn(client as any, "wsRequest").mockResolvedValue({ status: true, data: {} });
+      await client.updateCaseRisk("635:1069", "Critical");
+      expect(wsSpy).toHaveBeenCalledWith({
+        route: "setRisk",
+        case: "#635:1069",
+        data: "Critical",
+      });
+    });
+  });
+
   describe("Explore API", () => {
     it("search returns results array", async () => {
       const { client, mockGet } = createMockedClient();

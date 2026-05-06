@@ -1,6 +1,7 @@
 import {
   API_BASE,
   currentMode,
+  currentSessionId,
   activeStreamController,
   setActiveStreamController,
 } from "./state.js";
@@ -27,9 +28,16 @@ async function loadToolsModal() {
 }
 
 export function stopGeneration() {
+  const sessionId = currentSessionId;
   if (activeStreamController) {
     activeStreamController?.abort();
     setActiveStreamController(null);
+  }
+  if (sessionId) {
+    fetch(`${API_BASE}/chat/sessions/${sessionId}/cancel`, {
+      method: "POST",
+      headers: authHeaders(),
+    }).catch(() => {});
   }
   const processingEl = document.getElementById("processingIndicator");
   processingEl.classList.remove("active");

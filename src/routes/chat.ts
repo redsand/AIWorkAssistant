@@ -49,11 +49,31 @@ const createSessionSchema = z.object({
 
 const MAX_TOOL_LOOPS = 25;
 
+class ToolLoopLimitError extends Error {
+  constructor(limit: number) {
+    super(
+      `The agent reached the maximum of ${limit} tool loops before producing a final response. Ask it to continue with a narrower scope or fewer searches.`,
+    );
+    this.name = "ToolLoopLimitError";
+  }
+}
+
+class JobCancelledError extends Error {
+  constructor(message = "Run cancelled by user") {
+    super(message);
+    this.name = "JobCancelledError";
+  }
+}
+
 interface ProcessingJob {
   sessionId: string;
   status: "processing" | "completed" | "failed";
   startedAt: Date;
+  lastActivityAt: Date;
   completedAt?: Date;
+  runId?: string | null;
+  cancelled: boolean;
+  cancelReason?: string;
   events: Array<{ event: string; data: unknown }>;
   subscribers: Set<(event: string, data: unknown) => void>;
 }
@@ -67,6 +87,8 @@ function getOrCreateJob(sessionId: string): ProcessingJob {
       sessionId,
       status: "processing",
       startedAt: new Date(),
+      lastActivityAt: new Date(),
+      cancelled: false,
       events: [],
       subscribers: new Set(),
     };
@@ -78,12 +100,117 @@ function getOrCreateJob(sessionId: string): ProcessingJob {
 function emitJobEvent(sessionId: string, event: string, data: unknown) {
   const job = processingJobs.get(sessionId);
   if (!job) return;
+  job.lastActivityAt = new Date();
+  if (job.runId) {
+    try { agentRunDatabase.touchRun(job.runId); } catch (e) { console.error("[AgentRuns]", e); }
+  }
   job.events.push({ event, data });
   for (const subscriber of job.subscribers) {
     try {
       subscriber(event, data);
     } catch {}
   }
+}
+
+function assertJobActive(job: ProcessingJob) {
+  if (job.cancelled) {
+    throw new JobCancelledError(job.cancelReason);
+  }
+}
+
+function cancelProcessingJob(
+  sessionId: string,
+  reason = "Run cancelled by user",
+): boolean {
+  const job = processingJobs.get(sessionId);
+  if (!job || job.status !== "processing") return false;
+
+  job.cancelled = true;
+  job.cancelReason = reason;
+  job.status = "failed";
+  job.completedAt = new Date();
+  job.lastActivityAt = new Date();
+
+  if (job.runId) {
+    try { agentRunDatabase.cancelRun(job.runId, reason); } catch (e) { console.error("[AgentRuns]", e); }
+  }
+
+  emitJobEvent(sessionId, "error", {
+    error: "Run cancelled",
+    message: reason,
+    cancelled: true,
+  });
+
+  return true;
+}
+
+function parseStoredToolContent(content: string): unknown {
+  try {
+    return JSON.parse(content);
+  } catch {
+    return content;
+  }
+}
+
+function buildSessionRecovery(sessionId: string) {
+  const session = conversationManager.getSession(sessionId);
+  if (!session) return null;
+
+  const messages = session.messages.map((message) => ({
+    role: message.role,
+    content: message.content,
+    timestamp: message.timestamp.toISOString(),
+    toolCalls: message.toolCalls,
+    toolCallId: message.tool_call_id,
+  }));
+  const assistantMessages = messages
+    .filter(
+      (message) =>
+        message.role === "assistant" && message.content.trim().length > 0,
+    )
+    .slice(-20);
+  const toolResults = session.messages
+    .filter((message) => message.role === "tool")
+    .slice(-50)
+    .map((message) => ({
+      toolCallId: message.tool_call_id ?? null,
+      timestamp: message.timestamp.toISOString(),
+      result: parseStoredToolContent(message.content),
+    }));
+  const lastUserMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "user");
+  const runs = agentRunDatabase.listRuns({ sessionId, limit: 20 }).runs;
+  const job = processingJobs.get(sessionId);
+
+  return {
+    success: true,
+    session: {
+      id: session.id,
+      userId: session.userId,
+      mode: session.mode,
+      createdAt: session.createdAt.toISOString(),
+      updatedAt: session.updatedAt.toISOString(),
+      messageCount: session.messages.length,
+      lastUserMessage,
+    },
+    processing: job?.status === "processing",
+    job: job
+      ? {
+          status: job.status,
+          startedAt: job.startedAt.toISOString(),
+          lastActivityAt: job.lastActivityAt.toISOString(),
+          completedAt: job.completedAt?.toISOString() ?? null,
+          cancelled: job.cancelled,
+          eventCount: job.events.length,
+        }
+      : null,
+    latestRun: runs[0] ?? null,
+    runs,
+    assistantMessages,
+    toolResults,
+    messages,
+  };
 }
 
 async function runChatJob(
@@ -94,14 +221,22 @@ async function runChatJob(
   userId: string,
 ) {
   const job = getOrCreateJob(sessionId);
+  if (job.cancelled) return;
   job.status = "processing";
   job.events = [];
+  job.cancelled = false;
+  job.cancelReason = undefined;
+  job.startedAt = new Date();
+  job.lastActivityAt = new Date();
+  job.completedAt = undefined;
+  job.runId = null;
 
   let runId: string | null = null;
-  try { runId = agentRunDatabase.startRun({ sessionId, userId, mode }).id; } catch (e) { console.error("[AgentRuns]", e); }
+  try { runId = agentRunDatabase.startRun({ sessionId, userId, mode }).id; job.runId = runId; } catch (e) { console.error("[AgentRuns]", e); }
 
   try {
     let stepOrder = 0;
+    assertJobActive(job);
     try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
     let response = await aiClient.chat({
       messages: messages,
@@ -109,6 +244,7 @@ async function runChatJob(
       temperature: 0.7,
       top_p: 0.95,
     });
+    assertJobActive(job);
     try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
     let allToolResults: Record<string, unknown> = {};
@@ -119,13 +255,14 @@ async function runChatJob(
       expandedTools.map((t: Tool) => t.function.name);
 
     while (response.toolCalls && response.toolCalls.length > 0) {
+      assertJobActive(job);
       loopCount++;
 
       if (loopCount > MAX_TOOL_LOOPS) {
         console.warn(
           `[Chat/Job] Tool loop limit (${MAX_TOOL_LOOPS}) reached for ${sessionId}`,
         );
-        break;
+        throw new ToolLoopLimitError(MAX_TOOL_LOOPS);
       }
 
       if (response.thinking) {
@@ -169,6 +306,7 @@ async function runChatJob(
       const regularCalls = toolCalls.filter((tc) => tc.name !== "agent.spawn");
 
       for (const tc of regularCalls) {
+        assertJobActive(job);
         emitJobEvent(sessionId, "tool_start", {
           id: tc.id,
           name: tc.name,
@@ -179,6 +317,7 @@ async function runChatJob(
         const toolStart = Date.now();
         const dispatchParams = { ...tc.params, _mode: mode, _loadedTools: getLoadedToolNames() };
         const result = await dispatchToolCall(tc.name, dispatchParams, userId, false, { messages, mode });
+        assertJobActive(job);
         const toolDuration = Date.now() - toolStart;
         allToolResults[tc.id] = result;
 
@@ -245,6 +384,7 @@ async function runChatJob(
         }
 
         const spawnPromises = spawnCalls.map(async (tc) => {
+          assertJobActive(job);
           try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_call", toolName: tc.name, sanitizedParams: sanitizeValue(tc.params), stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
           const spawnStart = Date.now();
           const dispatchParams = { ...tc.params, _mode: mode, _loadedTools: getLoadedToolNames() };
@@ -255,6 +395,7 @@ async function runChatJob(
             false,
             { messages, mode },
           );
+          assertJobActive(job);
           const spawnDuration = Date.now() - spawnStart;
           try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: tc.name, success: result.success !== false, errorMessage: result.error, durationMs: spawnDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
           return { id: tc.id, result };
@@ -296,15 +437,18 @@ async function runChatJob(
       messages = aiClient.pruneMessages(messages, currentTools) as ChatMessage[];
 
       try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+      assertJobActive(job);
       response = await aiClient.chat({
         messages: messages,
         tools: expandedTools.length > 0 ? expandedTools : undefined,
         temperature: 0.7,
         top_p: 0.95,
       });
+      assertJobActive(job);
       try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
     }
 
+    assertJobActive(job);
     conversationManager.addMessage(sessionId, {
       role: "assistant",
       content: response.content,
@@ -329,15 +473,23 @@ async function runChatJob(
     try { if (runId) agentRunDatabase.completeRun(runId, { model: response.model, promptTokens: response.usage?.promptTokens, completionTokens: response.usage?.completionTokens, totalTokens: response.usage?.totalTokens, toolLoopCount: loopCount }); } catch (e) { console.error("[AgentRuns]", e); }
   } catch (error) {
     console.error(`[Chat/Job] Failed for session ${sessionId}:`, error);
-    emitJobEvent(sessionId, "error", {
+    const cancelled = error instanceof JobCancelledError;
+    if (!cancelled || job.events[job.events.length - 1]?.event !== "error") {
+      emitJobEvent(sessionId, "error", {
       error: "Failed to process request",
       message: error instanceof Error ? error.message : "Unknown error",
-    });
+      cancelled,
+      });
+    }
 
     job.status = "failed";
     job.completedAt = new Date();
 
-    try { if (runId) agentRunDatabase.failRun(runId, error instanceof Error ? error.message : "Unknown error"); } catch (e) { console.error("[AgentRuns]", e); }
+    try {
+      if (runId && !cancelled) {
+        agentRunDatabase.failRun(runId, error instanceof Error ? error.message : "Unknown error");
+      }
+    } catch (e) { console.error("[AgentRuns]", e); }
   }
 }
 
@@ -492,7 +644,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           console.warn(
             `[Chat] Tool loop limit (${MAX_TOOL_LOOPS}) reached, breaking`,
           );
-          break;
+          throw new ToolLoopLimitError(MAX_TOOL_LOOPS);
         }
 
         if (response.thinking) {
@@ -713,8 +865,33 @@ export async function chatRoutes(fastify: FastifyInstance) {
     };
 
     try {
-      const systemPrompt = getSystemPrompt(body.mode, body.message);
       let sessionId = body.sessionId;
+      const activeJob = sessionId ? processingJobs.get(sessionId) : null;
+
+      if (activeJob?.status === "processing") {
+        sendEvent("session", { sessionId });
+        for (const evt of activeJob.events) {
+          sendEvent(evt.event, evt.data);
+        }
+
+        const subscriber = (event: string, data: unknown) => {
+          sendEvent(event, data);
+          if (event === "done" || event === "error") {
+            setTimeout(() => {
+              cleanupConnection();
+            }, 100);
+          }
+        };
+        activeJob.subscribers.add(subscriber);
+
+        request.raw.on("close", () => {
+          activeJob.subscribers.delete(subscriber);
+          cleanupConnection();
+        });
+        return;
+      }
+
+      const systemPrompt = getSystemPrompt(body.mode, body.message);
 
       const existingSession = sessionId
         ? conversationManager.getSession(sessionId)
@@ -801,17 +978,6 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       const job = getOrCreateJob(sessionId!);
 
-      if (job.status === "processing") {
-        const pendingEvents = job.events;
-        for (const evt of pendingEvents) {
-          sendEvent(evt.event, evt.data);
-        }
-        if (job.status !== "processing") {
-          cleanupConnection();
-          return;
-        }
-      }
-
       const subscriber = (event: string, data: unknown) => {
         sendEvent(event, data);
         if (event === "done" || event === "error") {
@@ -849,6 +1015,36 @@ export async function chatRoutes(fastify: FastifyInstance) {
     }
   });
 
+  fastify.post("/chat/sessions/:sessionId/cancel", async (request, reply) => {
+    const { sessionId } = request.params as { sessionId: string };
+    const session = conversationManager.getSession(sessionId);
+
+    if (!session) {
+      reply.code(404);
+      return { error: "Session not found" };
+    }
+
+    const cancelled = cancelProcessingJob(sessionId);
+    return {
+      success: true,
+      sessionId,
+      cancelled,
+      message: cancelled ? "Run cancelled" : "No active run for session",
+    };
+  });
+
+  fastify.get("/chat/sessions/:sessionId/recovery", async (request, reply) => {
+    const { sessionId } = request.params as { sessionId: string };
+    const recovery = buildSessionRecovery(sessionId);
+
+    if (!recovery) {
+      reply.code(404);
+      return { error: "Session not found" };
+    }
+
+    return recovery;
+  });
+
   fastify.get("/chat/sessions/:sessionId/status", async (request) => {
     const { sessionId } = request.params as { sessionId: string };
     const job = processingJobs.get(sessionId);
@@ -867,7 +1063,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
       processing: job.status === "processing",
       status: job.status,
       startedAt: job.startedAt,
+      lastActivityAt: job.lastActivityAt,
       completedAt: job.completedAt,
+      cancelled: job.cancelled,
       eventCount: job.events.length,
     };
   });

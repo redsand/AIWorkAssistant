@@ -335,7 +335,7 @@ class CtoDailyCommandCenter {
     ];
     if (data.memories.length > 0) bullets.push(`- Memory surfaced ${data.memories.length} relevant prior context item(s).`);
     if (unavailable.length > 0) bullets.push(`- Some integrations were unavailable; the brief still used local and configured sources.`);
-    return bullets.slice(0, 7);
+    return bullets.slice(0, 10);
   }
 
   private customerSignals(jitbit: BriefData["jitbit"]): string[] {

@@ -4744,6 +4744,56 @@ async function handleHawkIrDeescalateCase(
   return { success: true, data };
 }
 
+async function handleHawkIrAddCaseNote(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const caseId = params.caseId as string;
+  const body = params.body as string;
+  if (!caseId) return { success: false, error: "caseId is required" };
+  if (!body) return { success: false, error: "body is required" };
+  const data = await hawkIrService.addCaseNote(caseId, body);
+  return { success: true, data };
+}
+
+async function handleHawkIrUpdateCaseStatus(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const caseId = params.caseId as string;
+  const status = params.status as string;
+  if (!caseId) return { success: false, error: "caseId is required" };
+  if (!status) return { success: false, error: "status is required" };
+  const data = await hawkIrService.updateCaseStatus(caseId, status);
+  const comment = params.comment as string | undefined;
+  if (comment) {
+    await hawkIrService.addCaseNote(caseId, comment);
+  }
+  return { success: true, data };
+}
+
+async function handleHawkIrUpdateCaseRisk(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const caseId = params.caseId as string;
+  const riskLevel = params.riskLevel as string;
+  if (!caseId) return { success: false, error: "caseId is required" };
+  if (!riskLevel) return { success: false, error: "riskLevel is required" };
+  const data = await hawkIrService.updateCaseRisk(caseId, riskLevel);
+  const reason = params.reason as string | undefined;
+  if (reason) {
+    await hawkIrService.addCaseNote(caseId, `Risk level changed to ${riskLevel}: ${reason}`);
+  }
+  return { success: true, data };
+}
+
 async function handleHawkIrSearchLogs(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -5175,6 +5225,9 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "hawk_ir.get_case_summary": handleHawkIrGetCaseSummary,
   "hawk_ir.get_risky_open_cases": handleHawkIrGetRiskyOpenCases,
   "hawk_ir.deescalate_case": handleHawkIrDeescalateCase,
+  "hawk_ir.add_case_note": handleHawkIrAddCaseNote,
+  "hawk_ir.update_case_status": handleHawkIrUpdateCaseStatus,
+  "hawk_ir.update_case_risk": handleHawkIrUpdateCaseRisk,
   "hawk_ir.search_logs": handleHawkIrSearchLogs,
   "hawk_ir.get_available_indexes": handleHawkIrGetAvailableIndexes,
   "hawk_ir.get_assets": handleHawkIrGetAssets,

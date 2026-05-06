@@ -139,6 +139,15 @@ Example: `jira.issue.close` matches:
 | `gitlab.jira_link.auto_comment` | Medium | Approval | Auto-posts to Jira |
 | `gitlab.jira_link.auto_transition` | High | Approval | Auto-transitions Jira |
 
+### HAWK IR Case Management
+
+| Action | Risk | Approval | MFA | Justification | Impact |
+|--------|------|----------|-----|---------------|--------|
+| `hawk_ir.add_case_note` | Medium | Yes | No | No | Adds note to case record |
+| `hawk_ir.update_case_status` | High | Yes | No | Yes | Changes case workflow state |
+| `hawk_ir.update_case_risk` | High | Yes | No | Yes | Changes case prioritization |
+| `hawk_ir.deescalate_case` | High | Yes | No | Yes | Removes escalation (existing) |
+
 ### Bulk/Destructive Operations
 | Action | Risk | Default | Notes |
 |--------|------|---------|-------|

@@ -4310,6 +4310,73 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "high",
   },
   {
+    name: "hawk_ir.add_case_note",
+    description:
+      "Add a note/comment to a HAWK IR case. Use to document findings, link to Jira tickets, or record investigation decisions. Requires approval.",
+    params: {
+      caseId: {
+        type: "string",
+        description: "HAWK IR case ID (e.g., \"#635:1069\" or \"635:1069\")",
+        required: true,
+      },
+      body: {
+        type: "string",
+        description: "Note content to add to the case (markdown supported)",
+        required: true,
+      },
+    },
+    actionType: "hawk_ir.add_case_note",
+    riskLevel: "medium",
+  },
+  {
+    name: "hawk_ir.update_case_status",
+    description:
+      "Update the progress status of a HAWK IR case. Valid statuses: New, Open, In Progress, Closed, Resolved. High risk — requires approval.",
+    params: {
+      caseId: {
+        type: "string",
+        description: "HAWK IR case ID (e.g., \"#635:1069\" or \"635:1069\")",
+        required: true,
+      },
+      status: {
+        type: "string",
+        description: "Target status: New, Open, In Progress, Closed, or Resolved",
+        required: true,
+      },
+      comment: {
+        type: "string",
+        description: "Optional reason for the status change (also added as a case note)",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.update_case_status",
+    riskLevel: "high",
+  },
+  {
+    name: "hawk_ir.update_case_risk",
+    description:
+      "Update the risk level of a HAWK IR case. Valid levels: Informational, Low, Moderate, High, Critical. High risk — requires approval.",
+    params: {
+      caseId: {
+        type: "string",
+        description: "HAWK IR case ID (e.g., \"#635:1069\" or \"635:1069\")",
+        required: true,
+      },
+      riskLevel: {
+        type: "string",
+        description: "Target risk level: Informational, Low, Moderate, High, or Critical",
+        required: true,
+      },
+      reason: {
+        type: "string",
+        description: "Justification for the risk level change (also added as a case note)",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.update_case_risk",
+    riskLevel: "high",
+  },
+  {
     name: "hawk_ir.search_logs",
     description:
       "Search HAWK IR logs/explore data with query and optional filters (index, date range, pagination).",

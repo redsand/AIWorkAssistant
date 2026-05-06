@@ -4,6 +4,13 @@ const mocks = vi.hoisted(() => ({
   fileCalendarService: {
     listEvents: vi.fn(),
   },
+  hawkIrService: {
+    isConfigured: vi.fn().mockReturnValue(false),
+    getRiskyOpenCases: vi.fn().mockResolvedValue([]),
+    getCaseCount: vi.fn().mockResolvedValue(0),
+    getRecentCases: vi.fn().mockResolvedValue([]),
+    getActiveNodes: vi.fn().mockResolvedValue([]),
+  },
   jiraClient: {
     isConfigured: vi.fn(),
     searchIssues: vi.fn(),
@@ -60,6 +67,10 @@ vi.mock("../../../src/integrations/github/github-client", () => ({
 
 vi.mock("../../../src/integrations/jitbit/jitbit-service", () => ({
   jitbitService: mocks.jitbitService,
+}));
+
+vi.mock("../../../src/integrations/hawk-ir/hawk-ir-service", () => ({
+  hawkIrService: mocks.hawkIrService,
 }));
 
 vi.mock("../../../src/roadmap/database", () => ({

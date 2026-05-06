@@ -423,6 +423,8 @@ describe("Engineering Prompt Quality", () => {
       expect(result.users.length).toBeGreaterThan(0);
     });
 
+    it("should fall back gracefully when AI client returns undefined", async () => {
+      // chatSpy returns undefined by default (vi.fn()); generator has a fallback
       vi.doMock("../../../src/agent/opencode-client", () => ({
         aiClient: { isConfigured: () => true, chat: chatSpy },
       }));
@@ -430,7 +432,9 @@ describe("Engineering Prompt Quality", () => {
       const { workflowBriefGenerator: gen } =
         await import("../../../src/engineering/workflow-brief");
 
-      await expect(gen.generate("test")).rejects.toThrow();
+      const result = await gen.generate("test");
+      expect(result).toBeDefined();
+      expect(result.problem).toBeDefined();
     });
 
     it("should fall back gracefully on completely invalid JSON", async () => {

@@ -139,6 +139,12 @@ async function start() {
   try {
     const port = env.PORT;
     const host = "0.0.0.0";
+    let staleRunInterval: NodeJS.Timeout | undefined;
+    server.addHook("onClose", async () => {
+      if (staleRunInterval) {
+        clearInterval(staleRunInterval);
+      }
+    });
 
     await server.listen({ port, host });
 
@@ -147,6 +153,13 @@ async function start() {
     if (staleCount > 0) {
       console.log(`🧹 Marked ${staleCount} stale agent run(s) as failed`);
     }
+    staleRunInterval = setInterval(() => {
+      const count = agentRunDatabase.markStaleRunsAsFailed();
+      if (count > 0) {
+        console.log(`🧹 Marked ${count} stale agent run(s) as failed`);
+      }
+    }, 60_000);
+    staleRunInterval.unref();
 
     console.log(`
 ╔════════════════════════════════════════════════════════════╗
