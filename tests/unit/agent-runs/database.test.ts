@@ -243,4 +243,104 @@ describe("AgentRunDatabase", () => {
       expect(db.getRun(run.id)).not.toBeNull();
     });
   });
+
+  describe("markStaleRunsAsFailed", () => {
+    it("should mark old running runs as failed", () => {
+      const run = db.startRun({ userId: "user1", mode: "chat" });
+
+      // Manually set started_at to 60 minutes ago
+      const dbAny = db as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } };
+      const oldDate = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      dbAny.db.prepare("UPDATE agent_runs SET started_at = ? WHERE id = ?").run(oldDate, run.id);
+
+      const count = db.markStaleRunsAsFailed(30);
+      expect(count).toBe(1);
+
+      const fetched = db.getRun(run.id);
+      expect(fetched!.status).toBe("failed");
+      expect(fetched!.errorMessage).toBe("Run timed out (stale)");
+      expect(fetched!.completedAt).toBeTruthy();
+    });
+
+    it("should not mark recent running runs as failed", () => {
+      db.startRun({ userId: "user1", mode: "chat" });
+
+      const count = db.markStaleRunsAsFailed(30);
+      expect(count).toBe(0);
+    });
+
+    it("should not affect completed runs", () => {
+      const run = db.startRun({ userId: "user1", mode: "chat" });
+      db.completeRun(run.id, { toolLoopCount: 1 });
+
+      // Manually set started_at to 60 minutes ago (old but already completed)
+      const dbAny = db as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } };
+      const oldDate = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      dbAny.db.prepare("UPDATE agent_runs SET started_at = ? WHERE id = ?").run(oldDate, run.id);
+
+      const count = db.markStaleRunsAsFailed(30);
+      expect(count).toBe(0);
+
+      const fetched = db.getRun(run.id);
+      expect(fetched!.status).toBe("completed");
+    });
+
+    it("should not affect already failed runs", () => {
+      const run = db.startRun({ userId: "user1", mode: "chat" });
+      db.failRun(run.id, "Original error");
+
+      // Manually set started_at to 60 minutes ago
+      const dbAny = db as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } };
+      const oldDate = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      dbAny.db.prepare("UPDATE agent_runs SET started_at = ? WHERE id = ?").run(oldDate, run.id);
+
+      const count = db.markStaleRunsAsFailed(30);
+      expect(count).toBe(0);
+
+      const fetched = db.getRun(run.id);
+      expect(fetched!.status).toBe("failed");
+      expect(fetched!.errorMessage).toBe("Original error");
+    });
+
+    it("should mark multiple stale runs as failed", () => {
+      const dbAny = db as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } };
+      const oldDate = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+      const run1 = db.startRun({ userId: "user1", mode: "chat" });
+      const run2 = db.startRun({ userId: "user1", mode: "agent" });
+      db.startRun({ userId: "user1", mode: "chat" }); // recent, should not be marked
+
+      dbAny.db.prepare("UPDATE agent_runs SET started_at = ? WHERE id IN (?, ?)").run(oldDate, run1.id, run2.id);
+
+      const count = db.markStaleRunsAsFailed(30);
+      expect(count).toBe(2);
+    });
+
+    it("should use default 30-minute threshold", () => {
+      const run = db.startRun({ userId: "user1", mode: "chat" });
+
+      // 31 minutes old — just over default threshold
+      const dbAny = db as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } };
+      const oldDate = new Date(Date.now() - 31 * 60 * 1000).toISOString();
+      dbAny.db.prepare("UPDATE agent_runs SET started_at = ? WHERE id = ?").run(oldDate, run.id);
+
+      const count = db.markStaleRunsAsFailed();
+      expect(count).toBe(1);
+    });
+
+    it("should not mark runs within threshold with custom value", () => {
+      const run = db.startRun({ userId: "user1", mode: "chat" });
+
+      // 5 minutes old — within a 10-minute threshold
+      const dbAny = db as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } };
+      const recentDate = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      dbAny.db.prepare("UPDATE agent_runs SET started_at = ? WHERE id = ?").run(recentDate, run.id);
+
+      const count = db.markStaleRunsAsFailed(10);
+      expect(count).toBe(0);
+
+      const fetched = db.getRun(run.id);
+      expect(fetched!.status).toBe("running");
+    });
+  });
 });

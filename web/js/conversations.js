@@ -9,7 +9,7 @@ import {
   updateSessionHash,
 } from "./state.js";
 import { authHeaders } from "./auth.js";
-import { addMessage, scrollChatToBottom, ensureScrollListener } from "./messages.js";
+import { addMessage, scrollChatToBottom, ensureScrollListener, enableAutoScroll } from "./messages.js";
 
 import { escapeHtml, escapeAttr } from "./utils.js";
 import { readSessionHash } from "./state.js";
@@ -96,6 +96,7 @@ export async function switchConversation(sessionId) {
   if (processingIndicator) processingIndicator.classList.remove("active");
   const typingIndicator = document.getElementById("typingIndicator");
   if (typingIndicator) typingIndicator.classList.remove("active");
+  enableAutoScroll();
 
   const chatMessages = document.getElementById("chatMessages");
   chatMessages.innerHTML = "";
@@ -176,6 +177,7 @@ export async function newChat() {
   if (processingIndicator) processingIndicator.classList.remove("active");
   const typingIndicator = document.getElementById("typingIndicator");
   if (typingIndicator) typingIndicator.classList.remove("active");
+  enableAutoScroll();
 
   const chatMessages = document.getElementById("chatMessages");
   chatMessages.innerHTML = `

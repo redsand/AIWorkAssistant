@@ -19,6 +19,8 @@ import { renderMarkdown } from "./markdown.js";
 
 const SCROLL_NEAR_BOTTOM_PX = 150;
 
+let autoScrollEnabled = true;
+
 function getChatMessagesEl() {
   return document.getElementById("chatMessages");
 }
@@ -29,6 +31,10 @@ function isNearBottom() {
   return el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_NEAR_BOTTOM_PX;
 }
 
+export function isAutoScrollEnabled() {
+  return autoScrollEnabled;
+}
+
 export function scrollChatToBottom(force = false) {
   const el = getChatMessagesEl();
   if (!el) return;
@@ -37,6 +43,7 @@ export function scrollChatToBottom(force = false) {
     return;
   }
   hideJumpToLatest();
+  autoScrollEnabled = true;
   el.scrollTo({ top: el.scrollHeight, behavior: force ? "instant" : "smooth" });
 }
 
@@ -50,6 +57,7 @@ function showJumpToLatest() {
   jumpToLatestBtn.className = "jump-to-latest-btn";
   jumpToLatestBtn.textContent = "↓ Jump to latest";
   jumpToLatestBtn.addEventListener("click", () => {
+    autoScrollEnabled = true;
     scrollChatToBottom(true);
   });
   chatSection.appendChild(jumpToLatestBtn);
@@ -67,7 +75,10 @@ function setupScrollListener() {
   if (!el) return;
   el.addEventListener("scroll", () => {
     if (isNearBottom()) {
+      autoScrollEnabled = true;
       hideJumpToLatest();
+    } else {
+      autoScrollEnabled = false;
     }
   });
 }
@@ -78,6 +89,11 @@ export function ensureScrollListener() {
   if (scrollListenerSetup) return;
   setupScrollListener();
   scrollListenerSetup = true;
+}
+
+export function enableAutoScroll() {
+  autoScrollEnabled = true;
+  hideJumpToLatest();
 }
 
 export function showTyping(show) {
@@ -141,7 +157,7 @@ export function addMessage(content, type, thinking, { scroll = true } = {}) {
 
   messageDiv.appendChild(row);
   messagesDiv.appendChild(messageDiv);
-  if (scroll) {
+  if (scroll && autoScrollEnabled) {
     scrollChatToBottom();
   }
 }
@@ -210,7 +226,7 @@ export function addToolCall(id, name, params) {
   body.classList.add("expanded");
   progressEl.querySelector(".tool-progress-toggle").classList.add("expanded");
 
-  scrollChatToBottom();
+  if (autoScrollEnabled) scrollChatToBottom();
 }
 
 export function completeToolCall(id, result) {
@@ -241,7 +257,7 @@ export function completeToolCall(id, result) {
   }
   item.appendChild(resultDiv);
 
-  scrollChatToBottom();
+  if (autoScrollEnabled) scrollChatToBottom();
 
   const body = progressEl.querySelector(".tool-progress-body");
   const running = body.querySelectorAll(".tool-call-status.running");

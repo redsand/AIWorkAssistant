@@ -19,6 +19,7 @@ import { fileCalendarRoutes } from "./routes/file-calendar";
 import { productivityRoutes } from "./routes/productivity";
 import { engineeringRoutes } from "./routes/engineering";
 import { agentRunsRoutes } from "./agent-runs/api";
+import { agentRunDatabase } from "./agent-runs/database";
 import { workItemRoutes } from "./routes/work-items";
 import { ctoRoutes } from "./routes/cto";
 import { personalOsRoutes } from "./routes/personal-os";
@@ -136,6 +137,12 @@ async function start() {
     const host = "0.0.0.0";
 
     await server.listen({ port, host });
+
+    // Mark stale agent runs as failed on startup (crashed/restarted mid-run)
+    const staleCount = agentRunDatabase.markStaleRunsAsFailed();
+    if (staleCount > 0) {
+      console.log(`🧹 Marked ${staleCount} stale agent run(s) as failed`);
+    }
 
     console.log(`
 ╔════════════════════════════════════════════════════════════╗

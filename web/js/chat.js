@@ -27,6 +27,8 @@ import {
   finalizeToolProgress,
   scrollChatToBottom,
   ensureScrollListener,
+  enableAutoScroll,
+  isAutoScrollEnabled,
 } from "./messages.js";
 import { loadRoadmaps } from "./sidebar.js";
 import { loadConversations } from "./conversations.js";
@@ -48,7 +50,7 @@ async function handleStreamResponse(response, progressElRef, onError) {
       document.getElementById("chatMessages").appendChild(result.progressEl);
       const processingEl = document.getElementById("processingIndicator");
       processingEl.classList.add("active");
-      scrollChatToBottom();
+      if (isAutoScrollEnabled()) scrollChatToBottom();
     }
     return progressElRef.progressEl;
   }
@@ -313,6 +315,7 @@ export async function sendMessage() {
     setActiveStreamController(null);
   }
 
+  enableAutoScroll();
   showTyping(true);
 
   const progressElRef = { progressEl: null };
@@ -435,6 +438,7 @@ export async function resendMessage(message) {
     setActiveStreamController(null);
   }
 
+  enableAutoScroll();
   showTyping(true);
 
   const progressElRef = { progressEl: null };
