@@ -4982,6 +4982,63 @@ async function handleHawkIrRunDashboard(
   return { success: true, data };
 }
 
+async function handleHawkIrRunDashboardQuery(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const from = params.from as string;
+  if (!from) return { success: false, error: "from is required" };
+  const data = await hawkIrService.runDashboardQuery({
+    from,
+    to: params.to as string | undefined,
+    query: params.query as string | undefined,
+    index: params.index as string | undefined,
+    type: params.type as "table" | "bar" | "line" | "pie" | "count" | "metric" | undefined,
+    columns: params.columns as string[] | undefined,
+    groupBy: params.groupBy as string[] | undefined,
+    metrics: params.metrics as { field: string; operator: string }[] | undefined,
+    size: params.size as number | undefined,
+    sort: params.sort as { field: string; direction: "asc" | "desc" } | undefined,
+    pagination: params.pagination as { limit?: number; offset?: number; page?: number } | undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleHawkIrWeeklyReport(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.weeklyReport({
+    query: params.query as string | undefined,
+    index: params.index as string | undefined,
+    columns: params.columns as string[] | undefined,
+    groupBy: params.groupBy as string[] | undefined,
+    metrics: params.metrics as { field: string; operator: string }[] | undefined,
+    size: params.size as number | undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleHawkIrMonthlySummary(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.monthlySummary({
+    query: params.query as string | undefined,
+    index: params.index as string | undefined,
+    columns: params.columns as string[] | undefined,
+    groupBy: params.groupBy as string[] | undefined,
+    metrics: params.metrics as { field: string; operator: string }[] | undefined,
+  });
+  return { success: true, data };
+}
+
 async function handleHawkIrGetCaseCount(
   _params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -5311,6 +5368,9 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "hawk_ir.get_active_nodes": handleHawkIrGetActiveNodes,
   "hawk_ir.list_dashboards": handleHawkIrListDashboards,
   "hawk_ir.run_dashboard": handleHawkIrRunDashboard,
+  "hawk_ir.run_dashboard_query": handleHawkIrRunDashboardQuery,
+  "hawk_ir.weekly_report": handleHawkIrWeeklyReport,
+  "hawk_ir.monthly_summary": handleHawkIrMonthlySummary,
   "hawk_ir.get_case_count": handleHawkIrGetCaseCount,
   "hawk_ir.get_recent_cases": handleHawkIrGetRecentCases,
   "hawk_ir.get_log_histogram": handleHawkIrGetLogHistogram,

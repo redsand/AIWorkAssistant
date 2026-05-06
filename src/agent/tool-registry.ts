@@ -4628,6 +4628,143 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "low",
   },
   {
+    name: "hawk_ir.run_dashboard_query",
+    description:
+      "Run an ad-hoc HAWK IR dashboard query without needing a saved dashboard. Time range is enforced to a maximum of 10 days. For longer periods use hawk_ir.weekly_report or hawk_ir.monthly_summary.",
+    params: {
+      from: {
+        type: "string",
+        description: "Start of the query time range (ISO 8601)",
+        required: true,
+      },
+      to: {
+        type: "string",
+        description: "End of the query time range (ISO 8601). Defaults to now.",
+        required: false,
+      },
+      query: {
+        type: "string",
+        description: "Lucene/KQL query string. Defaults to '*'.",
+        required: false,
+      },
+      index: {
+        type: "string",
+        description: "Index pattern to query (e.g. 'logs-*')",
+        required: false,
+      },
+      type: {
+        type: "string",
+        description: "Visualization type: table, bar, line, pie, count, or metric. Defaults to 'table'.",
+        required: false,
+      },
+      columns: {
+        type: "array",
+        description: "List of field names to include as columns",
+        required: false,
+      },
+      groupBy: {
+        type: "array",
+        description: "List of field names to group results by",
+        required: false,
+      },
+      metrics: {
+        type: "array",
+        description: "Metric definitions: array of { field, operator }",
+        required: false,
+      },
+      size: {
+        type: "number",
+        description: "Maximum number of results to return. Defaults to 25.",
+        required: false,
+      },
+      sort: {
+        type: "object",
+        description: "Sort order: { field, direction: 'asc'|'desc' }",
+        required: false,
+      },
+      pagination: {
+        type: "object",
+        description: "Pagination: { limit?, offset?, page? }",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.run_dashboard_query",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.weekly_report",
+    description:
+      "Generate a HAWK IR weekly report covering the last 10 days. Returns aggregated dashboard query results. For custom time ranges use hawk_ir.run_dashboard_query.",
+    params: {
+      query: {
+        type: "string",
+        description: "Optional Lucene/KQL filter query. Defaults to '*'.",
+        required: false,
+      },
+      index: {
+        type: "string",
+        description: "Index pattern to query (e.g. 'logs-*')",
+        required: false,
+      },
+      columns: {
+        type: "array",
+        description: "List of field names to include as columns",
+        required: false,
+      },
+      groupBy: {
+        type: "array",
+        description: "List of field names to group results by",
+        required: false,
+      },
+      metrics: {
+        type: "array",
+        description: "Metric definitions: array of { field, operator }",
+        required: false,
+      },
+      size: {
+        type: "number",
+        description: "Maximum number of results to return. Defaults to 25.",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.weekly_report",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.monthly_summary",
+    description:
+      "Generate a HAWK IR monthly summary by running up to 3 weekly queries (each within the 10-day limit) and returning combined results. Use for trend analysis across ~30 days.",
+    params: {
+      query: {
+        type: "string",
+        description: "Optional Lucene/KQL filter query. Defaults to '*'.",
+        required: false,
+      },
+      index: {
+        type: "string",
+        description: "Index pattern to query (e.g. 'logs-*')",
+        required: false,
+      },
+      columns: {
+        type: "array",
+        description: "List of field names to include as columns",
+        required: false,
+      },
+      groupBy: {
+        type: "array",
+        description: "List of field names to group results by",
+        required: false,
+      },
+      metrics: {
+        type: "array",
+        description: "Metric definitions: array of { field, operator }",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.monthly_summary",
+    riskLevel: "low",
+  },
+  {
     name: "hawk_ir.get_case_count",
     description:
       "Get the count of HAWK IR incident response cases within the last 10 days.",
