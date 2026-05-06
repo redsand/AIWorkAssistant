@@ -520,6 +520,22 @@ export class GithubClient {
     return response.data;
   }
 
+  async listPullRequestChecks(
+    prNumber: number,
+    owner?: string,
+    repo?: string,
+  ): Promise<any[]> {
+    const { owner: o, repo: r } = this.resolveRepo(owner, repo);
+    const pr = await this.getPullRequest(prNumber, o, r);
+    const sha = pr?.head?.sha;
+    if (!sha) return [];
+    const response = await this.client.get(
+      `/repos/${o}/${r}/commits/${sha}/check-runs`,
+      { params: { per_page: 100 } },
+    );
+    return response.data?.check_runs ?? [];
+  }
+
   async listIssues(
     state?: "open" | "closed" | "all",
     labels?: string,

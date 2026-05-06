@@ -44,6 +44,7 @@ const PLATFORM_PREFIX_MAP: Record<string, Platform> = {
   product: "cross-platform",
   hawk_ir: "hawk-ir",
   discover: "cross-platform",
+  code_review: "cross-platform",
 };
 
 export function getPlatformForToolName(toolName: string): Platform {
@@ -1907,6 +1908,153 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     },
     actionType: "github.release.create",
     riskLevel: "high",
+  },
+
+  // ==================== Code Review Tools ====================
+  {
+    name: "code_review.github_pr",
+    description:
+      "Review a GitHub pull request. Fetches PR metadata, changed files, diff, and CI check status, then produces a structured review with risk level, must-fix/should-fix items, security concerns, and a suggested review comment. Does NOT post or merge.",
+    params: {
+      owner: {
+        type: "string",
+        description: "Repository owner (user or org)",
+        required: true,
+      },
+      repo: {
+        type: "string",
+        description: "Repository name",
+        required: true,
+      },
+      prNumber: {
+        type: "number",
+        description: "Pull request number",
+        required: true,
+      },
+    },
+    actionType: "code_review.github_pr",
+    riskLevel: "low",
+  },
+  {
+    name: "code_review.gitlab_mr",
+    description:
+      "Review a GitLab merge request. Fetches MR metadata, changed files, diff, and pipeline status, then produces a structured review with risk level, must-fix/should-fix items, security concerns, and a suggested review comment. Does NOT post or merge.",
+    params: {
+      projectId: {
+        type: "string",
+        description: "GitLab project ID or path (e.g. '123' or 'group/repo')",
+        required: true,
+      },
+      mrIid: {
+        type: "number",
+        description: "Merge request internal ID (the !N number)",
+        required: true,
+      },
+    },
+    actionType: "code_review.gitlab_mr",
+    riskLevel: "low",
+  },
+  {
+    name: "code_review.release_readiness",
+    description:
+      "Generate a release readiness report for a GitHub PR or GitLab MR. Includes Go/No-Go recommendation, known risks, deployment notes, rollback plan, customer impact, and a draft internal announcement. Does NOT deploy or merge.",
+    params: {
+      platform: {
+        type: "string",
+        description: "Platform: 'github' or 'gitlab'",
+        required: true,
+      },
+      owner: {
+        type: "string",
+        description: "GitHub repository owner (required for GitHub)",
+        required: false,
+      },
+      repo: {
+        type: "string",
+        description: "GitHub repository name (required for GitHub)",
+        required: false,
+      },
+      prNumber: {
+        type: "number",
+        description: "GitHub PR number (required for GitHub)",
+        required: false,
+      },
+      projectId: {
+        type: "string",
+        description: "GitLab project ID or path (required for GitLab)",
+        required: false,
+      },
+      mrIid: {
+        type: "number",
+        description: "GitLab MR internal ID (required for GitLab)",
+        required: false,
+      },
+      notes: {
+        type: "string",
+        description: "Optional additional context (deployment constraints, stakeholder notes, etc.)",
+        required: false,
+      },
+    },
+    actionType: "code_review.release_readiness",
+    riskLevel: "low",
+  },
+  {
+    name: "code_review.generate_comment",
+    description:
+      "Format a previously generated CodeReview object into a ready-to-post markdown review comment. Returns the formatted comment string — does NOT post it.",
+    params: {
+      review: {
+        type: "object",
+        description: "CodeReview object (output from code_review.github_pr or code_review.gitlab_mr)",
+        required: true,
+      },
+    },
+    actionType: "code_review.generate_comment",
+    riskLevel: "low",
+  },
+  {
+    name: "code_review.create_work_item",
+    description:
+      "Create a work item from a code review or release readiness report. Links to the PR/MR URL and records the recommendation and risk level.",
+    params: {
+      title: {
+        type: "string",
+        description: "Work item title",
+        required: true,
+      },
+      type: {
+        type: "string",
+        description: "Work item type: 'code_review' or 'release'",
+        required: true,
+      },
+      prUrl: {
+        type: "string",
+        description: "PR/MR URL to link",
+        required: false,
+      },
+      riskLevel: {
+        type: "string",
+        description: "Risk level from the review: low, medium, high, or critical",
+        required: false,
+      },
+      recommendation: {
+        type: "string",
+        description: "Recommendation from the review",
+        required: false,
+      },
+      description: {
+        type: "string",
+        description: "Optional additional description",
+        required: false,
+      },
+      priority: {
+        type: "string",
+        description: "Priority: low, medium, high, or critical. Defaults to the review risk level.",
+        required: false,
+      },
+    },
+    actionType: "code_review.create_work_item",
+    riskLevel: "low",
   },
 
   // ==================== Web Search Tools ====================
@@ -5318,6 +5466,13 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "product.create_work_items")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "product.shipped_vs_planned")!,
 
+  // Code Review
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "code_review.github_pr")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "code_review.gitlab_mr")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "code_review.release_readiness")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "code_review.generate_comment")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "code_review.create_work_item")!,
+
   // HAWK IR core
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_cases")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_case")!,
@@ -5502,6 +5657,7 @@ export function getToolInventorySummary(mode: string): string {
     { name: "HAWK IR", prefix: "hawk_ir", writeActions: ["case de-escalation", "case escalation", "case assignment", "host quarantine", "host unquarantine"] },
     { name: "Jira", prefix: "jira", writeActions: ["advanced fields"] },
     { name: "Jitbit", prefix: "jitbit", writeActions: ["ticket comments", "ticket lifecycle", "asset management", "tags", "time tracking", "custom fields", "automation"] },
+    { name: "Code Review", prefix: "code_review", writeActions: ["create work item from review"] },
   ];
 
   for (const platform of platformCategories) {
@@ -5548,6 +5704,7 @@ export function getToolInventory(mode: string): string {
     { name: "HAWK IR", prefix: "hawk_ir", writeActions: ["case de-escalation", "case escalation", "case assignment", "host quarantine", "host unquarantine"] },
     { name: "Jira", prefix: "jira", writeActions: ["advanced fields"] },
     { name: "Jitbit", prefix: "jitbit", writeActions: ["ticket comments", "ticket lifecycle", "asset management", "tags", "time tracking", "custom fields", "automation"] },
+    { name: "Code Review", prefix: "code_review", writeActions: ["create work item from review"] },
   ];
 
   for (const platform of platformCategories) {

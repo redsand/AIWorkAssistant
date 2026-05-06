@@ -43,6 +43,7 @@ import { entityMemory } from "../memory/entity-memory";
 import type { EntityType, FindEntitiesQuery } from "../memory/entity-types";
 import { lspManager } from "../integrations/lsp/index.js";
 import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
+import { reviewAssistant } from "../code-review/review-assistant";
 
 export interface ToolCallResult {
   success: boolean;
@@ -5213,6 +5214,96 @@ async function handleWorkItemsComplete(
   }
 }
 
+async function handleCodeReviewGithubPr(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const owner = params.owner as string;
+  const repo = params.repo as string;
+  const prNumber = params.prNumber as number;
+  if (!owner || !repo || !prNumber) {
+    return { success: false, error: "owner, repo, and prNumber are required" };
+  }
+  if (!githubClient.isConfigured()) {
+    return { success: false, error: "GitHub client not configured" };
+  }
+  const review = await reviewAssistant.reviewGitHubPullRequest({ owner, repo, prNumber });
+  return { success: true, data: review };
+}
+
+async function handleCodeReviewGitlabMr(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const projectId = params.projectId as string | number;
+  const mrIid = params.mrIid as number;
+  if (!projectId || !mrIid) {
+    return { success: false, error: "projectId and mrIid are required" };
+  }
+  if (!gitlabClient.isConfigured()) {
+    return { success: false, error: "GitLab client not configured" };
+  }
+  const review = await reviewAssistant.reviewGitLabMergeRequest({ projectId, mrIid });
+  return { success: true, data: review };
+}
+
+async function handleCodeReviewReleaseReadiness(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const platform = params.platform as string;
+  if (!platform) {
+    return { success: false, error: "platform is required (github or gitlab)" };
+  }
+  if (platform === "github" && !githubClient.isConfigured()) {
+    return { success: false, error: "GitHub client not configured" };
+  }
+  if (platform === "gitlab" && !gitlabClient.isConfigured()) {
+    return { success: false, error: "GitLab client not configured" };
+  }
+  const report = await reviewAssistant.generateReleaseReadinessReport({
+    platform: platform as "github" | "gitlab",
+    owner: params.owner as string | undefined,
+    repo: params.repo as string | undefined,
+    prNumber: params.prNumber as number | undefined,
+    projectId: params.projectId as string | number | undefined,
+    mrIid: params.mrIid as number | undefined,
+    notes: params.notes as string | undefined,
+  });
+  return { success: true, data: report };
+}
+
+async function handleCodeReviewGenerateComment(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const review = params.review as any;
+  if (!review) {
+    return { success: false, error: "review is required" };
+  }
+  const comment = reviewAssistant.generateReviewComment(review);
+  return { success: true, data: { comment } };
+}
+
+async function handleCodeReviewCreateWorkItem(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const title = params.title as string;
+  const type = params.type as string;
+  if (!title || !type) {
+    return { success: false, error: "title and type are required" };
+  }
+  if (type !== "code_review" && type !== "release") {
+    return { success: false, error: 'type must be "code_review" or "release"' };
+  }
+  const item = reviewAssistant.createReviewWorkItem({
+    title,
+    type: type as "code_review" | "release",
+    prUrl: params.prUrl as string | undefined,
+    riskLevel: params.riskLevel as string | undefined,
+    recommendation: params.recommendation as string | undefined,
+    description: params.description as string | undefined,
+    priority: params.priority as "low" | "medium" | "high" | "critical" | undefined,
+  });
+  return { success: true, data: item };
+}
+
 const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "calendar.list_events": handleCalendarListEvents,
   "calendar.create_focus_block": handleCalendarCreateFocusBlock,
@@ -5377,6 +5468,11 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "hawk_ir.get_saved_searches": handleHawkIrGetSavedSearches,
   "hawk_ir.get_artefacts": handleHawkIrGetArtefacts,
   "hawk_ir.execute_hybrid_tool": handleHawkIrExecuteHybridTool,
+  "code_review.github_pr": handleCodeReviewGithubPr,
+  "code_review.gitlab_mr": handleCodeReviewGitlabMr,
+  "code_review.release_readiness": handleCodeReviewReleaseReadiness,
+  "code_review.generate_comment": handleCodeReviewGenerateComment,
+  "code_review.create_work_item": handleCodeReviewCreateWorkItem,
   "productivity.generate_daily_plan": handleDailyPlan,
   "productivity.generate_weekly_plan": handleWeeklyPlan,
   "cto.daily_command_center": handleCtoDailyCommandCenter,

@@ -86,6 +86,7 @@ To keep token usage manageable, the system sends a **core set of ~26 tools** ini
 | CTO Command Center | ✅ Real | Daily brief from calendar, Jira, GitLab, GitHub, roadmap, work items, Jitbit, memory                                       |
 | Personal OS         | ✅ Real | Brief, open loops, pattern detection, delegation suggestions, focus blocks — all with graceful fallbacks                  |
 | Product Chief of Staff | ✅ Real | Workflow briefs, roadmap proposals, drift analysis, customer signals, weekly updates, work item creation               |
+| Code Review Agent   | ✅ Real | AI-powered PR/MR review (risk level, must-fix/should-fix, security, migration risks, suggested comment) + release readiness reports — GitHub and GitLab |
 | Health Endpoints    | ✅ Real | `/health` reports GitHub/GitLab/Jira integration status; `/chat/health` reports active AI provider                          |
 | Discord Bot         | ✅ Real | Slash commands, sessions, API integration                                                                                   |
 
@@ -167,6 +168,61 @@ The Product Chief of Staff turns ideas, customer signals, support trends, roadma
 - Read-only endpoints are `low` risk; `create_work_items` is `medium` risk
 - Falls back to structured templates when AI is not configured
 - Jitbit signals degrade gracefully when Jitbit is not configured
+
+## Code Review Agent
+
+The Code Review Agent provides AI-powered code review and release readiness assessments for GitHub PRs and GitLab MRs. It fetches PR/MR metadata, changed files, diffs, CI/pipeline status, and existing comments, then generates a structured review.
+
+### What it produces
+
+**Code Review (`code_review.github_pr` / `code_review.gitlab_mr`):**
+- **Risk Level** — `low` | `medium` | `high` | `critical` (rule-based scoring + AI)
+- **Recommendation** — `low_risk` | `ready_for_human_review` | `needs_changes` | `high_risk_hold`
+- **What Changed** — plain-English summary
+- **Must Fix** — blocking issues before merge
+- **Should Fix** — non-blocking improvements
+- **Test Gaps** — missing coverage
+- **Security Concerns** — auth/token/secret patterns detected
+- **Observability Concerns** — logging/metrics gaps
+- **Migration / Compatibility Risks** — schema migration detection
+- **Rollback Considerations** — what's needed to roll back
+- **Suggested Review Comment** — compact markdown ready to copy-paste to the PR/MR
+
+**Release Readiness (`code_review.release_readiness`):**
+- Go / No-Go / Conditional Go recommendation
+- Included changes, known risks, test status, deployment notes, rollback plan, customer impact, internal comms draft
+
+### Tools
+
+| Tool | Description |
+|------|-------------|
+| `code_review.github_pr` | Review a GitHub PR by owner/repo/number |
+| `code_review.gitlab_mr` | Review a GitLab MR by projectId/mrIid |
+| `code_review.release_readiness` | Generate a release readiness report |
+| `code_review.generate_comment` | Format a review into a full analysis document |
+| `code_review.create_work_item` | Create a `code_review` or `release` work item linked to the PR/MR |
+
+### API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/code-review/github/pr` | Review a GitHub PR |
+| POST | `/api/code-review/gitlab/mr` | Review a GitLab MR |
+| POST | `/api/code-review/release-readiness` | Generate release readiness report |
+
+### Design Constraints
+
+- **No auto-merge** — the agent analyzes only; merging requires explicit `github.merge_pull_request` / `gitlab.merge_merge_request`
+- **No auto-post** — `generate_comment` returns the markdown string; posting requires explicit `github.add_pr_comment` / `gitlab.add_mr_comment`
+- All review tools are `low` risk — no policy gate required
+- Falls back gracefully to rule-based analysis when AI is not configured or returns malformed JSON
+
+### Example
+
+```
+Tim: "Review PR #42 in org/repo"
+Assistant: [calls code_review.github_pr] → returns CodeReview with risk level, must-fix items, and a suggested review comment
+```
 
 ## Quick Start
 
