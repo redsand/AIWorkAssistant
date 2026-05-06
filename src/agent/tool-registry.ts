@@ -32,6 +32,7 @@ const PLATFORM_PREFIX_MAP: Record<string, Platform> = {
   productivity: "cross-platform",
   engineering: "cross-platform",
   cto: "cross-platform",
+  personal_os: "cross-platform",
   roadmap: "cross-platform",
   todo: "cross-platform",
   knowledge: "cross-platform",
@@ -2594,6 +2595,76 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "low",
   },
 
+  // ── Personal OS Tools ──────────────────────────────────────────
+  {
+    name: "personal_os.brief",
+    description:
+      "Generate a Personal OS brief: today's load, open loops, decisions waiting, recurring patterns, suggested delegations, focus blocks, energy risks, and things to stop doing. Aggregates calendar, Jira, GitLab, GitHub, Jitbit, work items, and memory. Read-only.",
+    params: {
+      date: {
+        type: "string",
+        description: "Brief date in YYYY-MM-DD format. Defaults to today.",
+        required: false,
+      },
+      daysBack: {
+        type: "number",
+        description: "How many days back to inspect. Default 7.",
+        required: false,
+      },
+      includeCalendar: { type: "boolean", description: "Include calendar signals", required: false },
+      includeJira: { type: "boolean", description: "Include Jira signals", required: false },
+      includeGitLab: { type: "boolean", description: "Include GitLab signals", required: false },
+      includeGitHub: { type: "boolean", description: "Include GitHub signals", required: false },
+      includeWorkItems: { type: "boolean", description: "Include work items", required: false },
+      includeJitbit: { type: "boolean", description: "Include Jitbit support signals", required: false },
+      includeRoadmap: { type: "boolean", description: "Include roadmap signals", required: false },
+      includeMemory: { type: "boolean", description: "Include conversation memory context", required: false },
+    },
+    actionType: "personal_os.brief",
+    riskLevel: "low",
+  },
+  {
+    name: "personal_os.open_loops",
+    description:
+      "Summarize unresolved decisions, tasks, and follow-ups across all sources (work items, Jira, GitLab MRs, GitHub PRs, Jitbit tickets).",
+    params: {
+      userId: { type: "string", description: "User ID", required: false },
+    },
+    actionType: "personal_os.open_loops",
+    riskLevel: "low",
+  },
+  {
+    name: "personal_os.detect_patterns",
+    description:
+      "Detect recurring patterns in work items and calendar data over the past N days. Identifies meeting overload, context switching, review bottlenecks, and task clustering.",
+    params: {
+      daysBack: { type: "number", description: "Number of days to analyze (7-90). Default 30.", required: false },
+    },
+    actionType: "personal_os.detect_patterns",
+    riskLevel: "low",
+  },
+  {
+    name: "personal_os.suggest_focus",
+    description:
+      "Suggest calendar focus blocks based on open loops, priorities, and schedule gaps. Does NOT create calendar events unless the user explicitly asks.",
+    params: {
+      date: { type: "string", description: "Date for focus blocks in YYYY-MM-DD format. Defaults to today.", required: false },
+      minDurationMinutes: { type: "number", description: "Minimum focus block duration in minutes. Default 60.", required: false },
+    },
+    actionType: "personal_os.suggest_focus",
+    riskLevel: "low",
+  },
+  {
+    name: "personal_os.create_work_items",
+    description:
+      "Create work items from Personal OS brief suggestions. Only creates items the user has explicitly approved.",
+    params: {
+      items: { type: "string", description: "JSON array of work item objects with type, title, description, priority, source, tags", required: true },
+    },
+    actionType: "personal_os.create_work_items",
+    riskLevel: "medium",
+  },
+
   // ── Roadmap Tools ──────────────────────────────────────────────
   {
     name: "roadmap.list",
@@ -3874,6 +3945,13 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
     (t) => t.name === "productivity.generate_weekly_plan",
   )!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "cto.daily_command_center")!,
+
+  // Personal OS core
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "personal_os.brief")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "personal_os.open_loops")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "personal_os.detect_patterns")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "personal_os.suggest_focus")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "personal_os.create_work_items")!,
 
   // Roadmap core
   PRODUCTIVITY_TOOLS.find((t) => t.name === "roadmap.list")!,

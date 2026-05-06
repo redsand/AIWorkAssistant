@@ -9,6 +9,7 @@ import { jitbitService } from "../integrations/jitbit/jitbit-service";
 import { dailyPlanner } from "../productivity/daily-planner";
 import { weeklyPlanner } from "../productivity/weekly-planner";
 import { ctoDailyCommandCenter } from "../cto/daily-command-center";
+import { personalOsBriefGenerator } from "../personal-os/brief-generator";
 import { roadmapDatabase } from "../roadmap/database";
 import { auditLogger } from "../audit/logger";
 import { env } from "../config/env";
@@ -1940,6 +1941,92 @@ async function handleCtoDailyCommandCenter(
     daysBack: params.daysBack as number | undefined,
   });
   return { success: true, data: brief };
+}
+
+async function handlePersonalOsBrief(
+  params: Record<string, unknown>,
+  userId: string,
+): Promise<ToolCallResult> {
+  const brief = await personalOsBriefGenerator.generatePersonalBrief({
+    userId,
+    date: params.date as string | undefined,
+    daysBack: params.daysBack as number | undefined,
+    includeCalendar: params.includeCalendar as boolean | undefined,
+    includeJira: params.includeJira as boolean | undefined,
+    includeGitLab: params.includeGitLab as boolean | undefined,
+    includeGitHub: params.includeGitHub as boolean | undefined,
+    includeWorkItems: params.includeWorkItems as boolean | undefined,
+    includeJitbit: params.includeJitbit as boolean | undefined,
+    includeRoadmap: params.includeRoadmap as boolean | undefined,
+    includeMemory: params.includeMemory as boolean | undefined,
+  });
+  return { success: true, data: brief };
+}
+
+async function handlePersonalOsOpenLoops(
+  params: Record<string, unknown>,
+  userId: string,
+): Promise<ToolCallResult> {
+  const brief = await personalOsBriefGenerator.generatePersonalBrief({
+    userId: (params.userId as string) || userId,
+    includeMemory: false,
+  });
+  return {
+    success: true,
+    data: {
+      openLoops: brief.openLoops,
+      decisionsWaiting: brief.decisionsWaiting,
+    },
+  };
+}
+
+async function handlePersonalOsDetectPatterns(
+  params: Record<string, unknown>,
+  userId: string,
+): Promise<ToolCallResult> {
+  const brief = await personalOsBriefGenerator.generatePersonalBrief({
+    userId,
+    daysBack: params.daysBack as number | undefined,
+    includeMemory: false,
+  });
+  return {
+    success: true,
+    data: { recurringPatterns: brief.recurringPatterns },
+  };
+}
+
+async function handlePersonalOsSuggestFocus(
+  params: Record<string, unknown>,
+  userId: string,
+): Promise<ToolCallResult> {
+  const brief = await personalOsBriefGenerator.generatePersonalBrief({
+    userId,
+    date: params.date as string | undefined,
+    includeMemory: false,
+  });
+  return {
+    success: true,
+    data: { suggestedFocusBlocks: brief.suggestedFocusBlocks },
+  };
+}
+
+async function handlePersonalOsCreateWorkItems(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  let items = params.items;
+  if (typeof items === "string") {
+    try {
+      items = JSON.parse(items);
+    } catch {
+      return { success: false, error: "items must be a valid JSON array" };
+    }
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    return { success: false, error: "items must be a non-empty array" };
+  }
+  const created = personalOsBriefGenerator.createSuggestedWorkItems(items as any[]);
+  return { success: true, data: { created } };
 }
 
 async function handleDiscoverTools(
@@ -4255,6 +4342,11 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "productivity.generate_daily_plan": handleDailyPlan,
   "productivity.generate_weekly_plan": handleWeeklyPlan,
   "cto.daily_command_center": handleCtoDailyCommandCenter,
+  "personal_os.brief": handlePersonalOsBrief,
+  "personal_os.open_loops": handlePersonalOsOpenLoops,
+  "personal_os.detect_patterns": handlePersonalOsDetectPatterns,
+  "personal_os.suggest_focus": handlePersonalOsSuggestFocus,
+  "personal_os.create_work_items": handlePersonalOsCreateWorkItems,
   "web.search": handleWebSearch,
   "web.fetch_page": handleWebFetchPage,
 
@@ -4350,6 +4442,10 @@ const SYSTEM_TOOLS = new Set([
   "productivity.generate_daily_plan",
   "productivity.generate_weekly_plan",
   "cto.daily_command_center",
+  "personal_os.brief",
+  "personal_os.open_loops",
+  "personal_os.detect_patterns",
+  "personal_os.suggest_focus",
 ]);
 
 export interface DispatchContext {

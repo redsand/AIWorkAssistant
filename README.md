@@ -83,6 +83,8 @@ To keep token usage manageable, the system sends a **core set of ~26 tools** ini
 | Web UI              | ✅ Real | Chat with thinking display, tool progress, collapsible JSON, export, stop button, conversation sidebar, delete confirmation |
 | Agent Runs UI       | ✅ Real | Inspect model/tool execution traces from the browser — list, filter, and drill into run details and step timelines |
 | Daily Planner       | ✅ Real | Jira + GitLab data wired, real issue counts and activity                                                                    |
+| CTO Command Center | ✅ Real | Daily brief from calendar, Jira, GitLab, GitHub, roadmap, work items, Jitbit, memory                                       |
+| Personal OS         | ✅ Real | Brief, open loops, pattern detection, delegation suggestions, focus blocks — all with graceful fallbacks                  |
 | Health Endpoints    | ✅ Real | `/health` reports GitHub/GitLab/Jira integration status; `/chat/health` reports active AI provider                          |
 | Discord Bot         | ✅ Real | Slash commands, sessions, API integration                                                                                   |
 
@@ -107,6 +109,33 @@ To keep token usage manageable, the system sends a **core set of ~26 tools** ini
 | `src/integrations/jitbit/__tests__/jitbit-service.test.ts` | 18 | Jitbit service: snapshots, followups, summaries, recent activity                                         |
 | `src/integrations/jitbit/__tests__/jitbit-client-extended.test.ts` | 34 | Jitbit client: lifecycle, attachments, assets, custom fields, tags, sections, time, automation |
 | `src/integrations/jitbit/__tests__/jitbit-service-extended.test.ts` | 31 | Jitbit service: close/reopen/assign, assets, custom fields, tags, time, sections, automation |
+
+## Personal OS
+
+The Personal OS module provides a holistic daily operating brief that aggregates signals across all connected integrations:
+
+- **Brief** (`personal_os.brief`) — Aggregates calendar, Jira, GitLab, GitHub, Jitbit, work items, roadmaps, and memory into a structured daily brief with 9 sections: Today's Load, Open Loops, Decisions Waiting, Recurring Patterns, Suggested Delegations, Suggested Focus Blocks, Energy/Context-Switching Risks, Things To Stop Doing, and Work Items To Create.
+- **Open Loops** (`personal_os.open_loops`) — Finds unresolved decisions, blocked tasks, PRs awaiting review, and follow-ups across all sources.
+- **Pattern Detection** (`personal_os.detect_patterns`) — Analyzes work item and calendar data for recurring patterns like meeting overload, context switching, and review bottlenecks.
+- **Focus Blocks** (`personal_os.suggest_focus`) — Suggests calendar focus blocks based on open loops, priorities, and schedule gaps. Does **not** auto-create calendar events.
+- **Create Work Items** (`personal_os.create_work_items`) — Creates work items from brief suggestions. Requires explicit user approval (medium risk, policy-checked).
+
+### API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/personal-os/brief` | Generate Personal OS brief |
+| GET | `/api/personal-os/open-loops` | Summarize open loops |
+| GET | `/api/personal-os/patterns` | Detect recurring patterns |
+| POST | `/api/personal-os/work-items` | Create work items from brief |
+
+### Design Constraints
+
+- No invasive monitoring — reads existing integration data only
+- No auto-changing calendar — only suggests focus blocks
+- No health/fitness decisions — only suggests protecting focus time
+- Uses existing policy engine for approval gates on `create_work_items`
+- All read-only endpoints are `low` risk; `create_work_items` is `medium` risk
 
 ## Quick Start
 

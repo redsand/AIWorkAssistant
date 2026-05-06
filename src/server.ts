@@ -21,6 +21,7 @@ import { engineeringRoutes } from "./routes/engineering";
 import { agentRunsRoutes } from "./agent-runs/api";
 import { workItemRoutes } from "./routes/work-items";
 import { ctoRoutes } from "./routes/cto";
+import { personalOsRoutes } from "./routes/personal-os";
 import {
   authMiddleware,
   isAuthConfigured,
@@ -82,6 +83,7 @@ export async function buildServer() {
   await server.register(agentRunsRoutes, { prefix: "/api" });
   await server.register(workItemRoutes, { prefix: "/api/work-items" });
   await server.register(ctoRoutes, { prefix: "/api/cto" });
+  await server.register(personalOsRoutes, { prefix: "/api/personal-os" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 
@@ -207,6 +209,10 @@ async function start() {
 ║     POST   /api/work-items/:id/links                        ║
 ║     POST   /api/work-items/:id/complete                      ║
 ║     POST   /api/work-items/:id/archive                      ║
+║     GET    /api/personal-os/brief                            ║
+║     GET    /api/personal-os/open-loops                       ║
+║     GET    /api/personal-os/patterns                         ║
+║     POST   /api/personal-os/work-items                       ║
 ║                                                            ║
 ╚════════════════════════════════════════════════════════════╝
     `);
