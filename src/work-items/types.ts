@@ -29,7 +29,8 @@ export type WorkItemSource =
   | "jitbit"
   | "calendar"
   | "manual"
-  | "roadmap";
+  | "roadmap"
+  | "hawk-ir";
 
 export interface WorkItem {
   id: string;

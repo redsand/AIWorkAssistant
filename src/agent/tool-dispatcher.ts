@@ -10,6 +10,7 @@ import { dailyPlanner } from "../productivity/daily-planner";
 import { weeklyPlanner } from "../productivity/weekly-planner";
 import { ctoDailyCommandCenter } from "../cto/daily-command-center";
 import { personalOsBriefGenerator } from "../personal-os/brief-generator";
+import { productChiefOfStaff } from "../product/product-chief-of-staff";
 import { roadmapDatabase } from "../roadmap/database";
 import { auditLogger } from "../audit/logger";
 import { env } from "../config/env";
@@ -2026,6 +2027,94 @@ async function handlePersonalOsCreateWorkItems(
     return { success: false, error: "items must be a non-empty array" };
   }
   const created = personalOsBriefGenerator.createSuggestedWorkItems(items as any[]);
+  return { success: true, data: { created } };
+}
+
+// ── Product Chief of Staff Handlers ──────────────────────────────────
+
+async function handleProductWorkflowBrief(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  const idea = params.idea as string;
+  if (!idea) {
+    return { success: false, error: "idea is required" };
+  }
+  const brief = await productChiefOfStaff.turnIdeaIntoWorkflowBrief({
+    idea,
+    context: params.context as string | undefined,
+  });
+  return { success: true, data: { brief } };
+}
+
+async function handleProductRoadmapProposal(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  const theme = params.theme as string;
+  if (!theme) {
+    return { success: false, error: "theme is required" };
+  }
+  const proposal = await productChiefOfStaff.buildRoadmapProposal({
+    theme,
+    customerEvidence: params.customerEvidence as string | undefined,
+    engineeringConstraints: params.engineeringConstraints as string | undefined,
+    timeHorizon: params.timeHorizon as string | undefined,
+  });
+  return { success: true, data: { proposal } };
+}
+
+async function handleProductRoadmapDrift(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  const drift = await productChiefOfStaff.analyzeRoadmapDrift({
+    roadmapId: params.roadmapId as string | undefined,
+  });
+  return { success: true, data: { drift } };
+}
+
+async function handleProductCustomerSignals(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  const signals = await productChiefOfStaff.extractCustomerSignalsFromJitbit({
+    daysBack: params.daysBack as number | undefined,
+    limit: params.limit as number | undefined,
+  });
+  return { success: true, data: { signals } };
+}
+
+async function handleProductWeeklyUpdate(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  const update = await productChiefOfStaff.generateWeeklyProductUpdate({
+    weekStart: params.weekStart as string | undefined,
+    daysBack: params.daysBack as number | undefined,
+  });
+  return { success: true, data: { update } };
+}
+
+async function handleProductCreateWorkItems(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  let items = params.items;
+  if (typeof items === "string") {
+    try {
+      items = JSON.parse(items);
+    } catch {
+      return { success: false, error: "items must be a valid JSON array" };
+    }
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    return { success: false, error: "items must be a non-empty array" };
+  }
+  const created = productChiefOfStaff.createRoadmapWorkItems({
+    items: items as any[],
+    source: params.source as string | undefined,
+  });
   return { success: true, data: { created } };
 }
 
@@ -4347,6 +4436,14 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "personal_os.detect_patterns": handlePersonalOsDetectPatterns,
   "personal_os.suggest_focus": handlePersonalOsSuggestFocus,
   "personal_os.create_work_items": handlePersonalOsCreateWorkItems,
+
+  // Product Chief of Staff
+  "product.workflow_brief": handleProductWorkflowBrief,
+  "product.roadmap_proposal": handleProductRoadmapProposal,
+  "product.roadmap_drift": handleProductRoadmapDrift,
+  "product.customer_signals": handleProductCustomerSignals,
+  "product.weekly_update": handleProductWeeklyUpdate,
+  "product.create_work_items": handleProductCreateWorkItems,
   "web.search": handleWebSearch,
   "web.fetch_page": handleWebFetchPage,
 
@@ -4446,6 +4543,11 @@ const SYSTEM_TOOLS = new Set([
   "personal_os.open_loops",
   "personal_os.detect_patterns",
   "personal_os.suggest_focus",
+  "product.workflow_brief",
+  "product.roadmap_proposal",
+  "product.roadmap_drift",
+  "product.customer_signals",
+  "product.weekly_update",
 ]);
 
 export interface DispatchContext {

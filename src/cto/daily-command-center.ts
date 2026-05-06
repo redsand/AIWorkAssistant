@@ -3,6 +3,7 @@ import { jiraClient } from "../integrations/jira/jira-client";
 import { gitlabClient } from "../integrations/gitlab/gitlab-client";
 import { githubClient } from "../integrations/github/github-client";
 import { jitbitService } from "../integrations/jitbit/jitbit-service";
+import { hawkIrService } from "../integrations/hawk-ir/hawk-ir-service";
 import { roadmapDatabase } from "../roadmap/database";
 import { workItemDatabase } from "../work-items/database";
 import { conversationManager } from "../memory/conversation-manager";
@@ -18,6 +19,7 @@ export interface DailyCommandCenterParams {
   includeRoadmap?: boolean;
   includeWorkItems?: boolean;
   includeJitbit?: boolean;
+  includeHawkSoar?: boolean;
   daysBack?: number;
 }
 
@@ -51,6 +53,12 @@ interface BriefData {
     followups: any[];
     highPriority: any[];
   };
+  hawkSoar: {
+    riskyOpenCases: any[];
+    caseCount: number;
+    recentCases: any[];
+    activeNodes: any[];
+  };
   memories: string[];
 }
 
@@ -70,6 +78,7 @@ class CtoDailyCommandCenter {
       roadmaps: [],
       workItems: [],
       jitbit: { recent: [], followups: [], highPriority: [] },
+      hawkSoar: { riskyOpenCases: [], caseCount: 0, recentCases: [], activeNodes: [] },
       memories: [],
     };
 
@@ -163,6 +172,21 @@ class CtoDailyCommandCenter {
       sources.jitbit = { enabled: false, available: false };
     }
 
+    if (include.hawkSoar) {
+      await this.collect("hawkSoar", sources, async () => {
+        if (!hawkIrService.isConfigured()) throw new Error("HAWK IR client not configured");
+        const [riskyOpenCases, caseCount, recentCases, activeNodes] = await Promise.all([
+          hawkIrService.getRiskyOpenCases({ minRiskLevel: "high", limit: 15 }).catch(() => []),
+          hawkIrService.getCaseCount().catch(() => 0),
+          hawkIrService.getRecentCases(10).catch(() => []),
+          hawkIrService.getActiveNodes().catch(() => []),
+        ]);
+        data.hawkSoar = { riskyOpenCases, caseCount, recentCases, activeNodes };
+      });
+    } else {
+      sources.hawkSoar = { enabled: false, available: false };
+    }
+
     await this.collect("memory", sources, async () => {
       data.memories = conversationManager.getRelevantMemories(
         params.userId,
@@ -213,6 +237,7 @@ class CtoDailyCommandCenter {
       roadmap: params.includeRoadmap !== false,
       workItems: params.includeWorkItems !== false,
       jitbit: params.includeJitbit !== false,
+      hawkSoar: params.includeHawkSoar !== false,
     };
   }
 
@@ -247,6 +272,7 @@ class CtoDailyCommandCenter {
         ...blocked.map((item) => `- Blocked work item: ${item.title}`),
         ...overdue.map((item) => `- Overdue work item: ${item.title}`),
         ...data.jitbit.highPriority.map((ticket) => `- High-priority support ticket: ${this.ticketLabel(ticket)}`),
+        ...data.hawkSoar.riskyOpenCases.slice(0, 3).map((c: any) => `- High-risk IR case: ${this.irCaseLabel(c)}`),
         ...data.jira.slice(0, 5).map((issue) => `- Jira signal: ${this.jiraLabel(issue)}`),
         ...failedPipelines.map((pipeline) => `- Failed GitLab pipeline: ${pipeline.web_url || pipeline.id || "unknown pipeline"}`),
         ...failedRuns.map((run) => `- Failed GitHub workflow: ${run.html_url || run.name || run.id}`),
@@ -255,6 +281,9 @@ class CtoDailyCommandCenter {
       "",
       "## 3. Customer / Support Signals",
       ...this.customerSignals(data.jitbit),
+      "",
+      "## 3b. Incident Response / Security Signals",
+      ...this.incidentResponseSignals(data.hawkSoar),
       "",
       "## 4. Engineering Signals",
       ...this.engineeringSignals(data),
@@ -299,6 +328,7 @@ class CtoDailyCommandCenter {
     const bullets = [
       `- Calendar has ${data.calendar.length} event(s) today.`,
       `- Customer/support: ${data.jitbit.recent.length} recent ticket(s), ${data.jitbit.followups.length} follow-up candidate(s), ${data.jitbit.highPriority.length} high-priority open ticket(s).`,
+      `- IR: ${data.hawkSoar.caseCount} total case(s), ${data.hawkSoar.riskyOpenCases.length} high-risk unescalated, ${data.hawkSoar.activeNodes.length} active node(s).`,
       `- Engineering: ${data.github.pullRequests.length} GitHub PR(s), ${data.gitlab.mergeRequests.length} GitLab MR(s), ${failedPipelines.length + failedRuns.length} failed pipeline/workflow signal(s).`,
       `- Product/roadmap: ${data.roadmaps.length} active roadmap(s) in scope.`,
       `- Work items: ${overdue.length} overdue, ${blocked.length} blocked, ${data.workItems.filter((item) => item.status === "waiting").length} waiting.`,
@@ -425,7 +455,45 @@ class CtoDailyCommandCenter {
         tags: ["cto-daily", "pipeline"],
       });
     }
+    for (const c of data.hawkSoar.riskyOpenCases.slice(0, 5)) {
+      const caseRid = c["@rid"] || c.rid || "unknown";
+      const caseName = c.name || "(unnamed case)";
+      const riskLevel = c.riskLevel || c["risk_level"] || "high";
+      suggestions.push({
+        type: "customer_followup",
+        title: `Investigate high-risk IR case: ${caseName} (${caseRid})`,
+        description: `Case ${caseRid} is ${riskLevel}-risk and not yet escalated. Status: ${c.progressStatus || c["progress_status"] || "unknown"}. Consider escalating or creating a Jitbit ticket.`,
+        priority: riskLevel === "critical" ? "critical" : "high",
+        source: "hawk-ir",
+        sourceExternalId: String(caseRid),
+        dueAt: date,
+        tags: ["cto-daily", "incident-response", "security"],
+      });
+    }
+
     return suggestions.slice(0, 12);
+  }
+
+  private incidentResponseSignals(hawkSoar: BriefData["hawkSoar"]): string[] {
+    const { riskyOpenCases, caseCount, recentCases, activeNodes } = hawkSoar;
+    return this.listOrFallback([
+      `- Total open cases: ${caseCount}`,
+      `- High-risk unescalated: ${riskyOpenCases.length} case(s) needing attention`,
+      `- Active nodes: ${activeNodes.length}`,
+      ...riskyOpenCases.slice(0, 8).map((c: any) => `- Risky: ${this.irCaseLabel(c)}`),
+      ...recentCases.slice(0, 3).map((c: any) => `- Recent: ${this.irCaseLabel(c)}`),
+      ...activeNodes.slice(0, 3).map((n: any) => `- Node: ${n.hostname || n.id} (${n.platform || "?"}, last seen ${n.lastSeen || "unknown"})`),
+    ], "- No HAWK IR signals available.");
+  }
+
+  private irCaseLabel(c: any): string {
+    const rid = c["@rid"] || c.rid || "?";
+    const name = c.name || "(unnamed)";
+    const risk = c.riskLevel || c["risk_level"] || "unknown";
+    const status = c.progressStatus || c["progress_status"] || "unknown";
+    const owner = c.ownerName || c["owner_name"] || "unassigned";
+    const esc = c.escalated ? " ⚠️ ESCALATED" : "";
+    return `#${rid} ${name} (${risk} risk, ${status}, ${owner})${esc}`;
   }
 
   private overdueWorkItems(items: WorkItem[], date: string): WorkItem[] {

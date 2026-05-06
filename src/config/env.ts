@@ -188,6 +188,15 @@ const envSchema = z.object({
     .default("true"),
   NIGHTLY_PLAN_WEEKS: z.coerce.number().default(2),
   NIGHTLY_PLAN_USER: z.string().default("user"),
+
+  // HAWK Incident Response (ir.hawk.io)
+  HAWK_SOAR_BASE_URL: z.string().default(""),
+  HAWK_SOAR_ACCESS_TOKEN: z.string().default(""),
+  HAWK_SOAR_SECRET_KEY: z.string().default(""),
+  HAWK_SOAR_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
 });
 
 export type Env = z.infer<typeof envSchema>;

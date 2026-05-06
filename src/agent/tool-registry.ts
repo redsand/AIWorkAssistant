@@ -41,6 +41,7 @@ const PLATFORM_PREFIX_MAP: Record<string, Platform> = {
   system: "cross-platform",
   agent: "cross-platform",
   workflow: "cross-platform",
+  product: "cross-platform",
   discover: "cross-platform",
 };
 
@@ -2665,6 +2666,127 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "medium",
   },
 
+  // ── Product Chief of Staff Tools ────────────────────────────────
+  {
+    name: "product.workflow_brief",
+    description:
+      "Turn a product idea into a structured workflow-first product brief. Covers problem, users, actors, job-to-be-done, trigger, desired outcome, current/proposed workflows, friction, automation opportunities, human-in-the-loop moments, MVP scope, non-goals, risks, and success criteria.",
+    params: {
+      idea: {
+        type: "string",
+        description: "Product idea or problem description",
+        required: true,
+      },
+      context: {
+        type: "string",
+        description: "Additional context or background information",
+        required: false,
+      },
+    },
+    actionType: "product.workflow_brief",
+    riskLevel: "low",
+  },
+  {
+    name: "product.roadmap_proposal",
+    description:
+      "Generate a roadmap proposal from a theme. Includes why now, customer evidence, engineering impact, proposed milestones, work items, dependencies, risks, cut line, and demo criteria.",
+    params: {
+      theme: {
+        type: "string",
+        description: "Roadmap theme or initiative name",
+        required: true,
+      },
+      customerEvidence: {
+        type: "string",
+        description: "Known customer evidence or signals",
+        required: false,
+      },
+      engineeringConstraints: {
+        type: "string",
+        description: "Engineering constraints or considerations",
+        required: false,
+      },
+      timeHorizon: {
+        type: "string",
+        description: "Time horizon (e.g., 'Q2 2026', '6 months')",
+        required: false,
+      },
+    },
+    actionType: "product.roadmap_proposal",
+    riskLevel: "low",
+  },
+  {
+    name: "product.roadmap_drift",
+    description:
+      "Analyze roadmap drift — compare shipped vs planned progress. Shows completion rates, overdue milestones, at-risk items, and a drift score for each active roadmap.",
+    params: {
+      roadmapId: {
+        type: "string",
+        description: "Specific roadmap ID to analyze. Omit for all active roadmaps.",
+        required: false,
+      },
+    },
+    actionType: "product.roadmap_drift",
+    riskLevel: "low",
+  },
+  {
+    name: "product.customer_signals",
+    description:
+      "Extract customer signals from Jitbit support tickets. Detects repeated asks, high-friction areas, stale support themes, and customers waiting on roadmap promises.",
+    params: {
+      daysBack: {
+        type: "number",
+        description: "Number of days to look back for ticket analysis. Default 14.",
+        required: false,
+      },
+      limit: {
+        type: "number",
+        description: "Maximum number of tickets to analyze. Default 50.",
+        required: false,
+      },
+    },
+    actionType: "product.customer_signals",
+    riskLevel: "low",
+  },
+  {
+    name: "product.weekly_update",
+    description:
+      "Generate a weekly product update from roadmap progress, work items, and Jitbit customer signals. Covers shipped, in-progress, blocked, customer signals, roadmap changes, decisions needed, and next week priorities.",
+    params: {
+      weekStart: {
+        type: "string",
+        description: "Week start date in YYYY-MM-DD format. Defaults to today.",
+        required: false,
+      },
+      daysBack: {
+        type: "number",
+        description: "Number of days to look back. Default 7.",
+        required: false,
+      },
+    },
+    actionType: "product.weekly_update",
+    riskLevel: "low",
+  },
+  {
+    name: "product.create_work_items",
+    description:
+      "Create work items from product roadmap proposals or signals. Only creates items the user has explicitly approved.",
+    params: {
+      items: {
+        type: "string",
+        description: "JSON array of work item objects with type, title, description, priority, tags",
+        required: true,
+      },
+      source: {
+        type: "string",
+        description: "Source for the work items. Default 'roadmap'.",
+        required: false,
+      },
+    },
+    actionType: "product.create_work_items",
+    riskLevel: "medium",
+  },
+
   // ── Roadmap Tools ──────────────────────────────────────────────
   {
     name: "roadmap.list",
@@ -3952,6 +4074,14 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "personal_os.detect_patterns")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "personal_os.suggest_focus")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "personal_os.create_work_items")!,
+
+  // Product Chief of Staff
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "product.workflow_brief")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "product.roadmap_proposal")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "product.roadmap_drift")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "product.customer_signals")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "product.weekly_update")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "product.create_work_items")!,
 
   // Roadmap core
   PRODUCTIVITY_TOOLS.find((t) => t.name === "roadmap.list")!,
