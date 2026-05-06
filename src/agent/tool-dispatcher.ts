@@ -4687,6 +4687,7 @@ async function handleHawkIrGetCases(
     stopDate: params.stopDate as string | undefined,
     groupId: params.groupId as string | undefined,
     limit: params.limit as number | undefined,
+    offset: params.offset as number | undefined,
   });
   return { success: true, data };
 }
@@ -4879,7 +4880,8 @@ async function handleHawkIrGetRecentCases(
     return { success: false, error: "HAWK IR client not configured" };
   }
   const limit = (params.limit as number) ?? 20;
-  const data = await hawkIrService.getRecentCases(limit);
+  const offset = (params.offset as number) ?? 0;
+  const data = await hawkIrService.getRecentCases(limit, offset);
   return { success: true, data };
 }
 

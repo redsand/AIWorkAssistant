@@ -4207,16 +4207,16 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "hawk_ir.get_cases",
     description:
-      "Get HAWK IR incident response cases with optional filters (date range, group, limit).",
+      "Get HAWK IR incident response cases with optional filters. Defaults to last 10 days. Max range is 10 days — use weeklyReport for longer periods.",
     params: {
       startDate: {
         type: "string",
-        description: "Start date filter (YYYY-MM-DD)",
+        description: "Start date filter (YYYY-MM-DD). Defaults to 10 days ago.",
         required: false,
       },
       stopDate: {
         type: "string",
-        description: "End date filter (YYYY-MM-DD)",
+        description: "End date filter (YYYY-MM-DD). Defaults to now.",
         required: false,
       },
       groupId: {
@@ -4226,7 +4226,12 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       },
       limit: {
         type: "number",
-        description: "Max number of cases to return (default 20)",
+        description: "Max number of cases to return (default 20, max 100)",
+        required: false,
+      },
+      offset: {
+        type: "number",
+        description: "Number of cases to skip for pagination",
         required: false,
       },
     },
@@ -4433,7 +4438,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "hawk_ir.run_dashboard",
     description:
-      "Run a HAWK IR dashboard widget and get results.",
+      "Run a HAWK IR dashboard widget query for data aggregation. Supports pagination via body.pagination (limit, offset, page). Time range enforced to max 10 days.",
     params: {
       dashboardId: {
         type: "string",
@@ -4442,7 +4447,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       },
       body: {
         type: "object",
-        description: "Optional request body for widget parameters",
+        description: "Request body: { widget?, index?, timeRange: { from, to }, pagination: { limit, offset, page } }",
         required: false,
       },
     },
@@ -4452,7 +4457,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "hawk_ir.get_case_count",
     description:
-      "Get the total count of HAWK IR incident response cases.",
+      "Get the count of HAWK IR incident response cases within the last 10 days.",
     params: {},
     actionType: "hawk_ir.get_case_count",
     riskLevel: "low",
@@ -4460,11 +4465,16 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "hawk_ir.get_recent_cases",
     description:
-      "Get recent HAWK IR incident response cases (convenience method with default limit).",
+      "Get recent HAWK IR incident response cases from the last 10 days with pagination.",
     params: {
       limit: {
         type: "number",
         description: "Maximum number of cases to return. Default: 20",
+        required: false,
+      },
+      offset: {
+        type: "number",
+        description: "Number of cases to skip for pagination. Default: 0",
         required: false,
       },
     },
@@ -4931,6 +4941,8 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "calendar.list_events")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "calendar.create_focus_block")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "calendar.create_health_block")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "calendar.create_event")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "calendar.get_event")!,
 
   // Jira core
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jira.list_projects")!,
@@ -4978,6 +4990,7 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
     (t) => t.name === "productivity.generate_weekly_plan",
   )!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "cto.daily_command_center")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "cto.create_suggested_work_items")!,
 
   // Personal OS core
   PRODUCTIVITY_TOOLS.find((t) => t.name === "personal_os.brief")!,
@@ -5029,6 +5042,10 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_sections")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.get_time_entries")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.get_automation_rule")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.search_assets")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.summarize_ticket")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.get_attachment")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_attachments")!,
 
   // Roadmap core
   PRODUCTIVITY_TOOLS.find((t) => t.name === "roadmap.list")!,

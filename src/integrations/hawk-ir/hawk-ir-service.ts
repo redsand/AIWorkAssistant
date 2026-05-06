@@ -22,26 +22,31 @@ import type {
 
 const riskPriority: Record<string, number> = { low: 1, medium: 2, high: 3, critical: 4 };
 
-const MAX_QUERY_RANGE_DAYS = 7;
+const MAX_QUERY_RANGE_DAYS = 10;
 
-function todayRange(): { startDate: string; stopDate: string } {
+export function todayRange(): { startDate: string; stopDate: string } {
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   return { startDate: start.toISOString(), stopDate: now.toISOString() };
 }
 
-function enforceMaxRange(from: Date | string, to: Date | string): { from: string; to: string } {
+export function enforceMaxRange(from: Date | string, to: Date | string): { from: string; to: string } {
   const fromDate = new Date(from);
   const toDate = new Date(to);
   const maxFrom = new Date(toDate.getTime() - MAX_QUERY_RANGE_DAYS * 24 * 60 * 60 * 1000);
   if (fromDate < maxFrom) {
     throw new Error(
-      `Query range exceeds ${MAX_QUERY_RANGE_DAYS} days. ` +
-      `Requested: ${fromDate.toISOString()} to ${toDate.toISOString()}. ` +
-      `Max range starts at ${maxFrom.toISOString()}. Use weekly reports for longer periods.`,
+      `Query range exceeds ${MAX_QUERY_RANGE_DAYS} days (from=${fromDate.toISOString()}, to=${toDate.toISOString()}). ` +
+      `Maximum range starts at ${maxFrom.toISOString()}. Use weeklyReport() or monthlySummary() for longer periods.`,
     );
   }
   return { from: fromDate.toISOString(), to: toDate.toISOString() };
+}
+
+function last10Days(): { from: string; to: string } {
+  const to = new Date();
+  const from = new Date(to.getTime() - MAX_QUERY_RANGE_DAYS * 24 * 60 * 60 * 1000);
+  return { from: from.toISOString(), to: to.toISOString() };
 }
 
 export class HawkIrService {
@@ -59,9 +64,11 @@ export class HawkIrService {
 
   async getCases(params: HawkCasesParams = {}): Promise<HawkCase[]> {
     if (!params.startDate) {
-      const range = todayRange();
-      params.startDate = range.startDate;
-      if (!params.stopDate) params.stopDate = range.stopDate;
+      const range = last10Days();
+      params.startDate = range.from;
+      if (!params.stopDate) params.stopDate = range.to;
+    } else if (params.stopDate) {
+      enforceMaxRange(params.startDate, params.stopDate);
     }
     return this.client.getCases(params);
   }
@@ -74,13 +81,20 @@ export class HawkIrService {
     return this.client.getCaseSummary(caseId);
   }
 
+  /**
+   * Returns the count of cases visible to this user within the last 10 days.
+   * The backend's /api/cases/getUserCount only counts the API token user's own open cases,
+   * which is typically 0. Instead, we fetch recent cases and count them.
+   */
   async getCaseCount(): Promise<number> {
-    return this.client.getCaseCount();
+    const range = last10Days();
+    const cases = await this.client.getCases({ startDate: range.from, stopDate: range.to, limit: 100 });
+    return cases.length;
   }
 
-  async getRecentCases(limit = 20): Promise<HawkCase[]> {
-    const range = todayRange();
-    const cases = await this.client.getCases({ limit, startDate: range.startDate, stopDate: range.stopDate });
+  async getRecentCases(limit = 20, offset = 0): Promise<HawkCase[]> {
+    const range = last10Days();
+    const cases = await this.client.getCases({ limit, offset, startDate: range.from, stopDate: range.to });
     return cases.slice(0, limit);
   }
 
@@ -91,16 +105,19 @@ export class HawkIrService {
   async getRiskyOpenCases(params: {
     minRiskLevel?: CaseRiskLevel;
     limit?: number;
+    offset?: number;
   } = {}): Promise<HawkCase[]> {
     const minRiskLevel = params.minRiskLevel ?? "high";
     const limit = params.limit ?? 25;
+    const offset = params.offset ?? 0;
     const minPriority = riskPriority[minRiskLevel] ?? 3;
-    const range = todayRange();
+    const range = last10Days();
 
     const cases = await this.client.getCases({
       limit: Math.min(limit * 4, 100),
-      startDate: range.startDate,
-      stopDate: range.stopDate,
+      offset,
+      startDate: range.from,
+      stopDate: range.to,
     });
 
     return cases
@@ -125,10 +142,24 @@ export class HawkIrService {
   // === Explore ===
 
   async searchLogs(params: HawkExploreSearchParams): Promise<HawkExploreResult[]> {
+    if (!params.from) {
+      const range = last10Days();
+      params.from = range.from;
+      if (!params.to) params.to = range.to;
+    } else if (params.to) {
+      enforceMaxRange(params.from, params.to);
+    }
     return this.client.search(params);
   }
 
   async getLogHistogram(params: HawkExploreSearchParams): Promise<HawkHistogramBucket[]> {
+    if (!params.from) {
+      const range = last10Days();
+      params.from = range.from;
+      if (!params.to) params.to = range.to;
+    } else if (params.to) {
+      enforceMaxRange(params.from, params.to);
+    }
     return this.client.histogram(params);
   }
 
@@ -209,15 +240,18 @@ export class HawkIrService {
     return this.client.listDashboards();
   }
 
-  async runDashboardWidget(dashboardId: string, body?: Record<string, unknown>): Promise<HawkDashboardRunResult> {
+  async runDashboardWidget(dashboardId: string, body: Record<string, unknown> = {}): Promise<HawkDashboardRunResult> {
+    const timeRange = body.timeRange as { from?: string; to?: string } | undefined;
+    if (timeRange?.from && timeRange?.to) {
+      enforceMaxRange(timeRange.from, timeRange.to);
+    }
     return this.client.runDashboardWidget(dashboardId, body);
   }
 
   /**
    * Run an ad-hoc dashboard query without needing a saved dashboard.
-   * Sends a widget definition with the given query, index, and time range
-   * to the first matching dashboard. This is the primary method for
-   * answering data aggregation questions.
+   * Enforces a maximum 10-day query range. Use weeklyReport() or
+   * monthlySummary() for longer periods.
    */
   async runDashboardQuery(params: {
     query?: string;
@@ -230,7 +264,10 @@ export class HawkIrService {
     metrics?: { field: string; operator: string }[];
     size?: number;
     sort?: { field: string; direction: "asc" | "desc" };
+    pagination?: { limit?: number; offset?: number; page?: number };
   }): Promise<HawkDashboardRunResult> {
+    const validated = enforceMaxRange(params.from, params.to ?? new Date().toISOString());
+
     const dashboards = await this.client.listDashboards();
     if (!dashboards.length) {
       throw new Error("No dashboards available for running queries");
@@ -249,8 +286,75 @@ export class HawkIrService {
         sort: params.sort ?? { field: "@timestamp", direction: "desc" },
       },
       index: params.index,
-      timeRange: { from: params.from, to: params.to },
+      timeRange: { from: validated.from, to: validated.to },
+      pagination: params.pagination,
     });
+  }
+
+  /**
+   * Generate a weekly report covering the last 10 days (allows 3 days of overlap for summary runs).
+   * Returns dashboard query results for the specified metrics and groupings.
+   */
+  async weeklyReport(params: {
+    query?: string;
+    index?: string;
+    columns?: string[];
+    groupBy?: string[];
+    metrics?: { field: string; operator: string }[];
+    size?: number;
+  } = {}): Promise<HawkDashboardRunResult> {
+    const range = last10Days();
+    return this.runDashboardQuery({
+      ...params,
+      from: range.from,
+      to: range.to,
+    });
+  }
+
+  /**
+   * Generate a monthly summary by aggregating weekly reports.
+   * Runs up to 3 weekly queries (each within the 10-day limit) and combines the results.
+   */
+  async monthlySummary(params: {
+    query?: string;
+    index?: string;
+    columns?: string[];
+    groupBy?: string[];
+    metrics?: { field: string; operator: string }[];
+  } = {}): Promise<HawkDashboardRunResult[]> {
+    const now = new Date();
+    const weeks: HawkDashboardRunResult[] = [];
+
+    for (let i = 0; i < 3; i++) {
+      const weekEnd = new Date(now.getTime() - i * 10 * 24 * 60 * 60 * 1000);
+      const weekStart = new Date(weekEnd.getTime() - 10 * 24 * 60 * 60 * 1000);
+
+      const validated = enforceMaxRange(weekStart, weekEnd);
+      const dashboards = await this.client.listDashboards();
+      if (!dashboards.length) {
+        throw new Error("No dashboards available for running queries");
+      }
+
+      const result = await this.client.runDashboardWidget(dashboards[0].id, {
+        widget: {
+          id: `monthly-week-${i}-${Date.now()}`,
+          title: `Monthly Summary — Week ${3 - i}`,
+          type: "table",
+          query: params.query ?? "*",
+          columns: params.columns ?? [],
+          groupBy: params.groupBy ?? [],
+          metrics: params.metrics ?? [{ field: "@timestamp", operator: "count" }],
+          size: 100,
+          sort: { field: "@timestamp", direction: "desc" },
+        },
+        index: params.index,
+        timeRange: { from: validated.from, to: validated.to },
+      });
+
+      weeks.push(result);
+    }
+
+    return weeks;
   }
 
   // === Formatting ===

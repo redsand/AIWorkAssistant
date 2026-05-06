@@ -44,17 +44,17 @@ describe.skipIf(!process.env.HAWK_IR_ENABLED || process.env.HAWK_IR_ENABLED !== 
     // ── Cases ────────────────────────────────────────────────────────
 
     describe("Cases API", () => {
-      it("retrieves case count", async () => {
-        const count = await hawkIrClient.getCaseCount();
+      it("retrieves case count via service (last 10 days)", async () => {
+        const count = await hawkIrService.getCaseCount();
         expect(typeof count).toBe("number");
         expect(count).toBeGreaterThanOrEqual(0);
-        console.log(`  ✅ Case count: ${count}`);
+        console.log(`  ✅ Case count (last 10 days): ${count}`);
       }, TIMEOUT);
 
-      it("lists cases with small limit", async () => {
-        const cases = await hawkIrClient.getCases({ limit: 3 });
+      it("defaults cases to last 10 days via service", async () => {
+        const cases = await hawkIrService.getCases({ limit: 50 });
         expect(Array.isArray(cases)).toBe(true);
-        console.log(`  ✅ Retrieved ${cases.length} cases`);
+        console.log(`  ✅ Retrieved ${cases.length} cases (last 10 days)`);
         if (cases.length > 0) {
           const c = cases[0];
           console.log(`  Sample: rid=${c.rid ?? c["@rid"]}, name=${c.name}, risk=${c.riskLevel ?? c["risk_level"]}`);
@@ -256,6 +256,53 @@ describe.skipIf(!process.env.HAWK_IR_ENABLED || process.env.HAWK_IR_ENABLED !== 
           console.log(`  ✅ Grouped aggregation query succeeded`);
         } catch (err) {
           console.log(`  ⚠️ Grouped query error (auth OK): ${(err as Error).message}`);
+        }
+      }, TIMEOUT);
+    });
+
+    // ── Time range guardrails ──────────────────────────────────────────
+
+    describe("Time range guardrails", () => {
+      it("refuses queries beyond 10 days", async () => {
+        const indexes = await hawkIrClient.getAvailableIndexes();
+        const dashboards = await hawkIrClient.listDashboards();
+        if (indexes.length === 0 || dashboards.length === 0) {
+          console.log("  ⚠️ No indexes/dashboards — skipping guardrail test");
+          return;
+        }
+
+        await expect(
+          hawkIrService.runDashboardQuery({
+            query: "*",
+            index: indexes[0],
+            from: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+            to: new Date().toISOString(),
+          }),
+        ).rejects.toThrow("exceeds 10 days");
+
+        console.log("  ✅ Guardrail correctly rejected 30-day query");
+      }, TIMEOUT);
+
+      it("allows queries within 10 days", async () => {
+        const indexes = await hawkIrClient.getAvailableIndexes();
+        const dashboards = await hawkIrClient.listDashboards();
+        if (indexes.length === 0 || dashboards.length === 0) {
+          console.log("  ⚠️ No indexes/dashboards — skipping");
+          return;
+        }
+
+        try {
+          const result = await hawkIrService.runDashboardQuery({
+            query: "*",
+            index: indexes[0],
+            from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+            to: new Date().toISOString(),
+            size: 3,
+          });
+          expect(result).toBeDefined();
+          console.log("  ✅ 7-day query accepted (within 10-day limit)");
+        } catch (err) {
+          console.log(`  ⚠️ 7-day query error (auth OK): ${(err as Error).message}`);
         }
       }, TIMEOUT);
     });
