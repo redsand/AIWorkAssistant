@@ -27,6 +27,10 @@ import { workflowBriefGenerator } from "../engineering/workflow-brief";
 import { architecturePlanner } from "../engineering/architecture-planner";
 import { scaffoldPlanner } from "../engineering/scaffold-planner";
 import { jiraTicketGenerator } from "../engineering/jira-ticket-generator";
+import {
+  ticketToTaskGenerator,
+  TicketToTaskAgent,
+} from "../engineering/ticket-to-task";
 import { policyEngine } from "../policy/engine";
 import { approvalQueue } from "../approvals/queue";
 import * as fs from "fs";
@@ -2839,6 +2843,41 @@ async function handleEngineeringJiraTickets(
   }
 }
 
+async function handleEngineeringTicketToTask(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const issueNumber = Number(params.issueNumber);
+    if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+      return { success: false, error: "issueNumber is required" };
+    }
+
+    const result = await ticketToTaskGenerator.generate({
+      owner: (params.owner as string | undefined) || "",
+      repo: (params.repo as string | undefined) || "",
+      issueNumber,
+      agent: params.agent as TicketToTaskAgent | undefined,
+      includeComments: params.includeComments as boolean | undefined,
+      includeRoadmap: params.includeRoadmap as boolean | undefined,
+      includeCodebase: params.includeCodebase as boolean | undefined,
+      maxCodebaseFiles: params.maxCodebaseFiles as number | undefined,
+    });
+
+    return {
+      success: true,
+      data: {
+        prompt: result.body,
+        metadata: result.metadata,
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
 async function handleCodexRun(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -5511,6 +5550,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "engineering.architecture_proposal": handleEngineeringArchitectureProposal,
   "engineering.scaffolding_plan": handleEngineeringScaffoldingPlan,
   "engineering.jira_tickets": handleEngineeringJiraTickets,
+  "engineering.ticket_to_task": handleEngineeringTicketToTask,
 
   "system.approve_action": handleApproveAction,
   "system.reject_action": handleRejectAction,
@@ -5587,6 +5627,7 @@ const SYSTEM_TOOLS = new Set([
   "engineering.workflow_brief",
   "engineering.architecture_proposal",
   "engineering.scaffolding_plan",
+  "engineering.ticket_to_task",
   "productivity.generate_daily_plan",
   "productivity.generate_weekly_plan",
   "cto.daily_command_center",

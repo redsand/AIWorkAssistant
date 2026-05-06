@@ -8,7 +8,9 @@ import { Command } from "commander";
 import { loadEnv } from "../config/env";
 import { OllamaLauncher } from "../integrations/ollama-launcher";
 import type { LaunchOptions } from "../integrations/ollama-launcher";
+import { ticketToTaskGenerator, TicketToTaskAgent } from "../engineering/ticket-to-task";
 import axios from "axios";
+import * as fs from "fs";
 
 // Load environment variables
 const env = loadEnv();
@@ -266,6 +268,55 @@ async function generateImplementationPlan(idea: string): Promise<void> {
   );
 }
 
+async function generateTicketToTaskPrompt(
+  issueNumber: string,
+  options: {
+    owner?: string;
+    repo?: string;
+    output?: string;
+    agent?: TicketToTaskAgent;
+    includeComments?: boolean;
+    noComments?: boolean;
+    includeRoadmap?: boolean;
+    noRoadmap?: boolean;
+    includeCodebase?: boolean;
+    noCodebase?: boolean;
+    maxCodebaseFiles?: string;
+  },
+): Promise<void> {
+  const issue = Number(issueNumber);
+  if (!Number.isInteger(issue) || issue <= 0) {
+    console.error("Error: issue number must be a positive integer");
+    process.exit(1);
+  }
+
+  try {
+    const result = await ticketToTaskGenerator.generate({
+      owner: options.owner || "",
+      repo: options.repo || "",
+      issueNumber: issue,
+      agent: options.agent || "generic",
+      includeComments: options.noComments ? false : (options.includeComments ?? true),
+      includeRoadmap: options.noRoadmap ? false : (options.includeRoadmap ?? true),
+      includeCodebase: options.noCodebase ? false : (options.includeCodebase ?? true),
+      maxCodebaseFiles: options.maxCodebaseFiles ? Number(options.maxCodebaseFiles) : undefined,
+    });
+
+    if (options.output) {
+      fs.writeFileSync(options.output, result.body, "utf-8");
+      console.log(`Wrote implementation prompt to ${options.output}`);
+    } else {
+      console.log(result.body);
+    }
+  } catch (error) {
+    console.error(
+      "Failed to generate ticket-to-task prompt:",
+      error instanceof Error ? error.message : error,
+    );
+    process.exit(1);
+  }
+}
+
 // ==================== Helper: launch provider ====================
 
 const launcher = new OllamaLauncher();
@@ -353,6 +404,24 @@ program
   .description("Generate implementation plan")
   .action(async (_options, idea) => {
     await generateImplementationPlan(idea);
+  });
+
+program
+  .command("ticket-to-task <issueNumber>")
+  .description("Generate a coding-agent implementation prompt from a GitHub issue")
+  .option("--owner <owner>", "GitHub repository owner")
+  .option("--repo <repo>", "GitHub repository name")
+  .option("--output <file>", "Write the generated prompt to a file")
+  .option("--agent <agent>", "Target agent: codex, cursor, claude, generic", "generic")
+  .option("--include-comments", "Include GitHub issue comments")
+  .option("--no-comments", "Do not include GitHub issue comments")
+  .option("--include-roadmap", "Include roadmap context")
+  .option("--no-roadmap", "Do not include roadmap context")
+  .option("--include-codebase", "Include codebase context")
+  .option("--no-codebase", "Do not include codebase context")
+  .option("--max-codebase-files <number>", "Maximum relevant files to include", "10")
+  .action(async (issueNumber, options) => {
+    await generateTicketToTaskPrompt(issueNumber, options);
   });
 
 // Management commands

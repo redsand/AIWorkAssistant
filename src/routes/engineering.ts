@@ -10,8 +10,54 @@ import {
 } from "../engineering/architecture-planner";
 import { scaffoldPlanner } from "../engineering/scaffold-planner";
 import { jiraTicketGenerator } from "../engineering/jira-ticket-generator";
+import {
+  ticketToTaskGenerator,
+  TicketToTaskAgent,
+} from "../engineering/ticket-to-task";
+
+interface TicketToTaskRequest {
+  owner?: string;
+  repo?: string;
+  issueNumber: number;
+  agent?: TicketToTaskAgent;
+  includeComments?: boolean;
+  includeRoadmap?: boolean;
+  includeCodebase?: boolean;
+  maxCodebaseFiles?: number;
+}
 
 export async function engineeringRoutes(fastify: FastifyInstance) {
+  const handleTicketToTask = async (request: { body: unknown }, reply: any) => {
+    const body = request.body as TicketToTaskRequest;
+    if (!body.issueNumber) {
+      reply.code(400);
+      return { success: false, error: "issueNumber is required" };
+    }
+
+    try {
+      const result = await ticketToTaskGenerator.generate({
+        owner: body.owner || "",
+        repo: body.repo || "",
+        issueNumber: Number(body.issueNumber),
+        agent: body.agent,
+        includeComments: body.includeComments,
+        includeRoadmap: body.includeRoadmap,
+        includeCodebase: body.includeCodebase,
+        maxCodebaseFiles: body.maxCodebaseFiles,
+      });
+      return { success: true, prompt: result.body, metadata: result.metadata };
+    } catch (error) {
+      reply.code(500);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  };
+
+  fastify.post("/api/ticket-to-task", handleTicketToTask);
+  fastify.post("/engineering/ticket-to-task", handleTicketToTask);
+
   fastify.post("/engineering/workflow-brief", async (request, _reply) => {
     const { idea } = request.body as { idea: string };
 

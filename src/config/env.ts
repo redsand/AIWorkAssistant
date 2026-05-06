@@ -205,6 +205,11 @@ const envSchema = z.object({
     .string()
     .default("mailto:admin@ai-work-assistant.example"),
   VAPID_SUBJECT: z.string().default(""),
+
+  // Push notification polling
+  PUSH_POLL_INTERVAL_MIN: z.coerce.number().default(5),
+  PUSH_ESCALATION_L2_MINUTES: z.coerce.number().default(5),
+  PUSH_ESCALATION_L3_MINUTES: z.coerce.number().default(15),
 });
 
 export type Env = z.infer<typeof envSchema>;

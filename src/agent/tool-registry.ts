@@ -5388,6 +5388,50 @@ const ENGINEERING_TOOLS: Tool[] = [
     actionType: "engineering.jira.tickets",
     riskLevel: "low",
   },
+  {
+    name: "engineering.ticket_to_task",
+    description:
+      "Convert a GitHub issue into a structured implementation prompt for coding agents. Fetches the issue, enriches with codebase context, roadmap context, and produces a ready-to-use prompt.",
+    params: {
+      owner: {
+        type: "string",
+        description: "Repository owner. Uses GITHUB_DEFAULT_OWNER if omitted.",
+        required: false,
+      },
+      repo: {
+        type: "string",
+        description: "Repository name. Uses GITHUB_DEFAULT_REPO if omitted.",
+        required: false,
+      },
+      issueNumber: {
+        type: "number",
+        description: "GitHub issue number",
+        required: true,
+      },
+      agent: {
+        type: "string",
+        description: "Target agent: codex, cursor, claude, generic",
+        required: false,
+      },
+      includeComments: {
+        type: "boolean",
+        description: "Include issue comments",
+        required: false,
+      },
+      includeRoadmap: {
+        type: "boolean",
+        description: "Include roadmap context",
+        required: false,
+      },
+      includeCodebase: {
+        type: "boolean",
+        description: "Include relevant file analysis",
+        required: false,
+      },
+    },
+    actionType: "engineering.ticket_to_task",
+    riskLevel: "low",
+  },
 ];
 
 /**

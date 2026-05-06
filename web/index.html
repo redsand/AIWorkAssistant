@@ -451,6 +451,7 @@
             <div id="workItemsPanel" style="display:none;margin-top:10px;">
               <div style="margin-bottom:8px;">
                 <button class="action-btn" onclick="showCreateWorkItemForm()">+ New Item</button>
+                <button class="action-btn" onclick="showTicketToTaskDialog()">Generate Implementation Prompt</button>
               </div>
               <div id="workItemCreateForm" class="work-item-create-form" style="display:none;">
                 <label>Type</label>
@@ -605,6 +606,28 @@
         <button class="close-modal-btn" onclick="closeToolsModal()">
           Close
         </button>
+      </div>
+    </div>
+
+    <div id="ticketToTaskModal" class="ticket-prompt-modal-overlay" style="display:none" onclick="if(event.target===this)closeTicketToTaskModal()">
+      <div class="ticket-prompt-modal">
+        <div class="ticket-prompt-header">
+          <h3>Implementation Prompt</h3>
+          <button class="close-modal-btn" onclick="closeTicketToTaskModal()">Close</button>
+        </div>
+        <div class="ticket-prompt-controls">
+          <input id="ticketToTaskIssueNumber" type="number" min="1" placeholder="GitHub issue #" />
+          <select id="ticketToTaskAgent">
+            <option value="codex">Codex</option>
+            <option value="cursor">Cursor</option>
+            <option value="claude">Claude</option>
+            <option value="generic">Generic</option>
+          </select>
+          <button class="action-btn" onclick="generateTicketToTaskPrompt()">Generate</button>
+          <button class="action-btn" onclick="copyTicketToTaskPrompt()">Copy to Clipboard</button>
+        </div>
+        <div id="ticketToTaskStatus" class="ticket-prompt-status"></div>
+        <textarea id="ticketToTaskOutput" class="ticket-prompt-output" readonly></textarea>
       </div>
     </div>
 

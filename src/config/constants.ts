@@ -63,3 +63,8 @@ export const GITLAB_WEBHOOK_EVENTS = {
   MERGE_REQUEST: "Merge Request Hook",
   MERGE_REQUEST_MERGED: "Merge Request Hook",
 } as const;
+
+export const GITHUB_DEFAULTS = {
+  OWNER_ENV: "GITHUB_DEFAULT_OWNER",
+  REPO_ENV: "GITHUB_DEFAULT_REPO",
+} as const;

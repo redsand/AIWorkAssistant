@@ -90,6 +90,7 @@ let currentFilters = {
   limit: "50",
 };
 let selectedItemId = null;
+let lastTicketToTaskPrompt = "";
 
 function parseJsonArray(json) {
   if (!json) return [];
@@ -113,6 +114,24 @@ function renderOptions(values, selected) {
         `<option value="${escapeAttr(value)}"${value === selected ? " selected" : ""}>${escapeHtml(value)}</option>`,
     )
     .join("");
+}
+
+function extractGithubIssueNumber(item) {
+  const values = [
+    item.sourceExternalId,
+    item.title,
+    item.description,
+    ...parseJsonArray(item.linkedResourcesJson).flatMap((r) => [r.url, r.label]),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const urlMatch = values.match(/github\.com\/[^/\s]+\/[^/\s]+\/issues\/(\d+)/i);
+  if (urlMatch) return urlMatch[1];
+  const idMatch = values.match(/(?:^|\s)#(\d+)(?:\s|$)/);
+  if (item.source === "github" && item.sourceExternalId && /^\d+$/.test(item.sourceExternalId)) {
+    return item.sourceExternalId;
+  }
+  return idMatch ? idMatch[1] : "";
 }
 
 // ── List View ──
@@ -289,6 +308,7 @@ async function loadWorkItemDetail(id, detailEl) {
         ${item.status !== "archived"
           ? `<button class="action-btn" onclick="window.archiveWorkItem('${escapeAttr(item.id)}')" style="background:#f3f4f6;color:#333;">Archive</button>`
           : ""}
+        <button class="action-btn" onclick="window.showTicketToTaskDialog('${escapeAttr(extractGithubIssueNumber(item))}')">Generate Prompt</button>
       </div>
     `;
 
@@ -402,6 +422,76 @@ export function closeWorkItemDetail() {
   selectedItemId = null;
 }
 
+export function showTicketToTaskDialog(issueNumber = "") {
+  const modal = document.getElementById("ticketToTaskModal");
+  const input = document.getElementById("ticketToTaskIssueNumber");
+  const status = document.getElementById("ticketToTaskStatus");
+  if (input && issueNumber) input.value = issueNumber;
+  if (status) status.textContent = "";
+  modal.style.display = "flex";
+}
+
+export function closeTicketToTaskModal() {
+  document.getElementById("ticketToTaskModal").style.display = "none";
+}
+
+export async function generateTicketToTaskPrompt() {
+  const issueNumber = Number(document.getElementById("ticketToTaskIssueNumber").value);
+  const agent = document.getElementById("ticketToTaskAgent").value;
+  const status = document.getElementById("ticketToTaskStatus");
+  const output = document.getElementById("ticketToTaskOutput");
+
+  if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+    status.textContent = "Enter a valid GitHub issue number.";
+    return;
+  }
+
+  status.textContent = "Generating prompt...";
+  output.value = "";
+
+  try {
+    const response = await fetch(`${API_BASE}/api/ticket-to-task`, {
+      method: "POST",
+      headers: { ...authHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({
+        issueNumber,
+        agent,
+        includeComments: true,
+        includeRoadmap: true,
+        includeCodebase: true,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok || data.error) {
+      status.textContent = data.error || "Failed to generate prompt.";
+      return;
+    }
+    lastTicketToTaskPrompt = data.prompt || "";
+    output.value = lastTicketToTaskPrompt;
+    status.textContent = `Generated prompt for issue #${data.metadata?.issueNumber || issueNumber}.`;
+  } catch {
+    status.textContent = "Failed to generate prompt.";
+  }
+}
+
+export async function copyTicketToTaskPrompt() {
+  const output = document.getElementById("ticketToTaskOutput");
+  const status = document.getElementById("ticketToTaskStatus");
+  const text = output.value || lastTicketToTaskPrompt;
+  if (!text) {
+    status.textContent = "Generate a prompt before copying.";
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    status.textContent = "Copied to clipboard.";
+  } catch {
+    output.select();
+    document.execCommand("copy");
+    status.textContent = "Copied to clipboard.";
+  }
+}
+
 // ── Create Form ──
 
 export function showCreateWorkItemForm() {
@@ -502,3 +592,7 @@ window.completeWorkItem = completeWorkItem;
 window.archiveWorkItem = archiveWorkItem;
 window.applyWorkItemsFilters = applyWorkItemsFilters;
 window.refreshWorkItems = loadWorkItems;
+window.showTicketToTaskDialog = showTicketToTaskDialog;
+window.closeTicketToTaskModal = closeTicketToTaskModal;
+window.generateTicketToTaskPrompt = generateTicketToTaskPrompt;
+window.copyTicketToTaskPrompt = copyTicketToTaskPrompt;

@@ -3,6 +3,7 @@ import {
   getPlatformForToolName,
   getPlatformForTool,
   getToolsByPlatform,
+  getToolByName,
 } from "../../../src/agent/tool-registry";
 import type { Tool } from "../../../src/agent/tool-registry";
 
@@ -69,6 +70,7 @@ describe("getPlatformForToolName", () => {
 
   it("maps engineering.* to cross-platform", () => {
     expect(getPlatformForToolName("engineering.workflow_brief")).toBe("cross-platform");
+    expect(getPlatformForToolName("engineering.ticket_to_task")).toBe("cross-platform");
   });
 
   it("maps roadmap.* to cross-platform", () => {
@@ -93,6 +95,16 @@ describe("getPlatformForToolName", () => {
 
   it("maps unknown prefixes to cross-platform", () => {
     expect(getPlatformForToolName("foobar.something")).toBe("cross-platform");
+  });
+});
+
+describe("engineering tool registration", () => {
+  it("registers ticket-to-task in engineering mode", () => {
+    const tool = getToolByName("engineering.ticket_to_task", "engineering");
+    expect(tool).toBeDefined();
+    expect(tool?.riskLevel).toBe("low");
+    expect(tool?.actionType).toBe("engineering.ticket_to_task");
+    expect(tool?.params.issueNumber.required).toBe(true);
   });
 });
 

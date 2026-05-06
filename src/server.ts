@@ -29,6 +29,7 @@ import { codeReviewRoutes } from "./routes/code-review";
 import { pushSubscriptionRoutes } from "./routes/push-subscriptions";
 import { pushAcknowledgeRoutes } from "./routes/push-acknowledge";
 import { initPushDispatcher } from "./push/dispatcher";
+import { startPollingEngine, stopPollingEngine } from "./push/polling-engine";
 import { toolsRoutes } from "./routes/tools";
 import {
   authMiddleware,
@@ -290,6 +291,16 @@ async function start() {
 
     initializeMCP();
     initPushDispatcher();
+    startPollingEngine();
+
+    process.on("SIGTERM", () => {
+      stopPollingEngine();
+      process.exit(0);
+    });
+    process.on("SIGINT", () => {
+      stopPollingEngine();
+      process.exit(0);
+    });
 
     if (env.RAG_INDEX_ON_STARTUP) {
       codebaseIndexer
