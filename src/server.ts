@@ -110,6 +110,11 @@ export async function buildServer() {
     etag: false,
   });
 
+  // Serve the capabilities page at /capabilities (no .html extension)
+  server.get("/capabilities", async (_request, reply) => {
+    return reply.sendFile("capabilities.html");
+  });
+
   // Force no-cache on static assets so Cloudflare doesn't cache them
   server.addHook("onSend", async (_request, reply) => {
     const route = reply.request.url;

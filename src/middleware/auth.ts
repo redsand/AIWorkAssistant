@@ -13,6 +13,10 @@ const PUBLIC_PATHS = new Set([
   "/auth/google/status",
   "/calendar/export/ics",
   "/calendar/subscribe",
+  "/capabilities",
+  "/api/tools",
+  "/api/tools/categories",
+  "/api/agents",
 ]);
 
 const SESSION_TOKEN_BYTES = 32;
