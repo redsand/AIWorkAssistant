@@ -58,10 +58,10 @@ export class HawkIrClient {
   private maxRetries = 3;
 
   constructor() {
-    this.baseUrl = this.normalizeBaseUrl(env.HAWK_SOAR_BASE_URL);
-    this.accessToken = env.HAWK_SOAR_ACCESS_TOKEN;
-    this.secretKey = env.HAWK_SOAR_SECRET_KEY;
-    this.enabled = env.HAWK_SOAR_ENABLED && !!(this.baseUrl && this.accessToken && this.secretKey);
+    this.baseUrl = this.normalizeBaseUrl(env.HAWK_IR_BASE_URL);
+    this.accessToken = env.HAWK_IR_ACCESS_TOKEN;
+    this.secretKey = env.HAWK_IR_SECRET_KEY;
+    this.enabled = env.HAWK_IR_ENABLED && !!(this.baseUrl && this.accessToken && this.secretKey);
 
     this.http = axios.create({
       baseURL: this.baseUrl || undefined,
@@ -371,7 +371,7 @@ export class HawkIrClient {
 
   private ensureConfigured(): void {
     if (!this.isConfigured()) {
-      throw new Error("HAWK IR client not configured — check HAWK_SOAR_* env vars");
+      throw new Error("HAWK IR client not configured — check HAWK_IR_* env vars");
     }
   }
 

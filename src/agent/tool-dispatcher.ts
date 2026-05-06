@@ -11,6 +11,7 @@ import { weeklyPlanner } from "../productivity/weekly-planner";
 import { ctoDailyCommandCenter } from "../cto/daily-command-center";
 import { personalOsBriefGenerator } from "../personal-os/brief-generator";
 import { productChiefOfStaff } from "../product/product-chief-of-staff";
+import { hawkIrService } from "../integrations/hawk-ir/hawk-ir-service";
 import { roadmapDatabase } from "../roadmap/database";
 import { auditLogger } from "../audit/logger";
 import { env } from "../config/env";
@@ -4294,6 +4295,420 @@ async function handleJitbitAddTimeEntry(
     timeSpentInSeconds,
     statusId: params.statusId as number | undefined,
   });
+  return { success: true, data };
+}
+
+async function handleJitbitUpdateTicket(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  const fields = params.fields as Record<string, unknown>;
+  if (!fields) return { success: false, error: "fields is required" };
+  const data = await jitbitService.updateTicket(ticketId, fields);
+  return { success: true, data };
+}
+
+async function handleJitbitListUsers(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const data = await jitbitService.listUsers({
+    companyId: params.companyId as number | undefined,
+    count: params.count as number | undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleJitbitSearchUsers(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const query = params.query as string;
+  if (!query) return { success: false, error: "query is required" };
+  const data = await jitbitService.searchUsers(query);
+  return { success: true, data };
+}
+
+async function handleJitbitListCompanies(
+  _params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const data = await jitbitService.listCompanies();
+  return { success: true, data };
+}
+
+async function handleJitbitSearchCompanies(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const query = params.query as string;
+  if (!query) return { success: false, error: "query is required" };
+  const data = await jitbitService.searchCompanies(query);
+  return { success: true, data };
+}
+
+async function handleJitbitListCategories(
+  _params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const data = await jitbitService.listCategories();
+  return { success: true, data };
+}
+
+async function handleJitbitListPriorities(
+  _params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const data = await jitbitService.listPriorities();
+  return { success: true, data };
+}
+
+async function handleJitbitSubscribeToTicket(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  const data = await jitbitService.subscribeToTicket(ticketId, params.userId as number | undefined);
+  return { success: true, data };
+}
+
+async function handleJitbitUnsubscribeFromTicket(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  const data = await jitbitService.unsubscribeFromTicket(ticketId, params.userId as number | undefined);
+  return { success: true, data };
+}
+
+async function handleJitbitListAttachments(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  const data = await jitbitService.listAttachments(ticketId);
+  return { success: true, data };
+}
+
+async function handleJitbitAddAttachment(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  const data = await jitbitService.addAttachment(ticketId, {
+    fileName: params.fileName as string,
+    data: params.data as string,
+  });
+  return { success: true, data };
+}
+
+async function handleJitbitListCustomFields(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const data = await jitbitService.listCustomFields(params.categoryId as number | undefined);
+  return { success: true, data };
+}
+
+async function handleJitbitGetCustomFieldValues(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  const data = await jitbitService.getCustomFieldValues(ticketId);
+  return { success: true, data };
+}
+
+async function handleJitbitSetCustomFieldValue(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  const fieldId = params.fieldId as number;
+  const value = params.value as string;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  if (!fieldId) return { success: false, error: "fieldId is required" };
+  if (!value) return { success: false, error: "value is required" };
+  const data = await jitbitService.setCustomFieldValue(ticketId, fieldId, value);
+  return { success: true, data };
+}
+
+async function handleJitbitListTags(
+  _params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const data = await jitbitService.listTags();
+  return { success: true, data };
+}
+
+async function handleJitbitListSections(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const data = await jitbitService.listSections(params.categoryId as number | undefined);
+  return { success: true, data };
+}
+
+async function handleJitbitGetTimeEntries(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  const data = await jitbitService.getTimeEntries(ticketId);
+  return { success: true, data };
+}
+
+async function handleJitbitListAutomationRules(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const data = await jitbitService.listAutomationRules(params.categoryId as number | undefined);
+  return { success: true, data };
+}
+
+async function handleJitbitTriggerAutomation(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jitbitService.isConfigured()) {
+    return { success: false, error: "Jitbit client not configured" };
+  }
+  const ticketId = params.ticketId as number;
+  const ruleId = params.ruleId as number;
+  if (!ticketId) return { success: false, error: "ticketId is required" };
+  if (!ruleId) return { success: false, error: "ruleId is required" };
+  const data = await jitbitService.triggerAutomation(ticketId, ruleId);
+  return { success: true, data };
+}
+
+// ── HAWK IR Handlers ──────────────────────────────────────────────────
+
+async function handleHawkIrGetCases(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.getCases({
+    startDate: params.startDate as string | undefined,
+    stopDate: params.stopDate as string | undefined,
+    groupId: params.groupId as string | undefined,
+    limit: params.limit as number | undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleHawkIrGetCase(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const caseId = params.caseId as string;
+  if (!caseId) return { success: false, error: "caseId is required" };
+  const data = await hawkIrService.getCase(caseId);
+  return { success: true, data };
+}
+
+async function handleHawkIrGetCaseSummary(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const caseId = params.caseId as string;
+  if (!caseId) return { success: false, error: "caseId is required" };
+  const data = await hawkIrService.getCaseSummary(caseId);
+  return { success: true, data };
+}
+
+async function handleHawkIrGetRiskyOpenCases(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.getRiskyOpenCases({
+    minRiskLevel: params.minRiskLevel as any,
+    limit: params.limit as number | undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleHawkIrDeescalateCase(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const caseId = params.caseId as string;
+  const reason = params.reason as string;
+  if (!caseId) return { success: false, error: "caseId is required" };
+  if (!reason) return { success: false, error: "reason is required" };
+  const data = await hawkIrService.deescalateCase(caseId, reason, params.note as string | undefined);
+  return { success: true, data };
+}
+
+async function handleHawkIrSearchLogs(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const query = params.query as string;
+  if (!query) return { success: false, error: "query is required" };
+  const data = await hawkIrService.searchLogs({
+    q: query,
+    idx: params.index as string | undefined,
+    from: params.from as string | undefined,
+    to: params.to as string | undefined,
+    size: params.size as number | undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleHawkIrGetAvailableIndexes(
+  _params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.getAvailableIndexes();
+  return { success: true, data };
+}
+
+async function handleHawkIrGetAssets(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.getAssets({
+    search: params.search as string | undefined,
+    limit: params.limit as number | undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleHawkIrGetAssetSummary(
+  _params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.getAssetSummary();
+  return { success: true, data };
+}
+
+async function handleHawkIrGetIdentities(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.getIdentities({
+    search: params.search as string | undefined,
+    limit: params.limit as number | undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleHawkIrGetIdentitySummary(
+  _params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.getIdentitySummary();
+  return { success: true, data };
+}
+
+async function handleHawkIrListNodes(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const groupIds = params.groupIds
+    ? String(params.groupIds).split(",").map((s: string) => s.trim())
+    : undefined;
+  const data = await hawkIrService.listNodes(groupIds);
+  return { success: true, data };
+}
+
+async function handleHawkIrGetActiveNodes(
+  _params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.getActiveNodes();
+  return { success: true, data };
+}
+
+async function handleHawkIrListDashboards(
+  _params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.listDashboards();
+  return { success: true, data };
+}
+
+async function handleHawkIrRunDashboard(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const dashboardId = params.dashboardId as string;
+  if (!dashboardId) return { success: false, error: "dashboardId is required" };
+  const data = await hawkIrService.runDashboardWidget(dashboardId, params.body as Record<string, unknown> | undefined);
   return { success: true, data };
 }
 

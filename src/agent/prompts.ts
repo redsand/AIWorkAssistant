@@ -62,7 +62,7 @@ TICKET ACTION RULES:
 
 GITLAB PROJECT RESOLUTION:
 - GitLab tools that accept projectId require a numeric project ID or URL-encoded path. NEVER guess or use an unverified project name as the projectId.
-- If the user mentions a project by name (e.g., "siem", "hawk-soar"), call gitlab.list_projects FIRST to find the correct numeric ID.
+- If the user mentions a project by name (e.g., "siem", "hawk-ir"), call gitlab.list_projects FIRST to find the correct numeric ID.
 - Pattern: gitlab.list_projects → find matching project → use its id for subsequent calls like gitlab.list_commits, gitlab.list_tree, etc.
 - Do NOT call gitlab.list_commits, gitlab.search_code, or other project-scoped tools until you have verified the project ID.`;
 

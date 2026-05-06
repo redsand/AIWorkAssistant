@@ -42,6 +42,7 @@ const PLATFORM_PREFIX_MAP: Record<string, Platform> = {
   agent: "cross-platform",
   workflow: "cross-platform",
   product: "cross-platform",
+  hawk_ir: "hawk-ir",
   discover: "cross-platform",
 };
 
@@ -2616,7 +2617,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "memory.get_entity_context",
     description:
-      "Get everything known about a specific entity: its summary, all facts collected, and its links to other entities. Best for 'What do we know about customer ACME?' or 'Tell me about repo hawk-soar-cloud-v3'.",
+      "Get everything known about a specific entity: its summary, all facts collected, and its links to other entities. Best for 'What do we know about customer ACME?' or 'Tell me about repo hawk-ir-cloud-v3'.",
     params: {
       type: {
         type: "string",
@@ -3700,6 +3701,540 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     actionType: "jitbit.add_time_entry",
     riskLevel: "medium",
   },
+  {
+    name: "jitbit.update_ticket",
+    description:
+      "Update fields on a Jitbit support ticket (subject, body, priority, category, status, etc.).",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+      fields: {
+        type: "object",
+        description: "Fields to update (subject, body, priorityId, categoryId, statusId, assignedUserId, etc.)",
+        required: true,
+      },
+    },
+    actionType: "jitbit.update_ticket",
+    riskLevel: "medium",
+  },
+  {
+    name: "jitbit.list_users",
+    description:
+      "List Jitbit users with optional filters (company, department, search).",
+    params: {
+      companyId: {
+        type: "number",
+        description: "Filter by company ID",
+        required: false,
+      },
+      count: {
+        type: "number",
+        description: "Max number of users to return",
+        required: false,
+      },
+    },
+    actionType: "jitbit.list_users",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.search_users",
+    description:
+      "Search Jitbit users by name or email.",
+    params: {
+      query: {
+        type: "string",
+        description: "Search query (name or email)",
+        required: true,
+      },
+    },
+    actionType: "jitbit.search_users",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.list_companies",
+    description:
+      "List all Jitbit companies (organizations).",
+    params: {},
+    actionType: "jitbit.list_companies",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.search_companies",
+    description:
+      "Search Jitbit companies by name.",
+    params: {
+      query: {
+        type: "string",
+        description: "Company name search query",
+        required: true,
+      },
+    },
+    actionType: "jitbit.search_companies",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.list_categories",
+    description:
+      "List Jitbit ticket categories.",
+    params: {},
+    actionType: "jitbit.list_categories",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.list_priorities",
+    description:
+      "List Jitbit ticket priorities.",
+    params: {},
+    actionType: "jitbit.list_priorities",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.subscribe_to_ticket",
+    description:
+      "Subscribe the current user to a Jitbit ticket to receive notifications.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+      userId: {
+        type: "number",
+        description: "User ID to subscribe (optional, defaults to current user)",
+        required: false,
+      },
+    },
+    actionType: "jitbit.subscribe_to_ticket",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.unsubscribe_from_ticket",
+    description:
+      "Unsubscribe the current user from a Jitbit ticket.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+      userId: {
+        type: "number",
+        description: "User ID to unsubscribe (optional, defaults to current user)",
+        required: false,
+      },
+    },
+    actionType: "jitbit.unsubscribe_from_ticket",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.list_attachments",
+    description:
+      "List attachments on a Jitbit ticket.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+    },
+    actionType: "jitbit.list_attachments",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.add_attachment",
+    description:
+      "Add an attachment to a Jitbit ticket.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+      fileName: {
+        type: "string",
+        description: "File name for the attachment",
+        required: true,
+      },
+      data: {
+        type: "string",
+        description: "Base64-encoded file data",
+        required: true,
+      },
+    },
+    actionType: "jitbit.add_attachment",
+    riskLevel: "medium",
+  },
+  {
+    name: "jitbit.list_custom_fields",
+    description:
+      "List custom fields for Jitbit tickets (optionally filtered by category).",
+    params: {
+      categoryId: {
+        type: "number",
+        description: "Filter custom fields by category ID",
+        required: false,
+      },
+    },
+    actionType: "jitbit.list_custom_fields",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.get_custom_field_values",
+    description:
+      "Get custom field values for a Jitbit ticket.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+    },
+    actionType: "jitbit.get_custom_field_values",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.set_custom_field_value",
+    description:
+      "Set a custom field value on a Jitbit ticket.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+      fieldId: {
+        type: "number",
+        description: "Custom field ID",
+        required: true,
+      },
+      value: {
+        type: "string",
+        description: "Value to set",
+        required: true,
+      },
+    },
+    actionType: "jitbit.set_custom_field_value",
+    riskLevel: "medium",
+  },
+  {
+    name: "jitbit.list_tags",
+    description:
+      "List all tags in Jitbit.",
+    params: {},
+    actionType: "jitbit.list_tags",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.list_sections",
+    description:
+      "List Jitbit sections (optionally filtered by category).",
+    params: {
+      categoryId: {
+        type: "number",
+        description: "Filter sections by category ID",
+        required: false,
+      },
+    },
+    actionType: "jitbit.list_sections",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.get_time_entries",
+    description:
+      "Get time tracking entries for a Jitbit ticket.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+    },
+    actionType: "jitbit.get_time_entries",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.list_automation_rules",
+    description:
+      "List Jitbit automation rules (optionally filtered by category).",
+    params: {
+      categoryId: {
+        type: "number",
+        description: "Filter automation rules by category ID",
+        required: false,
+      },
+    },
+    actionType: "jitbit.list_automation_rules",
+    riskLevel: "low",
+  },
+  {
+    name: "jitbit.trigger_automation",
+    description:
+      "Trigger a Jitbit automation rule on a ticket.",
+    params: {
+      ticketId: {
+        type: "number",
+        description: "Jitbit ticket ID",
+        required: true,
+      },
+      ruleId: {
+        type: "number",
+        description: "Automation rule ID",
+        required: true,
+      },
+    },
+    actionType: "jitbit.trigger_automation",
+    riskLevel: "medium",
+  },
+
+  // ==================== HAWK IR Tools ====================
+  {
+    name: "hawk_ir.get_cases",
+    description:
+      "Get HAWK IR incident response cases with optional filters (date range, group, limit).",
+    params: {
+      startDate: {
+        type: "string",
+        description: "Start date filter (YYYY-MM-DD)",
+        required: false,
+      },
+      stopDate: {
+        type: "string",
+        description: "End date filter (YYYY-MM-DD)",
+        required: false,
+      },
+      groupId: {
+        type: "string",
+        description: "Filter by group ID",
+        required: false,
+      },
+      limit: {
+        type: "number",
+        description: "Max number of cases to return (default 20)",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.get_cases",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.get_case",
+    description:
+      "Get a specific HAWK IR case by ID with full details.",
+    params: {
+      caseId: {
+        type: "string",
+        description: "HAWK IR case ID (with or without # prefix)",
+        required: true,
+      },
+    },
+    actionType: "hawk_ir.get_case",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.get_case_summary",
+    description:
+      "Get a summary of a HAWK IR case including key details and recommendations.",
+    params: {
+      caseId: {
+        type: "string",
+        description: "HAWK IR case ID",
+        required: true,
+      },
+    },
+    actionType: "hawk_ir.get_case_summary",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.get_risky_open_cases",
+    description:
+      "Get HAWK IR cases that are high risk, unescalated, and not closed/resolved. Primary signal for CTO briefs and product insights.",
+    params: {
+      minRiskLevel: {
+        type: "string",
+        description: "Minimum risk level: low, medium, high, critical (default: high)",
+        required: false,
+      },
+      limit: {
+        type: "number",
+        description: "Max cases to return (default 25)",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.get_risky_open_cases",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.deescalate_case",
+    description:
+      "De-escalate a HAWK IR case with a reason. Requires approval.",
+    params: {
+      caseId: {
+        type: "string",
+        description: "HAWK IR case ID",
+        required: true,
+      },
+      reason: {
+        type: "string",
+        description: "Reason for de-escalation",
+        required: true,
+      },
+      note: {
+        type: "string",
+        description: "Optional additional note",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.deescalate_case",
+    riskLevel: "high",
+  },
+  {
+    name: "hawk_ir.search_logs",
+    description:
+      "Search HAWK IR logs/explore data with query and optional filters (index, date range, pagination).",
+    params: {
+      query: {
+        type: "string",
+        description: "Search query string",
+        required: true,
+      },
+      index: {
+        type: "string",
+        description: "Log index to search",
+        required: false,
+      },
+      from: {
+        type: "string",
+        description: "Start date/time filter",
+        required: false,
+      },
+      to: {
+        type: "string",
+        description: "End date/time filter",
+        required: false,
+      },
+      size: {
+        type: "number",
+        description: "Max results to return",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.search_logs",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.get_available_indexes",
+    description:
+      "List available HAWK IR log indexes for explore/search.",
+    params: {},
+    actionType: "hawk_ir.get_available_indexes",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.get_assets",
+    description:
+      "Get HAWK IR assets (endpoints) with optional filters (search, pagination, sort).",
+    params: {
+      search: {
+        type: "string",
+        description: "Search term for asset name/IP",
+        required: false,
+      },
+      limit: {
+        type: "number",
+        description: "Max results to return (default 25)",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.get_assets",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.get_asset_summary",
+    description:
+      "Get a summary of all HAWK IR assets including tag counts, OS distribution, and adapter counts.",
+    params: {},
+    actionType: "hawk_ir.get_asset_summary",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.get_identities",
+    description:
+      "Get HAWK IR identities with optional filters (search, pagination).",
+    params: {
+      search: {
+        type: "string",
+        description: "Search term for identity name",
+        required: false,
+      },
+      limit: {
+        type: "number",
+        description: "Max results to return (default 25)",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.get_identities",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.get_identity_summary",
+    description:
+      "Get a summary of all HAWK IR identities including tag counts, admin counts, and adapter counts.",
+    params: {},
+    actionType: "hawk_ir.get_identity_summary",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.list_nodes",
+    description:
+      "List HAWK IR nodes (sensors/agents) with optional group ID filter.",
+    params: {
+      groupIds: {
+        type: "string",
+        description: "Comma-separated group IDs to filter nodes",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.list_nodes",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.get_active_nodes",
+    description:
+      "Get active HAWK IR nodes (approved sensors/agents), sorted by most recently seen.",
+    params: {},
+    actionType: "hawk_ir.get_active_nodes",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.list_dashboards",
+    description:
+      "List HAWK IR dashboards.",
+    params: {},
+    actionType: "hawk_ir.list_dashboards",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.run_dashboard",
+    description:
+      "Run a HAWK IR dashboard widget and get results.",
+    params: {
+      dashboardId: {
+        type: "string",
+        description: "Dashboard ID to run",
+        required: true,
+      },
+      body: {
+        type: "object",
+        description: "Optional request body for widget parameters",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.run_dashboard",
+    riskLevel: "low",
+  },
 
   // ==================== Work Items Tools ====================
   {
@@ -4132,6 +4667,36 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "product.customer_signals")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "product.weekly_update")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "product.create_work_items")!,
+
+  // HAWK IR core
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_cases")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_case")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_case_summary")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_risky_open_cases")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.search_logs")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_available_indexes")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_assets")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_asset_summary")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_identities")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_identity_summary")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.list_nodes")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_active_nodes")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.list_dashboards")!,
+
+  // Jitbit extended
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.update_ticket")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_users")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.search_users")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_companies")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.search_companies")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_categories")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_priorities")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_custom_fields")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.get_custom_field_values")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_tags")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_sections")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.get_time_entries")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_automation_rules")!,
 
   // Roadmap core
   PRODUCTIVITY_TOOLS.find((t) => t.name === "roadmap.list")!,

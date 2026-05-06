@@ -272,7 +272,7 @@ class CtoDailyCommandCenter {
         ...blocked.map((item) => `- Blocked work item: ${item.title}`),
         ...overdue.map((item) => `- Overdue work item: ${item.title}`),
         ...data.jitbit.highPriority.map((ticket) => `- High-priority support ticket: ${this.ticketLabel(ticket)}`),
-        ...data.hawkSoar.riskyOpenCases.slice(0, 3).map((c: any) => `- High-risk IR case: ${this.irCaseLabel(c)}`),
+        ...data.hawkIr.riskyOpenCases.slice(0, 3).map((c: any) => `- High-risk IR case: ${this.irCaseLabel(c)}`),
         ...data.jira.slice(0, 5).map((issue) => `- Jira signal: ${this.jiraLabel(issue)}`),
         ...failedPipelines.map((pipeline) => `- Failed GitLab pipeline: ${pipeline.web_url || pipeline.id || "unknown pipeline"}`),
         ...failedRuns.map((run) => `- Failed GitHub workflow: ${run.html_url || run.name || run.id}`),
@@ -283,7 +283,7 @@ class CtoDailyCommandCenter {
       ...this.customerSignals(data.jitbit),
       "",
       "## 3b. Incident Response / Security Signals",
-      ...this.incidentResponseSignals(data.hawkSoar),
+      ...this.incidentResponseSignals(data.hawkIr),
       "",
       "## 4. Engineering Signals",
       ...this.engineeringSignals(data),
@@ -328,7 +328,7 @@ class CtoDailyCommandCenter {
     const bullets = [
       `- Calendar has ${data.calendar.length} event(s) today.`,
       `- Customer/support: ${data.jitbit.recent.length} recent ticket(s), ${data.jitbit.followups.length} follow-up candidate(s), ${data.jitbit.highPriority.length} high-priority open ticket(s).`,
-      `- IR: ${data.hawkSoar.caseCount} total case(s), ${data.hawkSoar.riskyOpenCases.length} high-risk unescalated, ${data.hawkSoar.activeNodes.length} active node(s).`,
+      `- IR: ${data.hawkIr.caseCount} total case(s), ${data.hawkIr.riskyOpenCases.length} high-risk unescalated, ${data.hawkIr.activeNodes.length} active node(s).`,
       `- Engineering: ${data.github.pullRequests.length} GitHub PR(s), ${data.gitlab.mergeRequests.length} GitLab MR(s), ${failedPipelines.length + failedRuns.length} failed pipeline/workflow signal(s).`,
       `- Product/roadmap: ${data.roadmaps.length} active roadmap(s) in scope.`,
       `- Work items: ${overdue.length} overdue, ${blocked.length} blocked, ${data.workItems.filter((item) => item.status === "waiting").length} waiting.`,
@@ -455,7 +455,7 @@ class CtoDailyCommandCenter {
         tags: ["cto-daily", "pipeline"],
       });
     }
-    for (const c of data.hawkSoar.riskyOpenCases.slice(0, 5)) {
+    for (const c of data.hawkIr.riskyOpenCases.slice(0, 5)) {
       const caseRid = c["@rid"] || c.rid || "unknown";
       const caseName = c.name || "(unnamed case)";
       const riskLevel = c.riskLevel || c["risk_level"] || "high";
@@ -474,8 +474,8 @@ class CtoDailyCommandCenter {
     return suggestions.slice(0, 12);
   }
 
-  private incidentResponseSignals(hawkSoar: BriefData["hawkSoar"]): string[] {
-    const { riskyOpenCases, caseCount, recentCases, activeNodes } = hawkSoar;
+  private incidentResponseSignals(hawkIr: BriefData["hawkIr"]): string[] {
+    const { riskyOpenCases, caseCount, recentCases, activeNodes } = hawkIr;
     return this.listOrFallback([
       `- Total open cases: ${caseCount}`,
       `- High-risk unescalated: ${riskyOpenCases.length} case(s) needing attention`,

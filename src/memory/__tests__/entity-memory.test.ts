@@ -60,8 +60,8 @@ describe("EntityMemory", () => {
   });
 
   it("getEntityByName finds by type and name", () => {
-    mem.upsertEntity({ type: "repo", name: "hawk-soar-cloud-v3" });
-    const found = mem.getEntityByName("repo", "hawk-soar-cloud-v3");
+    mem.upsertEntity({ type: "repo", name: "hawk-ir-cloud-v3" });
+    const found = mem.getEntityByName("repo", "hawk-ir-cloud-v3");
     expect(found).not.toBeNull();
     expect(found!.type).toBe("repo");
   });
