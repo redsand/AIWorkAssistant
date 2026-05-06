@@ -147,6 +147,14 @@ Example: `jira.issue.close` matches:
 | `hawk_ir.update_case_status` | High | Yes | No | Yes | Changes case workflow state |
 | `hawk_ir.update_case_risk` | High | Yes | No | Yes | Changes case prioritization |
 | `hawk_ir.deescalate_case` | High | Yes | No | Yes | Removes escalation (existing) |
+| `hawk_ir.merge_cases` | High | Yes | No | Yes | Merges duplicate case into canonical case |
+| `hawk_ir.rename_case` | Low | Yes | No | No | Cosmetic case name change |
+| `hawk_ir.update_case_details` | Medium | Yes | No | No | Updates case context/details |
+| `hawk_ir.set_case_categories` | Medium | Yes | No | No | Changes case classification |
+| `hawk_ir.add_ignore_label` | High | Yes | No | Yes | Suppresses future matching alerts |
+| `hawk_ir.delete_ignore_label` | High | Yes | No | Yes | Re-enables previously suppressed alerts |
+| `hawk_ir.get_case_categories` | Low | No | No | No | Reads available case categories |
+| `hawk_ir.get_case_labels` | Low | No | No | No | Reads label categories and ignore labels |
 
 ### Bulk/Destructive Operations
 | Action | Risk | Default | Notes |

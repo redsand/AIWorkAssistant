@@ -37,6 +37,7 @@ vi.mock("axios", () => {
   const mockCreate = vi.fn(() => ({
     get: vi.fn(),
     post: vi.fn(),
+    delete: vi.fn(),
     interceptors: { response: { use: vi.fn() } },
   }));
   return {
@@ -69,16 +70,19 @@ function createMockedClient(): {
   client: HawkIrClient;
   mockGet: ReturnType<typeof vi.fn>;
   mockPost: ReturnType<typeof vi.fn>;
+  mockDelete: ReturnType<typeof vi.fn>;
 } {
   const mockGet = vi.fn();
   const mockPost = vi.fn();
+  const mockDelete = vi.fn();
   vi.mocked(axios.create).mockReturnValue({
     get: mockGet,
     post: mockPost,
+    delete: mockDelete,
     interceptors: { response: { use: vi.fn() } },
   } as any);
   const client = new HawkIrClient();
-  return { client, mockGet, mockPost };
+  return { client, mockGet, mockPost, mockDelete };
 }
 
 // Helper to simulate server events on a mock WebSocket (uses EventEmitter pattern)
@@ -1087,6 +1091,159 @@ describe("HawkIrClient", () => {
 
       simulateMessage(ws, { cmd: "cases", route: "setOwner", status: true, data: {} });
       await promise;
+    });
+  });
+
+  describe("P2 case management tools", () => {
+    it("mergeCases should send mergeCase with source and target keys", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.mergeCases("635:1068", "#635:1069");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      const sentData = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(sentData.cmd).toBe("cases");
+      expect(sentData.route).toBe("mergeCase");
+      expect(sentData.source).toBe("#635:1068");
+      expect(sentData.target).toBe("#635:1069");
+      expect(sentData.case).toBeUndefined();
+      expect(sentData.data).toBeUndefined();
+
+      simulateMessage(ws, { cmd: "cases", route: "mergeCase", status: true, data: {} });
+      await promise;
+    });
+
+    it("renameCase should send setName with case and data", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.renameCase("635:1069", "Java RCE Scanning");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      const sentData = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(sentData.cmd).toBe("cases");
+      expect(sentData.route).toBe("setName");
+      expect(sentData.case).toBe("#635:1069");
+      expect(sentData.data).toBe("Java RCE Scanning");
+
+      simulateMessage(ws, { cmd: "cases", route: "setName", status: true, data: {} });
+      await promise;
+    });
+
+    it("updateCaseDetails should send setDetails with case and data", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.updateCaseDetails("635:1069", "Confirmed Tenable scanner.");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      const sentData = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(sentData.cmd).toBe("cases");
+      expect(sentData.route).toBe("setDetails");
+      expect(sentData.case).toBe("#635:1069");
+      expect(sentData.data).toBe("Confirmed Tenable scanner.");
+
+      simulateMessage(ws, { cmd: "cases", route: "setDetails", status: true, data: {} });
+      await promise;
+    });
+
+    it("setCaseCategories should send setCategory with categories array", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const categories = ["Vulnerability Scanner", "False Positive"];
+      const promise = client.setCaseCategories("635:1069", categories);
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      const sentData = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(sentData.cmd).toBe("cases");
+      expect(sentData.route).toBe("setCategory");
+      expect(sentData.case).toBe("#635:1069");
+      expect(sentData.data).toEqual(categories);
+
+      simulateMessage(ws, { cmd: "cases", route: "setCategory", status: true, data: {} });
+      await promise;
+    });
+
+    it("getCaseCategories should use REST GET", async () => {
+      const { client, mockGet } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      mockGet.mockResolvedValueOnce({ data: ["False Positive"] });
+
+      const result = await client.getCaseCategories();
+
+      expect(mockGet).toHaveBeenCalledWith("/api/cases/categories", {
+        params: undefined,
+        headers: { Cookie: "hawk_session=test" },
+      });
+      expect(result).toEqual(["False Positive"]);
+      expect(mockWsInstances.length).toBe(0);
+    });
+
+    it("getCaseLabels should use REST GET endpoints", async () => {
+      const { client, mockGet } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      mockGet
+        .mockResolvedValueOnce({ data: ["scanner"] })
+        .mockResolvedValueOnce({ data: [{ id: "1", label: "tenable" }] });
+
+      const result = await client.getCaseLabels();
+
+      expect(mockGet).toHaveBeenNthCalledWith(1, "/api/cases/labels/category", {
+        params: undefined,
+        headers: { Cookie: "hawk_session=test" },
+      });
+      expect(mockGet).toHaveBeenNthCalledWith(2, "/api/cases/labels/ignore", {
+        params: undefined,
+        headers: { Cookie: "hawk_session=test" },
+      });
+      expect(result).toEqual({
+        categories: ["scanner"],
+        ignoreLabels: [{ id: "1", label: "tenable" }],
+      });
+      expect(mockWsInstances.length).toBe(0);
+    });
+
+    it("addIgnoreLabel should use REST POST", async () => {
+      const { client, mockPost } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      mockPost.mockResolvedValueOnce({ data: { status: true } });
+
+      await client.addIgnoreLabel("tenable", "scanner");
+
+      expect(mockPost).toHaveBeenCalledWith(
+        "/api/cases/labels/ignore",
+        { label: "tenable", category: "scanner" },
+        { headers: { Cookie: "hawk_session=test" } },
+      );
+      expect(mockWsInstances.length).toBe(0);
+    });
+
+    it("deleteIgnoreLabel should use REST DELETE", async () => {
+      const { client, mockDelete } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      mockDelete.mockResolvedValueOnce({ data: { status: true } });
+
+      await client.deleteIgnoreLabel("label 1");
+
+      expect(mockDelete).toHaveBeenCalledWith(
+        "/api/cases/labels/ignore/label%201",
+        { headers: { Cookie: "hawk_session=test" } },
+      );
+      expect(mockWsInstances.length).toBe(0);
     });
   });
 

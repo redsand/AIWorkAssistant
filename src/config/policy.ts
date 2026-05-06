@@ -382,6 +382,56 @@ export const DEFAULT_POLICIES: PolicyRule[] = [
     description: "Search GitHub code",
   },
 
+  // ===== HAWK IR: CASE READS ALLOWED, CASE WRITES REQUIRE APPROVAL =====
+  {
+    pattern: "hawk_ir.get_case_categories",
+    riskLevel: "low",
+    defaultResult: "allow",
+    description: "Read HAWK IR case categories",
+  },
+  {
+    pattern: "hawk_ir.get_case_labels",
+    riskLevel: "low",
+    defaultResult: "allow",
+    description: "Read HAWK IR case labels and ignore labels",
+  },
+  {
+    pattern: "hawk_ir.merge_cases",
+    riskLevel: "high",
+    defaultResult: "approval_required",
+    description: "Merge duplicate HAWK IR cases",
+  },
+  {
+    pattern: "hawk_ir.rename_case",
+    riskLevel: "low",
+    defaultResult: "approval_required",
+    description: "Rename HAWK IR case",
+  },
+  {
+    pattern: "hawk_ir.update_case_details",
+    riskLevel: "medium",
+    defaultResult: "approval_required",
+    description: "Update HAWK IR case details",
+  },
+  {
+    pattern: "hawk_ir.set_case_categories",
+    riskLevel: "medium",
+    defaultResult: "approval_required",
+    description: "Set HAWK IR case categories",
+  },
+  {
+    pattern: "hawk_ir.add_ignore_label",
+    riskLevel: "high",
+    defaultResult: "approval_required",
+    description: "Add HAWK IR suppression/ignore label",
+  },
+  {
+    pattern: "hawk_ir.delete_ignore_label",
+    riskLevel: "high",
+    defaultResult: "approval_required",
+    description: "Delete HAWK IR suppression/ignore label",
+  },
+
   // ===== ROADMAP: ALL ALLOWED =====
   {
     pattern: "roadmap.read",

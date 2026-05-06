@@ -500,6 +500,119 @@ class GuardrailsRegistry {
       impacts: ["hawk_ir", "security_incidents", "workflow"],
     });
 
+    // HAWK IR case merge
+    this.registerAction({
+      id: "hawk_ir.merge_cases",
+      category: ActionCategory.SECURITY_CHANGE,
+      riskLevel: RiskLevel.HIGH,
+      operation: "hawk_ir.merge_cases",
+      description: "Merge a duplicate HAWK IR source case into a canonical target case",
+      requiresApproval: true,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 30000,
+      rateLimits: { maxPerHour: 10, maxPerDay: 30 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "soc"],
+      requiresConfirmation: true,
+      requiresJustification: true,
+      impacts: ["hawk_ir", "security_incidents", "case_history"],
+    });
+
+    // HAWK IR case rename
+    this.registerAction({
+      id: "hawk_ir.rename_case",
+      category: ActionCategory.DATA_MODIFICATION,
+      riskLevel: RiskLevel.LOW,
+      operation: "hawk_ir.rename_case",
+      description: "Rename a HAWK IR case",
+      requiresApproval: true,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 5000,
+      rateLimits: { maxPerHour: 30, maxPerDay: 100 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "soc", "analyst"],
+      requiresConfirmation: false,
+      requiresJustification: false,
+      impacts: ["hawk_ir", "security_incidents"],
+    });
+
+    // HAWK IR case details
+    this.registerAction({
+      id: "hawk_ir.update_case_details",
+      category: ActionCategory.DATA_MODIFICATION,
+      riskLevel: RiskLevel.MEDIUM,
+      operation: "hawk_ir.update_case_details",
+      description: "Update the details/context field of a HAWK IR case",
+      requiresApproval: true,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 5000,
+      rateLimits: { maxPerHour: 30, maxPerDay: 100 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "soc", "analyst"],
+      requiresConfirmation: true,
+      requiresJustification: false,
+      impacts: ["hawk_ir", "security_incidents"],
+    });
+
+    // HAWK IR case categories
+    this.registerAction({
+      id: "hawk_ir.set_case_categories",
+      category: ActionCategory.DATA_MODIFICATION,
+      riskLevel: RiskLevel.MEDIUM,
+      operation: "hawk_ir.set_case_categories",
+      description: "Set categories on a HAWK IR case",
+      requiresApproval: true,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 5000,
+      rateLimits: { maxPerHour: 30, maxPerDay: 100 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "soc", "analyst"],
+      requiresConfirmation: true,
+      requiresJustification: false,
+      impacts: ["hawk_ir", "security_incidents", "reporting"],
+    });
+
+    // HAWK IR ignore labels
+    this.registerAction({
+      id: "hawk_ir.add_ignore_label",
+      category: ActionCategory.SECURITY_CHANGE,
+      riskLevel: RiskLevel.HIGH,
+      operation: "hawk_ir.add_ignore_label",
+      description: "Add a HAWK IR suppression/ignore label for false positive reduction",
+      requiresApproval: true,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 30000,
+      rateLimits: { maxPerHour: 10, maxPerDay: 30 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "soc"],
+      requiresConfirmation: true,
+      requiresJustification: true,
+      impacts: ["hawk_ir", "security_incidents", "alert_suppression"],
+    });
+
+    this.registerAction({
+      id: "hawk_ir.delete_ignore_label",
+      category: ActionCategory.SECURITY_CHANGE,
+      riskLevel: RiskLevel.HIGH,
+      operation: "hawk_ir.delete_ignore_label",
+      description: "Delete a HAWK IR suppression/ignore label, re-enabling alerts",
+      requiresApproval: true,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 30000,
+      rateLimits: { maxPerHour: 10, maxPerDay: 30 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "soc"],
+      requiresConfirmation: true,
+      requiresJustification: true,
+      impacts: ["hawk_ir", "security_incidents", "alert_suppression"],
+    });
+
     // HAWK IR quarantine
     this.registerAction({
       id: "hawk_ir.quarantine_host",

@@ -108,6 +108,28 @@ describe("engineering tool registration", () => {
   });
 });
 
+describe("HAWK IR P2 tool registration", () => {
+  it("registers case management and ignore-label tools", () => {
+    const expected = [
+      ["hawk_ir.merge_cases", "high"],
+      ["hawk_ir.rename_case", "low"],
+      ["hawk_ir.update_case_details", "medium"],
+      ["hawk_ir.set_case_categories", "medium"],
+      ["hawk_ir.add_ignore_label", "high"],
+      ["hawk_ir.delete_ignore_label", "high"],
+      ["hawk_ir.get_case_categories", "low"],
+      ["hawk_ir.get_case_labels", "low"],
+    ] as const;
+
+    for (const [name, riskLevel] of expected) {
+      const tool = getToolByName(name, "productivity");
+      expect(tool).toBeDefined();
+      expect(tool?.riskLevel).toBe(riskLevel);
+      expect(tool?.actionType).toBe(name);
+    }
+  });
+});
+
 describe("getPlatformForTool", () => {
   it("uses explicit platform field when set", () => {
     const tool: Tool = {

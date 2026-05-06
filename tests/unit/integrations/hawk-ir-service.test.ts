@@ -88,6 +88,14 @@ describe("HawkIrService write operations", () => {
       addCaseNote: vi.fn().mockResolvedValue({ status: true }),
       updateCaseStatus: vi.fn().mockResolvedValue({ status: true }),
       updateCaseRisk: vi.fn().mockResolvedValue({ status: true }),
+      mergeCases: vi.fn().mockResolvedValue({ status: true }),
+      renameCase: vi.fn().mockResolvedValue({ status: true }),
+      updateCaseDetails: vi.fn().mockResolvedValue({ status: true }),
+      setCaseCategories: vi.fn().mockResolvedValue({ status: true }),
+      addIgnoreLabel: vi.fn().mockResolvedValue({ status: true }),
+      deleteIgnoreLabel: vi.fn().mockResolvedValue({ status: true }),
+      getCaseCategories: vi.fn().mockResolvedValue(["False Positive"]),
+      getCaseLabels: vi.fn().mockResolvedValue({ categories: [], ignoreLabels: [] }),
     } as unknown as HawkIrClient;
     service = new HawkIrService(mockClient);
   });
@@ -134,6 +142,61 @@ describe("HawkIrService write operations", () => {
         await service.updateCaseRisk("#635:1069", level);
       }
       expect(mockClient.updateCaseRisk).toHaveBeenCalledTimes(5);
+    });
+  });
+
+  describe("P2 case management operations", () => {
+    it("mergeCases validates distinct source and target", async () => {
+      await service.mergeCases("#635:1068", "#635:1069");
+      expect(mockClient.mergeCases).toHaveBeenCalledWith("#635:1068", "#635:1069");
+
+      await expect(service.mergeCases("#635:1069", "635:1069"))
+        .rejects.toThrow("must be different");
+    });
+
+    it("renameCase requires a non-empty name", async () => {
+      await service.renameCase("#635:1069", "Java RCE Scanning");
+      expect(mockClient.renameCase).toHaveBeenCalledWith("#635:1069", "Java RCE Scanning");
+
+      await expect(service.renameCase("#635:1069", "  "))
+        .rejects.toThrow("name is required");
+    });
+
+    it("updateCaseDetails requires non-empty details", async () => {
+      await service.updateCaseDetails("#635:1069", "Confirmed scanner.");
+      expect(mockClient.updateCaseDetails).toHaveBeenCalledWith("#635:1069", "Confirmed scanner.");
+
+      await expect(service.updateCaseDetails("#635:1069", ""))
+        .rejects.toThrow("details is required");
+    });
+
+    it("setCaseCategories normalizes and validates categories", async () => {
+      await service.setCaseCategories("#635:1069", [" False Positive ", "Scanner"]);
+      expect(mockClient.setCaseCategories).toHaveBeenCalledWith("#635:1069", ["False Positive", "Scanner"]);
+
+      await expect(service.setCaseCategories("#635:1069", []))
+        .rejects.toThrow("categories must be a non-empty array");
+    });
+
+    it("addIgnoreLabel trims label and optional category", async () => {
+      await service.addIgnoreLabel(" tenable ", " scanner ");
+      expect(mockClient.addIgnoreLabel).toHaveBeenCalledWith("tenable", "scanner");
+
+      await expect(service.addIgnoreLabel(" "))
+        .rejects.toThrow("label is required");
+    });
+
+    it("deleteIgnoreLabel trims and validates labelId", async () => {
+      await service.deleteIgnoreLabel(" label-1 ");
+      expect(mockClient.deleteIgnoreLabel).toHaveBeenCalledWith("label-1");
+
+      await expect(service.deleteIgnoreLabel(""))
+        .rejects.toThrow("labelId is required");
+    });
+
+    it("delegates read-only category and label discovery", async () => {
+      await expect(service.getCaseCategories()).resolves.toEqual(["False Positive"]);
+      await expect(service.getCaseLabels()).resolves.toEqual({ categories: [], ignoreLabels: [] });
     });
   });
 });

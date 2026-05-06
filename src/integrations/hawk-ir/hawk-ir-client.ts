@@ -149,6 +149,13 @@ export class HawkIrClient {
     return resp.data;
   }
 
+  private async httpDelete<T>(path: string): Promise<T> {
+    this.ensureConfigured();
+    const headers = await this.sessionHeaders();
+    const resp = await this.http.delete<T>(path, { headers });
+    return resp.data;
+  }
+
   // === WebSocket helper (request-response) ===
 
   /**
@@ -288,6 +295,31 @@ export class HawkIrClient {
     return Array.isArray(result) ? result : [];
   }
 
+  async getCaseCategories(): Promise<any[]> {
+    return this.getCategories();
+  }
+
+  async getCaseLabels(): Promise<{ categories: any[]; ignoreLabels: any[] }> {
+    const [categories, ignoreLabels] = await Promise.all([
+      this.httpGet<any[]>("/api/cases/labels/category"),
+      this.httpGet<any[]>("/api/cases/labels/ignore"),
+    ]);
+    return {
+      categories: Array.isArray(categories) ? categories : [],
+      ignoreLabels: Array.isArray(ignoreLabels) ? ignoreLabels : [],
+    };
+  }
+
+  async addIgnoreLabel(label: string, category?: string): Promise<any> {
+    const data: Record<string, unknown> = { label };
+    if (category) data.category = category;
+    return this.httpPost("/api/cases/labels/ignore", data);
+  }
+
+  async deleteIgnoreLabel(labelId: string): Promise<any> {
+    return this.httpDelete(`/api/cases/labels/ignore/${encodeURIComponent(labelId)}`);
+  }
+
   async deescalateCase(caseId: string, reason: string, note?: string): Promise<any> {
     return this.httpPost(`/api/cases/deescalate/${caseId.replace(/^#/, "")}`, { reason, note });
   }
@@ -325,6 +357,31 @@ export class HawkIrClient {
     this.ensureConfigured();
     const id = caseId.replace(/^#/, "");
     return this.wsRequest({ cmd: "cases", route: "setOwner", case: "#" + id, data: ownerId });
+  }
+
+  async mergeCases(sourceCaseId: string, targetCaseId: string): Promise<any> {
+    this.ensureConfigured();
+    const source = "#" + sourceCaseId.replace(/^#/, "");
+    const target = "#" + targetCaseId.replace(/^#/, "");
+    return this.wsRequest({ cmd: "cases", route: "mergeCase", source, target });
+  }
+
+  async renameCase(caseId: string, name: string): Promise<any> {
+    this.ensureConfigured();
+    const id = caseId.replace(/^#/, "");
+    return this.wsRequest({ cmd: "cases", route: "setName", case: "#" + id, data: name });
+  }
+
+  async updateCaseDetails(caseId: string, details: string): Promise<any> {
+    this.ensureConfigured();
+    const id = caseId.replace(/^#/, "");
+    return this.wsRequest({ cmd: "cases", route: "setDetails", case: "#" + id, data: details });
+  }
+
+  async setCaseCategories(caseId: string, categories: string[]): Promise<any> {
+    this.ensureConfigured();
+    const id = caseId.replace(/^#/, "");
+    return this.wsRequest({ cmd: "cases", route: "setCategory", case: "#" + id, data: categories });
   }
 
   // === Explore (REST) ===

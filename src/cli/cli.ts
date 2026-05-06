@@ -9,6 +9,8 @@ import { loadEnv } from "../config/env";
 import { OllamaLauncher } from "../integrations/ollama-launcher";
 import type { LaunchOptions } from "../integrations/ollama-launcher";
 import { ticketToTaskGenerator, TicketToTaskAgent } from "../engineering/ticket-to-task";
+import { ticketBridge } from "../integrations/ticket-bridge/ticket-bridge";
+import { spawn } from "child_process";
 import axios from "axios";
 import * as fs from "fs";
 
@@ -317,6 +319,77 @@ async function generateTicketToTaskPrompt(
   }
 }
 
+async function runTicketToPrompt(
+  sourceType: "github" | "jira" | "roadmap",
+  sourceId: string,
+  options: {
+    output?: string;
+    outputDir?: string;
+    milestone?: string;
+    runCodex?: boolean;
+    runOpencode?: boolean;
+    includeCodebase?: boolean;
+    noCodebase?: boolean;
+    maxFiles?: string;
+  },
+): Promise<void> {
+  const ctx = {
+    includeCodebaseIndex: options.noCodebase ? false : (options.includeCodebase ?? true),
+    maxFiles: options.maxFiles ? Number(options.maxFiles) : 10,
+  };
+
+  if (sourceType === "roadmap" && options.outputDir) {
+    try {
+      const results = await ticketBridge.generateBatch(
+        sourceId,
+        options.milestone,
+        options.outputDir,
+        ctx,
+      );
+      console.log(`Generated ${results.length} prompt(s) in ${options.outputDir}:`);
+      for (const r of results) {
+        console.log(`  ${r.file} — ${r.title}`);
+      }
+    } catch (err) {
+      console.error("Failed:", err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+    return;
+  }
+
+  try {
+    const generated = await ticketBridge.generatePrompt(
+      { type: sourceType, id: sourceId },
+      ctx,
+    );
+
+    if (options.output) {
+      fs.writeFileSync(options.output, generated.prompt, "utf-8");
+      console.log(`Wrote prompt to ${options.output}`);
+      console.log(`  Files referenced: ${generated.filesReferenced.length}`);
+      console.log(`  Tokens estimate:  ${generated.tokensEstimate}`);
+      return;
+    }
+
+    if (options.runCodex || options.runOpencode) {
+      const provider = options.runCodex ? "codex" : "opencode";
+      console.log(`Piping prompt to ${provider}...\n`);
+      const child = spawn(
+        provider,
+        ["--prompt", generated.prompt],
+        { stdio: "inherit", shell: true },
+      );
+      child.on("exit", (code) => process.exit(code ?? 0));
+      return;
+    }
+
+    process.stdout.write(generated.prompt);
+  } catch (err) {
+    console.error("Failed:", err instanceof Error ? err.message : err);
+    process.exit(1);
+  }
+}
+
 // ==================== Helper: launch provider ====================
 
 const launcher = new OllamaLauncher();
@@ -422,6 +495,57 @@ program
   .option("--max-codebase-files <number>", "Maximum relevant files to include", "10")
   .action(async (issueNumber, options) => {
     await generateTicketToTaskPrompt(issueNumber, options);
+  });
+
+const ttpCmd = program
+  .command("ticket-to-prompt")
+  .description(
+    "Generate a coding-agent implementation prompt from a ticket (GitHub issue, Jira, or roadmap item)",
+  );
+
+ttpCmd
+  .command("github <repoAndIssue>")
+  .description(
+    'Generate prompt from a GitHub issue. Format: "owner/repo#25" or "owner/repo 25"',
+  )
+  .option("--output <file>", "Write prompt to a file")
+  .option("--run-codex", "Pipe prompt directly to Codex CLI")
+  .option("--run-opencode", "Pipe prompt directly to OpenCode CLI")
+  .option("--include-codebase", "Include codebase file context")
+  .option("--no-codebase", "Skip codebase file context")
+  .option("--max-files <number>", "Max codebase files to include", "10")
+  .action(async (repoAndIssue: string, opts) => {
+    await runTicketToPrompt("github", repoAndIssue, opts);
+  });
+
+ttpCmd
+  .command("jira <key>")
+  .description("Generate prompt from a Jira issue (e.g., PROJ-123)")
+  .option("--output <file>", "Write prompt to a file")
+  .option("--run-codex", "Pipe prompt directly to Codex CLI")
+  .option("--run-opencode", "Pipe prompt directly to OpenCode CLI")
+  .option("--include-codebase", "Include codebase file context")
+  .option("--no-codebase", "Skip codebase file context")
+  .option("--max-files <number>", "Max codebase files to include", "10")
+  .action(async (key: string, opts) => {
+    await runTicketToPrompt("jira", key, opts);
+  });
+
+ttpCmd
+  .command("roadmap <id>")
+  .description(
+    "Generate prompt from a roadmap item UUID, or batch-generate for a milestone",
+  )
+  .option("--milestone <name>", "Filter by milestone name (for batch mode)")
+  .option("--output <file>", "Write prompt to a file (single item)")
+  .option("--output-dir <dir>", "Write prompts to a directory (batch mode)")
+  .option("--run-codex", "Pipe prompt directly to Codex CLI")
+  .option("--run-opencode", "Pipe prompt directly to OpenCode CLI")
+  .option("--include-codebase", "Include codebase file context")
+  .option("--no-codebase", "Skip codebase file context")
+  .option("--max-files <number>", "Max codebase files to include", "10")
+  .action(async (id: string, opts) => {
+    await runTicketToPrompt("roadmap", id, opts);
   });
 
 // Management commands

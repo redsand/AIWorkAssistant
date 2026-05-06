@@ -45,6 +45,7 @@ const PLATFORM_PREFIX_MAP: Record<string, Platform> = {
   hawk_ir: "hawk-ir",
   discover: "cross-platform",
   code_review: "cross-platform",
+  ticket_bridge: "cross-platform",
 };
 
 export function getPlatformForToolName(toolName: string): Platform {
@@ -4583,6 +4584,129 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "medium",
   },
   {
+    name: "hawk_ir.merge_cases",
+    description:
+      "Merge a duplicate HAWK IR source case into a canonical target case. High risk — source case is closed/redirected and requires approval.",
+    params: {
+      sourceCaseId: {
+        type: "string",
+        description: 'Source case ID to merge from (e.g., "#635:1068")',
+        required: true,
+      },
+      targetCaseId: {
+        type: "string",
+        description: 'Target case ID to merge into (e.g., "#635:1069")',
+        required: true,
+      },
+    },
+    actionType: "hawk_ir.merge_cases",
+    riskLevel: "high",
+  },
+  {
+    name: "hawk_ir.rename_case",
+    description:
+      "Rename a HAWK IR case. Low risk cosmetic change, but still requires approval.",
+    params: {
+      caseId: {
+        type: "string",
+        description: 'HAWK IR case ID (e.g., "#635:1069")',
+        required: true,
+      },
+      name: {
+        type: "string",
+        description: "New case name",
+        required: true,
+      },
+    },
+    actionType: "hawk_ir.rename_case",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.update_case_details",
+    description:
+      "Update the details/context field of a HAWK IR case. Medium risk — modifies case record and requires approval.",
+    params: {
+      caseId: {
+        type: "string",
+        description: 'HAWK IR case ID (e.g., "#635:1069")',
+        required: true,
+      },
+      details: {
+        type: "string",
+        description: "Case details text",
+        required: true,
+      },
+    },
+    actionType: "hawk_ir.update_case_details",
+    riskLevel: "medium",
+  },
+  {
+    name: "hawk_ir.set_case_categories",
+    description:
+      "Set categories on a HAWK IR case. Use hawk_ir.get_case_categories first to discover valid categories.",
+    params: {
+      caseId: {
+        type: "string",
+        description: 'HAWK IR case ID (e.g., "#635:1069")',
+        required: true,
+      },
+      categories: {
+        type: "array",
+        description: 'Array of category names, e.g. ["Vulnerability Scanner", "False Positive"]',
+        required: true,
+      },
+    },
+    actionType: "hawk_ir.set_case_categories",
+    riskLevel: "medium",
+  },
+  {
+    name: "hawk_ir.add_ignore_label",
+    description:
+      "Add a suppression/ignore label to reduce future false positive noise. High risk — suppresses matching alerts and requires approval.",
+    params: {
+      label: {
+        type: "string",
+        description: "Label text to add to the ignore list",
+        required: true,
+      },
+      category: {
+        type: "string",
+        description: "Optional label category",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.add_ignore_label",
+    riskLevel: "high",
+  },
+  {
+    name: "hawk_ir.delete_ignore_label",
+    description:
+      "Remove a suppression/ignore label, re-enabling alerts that were previously suppressed. High risk — requires approval.",
+    params: {
+      labelId: {
+        type: "string",
+        description: "Ignore label ID to remove",
+        required: true,
+      },
+    },
+    actionType: "hawk_ir.delete_ignore_label",
+    riskLevel: "high",
+  },
+  {
+    name: "hawk_ir.get_case_categories",
+    description: "Get available HAWK IR case categories before setting case categories.",
+    params: {},
+    actionType: "hawk_ir.get_case_categories",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.get_case_labels",
+    description: "Get HAWK IR ignore labels and label categories.",
+    params: {},
+    actionType: "hawk_ir.get_case_labels",
+    riskLevel: "low",
+  },
+  {
     name: "hawk_ir.quarantine_host",
     description:
       "Quarantine a host/IP in HAWK IR. Blocks network access for the specified target and associates it with a case. Critical risk — requires MFA, approval, and dry run.",
@@ -5432,6 +5556,42 @@ const ENGINEERING_TOOLS: Tool[] = [
     actionType: "engineering.ticket_to_task",
     riskLevel: "low",
   },
+  {
+    name: "ticket_bridge.generate_prompt",
+    description:
+      "Generate an agent-ready implementation prompt from a GitHub issue, Jira ticket, or roadmap item. Use when handing off a ticket to a coding agent or preparing a detailed implementation prompt.",
+    params: {
+      sourceType: {
+        type: "string",
+        description:
+          "Ticket source type: 'github', 'jira', or 'roadmap'",
+        required: true,
+      },
+      sourceId: {
+        type: "string",
+        description:
+          "Ticket identifier: 'owner/repo#number' for GitHub, 'PROJECT-123' for Jira, or UUID for roadmap",
+        required: true,
+      },
+      includeCodebaseIndex: {
+        type: "boolean",
+        description: "Include relevant file paths from codebase index",
+        required: false,
+      },
+      includeArchitecture: {
+        type: "boolean",
+        description: "Include architecture constraints from docs",
+        required: false,
+      },
+      maxFiles: {
+        type: "number",
+        description: "Max files to include as context (default: 10)",
+        required: false,
+      },
+    },
+    actionType: "ticket_bridge.generate",
+    riskLevel: "low",
+  },
 ];
 
 /**
@@ -5536,6 +5696,8 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_log_histogram")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_saved_searches")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_artefacts")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_case_categories")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_case_labels")!,
 
   // Jitbit extended
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.update_ticket")!,

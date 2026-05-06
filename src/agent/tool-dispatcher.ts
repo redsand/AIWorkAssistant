@@ -48,6 +48,7 @@ import type { EntityType, FindEntitiesQuery } from "../memory/entity-types";
 import { lspManager } from "../integrations/lsp/index.js";
 import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
 import { reviewAssistant } from "../code-review/review-assistant";
+import { ticketBridge } from "../integrations/ticket-bridge/ticket-bridge";
 
 export interface ToolCallResult {
   success: boolean;
@@ -2878,6 +2879,44 @@ async function handleEngineeringTicketToTask(
   }
 }
 
+async function handleTicketBridgeGeneratePrompt(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const sourceType = params.sourceType as string;
+  const sourceId = params.sourceId as string;
+
+  if (!sourceType || !sourceId) {
+    return { success: false, error: "sourceType and sourceId are required" };
+  }
+
+  const validTypes = ["github", "jira", "roadmap"];
+  if (!validTypes.includes(sourceType)) {
+    return {
+      success: false,
+      error: `sourceType must be one of: ${validTypes.join(", ")}`,
+    };
+  }
+
+  try {
+    const generated = await ticketBridge.generatePrompt(
+      { type: sourceType as "github" | "jira" | "roadmap", id: sourceId },
+      {
+        includeCodebaseIndex:
+          (params.includeCodebaseIndex as boolean | undefined) ?? true,
+        includeArchitecture:
+          (params.includeArchitecture as boolean | undefined) ?? true,
+        maxFiles: (params.maxFiles as number | undefined) ?? 10,
+      },
+    );
+    return { success: true, data: generated };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
 async function handleCodexRun(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -4872,6 +4911,104 @@ async function handleHawkIrAssignCase(
   return { success: true, data };
 }
 
+async function handleHawkIrMergeCases(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const sourceCaseId = params.sourceCaseId as string;
+  const targetCaseId = params.targetCaseId as string;
+  if (!sourceCaseId) return { success: false, error: "sourceCaseId is required" };
+  if (!targetCaseId) return { success: false, error: "targetCaseId is required" };
+  const data = await hawkIrService.mergeCases(sourceCaseId, targetCaseId);
+  return { success: true, data };
+}
+
+async function handleHawkIrRenameCase(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const caseId = params.caseId as string;
+  const name = params.name as string;
+  if (!caseId) return { success: false, error: "caseId is required" };
+  if (!name) return { success: false, error: "name is required" };
+  const data = await hawkIrService.renameCase(caseId, name);
+  return { success: true, data };
+}
+
+async function handleHawkIrUpdateCaseDetails(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const caseId = params.caseId as string;
+  const details = params.details as string;
+  if (!caseId) return { success: false, error: "caseId is required" };
+  if (!details) return { success: false, error: "details is required" };
+  const data = await hawkIrService.updateCaseDetails(caseId, details);
+  return { success: true, data };
+}
+
+async function handleHawkIrSetCaseCategories(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const caseId = params.caseId as string;
+  const categories = params.categories as string[];
+  if (!caseId) return { success: false, error: "caseId is required" };
+  if (!Array.isArray(categories)) {
+    return { success: false, error: "categories must be an array" };
+  }
+  const data = await hawkIrService.setCaseCategories(caseId, categories);
+  return { success: true, data };
+}
+
+async function handleHawkIrAddIgnoreLabel(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const label = params.label as string;
+  if (!label) return { success: false, error: "label is required" };
+  const data = await hawkIrService.addIgnoreLabel(label, params.category as string | undefined);
+  return { success: true, data };
+}
+
+async function handleHawkIrDeleteIgnoreLabel(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const labelId = params.labelId as string;
+  if (!labelId) return { success: false, error: "labelId is required" };
+  const data = await hawkIrService.deleteIgnoreLabel(labelId);
+  return { success: true, data };
+}
+
+async function handleHawkIrGetCaseCategories(): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.getCaseCategories();
+  return { success: true, data };
+}
+
+async function handleHawkIrGetCaseLabels(): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.getCaseLabels();
+  return { success: true, data };
+}
+
 async function handleHawkIrQuarantineHost(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -5486,6 +5623,14 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "hawk_ir.update_case_risk": handleHawkIrUpdateCaseRisk,
   "hawk_ir.escalate_case": handleHawkIrEscalateCase,
   "hawk_ir.assign_case": handleHawkIrAssignCase,
+  "hawk_ir.merge_cases": handleHawkIrMergeCases,
+  "hawk_ir.rename_case": handleHawkIrRenameCase,
+  "hawk_ir.update_case_details": handleHawkIrUpdateCaseDetails,
+  "hawk_ir.set_case_categories": handleHawkIrSetCaseCategories,
+  "hawk_ir.add_ignore_label": handleHawkIrAddIgnoreLabel,
+  "hawk_ir.delete_ignore_label": handleHawkIrDeleteIgnoreLabel,
+  "hawk_ir.get_case_categories": handleHawkIrGetCaseCategories,
+  "hawk_ir.get_case_labels": handleHawkIrGetCaseLabels,
   "hawk_ir.quarantine_host": handleHawkIrQuarantineHost,
   "hawk_ir.unquarantine_host": handleHawkIrUnquarantineHost,
   "hawk_ir.search_logs": handleHawkIrSearchLogs,
@@ -5551,6 +5696,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "engineering.scaffolding_plan": handleEngineeringScaffoldingPlan,
   "engineering.jira_tickets": handleEngineeringJiraTickets,
   "engineering.ticket_to_task": handleEngineeringTicketToTask,
+  "ticket_bridge.generate_prompt": handleTicketBridgeGeneratePrompt,
 
   "system.approve_action": handleApproveAction,
   "system.reject_action": handleRejectAction,
@@ -5659,6 +5805,8 @@ const SYSTEM_TOOLS = new Set([
   "hawk_ir.get_log_histogram",
   "hawk_ir.get_saved_searches",
   "hawk_ir.get_artefacts",
+  "hawk_ir.get_case_categories",
+  "hawk_ir.get_case_labels",
   "calendar.get_event",
 ]);
 

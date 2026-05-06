@@ -139,6 +139,14 @@ export class HawkIrService {
     return this.client.deescalateCase(caseId, reason, note);
   }
 
+  async getCaseCategories(): Promise<any[]> {
+    return this.client.getCaseCategories();
+  }
+
+  async getCaseLabels(): Promise<{ categories: any[]; ignoreLabels: any[] }> {
+    return this.client.getCaseLabels();
+  }
+
   // === Case Management (Write) ===
 
   async addCaseNote(caseId: string, body: string): Promise<any> {
@@ -194,6 +202,58 @@ export class HawkIrService {
       throw new Error("ownerId is required and cannot be empty");
     }
     return this.client.assignCase(caseId, ownerId);
+  }
+
+  async mergeCases(sourceCaseId: string, targetCaseId: string): Promise<any> {
+    if (!sourceCaseId || !sourceCaseId.trim()) {
+      throw new Error("sourceCaseId is required");
+    }
+    if (!targetCaseId || !targetCaseId.trim()) {
+      throw new Error("targetCaseId is required");
+    }
+    if (sourceCaseId.replace(/^#/, "") === targetCaseId.replace(/^#/, "")) {
+      throw new Error("sourceCaseId and targetCaseId must be different");
+    }
+    return this.client.mergeCases(sourceCaseId, targetCaseId);
+  }
+
+  async renameCase(caseId: string, name: string): Promise<any> {
+    if (!name || !name.trim()) {
+      throw new Error("name is required and cannot be empty");
+    }
+    return this.client.renameCase(caseId, name);
+  }
+
+  async updateCaseDetails(caseId: string, details: string): Promise<any> {
+    if (!details || !details.trim()) {
+      throw new Error("details is required and cannot be empty");
+    }
+    return this.client.updateCaseDetails(caseId, details);
+  }
+
+  async setCaseCategories(caseId: string, categories: string[]): Promise<any> {
+    if (!Array.isArray(categories) || categories.length === 0) {
+      throw new Error("categories must be a non-empty array");
+    }
+    const normalized = categories.map((c) => String(c).trim()).filter(Boolean);
+    if (normalized.length === 0) {
+      throw new Error("categories must contain at least one non-empty value");
+    }
+    return this.client.setCaseCategories(caseId, normalized);
+  }
+
+  async addIgnoreLabel(label: string, category?: string): Promise<any> {
+    if (!label || !label.trim()) {
+      throw new Error("label is required and cannot be empty");
+    }
+    return this.client.addIgnoreLabel(label.trim(), category?.trim() || undefined);
+  }
+
+  async deleteIgnoreLabel(labelId: string): Promise<any> {
+    if (!labelId || !labelId.trim()) {
+      throw new Error("labelId is required and cannot be empty");
+    }
+    return this.client.deleteIgnoreLabel(labelId.trim());
   }
 
   async quarantineHost(caseId: string, target: string, options?: { type?: string; expires?: string }): Promise<any> {
