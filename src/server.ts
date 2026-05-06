@@ -29,6 +29,7 @@ import { codeReviewRoutes } from "./routes/code-review";
 import { pushSubscriptionRoutes } from "./routes/push-subscriptions";
 import { pushAcknowledgeRoutes } from "./routes/push-acknowledge";
 import { initPushDispatcher } from "./push/dispatcher";
+import { toolsRoutes } from "./routes/tools";
 import {
   authMiddleware,
   isAuthConfigured,
@@ -96,6 +97,7 @@ export async function buildServer() {
   await server.register(codeReviewRoutes, { prefix: "/api/code-review" });
   await server.register(pushSubscriptionRoutes, { prefix: "/api" });
   await server.register(pushAcknowledgeRoutes, { prefix: "/api" });
+  await server.register(toolsRoutes, { prefix: "/api" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 

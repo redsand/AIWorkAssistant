@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Capabilities — AI Work Assistant</title>
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#1a1a2e" />
+    <link rel="stylesheet" href="/css/capabilities.css" />
+  </head>
+  <body>
+    <div class="page">
+
+      <!-- Header -->
+      <div class="cap-header">
+        <div class="cap-header-left">
+          <a href="/" class="back-link">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 18 9 12 15 6"/>
+            </svg>
+            Back to Assistant
+          </a>
+          <div>
+            <div class="cap-title">🔍 Capabilities</div>
+            <div class="cap-subtitle">Available agents, tools, and integrations</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="error-banner" class="error-msg" style="display:none"></div>
+
+      <!-- Stats bar -->
+      <div class="stats-bar">
+        <div class="stat-chip">
+          <span class="stat-value" id="stat-agents">—</span>
+          <span class="stat-label">Agent Modes</span>
+        </div>
+        <div class="stat-chip">
+          <span class="stat-value" id="stat-tools">—</span>
+          <span class="stat-label">Total Tools</span>
+        </div>
+        <div class="stat-chip">
+          <span class="stat-value" id="stat-cats">—</span>
+          <span class="stat-label">Tool Categories</span>
+        </div>
+      </div>
+
+      <!-- Agent Modes -->
+      <div class="section">
+        <div class="section-title">
+          Agent Modes &amp; Capabilities
+          <span class="count-badge" id="agent-count-badge">…</span>
+        </div>
+        <div class="agent-grid" id="agent-grid">
+          <div class="loading">Loading agents…</div>
+        </div>
+      </div>
+
+      <!-- Tool Categories -->
+      <div class="section">
+        <div class="section-title">
+          Tool Categories
+          <span class="count-badge" id="cat-count-badge">…</span>
+        </div>
+        <div class="cat-grid" id="cat-grid">
+          <div class="loading">Loading categories…</div>
+        </div>
+      </div>
+
+      <!-- Tools -->
+      <div class="section">
+        <div class="section-title">
+          All Tools
+          <span class="count-badge" id="tool-count-badge">…</span>
+        </div>
+
+        <div class="tools-controls">
+          <input
+            id="search-input"
+            class="search-box"
+            type="search"
+            placeholder="Search by name, description, or category…"
+            autocomplete="off"
+          />
+          <select id="risk-filter" class="risk-filter">
+            <option value="">All risk levels</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+          <button class="clear-btn" onclick="clearFilters()">Clear</button>
+          <span class="tool-count-label" id="tool-count-label"></span>
+        </div>
+
+        <div class="tools-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Tool name</th>
+                <th>Category</th>
+                <th>Description</th>
+                <th>Risk</th>
+                <th>Parameters</th>
+              </tr>
+            </thead>
+            <tbody id="tools-tbody">
+              <tr><td colspan="5" class="loading">Loading tools…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+
+    <script src="/js/capabilities.js"></script>
+  </body>
+</html>

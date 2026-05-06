@@ -15,6 +15,14 @@ AI Assistant is a personal productivity and engineering copilot that helps you:
 
 **Core Philosophy**: Design from workflows. Scaffold from architecture. Implement with guardrails. Iterate from evidence.
 
+### Capabilities Page
+
+Visit **`/capabilities`** in the web UI to browse all available agents, tool categories, and individual tools with descriptions, risk levels, and parameter signatures.
+
+- **GET `/api/agents`** — all agent modes and specialized API capabilities
+- **GET `/api/tools`** — all 267+ tools with metadata
+- **GET `/api/tools/categories`** — tools grouped by category
+
 ## AI Providers
 
 | Provider | Config                           | Notes                                                                                            |
