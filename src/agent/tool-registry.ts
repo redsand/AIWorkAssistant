@@ -4993,6 +4993,7 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "product.customer_signals")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "product.weekly_update")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "product.create_work_items")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "product.shipped_vs_planned")!,
 
   // HAWK IR core
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_cases")!,
@@ -5008,6 +5009,11 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.list_nodes")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_active_nodes")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.list_dashboards")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_case_count")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_recent_cases")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_log_histogram")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_saved_searches")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_artefacts")!,
 
   // Jitbit extended
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.update_ticket")!,

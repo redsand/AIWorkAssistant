@@ -1,6 +1,7 @@
 import { codexClient } from "../integrations/codex/codex-client";
 import { webSearchClient } from "../integrations/web/search-client";
 import { fileCalendarService } from "../integrations/file/calendar-service";
+import type { CalendarEvent } from "../integrations/file/calendar-service";
 import { jiraService } from "../integrations/jira/jira-service";
 import { jiraClient } from "../integrations/jira/jira-client";
 import { gitlabClient } from "../integrations/gitlab/gitlab-client";
@@ -115,6 +116,67 @@ async function handleCalendarCreateHealthBlock(
     duration: params.duration as number,
     type: params.type as "fitness" | "meal" | "mental_health",
   });
+  return { success: true, data: event };
+}
+
+async function handleCalendarCreateEvent(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!env.ENABLE_CALENDAR_WRITE) {
+    return { success: false, error: "Calendar write operations are disabled" };
+  }
+  const event = await fileCalendarService.createEvent({
+    summary: params.summary as string,
+    startTime: new Date(params.startTime as string),
+    endTime: new Date(params.endTime as string),
+    description: params.description as string | undefined,
+    location: params.location as string | undefined,
+    type: (params.type as CalendarEvent["type"]) || "other",
+  });
+  return { success: true, data: event };
+}
+
+async function handleCalendarUpdateEvent(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!env.ENABLE_CALENDAR_WRITE) {
+    return { success: false, error: "Calendar write operations are disabled" };
+  }
+  const eventId = params.eventId as string;
+  if (!eventId) return { success: false, error: "eventId is required" };
+  const event = await fileCalendarService.updateEvent(eventId, {
+    summary: params.summary as string | undefined,
+    startTime: params.startTime ? new Date(params.startTime as string) : undefined,
+    endTime: params.endTime ? new Date(params.endTime as string) : undefined,
+    description: params.description as string | undefined,
+    location: params.location as string | undefined,
+    type: params.type as CalendarEvent["type"] | undefined,
+  });
+  return { success: true, data: event };
+}
+
+async function handleCalendarDeleteEvent(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!env.ENABLE_CALENDAR_WRITE) {
+    return { success: false, error: "Calendar write operations are disabled" };
+  }
+  if (!env.POLICY_CALENDAR_ALLOW_DELETE) {
+    return { success: false, error: "Calendar delete operations are disabled by policy" };
+  }
+  const eventId = params.eventId as string;
+  if (!eventId) return { success: false, error: "eventId is required" };
+  const deleted = await fileCalendarService.deleteEvent(eventId);
+  return { success: true, data: { deleted } };
+}
+
+async function handleCalendarGetEvent(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const eventId = params.eventId as string;
+  if (!eventId) return { success: false, error: "eventId is required" };
+  const event = fileCalendarService.getEvent(eventId);
+  if (!event) return { success: false, error: "Event not found" };
   return { success: true, data: event };
 }
 
@@ -2184,6 +2246,34 @@ async function handleProductCreateWorkItems(
     items: items as any[],
     source: params.source as string | undefined,
   });
+  return { success: true, data: { created } };
+}
+
+async function handleProductShippedVsPlanned(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const data = await productChiefOfStaff.summarizeShippedVsPlanned({
+    roadmapId: params.roadmapId as string | undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleCtoCreateSuggestedWorkItems(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  let items = params.items;
+  if (typeof items === "string") {
+    try {
+      items = JSON.parse(items);
+    } catch {
+      return { success: false, error: "items must be a valid JSON array" };
+    }
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    return { success: false, error: "items must be a non-empty array" };
+  }
+  const created = ctoDailyCommandCenter.createSuggestedWorkItems(items as any[]);
   return { success: true, data: { created } };
 }
 
@@ -4772,6 +4862,84 @@ async function handleHawkIrRunDashboard(
   return { success: true, data };
 }
 
+async function handleHawkIrGetCaseCount(
+  _params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.getCaseCount();
+  return { success: true, data: { count: data } };
+}
+
+async function handleHawkIrGetRecentCases(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const limit = (params.limit as number) ?? 20;
+  const data = await hawkIrService.getRecentCases(limit);
+  return { success: true, data };
+}
+
+async function handleHawkIrGetLogHistogram(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const q = params.q as string;
+  if (!q) return { success: false, error: "q (search query) is required" };
+  const data = await hawkIrService.getLogHistogram({
+    q,
+    idx: params.idx as string | undefined,
+    from: params.from as string | undefined,
+    to: params.to as string | undefined,
+    interval: params.interval as string | undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleHawkIrGetSavedSearches(
+  _params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.getSavedSearches();
+  return { success: true, data };
+}
+
+async function handleHawkIrGetArtefacts(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.getArtefacts({ asset: params.asset as string | undefined });
+  return { success: true, data };
+}
+
+async function handleHawkIrExecuteHybridTool(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const groupId = params.groupId as string;
+  const cmd = params.cmd as string;
+  if (!groupId || !cmd) return { success: false, error: "groupId and cmd are required" };
+  const data = await hawkIrService.executeHybridTool({
+    groupId,
+    cmd,
+    data: params.data,
+    targetNodeId: params.targetNodeId as string | undefined,
+    timeoutMs: params.timeoutMs as number | undefined,
+  });
+  return { success: true, data };
+}
+
 async function handleWorkItemsList(
   params: Record<string, unknown>,
   _userId: string,
@@ -4871,6 +5039,10 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "calendar.list_events": handleCalendarListEvents,
   "calendar.create_focus_block": handleCalendarCreateFocusBlock,
   "calendar.create_health_block": handleCalendarCreateHealthBlock,
+  "calendar.create_event": handleCalendarCreateEvent,
+  "calendar.update_event": handleCalendarUpdateEvent,
+  "calendar.delete_event": handleCalendarDeleteEvent,
+  "calendar.get_event": handleCalendarGetEvent,
   "jira.list_assigned": handleJiraListAssigned,
   "jira.get_issue": handleJiraGetIssue,
   "jira.add_comment": handleJiraAddComment,
@@ -4967,6 +5139,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "jitbit.create_asset": handleJitbitCreateAsset,
   "jitbit.update_asset": handleJitbitUpdateAsset,
   "jitbit.disable_asset": handleJitbitDisableAsset,
+  "jitbit.search_assets": handleJitbitSearchAssets,
   "jitbit.add_tag": handleJitbitAddTag,
   "jitbit.remove_tag": handleJitbitRemoveTag,
   "jitbit.add_time_entry": handleJitbitAddTimeEntry,
@@ -4981,6 +5154,9 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "jitbit.unsubscribe_from_ticket": handleJitbitUnsubscribeFromTicket,
   "jitbit.list_attachments": handleJitbitListAttachments,
   "jitbit.add_attachment": handleJitbitAddAttachment,
+  "jitbit.get_attachment": handleJitbitGetAttachment,
+  "jitbit.delete_attachment": handleJitbitDeleteAttachment,
+  "jitbit.summarize_ticket": handleJitbitSummarizeTicket,
   "jitbit.list_custom_fields": handleJitbitListCustomFields,
   "jitbit.get_custom_field_values": handleJitbitGetCustomFieldValues,
   "jitbit.set_custom_field_value": handleJitbitSetCustomFieldValue,
@@ -5007,9 +5183,16 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "hawk_ir.get_active_nodes": handleHawkIrGetActiveNodes,
   "hawk_ir.list_dashboards": handleHawkIrListDashboards,
   "hawk_ir.run_dashboard": handleHawkIrRunDashboard,
+  "hawk_ir.get_case_count": handleHawkIrGetCaseCount,
+  "hawk_ir.get_recent_cases": handleHawkIrGetRecentCases,
+  "hawk_ir.get_log_histogram": handleHawkIrGetLogHistogram,
+  "hawk_ir.get_saved_searches": handleHawkIrGetSavedSearches,
+  "hawk_ir.get_artefacts": handleHawkIrGetArtefacts,
+  "hawk_ir.execute_hybrid_tool": handleHawkIrExecuteHybridTool,
   "productivity.generate_daily_plan": handleDailyPlan,
   "productivity.generate_weekly_plan": handleWeeklyPlan,
   "cto.daily_command_center": handleCtoDailyCommandCenter,
+  "cto.create_suggested_work_items": handleCtoCreateSuggestedWorkItems,
   "personal_os.brief": handlePersonalOsBrief,
   "personal_os.open_loops": handlePersonalOsOpenLoops,
   "personal_os.detect_patterns": handlePersonalOsDetectPatterns,
@@ -5023,6 +5206,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "product.customer_signals": handleProductCustomerSignals,
   "product.weekly_update": handleProductWeeklyUpdate,
   "product.create_work_items": handleProductCreateWorkItems,
+  "product.shipped_vs_planned": handleProductShippedVsPlanned,
   "web.search": handleWebSearch,
   "web.fetch_page": handleWebFetchPage,
 
@@ -5131,6 +5315,7 @@ const SYSTEM_TOOLS = new Set([
   "product.roadmap_drift",
   "product.customer_signals",
   "product.weekly_update",
+  "product.shipped_vs_planned",
   "hawk_ir.get_cases",
   "hawk_ir.get_case",
   "hawk_ir.get_case_summary",
@@ -5144,6 +5329,12 @@ const SYSTEM_TOOLS = new Set([
   "hawk_ir.list_nodes",
   "hawk_ir.get_active_nodes",
   "hawk_ir.list_dashboards",
+  "hawk_ir.get_case_count",
+  "hawk_ir.get_recent_cases",
+  "hawk_ir.get_log_histogram",
+  "hawk_ir.get_saved_searches",
+  "hawk_ir.get_artefacts",
+  "calendar.get_event",
 ]);
 
 export interface DispatchContext {

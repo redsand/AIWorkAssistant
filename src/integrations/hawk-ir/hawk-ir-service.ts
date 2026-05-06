@@ -22,6 +22,28 @@ import type {
 
 const riskPriority: Record<string, number> = { low: 1, medium: 2, high: 3, critical: 4 };
 
+const MAX_QUERY_RANGE_DAYS = 7;
+
+function todayRange(): { startDate: string; stopDate: string } {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return { startDate: start.toISOString(), stopDate: now.toISOString() };
+}
+
+function enforceMaxRange(from: Date | string, to: Date | string): { from: string; to: string } {
+  const fromDate = new Date(from);
+  const toDate = new Date(to);
+  const maxFrom = new Date(toDate.getTime() - MAX_QUERY_RANGE_DAYS * 24 * 60 * 60 * 1000);
+  if (fromDate < maxFrom) {
+    throw new Error(
+      `Query range exceeds ${MAX_QUERY_RANGE_DAYS} days. ` +
+      `Requested: ${fromDate.toISOString()} to ${toDate.toISOString()}. ` +
+      `Max range starts at ${maxFrom.toISOString()}. Use weekly reports for longer periods.`,
+    );
+  }
+  return { from: fromDate.toISOString(), to: toDate.toISOString() };
+}
+
 export class HawkIrService {
   constructor(private client: HawkIrClient = hawkIrClient) {}
 
@@ -36,6 +58,11 @@ export class HawkIrService {
   // === Cases ===
 
   async getCases(params: HawkCasesParams = {}): Promise<HawkCase[]> {
+    if (!params.startDate) {
+      const range = todayRange();
+      params.startDate = range.startDate;
+      if (!params.stopDate) params.stopDate = range.stopDate;
+    }
     return this.client.getCases(params);
   }
 
@@ -52,7 +79,8 @@ export class HawkIrService {
   }
 
   async getRecentCases(limit = 20): Promise<HawkCase[]> {
-    const cases = await this.client.getCases({ limit });
+    const range = todayRange();
+    const cases = await this.client.getCases({ limit, startDate: range.startDate, stopDate: range.stopDate });
     return cases.slice(0, limit);
   }
 
@@ -67,8 +95,13 @@ export class HawkIrService {
     const minRiskLevel = params.minRiskLevel ?? "high";
     const limit = params.limit ?? 25;
     const minPriority = riskPriority[minRiskLevel] ?? 3;
+    const range = todayRange();
 
-    const cases = await this.client.getCases({ limit: Math.min(limit * 4, 100) });
+    const cases = await this.client.getCases({
+      limit: Math.min(limit * 4, 100),
+      startDate: range.startDate,
+      stopDate: range.stopDate,
+    });
 
     return cases
       .filter((c) => {
