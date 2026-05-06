@@ -4794,6 +4794,75 @@ async function handleHawkIrUpdateCaseRisk(
   return { success: true, data };
 }
 
+async function handleHawkIrEscalateCase(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const caseId = params.caseId as string;
+  const type = params.type as string;
+  if (!caseId) return { success: false, error: "caseId is required" };
+  if (!type) return { success: false, error: "type is required" };
+  const vendor = params.vendor as string | undefined;
+  const ticketId = params.ticketId as string | undefined;
+  const data = await hawkIrService.escalateCase(caseId, type, vendor, ticketId);
+  const comment = params.comment as string | undefined;
+  if (comment) {
+    await hawkIrService.addCaseNote(caseId, comment);
+  }
+  return { success: true, data };
+}
+
+async function handleHawkIrAssignCase(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const caseId = params.caseId as string;
+  const ownerId = params.ownerId as string;
+  if (!caseId) return { success: false, error: "caseId is required" };
+  if (!ownerId) return { success: false, error: "ownerId is required" };
+  const data = await hawkIrService.assignCase(caseId, ownerId);
+  const comment = params.comment as string | undefined;
+  if (comment) {
+    await hawkIrService.addCaseNote(caseId, comment);
+  }
+  return { success: true, data };
+}
+
+async function handleHawkIrQuarantineHost(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const caseId = params.caseId as string;
+  const target = params.target as string;
+  if (!caseId) return { success: false, error: "caseId is required" };
+  if (!target) return { success: false, error: "target is required" };
+  const options: { type?: string; expires?: string } = {};
+  if (params.type) options.type = params.type as string;
+  if (params.expires) options.expires = params.expires as string;
+  const data = await hawkIrService.quarantineHost(caseId, target, options);
+  return { success: true, data };
+}
+
+async function handleHawkIrUnquarantineHost(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const caseId = params.caseId as string;
+  const target = params.target as string;
+  if (!caseId) return { success: false, error: "caseId is required" };
+  if (!target) return { success: false, error: "target is required" };
+  const data = await hawkIrService.unquarantineHost(caseId, target);
+  return { success: true, data };
+}
+
 async function handleHawkIrSearchLogs(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -5228,6 +5297,10 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "hawk_ir.add_case_note": handleHawkIrAddCaseNote,
   "hawk_ir.update_case_status": handleHawkIrUpdateCaseStatus,
   "hawk_ir.update_case_risk": handleHawkIrUpdateCaseRisk,
+  "hawk_ir.escalate_case": handleHawkIrEscalateCase,
+  "hawk_ir.assign_case": handleHawkIrAssignCase,
+  "hawk_ir.quarantine_host": handleHawkIrQuarantineHost,
+  "hawk_ir.unquarantine_host": handleHawkIrUnquarantineHost,
   "hawk_ir.search_logs": handleHawkIrSearchLogs,
   "hawk_ir.get_available_indexes": handleHawkIrGetAvailableIndexes,
   "hawk_ir.get_assets": handleHawkIrGetAssets,

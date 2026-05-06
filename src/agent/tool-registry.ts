@@ -4377,6 +4377,112 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "high",
   },
   {
+    name: "hawk_ir.escalate_case",
+    description:
+      "Escalate a HAWK IR case. Marks the case as escalated with an escalation type, optional vendor name, and optional ticket ID. Critical risk — requires MFA and approval.",
+    params: {
+      caseId: {
+        type: "string",
+        description: 'HAWK IR case ID (e.g., "#635:1069" or "635:1069")',
+        required: true,
+      },
+      type: {
+        type: "string",
+        description: "Escalation type: vendor, internal, or customer",
+        required: true,
+      },
+      vendor: {
+        type: "string",
+        description: "Vendor name (e.g., 'Customer'). Used when type is 'vendor'.",
+        required: false,
+      },
+      ticketId: {
+        type: "string",
+        description: "External ticket ID to link (e.g., 'JITBIT-99032784')",
+        required: false,
+      },
+      comment: {
+        type: "string",
+        description: "Optional note to add to the case when escalating",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.escalate_case",
+    riskLevel: "high",
+  },
+  {
+    name: "hawk_ir.assign_case",
+    description:
+      "Assign a HAWK IR case to a specific owner by user ID. Medium risk — requires approval.",
+    params: {
+      caseId: {
+        type: "string",
+        description: 'HAWK IR case ID (e.g., "#635:1069" or "635:1069")',
+        required: true,
+      },
+      ownerId: {
+        type: "string",
+        description: "User ID of the new case owner",
+        required: true,
+      },
+      comment: {
+        type: "string",
+        description: "Optional note to add to the case when assigning",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.assign_case",
+    riskLevel: "medium",
+  },
+  {
+    name: "hawk_ir.quarantine_host",
+    description:
+      "Quarantine a host/IP in HAWK IR. Blocks network access for the specified target and associates it with a case. Critical risk — requires MFA, approval, and dry run.",
+    params: {
+      caseId: {
+        type: "string",
+        description: 'Case ID to associate the quarantine with (e.g., "#635:1069")',
+        required: true,
+      },
+      target: {
+        type: "string",
+        description: "IP address or hostname to quarantine (e.g., '10.42.73.9')",
+        required: true,
+      },
+      type: {
+        type: "string",
+        description: "Quarantine type. Default: 'ip'. Options: 'ip', 'hostname'",
+        required: false,
+      },
+      expires: {
+        type: "string",
+        description: "Expiration: '-1' for indefinite (default), or duration like '1h', '24h', '7d', '1w'",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.quarantine_host",
+    riskLevel: "high",
+  },
+  {
+    name: "hawk_ir.unquarantine_host",
+    description:
+      "Remove quarantine from a host/IP in HAWK IR. Reverts the quarantine record, restoring network access. Critical risk — requires MFA and approval.",
+    params: {
+      caseId: {
+        type: "string",
+        description: 'Case ID the quarantine is associated with (e.g., "#635:1069")',
+        required: true,
+      },
+      target: {
+        type: "string",
+        description: "IP address or hostname to unquarantine (e.g., '10.42.73.9')",
+        required: true,
+      },
+    },
+    actionType: "hawk_ir.unquarantine_host",
+    riskLevel: "high",
+  },
+  {
     name: "hawk_ir.search_logs",
     description:
       "Search HAWK IR logs/explore data with query and optional filters (index, date range, pagination).",
@@ -5256,7 +5362,7 @@ export function getToolInventorySummary(mode: string): string {
     { name: "Calendar", prefix: "calendar", writeActions: ["event management"] },
     { name: "GitHub", prefix: "github", writeActions: ["create issue", "create PR", "create branch"] },
     { name: "GitLab", prefix: "gitlab", writeActions: ["pipeline/merge actions"] },
-    { name: "HAWK IR", prefix: "hawk_ir", writeActions: ["case de-escalation"] },
+    { name: "HAWK IR", prefix: "hawk_ir", writeActions: ["case de-escalation", "case escalation", "case assignment", "host quarantine", "host unquarantine"] },
     { name: "Jira", prefix: "jira", writeActions: ["advanced fields"] },
     { name: "Jitbit", prefix: "jitbit", writeActions: ["ticket comments", "ticket lifecycle", "asset management", "tags", "time tracking", "custom fields", "automation"] },
   ];
@@ -5302,7 +5408,7 @@ export function getToolInventory(mode: string): string {
     { name: "Calendar", prefix: "calendar", writeActions: ["event management"] },
     { name: "GitHub", prefix: "github", writeActions: ["create issue", "create PR", "create branch"] },
     { name: "GitLab", prefix: "gitlab", writeActions: ["pipeline/merge actions"] },
-    { name: "HAWK IR", prefix: "hawk_ir", writeActions: ["case de-escalation"] },
+    { name: "HAWK IR", prefix: "hawk_ir", writeActions: ["case de-escalation", "case escalation", "case assignment", "host quarantine", "host unquarantine"] },
     { name: "Jira", prefix: "jira", writeActions: ["advanced fields"] },
     { name: "Jitbit", prefix: "jitbit", writeActions: ["ticket comments", "ticket lifecycle", "asset management", "tags", "time tracking", "custom fields", "automation"] },
   ];

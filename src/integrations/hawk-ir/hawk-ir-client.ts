@@ -312,6 +312,21 @@ export class HawkIrClient {
     return this.wsRequest({ cmd: "cases", route: "setRisk", case: "#" + id, data: riskLevel });
   }
 
+  async escalateCase(caseId: string, type: string, vendor?: string, ticketId?: string): Promise<any> {
+    this.ensureConfigured();
+    const id = caseId.replace(/^#/, "");
+    const data: Record<string, unknown> = { id: "#" + id, type, module: "manual" };
+    if (vendor) data.vendor = vendor;
+    if (ticketId) data.ticketId = ticketId;
+    return this.wsRequest({ cmd: "cases", route: "setEscalated", data });
+  }
+
+  async assignCase(caseId: string, ownerId: string): Promise<any> {
+    this.ensureConfigured();
+    const id = caseId.replace(/^#/, "");
+    return this.wsRequest({ cmd: "cases", route: "setOwner", case: "#" + id, data: ownerId });
+  }
+
   // === Explore (REST) ===
 
   async search(params: HawkExploreSearchParams): Promise<HawkExploreResult[]> {
@@ -387,6 +402,45 @@ export class HawkIrClient {
 
   async runDashboardWidget(dashboardId: string, body: Record<string, unknown> = {}): Promise<HawkDashboardRunResult> {
     return this.httpPost<HawkDashboardRunResult>(`/api/dashboards/${dashboardId}/run`, body);
+  }
+
+  // === Quarantine (WebSocket) ===
+
+  async quarantineHost(caseId: string, target: string, options?: { type?: string; expires?: string }): Promise<any> {
+    this.ensureConfigured();
+    const id = caseId.replace(/^#/, "");
+    return this.wsRequest({
+      cmd: "quarantine",
+      route: "add",
+      data: {
+        type: options?.type ?? "ip",
+        object: target,
+        module: "manual",
+        case_id: "#" + id,
+        object_highlight: target,
+        expires: options?.expires ?? "-1",
+      },
+    });
+  }
+
+  async getQuarantineRecords(): Promise<any[]> {
+    this.ensureConfigured();
+    const result = await this.wsRequest({ cmd: "quarantine", route: "get" });
+    return Array.isArray(result) ? result : [];
+  }
+
+  async unquarantineHost(rid: string, caseId: string, objectHighlight: string): Promise<any> {
+    this.ensureConfigured();
+    return this.wsRequest({
+      cmd: "quarantine",
+      route: "revert",
+      data: {
+        "@rid": rid,
+        case_id: caseId,
+        module: "manual",
+        object_highlight: objectHighlight,
+      },
+    });
   }
 
   // === Private ===

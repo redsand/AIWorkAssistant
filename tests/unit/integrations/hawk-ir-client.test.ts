@@ -987,4 +987,217 @@ describe("HawkIrClient", () => {
       await promise;
     });
   });
+
+  // === Escalation, Assignment, and Quarantine WebSocket tests ===
+
+  describe("escalateCase", () => {
+    it("should send setEscalated with cmd: 'cases'", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.escalateCase("635:1069", "vendor", "Customer", "JITBIT-99032784");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      const sentData = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(sentData.cmd).toBe("cases");
+      expect(sentData.route).toBe("setEscalated");
+      expect(sentData.data.id).toBe("#635:1069");
+      expect(sentData.data.type).toBe("vendor");
+      expect(sentData.data.module).toBe("manual");
+      expect(sentData.data.vendor).toBe("Customer");
+      expect(sentData.data.ticketId).toBe("JITBIT-99032784");
+      expect(ws.url).toBe("wss://ir.hawk.io/websocket");
+
+      simulateMessage(ws, {
+        cmd: "cases",
+        route: "setEscalated",
+        status: true,
+        data: { id: "#635:1069" },
+      });
+
+      const result = await promise;
+      expect(result).toBeDefined();
+    });
+
+    it("should normalize case ID and omit optional fields", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.escalateCase("635:1069", "internal");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      const sentData = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(sentData.data.id).toBe("#635:1069");
+      expect(sentData.data.type).toBe("internal");
+      expect(sentData.data.module).toBe("manual");
+      expect(sentData.data.vendor).toBeUndefined();
+      expect(sentData.data.ticketId).toBeUndefined();
+
+      simulateMessage(ws, { cmd: "cases", route: "setEscalated", status: true, data: {} });
+      await promise;
+    });
+  });
+
+  describe("assignCase", () => {
+    it("should send setOwner with cmd: 'cases'", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.assignCase("635:1069", "user_42");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      const sentData = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(sentData.cmd).toBe("cases");
+      expect(sentData.route).toBe("setOwner");
+      expect(sentData.case).toBe("#635:1069");
+      expect(sentData.data).toBe("user_42");
+
+      simulateMessage(ws, {
+        cmd: "cases",
+        route: "setOwner",
+        status: true,
+        data: {},
+      });
+
+      const result = await promise;
+      expect(result).toBeDefined();
+    });
+
+    it("should normalize case ID by adding # prefix if missing", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.assignCase("635:1069", "admin_user");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      const sentData = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(sentData.case).toBe("#635:1069");
+
+      simulateMessage(ws, { cmd: "cases", route: "setOwner", status: true, data: {} });
+      await promise;
+    });
+  });
+
+  describe("quarantineHost", () => {
+    it("should send cmd: 'quarantine' with route: 'add' and default values", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.quarantineHost("635:1069", "10.42.73.9");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      const sentData = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(sentData.cmd).toBe("quarantine");
+      expect(sentData.route).toBe("add");
+      expect(sentData.data.type).toBe("ip");
+      expect(sentData.data.object).toBe("10.42.73.9");
+      expect(sentData.data.module).toBe("manual");
+      expect(sentData.data.case_id).toBe("#635:1069");
+      expect(sentData.data.object_highlight).toBe("10.42.73.9");
+      expect(sentData.data.expires).toBe("-1");
+      expect(ws.url).toBe("wss://ir.hawk.io/websocket");
+
+      simulateMessage(ws, {
+        cmd: "quarantine",
+        route: "add",
+        status: true,
+        data: { "@rid": "#34:5" },
+      });
+
+      const result = await promise;
+      expect(result).toBeDefined();
+    });
+
+    it("should allow overriding type and expires", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.quarantineHost("635:1069", "host.example.com", { type: "hostname", expires: "24h" });
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      const sentData = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(sentData.data.type).toBe("hostname");
+      expect(sentData.data.expires).toBe("24h");
+      expect(sentData.data.object).toBe("host.example.com");
+
+      simulateMessage(ws, { cmd: "quarantine", route: "add", status: true, data: {} });
+      await promise;
+    });
+  });
+
+  describe("getQuarantineRecords", () => {
+    it("should send cmd: 'quarantine' with route: 'get'", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.getQuarantineRecords();
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      const sentData = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(sentData.cmd).toBe("quarantine");
+      expect(sentData.route).toBe("get");
+
+      simulateMessage(ws, {
+        cmd: "quarantine",
+        route: "get",
+        status: true,
+        data: [{ "@rid": "#34:5", object: "10.42.73.9", case_id: "#635:1069", quarantine: true }],
+      });
+
+      const result = await promise;
+      expect(result).toEqual([{ "@rid": "#34:5", object: "10.42.73.9", case_id: "#635:1069", quarantine: true }]);
+    });
+  });
+
+  describe("unquarantineHost", () => {
+    it("should send cmd: 'quarantine' with route: 'revert'", async () => {
+      const { client } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+
+      const promise = client.unquarantineHost("#34:5", "#635:1069", "10.42.73.9");
+
+      await vi.waitFor(() => expect(mockWsInstances.length).toBe(1));
+      const ws = mockWsInstances[0];
+      simulateOpen(ws);
+
+      const sentData = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(sentData.cmd).toBe("quarantine");
+      expect(sentData.route).toBe("revert");
+      expect(sentData.data["@rid"]).toBe("#34:5");
+      expect(sentData.data.case_id).toBe("#635:1069");
+      expect(sentData.data.module).toBe("manual");
+      expect(sentData.data.object_highlight).toBe("10.42.73.9");
+
+      simulateMessage(ws, {
+        cmd: "quarantine",
+        route: "revert",
+        status: true,
+        data: [{ "@rid": "#34:5" }],
+      });
+
+      const result = await promise;
+      expect(result).toBeDefined();
+    });
+  });
 });

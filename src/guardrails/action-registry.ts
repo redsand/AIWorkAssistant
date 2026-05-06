@@ -462,6 +462,82 @@ class GuardrailsRegistry {
       impacts: ["hawk_ir", "security_incidents", "prioritization"],
     });
 
+    // HAWK IR escalation
+    this.registerAction({
+      id: "hawk_ir.escalate_case",
+      category: ActionCategory.SECURITY_CHANGE,
+      riskLevel: RiskLevel.CRITICAL,
+      operation: "hawk_ir.escalate_case",
+      description: "Escalate a HAWK IR case, marking it as escalated with type, vendor, and optional ticket ID",
+      requiresApproval: true,
+      requiresMFA: true,
+      requiresDryRun: false,
+      cooldownPeriod: 30000,
+      rateLimits: { maxPerHour: 10, maxPerDay: 30 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "soc"],
+      requiresConfirmation: true,
+      requiresJustification: true,
+      impacts: ["hawk_ir", "security_incidents", "escalation", "workflow"],
+    });
+
+    // HAWK IR case assignment
+    this.registerAction({
+      id: "hawk_ir.assign_case",
+      category: ActionCategory.DATA_MODIFICATION,
+      riskLevel: RiskLevel.MEDIUM,
+      operation: "hawk_ir.assign_case",
+      description: "Assign a HAWK IR case to a specific owner by user ID",
+      requiresApproval: true,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 5000,
+      rateLimits: { maxPerHour: 30, maxPerDay: 100 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "soc"],
+      requiresConfirmation: true,
+      requiresJustification: false,
+      impacts: ["hawk_ir", "security_incidents", "workflow"],
+    });
+
+    // HAWK IR quarantine
+    this.registerAction({
+      id: "hawk_ir.quarantine_host",
+      category: ActionCategory.SECURITY_CHANGE,
+      riskLevel: RiskLevel.CRITICAL,
+      operation: "hawk_ir.quarantine_host",
+      description: "Quarantine a host/IP in HAWK IR, blocking network access and associating with a case",
+      requiresApproval: true,
+      requiresMFA: true,
+      requiresDryRun: true,
+      cooldownPeriod: 60000,
+      rateLimits: { maxPerHour: 5, maxPerDay: 20 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "soc"],
+      requiresConfirmation: true,
+      requiresJustification: true,
+      impacts: ["hawk_ir", "security_incidents", "network", "infrastructure"],
+    });
+
+    // HAWK IR unquarantine
+    this.registerAction({
+      id: "hawk_ir.unquarantine_host",
+      category: ActionCategory.SECURITY_CHANGE,
+      riskLevel: RiskLevel.CRITICAL,
+      operation: "hawk_ir.unquarantine_host",
+      description: "Remove quarantine from a host/IP in HAWK IR, restoring network access",
+      requiresApproval: true,
+      requiresMFA: true,
+      requiresDryRun: false,
+      cooldownPeriod: 30000,
+      rateLimits: { maxPerHour: 10, maxPerDay: 30 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "soc"],
+      requiresConfirmation: true,
+      requiresJustification: true,
+      impacts: ["hawk_ir", "security_incidents", "network", "infrastructure"],
+    });
+
     // System configuration
     this.registerAction({
       id: "system.config_change",

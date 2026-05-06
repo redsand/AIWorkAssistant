@@ -180,6 +180,46 @@ export class HawkIrService {
     return this.client.updateCaseRisk(caseId, mapped);
   }
 
+  async escalateCase(caseId: string, type: string, vendor?: string, ticketId?: string): Promise<any> {
+    const validTypes = ["vendor", "internal", "customer"];
+    const mapped = type.toLowerCase();
+    if (!validTypes.includes(mapped)) {
+      throw new Error(`Invalid escalation type: "${type}". Valid types: ${validTypes.join(", ")}`);
+    }
+    return this.client.escalateCase(caseId, mapped, vendor, ticketId);
+  }
+
+  async assignCase(caseId: string, ownerId: string): Promise<any> {
+    if (!ownerId || !ownerId.trim()) {
+      throw new Error("ownerId is required and cannot be empty");
+    }
+    return this.client.assignCase(caseId, ownerId);
+  }
+
+  async quarantineHost(caseId: string, target: string, options?: { type?: string; expires?: string }): Promise<any> {
+    if (!target || !target.trim()) {
+      throw new Error("target is required (IP address or hostname)");
+    }
+    return this.client.quarantineHost(caseId, target, options);
+  }
+
+  async unquarantineHost(caseId: string, target: string): Promise<any> {
+    if (!target || !target.trim()) {
+      throw new Error("target is required (IP address or hostname)");
+    }
+    const records = await this.client.getQuarantineRecords();
+    const normalizedCaseId = "#" + caseId.replace(/^#/, "");
+    const match = records.find((r: any) => {
+      const objectMatch = r.object === target || r.object_highlight === target;
+      const caseMatch = r.case_id === normalizedCaseId || r.case_id === caseId;
+      return objectMatch && caseMatch && r.quarantine !== false;
+    });
+    if (!match) {
+      throw new Error(`No active quarantine record found for target "${target}" on case ${caseId}`);
+    }
+    return this.client.unquarantineHost(match["@rid"], match.case_id, match.object_highlight || target);
+  }
+
   // === Explore ===
 
   async searchLogs(params: HawkExploreSearchParams): Promise<HawkExploreResult[]> {
