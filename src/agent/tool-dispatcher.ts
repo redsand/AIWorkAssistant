@@ -4184,9 +4184,7 @@ async function handleJitbitListAssets(
   }
   const data = await jitbitService.listAssets({
     search: params.search as string | undefined,
-    categoryId: params.categoryId as number | undefined,
-    companyId: params.companyId as number | undefined,
-    count: params.count ? Number(params.count) : undefined,
+    assignedToCompanyId: params.companyId as number | undefined,
     page: params.page ? Number(params.page) : undefined,
   });
   return { success: true, data };
@@ -4210,14 +4208,15 @@ async function handleJitbitCreateAsset(
   if (!jitbitService.isConfigured()) {
     return { success: false, error: "Jitbit client not configured" };
   }
-  const name = params.name as string;
-  if (!name) return { success: false, error: "name is required" };
+  const modelName = (params.modelName ?? params.name) as string;
+  if (!modelName) return { success: false, error: "modelName is required" };
   const data = await jitbitService.createAsset({
-    name,
-    categoryId: params.categoryId as number | undefined,
+    modelName,
+    manufacturer: params.manufacturer as string | undefined,
+    type: params.type as string | undefined,
     companyId: params.companyId as number | undefined,
     serialNumber: params.serialNumber as string | undefined,
-    notes: params.notes as string | undefined,
+    comments: (params.comments ?? params.notes) as string | undefined,
   });
   return { success: true, data };
 }
@@ -4231,15 +4230,15 @@ async function handleJitbitUpdateAsset(
   const assetId = params.assetId as number;
   if (!assetId) return { success: false, error: "assetId is required" };
   const data = await jitbitService.updateAsset(assetId, {
-    name: params.name as string | undefined,
+    modelName: (params.modelName ?? params.name) as string | undefined,
     serialNumber: params.serialNumber as string | undefined,
     companyId: params.companyId as number | undefined,
-    notes: params.notes as string | undefined,
+    comments: (params.comments ?? params.notes) as string | undefined,
   });
   return { success: true, data };
 }
 
-async function handleJitbitDeleteAsset(
+async function handleJitbitDisableAsset(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
   if (!jitbitService.isConfigured()) {
@@ -4247,7 +4246,7 @@ async function handleJitbitDeleteAsset(
   }
   const assetId = params.assetId as number;
   if (!assetId) return { success: false, error: "assetId is required" };
-  const data = await jitbitService.deleteAsset(assetId);
+  const data = await jitbitService.disableAsset(assetId);
   return { success: true, data };
 }
 
@@ -4286,14 +4285,14 @@ async function handleJitbitAddTimeEntry(
     return { success: false, error: "Jitbit client not configured" };
   }
   const ticketId = params.ticketId as number;
-  const minutes = params.minutes as number;
+  const timeSpentInSeconds = params.timeSpentInSeconds
+    ? Number(params.timeSpentInSeconds)
+    : params.minutes ? Number(params.minutes) * 60 : 0;
   if (!ticketId) return { success: false, error: "ticketId is required" };
-  if (!minutes) return { success: false, error: "minutes is required" };
+  if (!timeSpentInSeconds) return { success: false, error: "timeSpentInSeconds is required" };
   const data = await jitbitService.addTimeEntry(ticketId, {
-    minutes,
-    date: params.date as string | undefined,
-    comment: params.comment as string | undefined,
-    billable: params.billable === true,
+    timeSpentInSeconds,
+    statusId: params.statusId as number | undefined,
   });
   return { success: true, data };
 }
@@ -4492,7 +4491,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "jitbit.get_asset": handleJitbitGetAsset,
   "jitbit.create_asset": handleJitbitCreateAsset,
   "jitbit.update_asset": handleJitbitUpdateAsset,
-  "jitbit.delete_asset": handleJitbitDeleteAsset,
+  "jitbit.disable_asset": handleJitbitDisableAsset,
   "jitbit.add_tag": handleJitbitAddTag,
   "jitbit.remove_tag": handleJitbitRemoveTag,
   "jitbit.add_time_entry": handleJitbitAddTimeEntry,

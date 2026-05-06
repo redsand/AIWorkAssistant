@@ -19,7 +19,7 @@ export interface DailyCommandCenterParams {
   includeRoadmap?: boolean;
   includeWorkItems?: boolean;
   includeJitbit?: boolean;
-  includeHawkSoar?: boolean;
+  includeHawkIr?: boolean;
   daysBack?: number;
 }
 
@@ -53,7 +53,7 @@ interface BriefData {
     followups: any[];
     highPriority: any[];
   };
-  hawkSoar: {
+  hawkIr: {
     riskyOpenCases: any[];
     caseCount: number;
     recentCases: any[];
@@ -78,7 +78,7 @@ class CtoDailyCommandCenter {
       roadmaps: [],
       workItems: [],
       jitbit: { recent: [], followups: [], highPriority: [] },
-      hawkSoar: { riskyOpenCases: [], caseCount: 0, recentCases: [], activeNodes: [] },
+      hawkIr: { riskyOpenCases: [], caseCount: 0, recentCases: [], activeNodes: [] },
       memories: [],
     };
 
@@ -172,8 +172,8 @@ class CtoDailyCommandCenter {
       sources.jitbit = { enabled: false, available: false };
     }
 
-    if (include.hawkSoar) {
-      await this.collect("hawkSoar", sources, async () => {
+    if (include.hawkIr) {
+      await this.collect("hawkIr", sources, async () => {
         if (!hawkIrService.isConfigured()) throw new Error("HAWK IR client not configured");
         const [riskyOpenCases, caseCount, recentCases, activeNodes] = await Promise.all([
           hawkIrService.getRiskyOpenCases({ minRiskLevel: "high", limit: 15 }).catch(() => []),
@@ -181,10 +181,10 @@ class CtoDailyCommandCenter {
           hawkIrService.getRecentCases(10).catch(() => []),
           hawkIrService.getActiveNodes().catch(() => []),
         ]);
-        data.hawkSoar = { riskyOpenCases, caseCount, recentCases, activeNodes };
+        data.hawkIr = { riskyOpenCases, caseCount, recentCases, activeNodes };
       });
     } else {
-      sources.hawkSoar = { enabled: false, available: false };
+      sources.hawkIr = { enabled: false, available: false };
     }
 
     await this.collect("memory", sources, async () => {
@@ -237,7 +237,7 @@ class CtoDailyCommandCenter {
       roadmap: params.includeRoadmap !== false,
       workItems: params.includeWorkItems !== false,
       jitbit: params.includeJitbit !== false,
-      hawkSoar: params.includeHawkSoar !== false,
+      hawkIr: params.includeHawkIr !== false,
     };
   }
 

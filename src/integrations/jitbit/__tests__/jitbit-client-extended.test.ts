@@ -115,66 +115,71 @@ describe("JitbitClient — Extended Methods", () => {
   });
 
   describe("subscribeToTicket", () => {
-    it("posts to /Subscribe with id param", async () => {
+    it("posts form-encoded to /AddSubscriber", async () => {
       mockPost.mockResolvedValue({ data: null });
       await client.subscribeToTicket(42);
-      expect(mockPost).toHaveBeenCalledWith("/Subscribe", null, { params: { id: 42 } });
+      const [url, body] = mockPost.mock.calls[0];
+      expect(url).toBe("/AddSubscriber");
+      expect((body as URLSearchParams).get("id")).toBe("42");
     });
 
     it("includes optional userId", async () => {
       mockPost.mockResolvedValue({ data: null });
       await client.subscribeToTicket(42, 5);
-      expect(mockPost).toHaveBeenCalledWith("/Subscribe", null, { params: { id: 42, userId: 5 } });
+      const body = mockPost.mock.calls[0][1] as URLSearchParams;
+      expect(body.get("userId")).toBe("5");
     });
   });
 
   describe("unsubscribeFromTicket", () => {
-    it("calls DELETE /Subscribe with id", async () => {
-      mockDelete.mockResolvedValue({ data: null });
+    it("posts form-encoded to /RemoveSubscriber", async () => {
+      mockPost.mockResolvedValue({ data: null });
       await client.unsubscribeFromTicket(42);
-      expect(mockDelete).toHaveBeenCalledWith("/Subscribe", { params: { id: 42 } });
+      const [url, body] = mockPost.mock.calls[0];
+      expect(url).toBe("/RemoveSubscriber");
+      expect((body as URLSearchParams).get("id")).toBe("42");
     });
   });
 
   // === Attachments ===
 
   describe("listAttachments", () => {
-    it("calls GET /Ticket/{id}/Attachments", async () => {
+    it("calls GET /Attachments?id=", async () => {
       const attachments = [{ ID: 1, FileName: "doc.pdf" }];
       mockGet.mockResolvedValue({ data: attachments });
       const result = await client.listAttachments(42);
-      expect(mockGet).toHaveBeenCalledWith("/Ticket/42/Attachments");
+      expect(mockGet).toHaveBeenCalledWith("/Attachments", { params: { id: 42 } });
       expect(result).toEqual(attachments);
     });
   });
 
   describe("getAttachment", () => {
-    it("calls GET /Attachment/{id} with arraybuffer", async () => {
+    it("calls GET /attachment?id= with arraybuffer", async () => {
       mockGet.mockResolvedValue({ data: Buffer.from("file-content") });
-      const result = await client.getAttachment(7);
-      expect(mockGet).toHaveBeenCalledWith("/Attachment/7", { responseType: "arraybuffer" });
-      expect(result).toBeDefined();
+      await client.getAttachment(7);
+      expect(mockGet).toHaveBeenCalledWith("/attachment", { params: { id: 7 }, responseType: "arraybuffer" });
     });
   });
 
   describe("addAttachment", () => {
-    it("posts multipart/form-data to /Ticket/{id}/Attachments", async () => {
+    it("posts multipart/form-data to /AttachFile with ticket id in body", async () => {
       mockPost.mockResolvedValue({ data: { id: 8 } });
       const result = await client.addAttachment(42, {
         fileName: "report.pdf",
         data: Buffer.from("pdf-content"),
-        commentBody: "See attached",
       });
-      expect(mockPost).toHaveBeenCalledWith("/Ticket/42/Attachments", expect.any(FormData));
+      const [url, body] = mockPost.mock.calls[0];
+      expect(url).toBe("/AttachFile");
+      expect(body).toBeInstanceOf(FormData);
       expect(result).toEqual({ id: 8 });
     });
   });
 
   describe("deleteAttachment", () => {
-    it("calls DELETE /Attachment/{id}", async () => {
-      mockDelete.mockResolvedValue({ data: null });
+    it("calls GET /DeleteFile?id= (Jitbit uses GET for delete)", async () => {
+      mockGet.mockResolvedValue({ data: null });
       await client.deleteAttachment(7);
-      expect(mockDelete).toHaveBeenCalledWith("/Attachment/7");
+      expect(mockGet).toHaveBeenCalledWith("/DeleteFile", { params: { id: 7 } });
     });
   });
 
@@ -182,99 +187,92 @@ describe("JitbitClient — Extended Methods", () => {
 
   describe("listAssets", () => {
     it("calls GET /Assets with params", async () => {
-      const assets = [{ AssetID: 1, Name: "Laptop" }];
+      const assets = [{ AssetID: 1 }];
       mockGet.mockResolvedValue({ data: assets });
-      const result = await client.listAssets({ search: "laptop", count: 10 });
-      expect(mockGet).toHaveBeenCalledWith("/Assets", { params: { search: "laptop", count: 10 } });
+      const result = await client.listAssets({ page: 2 });
+      expect(mockGet).toHaveBeenCalledWith("/Assets", { params: { page: 2 } });
       expect(result).toEqual(assets);
     });
   });
 
   describe("getAsset", () => {
-    it("calls GET /Assets/{id}", async () => {
-      const asset = { AssetID: 1, Name: "Server" };
+    it("calls GET /Asset?id=", async () => {
+      const asset = { AssetID: 1 };
       mockGet.mockResolvedValue({ data: asset });
       const result = await client.getAsset(1);
-      expect(mockGet).toHaveBeenCalledWith("/Assets/1");
+      expect(mockGet).toHaveBeenCalledWith("/Asset", { params: { id: 1 } });
       expect(result).toEqual(asset);
     });
   });
 
   describe("createAsset", () => {
-    it("posts JSON to /Assets", async () => {
+    it("posts form-encoded to /Asset", async () => {
       mockPost.mockResolvedValue({ data: { AssetID: 2 } });
-      const result = await client.createAsset({ name: "Router", serialNumber: "SN-001" });
-      expect(mockPost).toHaveBeenCalledWith("/Assets", { name: "Router", serialNumber: "SN-001" });
-      expect(result).toEqual({ AssetID: 2 });
+      await client.createAsset({ modelName: "Router", serialNumber: "SN-001" });
+      const [url, body] = mockPost.mock.calls[0];
+      expect(url).toBe("/Asset");
+      expect(body).toBeInstanceOf(URLSearchParams);
+      expect((body as URLSearchParams).get("modelName")).toBe("Router");
     });
   });
 
   describe("updateAsset", () => {
-    it("calls PUT /Assets/{id} with JSON body", async () => {
-      mockPut.mockResolvedValue({ data: { AssetID: 2 } });
-      const result = await client.updateAsset(2, { name: "Updated Router" });
-      expect(mockPut).toHaveBeenCalledWith("/Assets/2", { name: "Updated Router" });
-      expect(result).toEqual({ AssetID: 2 });
+    it("posts form-encoded to /UpdateAsset with id", async () => {
+      mockPost.mockResolvedValue({ data: { AssetID: 2 } });
+      await client.updateAsset(2, { modelName: "Updated Router" });
+      const [url, body] = mockPost.mock.calls[0];
+      expect(url).toBe("/UpdateAsset");
+      expect((body as URLSearchParams).get("id")).toBe("2");
+      expect((body as URLSearchParams).get("modelName")).toBe("Updated Router");
     });
   });
 
-  describe("deleteAsset", () => {
-    it("calls DELETE /Assets/{id}", async () => {
-      mockDelete.mockResolvedValue({ data: null });
-      await client.deleteAsset(2);
-      expect(mockDelete).toHaveBeenCalledWith("/Assets/2");
-    });
-  });
-
-  describe("getAssetTickets", () => {
-    it("calls GET /Assets/{id}/Tickets", async () => {
-      const tickets = [{ IssueID: 1 }];
-      mockGet.mockResolvedValue({ data: tickets });
-      const result = await client.getAssetTickets(2);
-      expect(mockGet).toHaveBeenCalledWith("/Assets/2/Tickets");
-      expect(result).toEqual(tickets);
+  describe("disableAsset", () => {
+    it("posts form-encoded to /DisableAsset", async () => {
+      mockPost.mockResolvedValue({ data: null });
+      await client.disableAsset(2);
+      const [url, body] = mockPost.mock.calls[0];
+      expect(url).toBe("/DisableAsset");
+      expect((body as URLSearchParams).get("assetId")).toBe("2");
     });
   });
 
   // === Custom Fields ===
 
   describe("listCustomFields", () => {
-    it("calls GET /CustomFields", async () => {
+    it("calls GET /CustomFields when no categoryId", async () => {
       const fields = [{ FieldID: 1, Name: "Department" }];
       mockGet.mockResolvedValue({ data: fields });
       const result = await client.listCustomFields();
-      expect(mockGet).toHaveBeenCalledWith("/CustomFields", { params: undefined });
+      expect(mockGet).toHaveBeenCalledWith("/CustomFields");
       expect(result).toEqual(fields);
     });
 
-    it("supports categoryId filter", async () => {
+    it("calls GET /CustomFieldsForCategory when categoryId provided", async () => {
       mockGet.mockResolvedValue({ data: [] });
       await client.listCustomFields({ categoryId: 5 });
-      expect(mockGet).toHaveBeenCalledWith("/CustomFields", { params: { categoryId: 5 } });
+      expect(mockGet).toHaveBeenCalledWith("/CustomFieldsForCategory", { params: { categoryId: 5 } });
     });
   });
 
   describe("setCustomFieldValue", () => {
-    it("posts form-encoded to /CustomFields/{fieldId}/Value", async () => {
+    it("posts form-encoded to /SetCustomField with ticketId, fieldId, value", async () => {
       mockPost.mockResolvedValue({ data: null });
       await client.setCustomFieldValue(42, 10, "Engineering");
-      expect(mockPost).toHaveBeenCalledWith(
-        "/CustomFields/10/Value",
-        expect.any(URLSearchParams),
-        { headers: { "Content-Type": "application/x-www-form-urlencoded" } },
-      );
-      const body = mockPost.mock.calls[0][1] as URLSearchParams;
-      expect(body.get("id")).toBe("42");
-      expect(body.get("value")).toBe("Engineering");
+      const [url, body] = mockPost.mock.calls[0];
+      expect(url).toBe("/SetCustomField");
+      expect((body as URLSearchParams).get("ticketId")).toBe("42");
+      expect((body as URLSearchParams).get("fieldId")).toBe("10");
+      expect((body as URLSearchParams).get("value")).toBe("Engineering");
     });
   });
 
   describe("getCustomFieldValues", () => {
-    it("calls GET /CustomFields/Values with id", async () => {
-      const values = [{ FieldID: 1, Name: "Dept", Value: "IT" }];
+    it("calls GET /TicketCustomFields?id=", async () => {
+      const values = [{ FieldID: 1, Value: "IT" }];
       mockGet.mockResolvedValue({ data: values });
       const result = await client.getCustomFieldValues(42);
-      expect(mockGet).toHaveBeenCalledWith("/CustomFields/Values", { params: { id: 42 } });
+      expect(mockGet).toHaveBeenCalledWith("/TicketCustomFields", { params: { id: 42 } });
       expect(result).toEqual(values);
     });
   });
@@ -283,7 +281,7 @@ describe("JitbitClient — Extended Methods", () => {
 
   describe("listTags", () => {
     it("calls GET /Tags", async () => {
-      const tags = [{ Name: "urgent", TagCount: 5 }];
+      const tags = [{ Name: "urgent" }];
       mockGet.mockResolvedValue({ data: tags });
       const result = await client.listTags();
       expect(mockGet).toHaveBeenCalledWith("/Tags");
@@ -292,96 +290,68 @@ describe("JitbitClient — Extended Methods", () => {
   });
 
   describe("addTag", () => {
-    it("posts to /Tag with id and name params", async () => {
+    it("posts form-encoded to /TagTicket", async () => {
       mockPost.mockResolvedValue({ data: null });
       await client.addTag(42, "urgent");
-      expect(mockPost).toHaveBeenCalledWith("/Tag", null, { params: { id: 42, name: "urgent" } });
+      const [url, body] = mockPost.mock.calls[0];
+      expect(url).toBe("/TagTicket");
+      expect((body as URLSearchParams).get("ticketId")).toBe("42");
+      expect((body as URLSearchParams).get("name")).toBe("urgent");
     });
   });
 
   describe("removeTag", () => {
-    it("calls DELETE /Tag with id and name params", async () => {
-      mockDelete.mockResolvedValue({ data: null });
-      await client.removeTag(42, "urgent");
-      expect(mockDelete).toHaveBeenCalledWith("/Tag", { params: { id: 42, name: "urgent" } });
-    });
-  });
-
-  // === Sections ===
-
-  describe("listSections", () => {
-    it("calls GET /Sections", async () => {
-      const sections = [{ SectionID: 1, Name: "General" }];
-      mockGet.mockResolvedValue({ data: sections });
-      const result = await client.listSections();
-      expect(mockGet).toHaveBeenCalledWith("/Sections", { params: undefined });
-      expect(result).toEqual(sections);
-    });
-
-    it("supports categoryId filter", async () => {
-      mockGet.mockResolvedValue({ data: [] });
-      await client.listSections(5);
-      expect(mockGet).toHaveBeenCalledWith("/Sections", { params: { categoryId: 5 } });
+    it("throws unsupported error", async () => {
+      await expect(client.removeTag(42, "urgent")).rejects.toThrow("does not support removing");
     });
   });
 
   // === Time Tracking ===
 
   describe("getTimeEntries", () => {
-    it("calls GET /Ticket/{id}/TimeTracking", async () => {
-      const entries = [{ TimeEntryID: 1, Minutes: 30 }];
+    it("calls GET /TimeSpentLog?ticketId=", async () => {
+      const entries = [{ TimeEntryID: 1 }];
       mockGet.mockResolvedValue({ data: entries });
       const result = await client.getTimeEntries(42);
-      expect(mockGet).toHaveBeenCalledWith("/Ticket/42/TimeTracking");
+      expect(mockGet).toHaveBeenCalledWith("/TimeSpentLog", { params: { ticketId: 42 } });
       expect(result).toEqual(entries);
     });
   });
 
   describe("addTimeEntry", () => {
-    it("posts JSON to /Ticket/{id}/TimeTracking", async () => {
+    it("posts form-encoded to /AddTimeSpent", async () => {
       mockPost.mockResolvedValue({ data: { id: 1 } });
-      await client.addTimeEntry(42, { minutes: 60, comment: "Testing", billable: true });
-      expect(mockPost).toHaveBeenCalledWith("/Ticket/42/TimeTracking", {
-        minutes: 60,
-        comment: "Testing",
-        billable: true,
-      });
+      await client.addTimeEntry(42, { timeSpentInSeconds: 3600 });
+      const [url, body] = mockPost.mock.calls[0];
+      expect(url).toBe("/AddTimeSpent");
+      expect((body as URLSearchParams).get("ticketId")).toBe("42");
+      expect((body as URLSearchParams).get("timeSpentInSeconds")).toBe("3600");
     });
   });
 
   describe("deleteTimeEntry", () => {
-    it("calls DELETE /TimeTracking/{id}", async () => {
-      mockDelete.mockResolvedValue({ data: null });
-      await client.deleteTimeEntry(7);
-      expect(mockDelete).toHaveBeenCalledWith("/TimeTracking/7");
+    it("throws unsupported error", async () => {
+      await expect(client.deleteTimeEntry(7)).rejects.toThrow("does not support deleting");
     });
   });
 
   // === Automation ===
 
-  describe("listAutomationRules", () => {
-    it("calls GET /AutomationRules", async () => {
-      const rules = [{ RuleID: 1, Name: "Auto-close" }];
-      mockGet.mockResolvedValue({ data: rules });
-      const result = await client.listAutomationRules();
-      expect(mockGet).toHaveBeenCalledWith("/AutomationRules", { params: undefined });
-      expect(result).toEqual(rules);
-    });
-
-    it("supports categoryId filter", async () => {
-      mockGet.mockResolvedValue({ data: [] });
-      await client.listAutomationRules(5);
-      expect(mockGet).toHaveBeenCalledWith("/AutomationRules", { params: { categoryId: 5 } });
+  describe("getAutomationRule", () => {
+    it("calls GET /Rule/{id}", async () => {
+      const rule = { RuleID: 1, Name: "Auto-close" };
+      mockGet.mockResolvedValue({ data: rule });
+      const result = await client.getAutomationRule(1);
+      expect(mockGet).toHaveBeenCalledWith("/Rule/1");
+      expect(result).toEqual(rule);
     });
   });
 
-  describe("triggerAutomation", () => {
-    it("posts to /AutomationRules/{ruleId}/Execute with ticket id", async () => {
+  describe("disableAutomationRule", () => {
+    it("posts to /DisableRule/{id}", async () => {
       mockPost.mockResolvedValue({ data: null });
-      await client.triggerAutomation(42, 3);
-      expect(mockPost).toHaveBeenCalledWith("/AutomationRules/3/Execute", null, {
-        params: { id: 42 },
-      });
+      await client.disableAutomationRule(3);
+      expect(mockPost).toHaveBeenCalledWith("/DisableRule/3", null);
     });
   });
 });

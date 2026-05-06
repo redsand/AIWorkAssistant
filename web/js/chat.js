@@ -320,6 +320,13 @@ export async function sendMessage() {
 
   const progressElRef = { progressEl: null };
 
+  // Show "AI Assistant is working..." immediately so the user sees real-time feedback
+  const immediateProgress = createToolProgress();
+  progressElRef.progressEl = immediateProgress.progressEl;
+  document.getElementById("chatMessages").appendChild(immediateProgress.progressEl);
+  document.getElementById("processingIndicator").classList.add("active");
+  scrollChatToBottom();
+
   try {
     const controller = new AbortController();
     setActiveStreamController(controller);
@@ -340,12 +347,16 @@ export async function sendMessage() {
 
     if (response.status === 401 || response.status === 403) {
       showTyping(false);
+      finalizeToolProgress();
+      document.getElementById("processingIndicator")?.classList.remove("active");
       showLoginOverlay();
       return;
     }
 
     if (!response.ok) {
       showTyping(false);
+      finalizeToolProgress();
+      document.getElementById("processingIndicator")?.classList.remove("active");
       let errorText = `Server returned ${response.status}`;
       try {
         const errBody = await response.json();
@@ -360,6 +371,7 @@ export async function sendMessage() {
     const result = await handleStreamResponse(response, progressElRef);
 
     finalizeToolProgress();
+    document.getElementById("processingIndicator")?.classList.remove("active");
     showTyping(false);
 
     if (result.error) return;
@@ -443,6 +455,13 @@ export async function resendMessage(message) {
 
   const progressElRef = { progressEl: null };
 
+  // Show "AI Assistant is working..." immediately so the user sees real-time feedback
+  const immediateProgress = createToolProgress();
+  progressElRef.progressEl = immediateProgress.progressEl;
+  document.getElementById("chatMessages").appendChild(immediateProgress.progressEl);
+  document.getElementById("processingIndicator").classList.add("active");
+  scrollChatToBottom();
+
   try {
     const controller = new AbortController();
     setActiveStreamController(controller);
@@ -463,12 +482,16 @@ export async function resendMessage(message) {
 
     if (response.status === 401 || response.status === 403) {
       showTyping(false);
+      finalizeToolProgress();
+      document.getElementById("processingIndicator")?.classList.remove("active");
       showLoginOverlay();
       return;
     }
 
     if (!response.ok) {
       showTyping(false);
+      finalizeToolProgress();
+      document.getElementById("processingIndicator")?.classList.remove("active");
       let errorText = `Server returned ${response.status}`;
       try {
         const errBody = await response.json();
@@ -483,6 +506,7 @@ export async function resendMessage(message) {
     const result = await handleStreamResponse(response, progressElRef);
 
     finalizeToolProgress();
+    document.getElementById("processingIndicator")?.classList.remove("active");
     showTyping(false);
 
     if (result.error) return;

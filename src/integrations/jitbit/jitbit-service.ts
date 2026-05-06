@@ -268,16 +268,12 @@ export class JitbitService {
     return this.client.updateAsset(assetId, params);
   }
 
-  async deleteAsset(assetId: number): Promise<unknown> {
-    return this.client.deleteAsset(assetId);
+  async disableAsset(assetId: number): Promise<unknown> {
+    return this.client.disableAsset(assetId);
   }
 
   async searchAssets(query: string): Promise<JitbitAsset[]> {
     return this.client.listAssets({ search: query });
-  }
-
-  async getAssetTickets(assetId: number): Promise<JitbitTicket[]> {
-    return this.client.getAssetTickets(assetId);
   }
 
   // === Custom Fields ===
@@ -304,8 +300,8 @@ export class JitbitService {
     return this.client.addTag(ticketId, tagName);
   }
 
-  async removeTag(ticketId: number, tagName: string): Promise<unknown> {
-    return this.client.removeTag(ticketId, tagName);
+  async removeTag(_ticketId: number, _tagName: string): Promise<unknown> {
+    throw new Error("Jitbit API does not support removing individual tags. Use updateTicket with the tags field instead.");
   }
 
   // === Sections ===
@@ -324,18 +320,22 @@ export class JitbitService {
     return this.client.addTimeEntry(ticketId, params);
   }
 
-  async deleteTimeEntry(entryId: number): Promise<unknown> {
-    return this.client.deleteTimeEntry(entryId);
+  async deleteTimeEntry(_entryId: number): Promise<unknown> {
+    throw new Error("Jitbit API does not support deleting time entries.");
   }
 
   // === Automation ===
 
-  async listAutomationRules(categoryId?: number): Promise<JitbitAutomationRule[]> {
-    return this.client.listAutomationRules(categoryId);
+  async getAutomationRule(ruleId: number): Promise<JitbitAutomationRule> {
+    return this.client.getAutomationRule(ruleId);
   }
 
-  async triggerAutomation(ticketId: number, ruleId: number): Promise<unknown> {
-    return this.client.triggerAutomation(ticketId, ruleId);
+  async disableAutomationRule(ruleId: number): Promise<unknown> {
+    return this.client.disableAutomationRule(ruleId);
+  }
+
+  async enableAutomationRule(ruleId: number): Promise<unknown> {
+    return this.client.enableAutomationRule(ruleId);
   }
 
   private isHighPriority(ticket: JitbitTicket): boolean {

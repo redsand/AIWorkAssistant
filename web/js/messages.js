@@ -282,6 +282,13 @@ export function completeToolCall(id, result) {
 export function finalizeToolProgress() {
   const progressEls = document.querySelectorAll(".tool-progress");
   progressEls.forEach((el) => {
+    const toolCallItems = el.querySelectorAll(".tool-call-item");
+    // If no tool calls were made (pre-created progress was never used), remove it entirely
+    if (toolCallItems.length === 0) {
+      el.remove();
+      return;
+    }
+
     const headerText = el.querySelector(".tool-progress-header-left");
     const headerStatus = el.querySelector(
       ".tool-progress-header-left .tool-call-status",

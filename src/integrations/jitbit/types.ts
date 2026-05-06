@@ -231,20 +231,27 @@ export interface JitbitAssetCustomField {
 }
 
 export interface JitbitListAssetsParams {
-  companyId?: number;
-  categoryId?: number;
-  search?: string;
-  count?: number;
   page?: number;
+  assignedToUserId?: number;
+  assignedToCompanyId?: number;
+  assignedToDepartmentId?: number;
+  assignedToTicketId?: number;
+  nameprefix?: string;
+  includeDisabled?: boolean;
+  // Non-API convenience field used locally for search filtering
+  search?: string;
 }
 
 export interface JitbitCreateAssetParams {
-  name: string;
-  categoryId?: number;
-  companyId?: number;
+  modelName: string;
+  manufacturer?: string;
+  type?: string;
+  supplier?: string;
   serialNumber?: string;
-  notes?: string;
-  customFields?: Record<string, string>;
+  location?: string;
+  comments?: string;
+  quantity?: number;
+  companyId?: number;
 }
 
 export interface JitbitUpdateAssetParams extends Partial<JitbitCreateAssetParams> {}
@@ -301,10 +308,8 @@ export interface JitbitTimeEntry {
 }
 
 export interface JitbitAddTimeEntryParams {
-  minutes: number;
-  date?: string;
-  comment?: string;
-  billable?: boolean;
+  timeSpentInSeconds: number;
+  statusId?: number;
 }
 
 // === Automation ===

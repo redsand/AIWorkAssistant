@@ -14,7 +14,6 @@ const {
   mockUpdateAsset,
   mockDeleteAsset,
   mockGetAsset,
-  mockGetAssetTickets,
   mockListCustomFields,
   mockGetCustomFieldValues,
   mockSetCustomFieldValue,
@@ -40,7 +39,6 @@ const {
   mockUpdateAsset: vi.fn(),
   mockDeleteAsset: vi.fn(),
   mockGetAsset: vi.fn(),
-  mockGetAssetTickets: vi.fn(),
   mockListCustomFields: vi.fn(),
   mockGetCustomFieldValues: vi.fn(),
   mockSetCustomFieldValue: vi.fn(),
@@ -67,9 +65,8 @@ vi.mock("../jitbit-client", () => ({
     listAssets: mockListAssets,
     createAsset: mockCreateAsset,
     updateAsset: mockUpdateAsset,
-    deleteAsset: mockDeleteAsset,
+    disableAsset: mockDeleteAsset,
     getAsset: mockGetAsset,
-    getAssetTickets: mockGetAssetTickets,
     listCustomFields: mockListCustomFields,
     getCustomFieldValues: mockGetCustomFieldValues,
     setCustomFieldValue: mockSetCustomFieldValue,
@@ -79,8 +76,9 @@ vi.mock("../jitbit-client", () => ({
     listSections: mockListSections,
     getTimeEntries: mockGetTimeEntries,
     addTimeEntry: mockAddTimeEntry,
-    listAutomationRules: mockListAutomationRules,
-    triggerAutomation: mockTriggerAutomation,
+    getAutomationRule: mockListAutomationRules,
+    disableAutomationRule: mockTriggerAutomation,
+    enableAutomationRule: vi.fn(),
     getBaseUrl: vi.fn(() => "https://test.jitbit.com/helpdesk/api"),
   })),
   jitbitClient: {
@@ -95,9 +93,8 @@ vi.mock("../jitbit-client", () => ({
     listAssets: mockListAssets,
     createAsset: mockCreateAsset,
     updateAsset: mockUpdateAsset,
-    deleteAsset: mockDeleteAsset,
+    disableAsset: mockDeleteAsset,
     getAsset: mockGetAsset,
-    getAssetTickets: mockGetAssetTickets,
     listCustomFields: mockListCustomFields,
     getCustomFieldValues: mockGetCustomFieldValues,
     setCustomFieldValue: mockSetCustomFieldValue,
@@ -107,8 +104,9 @@ vi.mock("../jitbit-client", () => ({
     listSections: mockListSections,
     getTimeEntries: mockGetTimeEntries,
     addTimeEntry: mockAddTimeEntry,
-    listAutomationRules: mockListAutomationRules,
-    triggerAutomation: mockTriggerAutomation,
+    getAutomationRule: mockListAutomationRules,
+    disableAutomationRule: mockTriggerAutomation,
+    enableAutomationRule: vi.fn(),
     getBaseUrl: vi.fn(() => "https://test.jitbit.com/helpdesk/api"),
   },
 }));
@@ -236,36 +234,27 @@ describe("JitbitService — Extended Methods", () => {
   });
 
   describe("createAsset", () => {
-    it("delegates to client", async () => {
+    it("delegates to client with modelName", async () => {
       mockCreateAsset.mockResolvedValue({ AssetID: 2 });
-      const result = await service.createAsset({ name: "Router" });
-      expect(mockCreateAsset).toHaveBeenCalledWith({ name: "Router" });
+      const result = await service.createAsset({ modelName: "Router" });
+      expect(mockCreateAsset).toHaveBeenCalledWith({ modelName: "Router" });
       expect(result).toEqual({ AssetID: 2 });
     });
   });
 
   describe("updateAsset", () => {
-    it("delegates to client", async () => {
+    it("delegates to client with modelName", async () => {
       mockUpdateAsset.mockResolvedValue({ AssetID: 2 });
-      await service.updateAsset(2, { name: "Updated" });
-      expect(mockUpdateAsset).toHaveBeenCalledWith(2, { name: "Updated" });
+      await service.updateAsset(2, { modelName: "Updated Router" });
+      expect(mockUpdateAsset).toHaveBeenCalledWith(2, { modelName: "Updated Router" });
     });
   });
 
-  describe("deleteAsset", () => {
+  describe("disableAsset", () => {
     it("delegates to client", async () => {
       mockDeleteAsset.mockResolvedValue(null);
-      await service.deleteAsset(2);
+      await service.disableAsset(2);
       expect(mockDeleteAsset).toHaveBeenCalledWith(2);
-    });
-  });
-
-  describe("getAssetTickets", () => {
-    it("delegates to client", async () => {
-      mockGetAssetTickets.mockResolvedValue([{ IssueID: 1 }]);
-      const result = await service.getAssetTickets(2);
-      expect(mockGetAssetTickets).toHaveBeenCalledWith(2);
-      expect(result).toEqual([{ IssueID: 1 }]);
     });
   });
 
@@ -322,10 +311,8 @@ describe("JitbitService — Extended Methods", () => {
   });
 
   describe("removeTag", () => {
-    it("delegates to client", async () => {
-      mockRemoveTag.mockResolvedValue(null);
-      await service.removeTag(42, "urgent");
-      expect(mockRemoveTag).toHaveBeenCalledWith(42, "urgent");
+    it("throws unsupported error", async () => {
+      await expect(service.removeTag(42, "urgent")).rejects.toThrow("does not support removing");
     });
   });
 
@@ -341,10 +328,10 @@ describe("JitbitService — Extended Methods", () => {
   });
 
   describe("addTimeEntry", () => {
-    it("delegates to client", async () => {
+    it("delegates to client with timeSpentInSeconds", async () => {
       mockAddTimeEntry.mockResolvedValue({ id: 1 });
-      await service.addTimeEntry(42, { minutes: 60, comment: "Work done" });
-      expect(mockAddTimeEntry).toHaveBeenCalledWith(42, { minutes: 60, comment: "Work done" });
+      await service.addTimeEntry(42, { timeSpentInSeconds: 3600 });
+      expect(mockAddTimeEntry).toHaveBeenCalledWith(42, { timeSpentInSeconds: 3600 });
     });
   });
 
@@ -366,26 +353,20 @@ describe("JitbitService — Extended Methods", () => {
 
   // === Automation ===
 
-  describe("listAutomationRules", () => {
+  describe("getAutomationRule", () => {
     it("delegates to client", async () => {
-      mockListAutomationRules.mockResolvedValue([{ RuleID: 1, Name: "Auto-close" }]);
-      const result = await service.listAutomationRules();
-      expect(mockListAutomationRules).toHaveBeenCalledWith(undefined);
-      expect(result).toEqual([{ RuleID: 1, Name: "Auto-close" }]);
-    });
-
-    it("delegates to client with categoryId", async () => {
-      mockListAutomationRules.mockResolvedValue([]);
-      await service.listAutomationRules(5);
-      expect(mockListAutomationRules).toHaveBeenCalledWith(5);
+      mockListAutomationRules.mockResolvedValue({ RuleID: 1, Name: "Auto-close" });
+      const result = await service.getAutomationRule(1);
+      expect(mockListAutomationRules).toHaveBeenCalledWith(1);
+      expect(result).toEqual({ RuleID: 1, Name: "Auto-close" });
     });
   });
 
-  describe("triggerAutomation", () => {
+  describe("disableAutomationRule", () => {
     it("delegates to client", async () => {
       mockTriggerAutomation.mockResolvedValue(null);
-      await service.triggerAutomation(42, 3);
-      expect(mockTriggerAutomation).toHaveBeenCalledWith(42, 3);
+      await service.disableAutomationRule(3);
+      expect(mockTriggerAutomation).toHaveBeenCalledWith(3);
     });
   });
 });

@@ -237,6 +237,9 @@ export class JitbitClient {
     return response.data;
   }
 
+  // Note: Jitbit has no /Statuses endpoint. Status IDs are fixed:
+  // 1=New, 2=In Process, 3=Closed. Custom statuses have IDs >3.
+  // This method is kept for compatibility but will 404 on most instances.
   async listStatuses(): Promise<JitbitStatus[]> {
     this.ensureConfigured();
     const response = await this.client.get("/Statuses");
@@ -326,17 +329,23 @@ export class JitbitClient {
 
   async subscribeToTicket(ticketId: number, userId?: number): Promise<unknown> {
     this.ensureConfigured();
-    const params: Record<string, unknown> = { id: ticketId };
-    if (userId !== undefined) params.userId = userId;
-    const response = await this.client.post("/Subscribe", null, { params });
+    const payload = new URLSearchParams();
+    payload.set("id", String(ticketId));
+    if (userId !== undefined) payload.set("userId", String(userId));
+    const response = await this.client.post("/AddSubscriber", payload, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
     return response.data;
   }
 
   async unsubscribeFromTicket(ticketId: number, userId?: number): Promise<unknown> {
     this.ensureConfigured();
-    const params: Record<string, unknown> = { id: ticketId };
-    if (userId !== undefined) params.userId = userId;
-    const response = await this.client.delete("/Subscribe", { params });
+    const payload = new URLSearchParams();
+    payload.set("id", String(ticketId));
+    if (userId !== undefined) payload.set("userId", String(userId));
+    const response = await this.client.post("/RemoveSubscriber", payload, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
     return response.data;
   }
 
@@ -344,13 +353,16 @@ export class JitbitClient {
 
   async listAttachments(ticketId: number): Promise<JitbitAttachment[]> {
     this.ensureConfigured();
-    const response = await this.client.get(`/Ticket/${ticketId}/Attachments`);
+    const response = await this.client.get("/Attachments", {
+      params: { id: ticketId },
+    });
     return response.data;
   }
 
   async getAttachment(attachmentId: number): Promise<unknown> {
     this.ensureConfigured();
-    const response = await this.client.get(`/Attachment/${attachmentId}`, {
+    const response = await this.client.get("/attachment", {
+      params: { id: attachmentId },
       responseType: "arraybuffer",
     });
     return response.data;
@@ -362,18 +374,18 @@ export class JitbitClient {
   ): Promise<unknown> {
     this.ensureConfigured();
     const formData = new FormData();
+    formData.append("id", String(ticketId));
     formData.append("file", new Blob([params.data]), params.fileName);
-    if (params.commentBody) formData.append("commentBody", params.commentBody);
-    const response = await this.client.post(
-      `/Ticket/${ticketId}/Attachments`,
-      formData,
-    );
+    const response = await this.client.post("/AttachFile", formData);
     return response.data;
   }
 
   async deleteAttachment(attachmentId: number): Promise<unknown> {
     this.ensureConfigured();
-    const response = await this.client.delete(`/Attachment/${attachmentId}`);
+    // Jitbit uses GET for delete (not REST-conventional)
+    const response = await this.client.get("/DeleteFile", {
+      params: { id: attachmentId },
+    });
     return response.data;
   }
 
@@ -387,13 +399,19 @@ export class JitbitClient {
 
   async getAsset(assetId: number): Promise<JitbitAsset> {
     this.ensureConfigured();
-    const response = await this.client.get(`/Assets/${assetId}`);
+    const response = await this.client.get("/Asset", { params: { id: assetId } });
     return response.data;
   }
 
   async createAsset(params: JitbitCreateAssetParams): Promise<JitbitAsset> {
     this.ensureConfigured();
-    const response = await this.client.post("/Assets", params);
+    const payload = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null) payload.set(key, String(value));
+    }
+    const response = await this.client.post("/Asset", payload, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
     return response.data;
   }
 
@@ -402,19 +420,24 @@ export class JitbitClient {
     params: JitbitUpdateAssetParams,
   ): Promise<JitbitAsset> {
     this.ensureConfigured();
-    const response = await this.client.put(`/Assets/${assetId}`, params);
+    const payload = new URLSearchParams();
+    payload.set("id", String(assetId));
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null) payload.set(key, String(value));
+    }
+    const response = await this.client.post("/UpdateAsset", payload, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
     return response.data;
   }
 
-  async deleteAsset(assetId: number): Promise<unknown> {
+  async disableAsset(assetId: number): Promise<unknown> {
     this.ensureConfigured();
-    const response = await this.client.delete(`/Assets/${assetId}`);
-    return response.data;
-  }
-
-  async getAssetTickets(assetId: number): Promise<JitbitTicket[]> {
-    this.ensureConfigured();
-    const response = await this.client.get(`/Assets/${assetId}/Tickets`);
+    const payload = new URLSearchParams();
+    payload.set("assetId", String(assetId));
+    const response = await this.client.post("/DisableAsset", payload, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
     return response.data;
   }
 
@@ -422,7 +445,14 @@ export class JitbitClient {
 
   async listCustomFields(params?: { categoryId?: number }): Promise<JitbitCustomField[]> {
     this.ensureConfigured();
-    const response = await this.client.get("/CustomFields", { params });
+    // Use CustomFieldsForCategory when categoryId provided, else list all
+    if (params?.categoryId) {
+      const response = await this.client.get("/CustomFieldsForCategory", {
+        params: { categoryId: params.categoryId },
+      });
+      return response.data;
+    }
+    const response = await this.client.get("/CustomFields");
     return response.data;
   }
 
@@ -433,19 +463,18 @@ export class JitbitClient {
   ): Promise<unknown> {
     this.ensureConfigured();
     const payload = new URLSearchParams();
-    payload.set("id", String(ticketId));
+    payload.set("ticketId", String(ticketId));
+    payload.set("fieldId", String(fieldId));
     payload.set("value", value);
-    const response = await this.client.post(
-      `/CustomFields/${fieldId}/Value`,
-      payload,
-      { headers: { "Content-Type": "application/x-www-form-urlencoded" } },
-    );
+    const response = await this.client.post("/SetCustomField", payload, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
     return response.data;
   }
 
   async getCustomFieldValues(ticketId: number): Promise<JitbitCustomFieldValue[]> {
     this.ensureConfigured();
-    const response = await this.client.get("/CustomFields/Values", {
+    const response = await this.client.get("/TicketCustomFields", {
       params: { id: ticketId },
     });
     return response.data;
@@ -461,18 +490,18 @@ export class JitbitClient {
 
   async addTag(ticketId: number, tagName: string): Promise<unknown> {
     this.ensureConfigured();
-    const response = await this.client.post("/Tag", null, {
-      params: { id: ticketId, name: tagName },
+    const payload = new URLSearchParams();
+    payload.set("ticketId", String(ticketId));
+    payload.set("name", tagName);
+    const response = await this.client.post("/TagTicket", payload, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
     });
     return response.data;
   }
 
-  async removeTag(ticketId: number, tagName: string): Promise<unknown> {
-    this.ensureConfigured();
-    const response = await this.client.delete("/Tag", {
-      params: { id: ticketId, name: tagName },
-    });
-    return response.data;
+  // Note: Jitbit API has no documented tag removal endpoint.
+  async removeTag(_ticketId: number, _tagName: string): Promise<unknown> {
+    throw new Error("Jitbit API does not support removing individual tags. Update tags via UpdateTicket instead.");
   }
 
   // === Sections ===
@@ -489,7 +518,9 @@ export class JitbitClient {
 
   async getTimeEntries(ticketId: number): Promise<JitbitTimeEntry[]> {
     this.ensureConfigured();
-    const response = await this.client.get(`/Ticket/${ticketId}/TimeTracking`);
+    const response = await this.client.get("/TimeSpentLog", {
+      params: { ticketId },
+    });
     return response.data;
   }
 
@@ -498,36 +529,39 @@ export class JitbitClient {
     params: JitbitAddTimeEntryParams,
   ): Promise<unknown> {
     this.ensureConfigured();
-    const response = await this.client.post(
-      `/Ticket/${ticketId}/TimeTracking`,
-      params,
-    );
-    return response.data;
-  }
-
-  async deleteTimeEntry(entryId: number): Promise<unknown> {
-    this.ensureConfigured();
-    const response = await this.client.delete(`/TimeTracking/${entryId}`);
-    return response.data;
-  }
-
-  // === Automation ===
-
-  async listAutomationRules(categoryId?: number): Promise<JitbitAutomationRule[]> {
-    this.ensureConfigured();
-    const response = await this.client.get("/AutomationRules", {
-      params: categoryId ? { categoryId } : undefined,
+    const payload = new URLSearchParams();
+    payload.set("ticketId", String(ticketId));
+    payload.set("timeSpentInSeconds", String(params.timeSpentInSeconds));
+    if (params.statusId !== undefined) payload.set("statusId", String(params.statusId));
+    const response = await this.client.post("/AddTimeSpent", payload, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
     });
     return response.data;
   }
 
-  async triggerAutomation(ticketId: number, ruleId: number): Promise<unknown> {
+  // Note: Jitbit API has no delete time entry endpoint.
+  async deleteTimeEntry(_entryId: number): Promise<unknown> {
+    throw new Error("Jitbit API does not support deleting time entries.");
+  }
+
+  // === Automation ===
+
+  // Note: Jitbit API only supports GET /Rule/{id} — no list endpoint exists.
+  async getAutomationRule(ruleId: number): Promise<JitbitAutomationRule> {
     this.ensureConfigured();
-    const response = await this.client.post(
-      `/AutomationRules/${ruleId}/Execute`,
-      null,
-      { params: { id: ticketId } },
-    );
+    const response = await this.client.get(`/Rule/${ruleId}`);
+    return response.data;
+  }
+
+  async disableAutomationRule(ruleId: number): Promise<unknown> {
+    this.ensureConfigured();
+    const response = await this.client.post(`/DisableRule/${ruleId}`, null);
+    return response.data;
+  }
+
+  async enableAutomationRule(ruleId: number): Promise<unknown> {
+    this.ensureConfigured();
+    const response = await this.client.post(`/EnableRule/${ruleId}`, null);
     return response.data;
   }
 
