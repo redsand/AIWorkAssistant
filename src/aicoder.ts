@@ -795,6 +795,13 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     return null;
   }
 
+  if (!runTests()) {
+    runLogger.logError("Tests failed — skipping push");
+    runLogger.endRun(1);
+    processedIssues.add(item.number);
+    return;
+  }
+
   if (!pushBranch(branchName)) {
     runLogger.logError(`Push failed — PR not created`);
     runLogger.endRun(1);
