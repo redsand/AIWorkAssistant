@@ -87,6 +87,7 @@ interface ReviewResult {
   clean: boolean;
   findings: ReviewFinding[];
   summary: string;
+  agentStatus?: Record<string, "passed" | "failed">;
 }
 
 async function loadConfig(): Promise<ReviewerConfig> {
@@ -199,8 +200,19 @@ async function runAiReview(
       summary: data.summary ?? buildSummary(findings),
     };
   } catch (err) {
-    console.error("[ERROR] AI review failed, returning empty findings:", err instanceof Error ? err.message : err);
-    return { clean: true, findings: [], summary: "AI review unavailable — treating as clean" };
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[ERROR] AI review failed:", message);
+    return {
+      clean: false,
+      findings: [{
+        severity: "critical",
+        category: "security",
+        file: "*",
+        message: `AI review service unavailable: ${message}`,
+        suggestion: "Re-run review after the AI review service is restored. Do not merge without review.",
+      }],
+      summary: `AI review unavailable — blocking merge. Error: ${message}`,
+    };
   }
 }
 
@@ -249,11 +261,16 @@ async function runMultiAgentReview(
     return gh.getPRDiff(repo, prNumber);
   })();
 
-  const findings: ReviewFinding[] = [
-    ...runAgentReview(diff, "security", config.securityAgentCmd),
-    ...runAgentReview(diff, "qa", config.qaAgentCmd),
-    ...runAgentReview(diff, "quality", config.qualityAgentCmd),
-  ];
+  const sec = runAgentReview(diff, "security", config.securityAgentCmd);
+  const qa = runAgentReview(diff, "qa", config.qaAgentCmd);
+  const qual = runAgentReview(diff, "quality", config.qualityAgentCmd);
+
+  const findings: ReviewFinding[] = [...sec.findings, ...qa.findings, ...qual.findings];
+  const agentStatus: Record<string, "passed" | "failed"> = {
+    security: sec.status,
+    qa: qa.status,
+    quality: qual.status,
+  };
 
   const hasCriticalOrHigh = findings.some(
     (f) => f.severity === "critical" || f.severity === "high",
@@ -263,6 +280,7 @@ async function runMultiAgentReview(
     clean: !hasCriticalOrHigh,
     findings,
     summary: buildSummary(findings),
+    agentStatus,
   };
 }
 
@@ -270,18 +288,35 @@ function runAgentReview(
   diff: string,
   category: "security" | "qa" | "quality",
   cmd: string,
-): ReviewFinding[] {
+): { findings: ReviewFinding[]; status: "passed" | "failed" } {
   try {
     const output = execSync(cmd, {
       input: diff,
       encoding: "utf-8",
       timeout: 300_000,
     });
-    return JSON.parse(output) as ReviewFinding[];
+    return { findings: JSON.parse(output) as ReviewFinding[], status: "passed" };
   } catch (err) {
-    console.error(`[ERROR] ${category} agent failed:`, err instanceof Error ? err.message : err);
-    return [];
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[ERROR] ${category} agent failed:`, message);
+    return {
+      status: "failed",
+      findings: [{
+        severity: "critical",
+        category,
+        file: "*",
+        message: `${category} review agent failed: ${message}`,
+        suggestion: `Fix the ${category} agent and re-run review before merging.`,
+      }],
+    };
   }
+}
+
+function formatAgentStatus(agentStatus?: Record<string, "passed" | "failed">): string {
+  if (!agentStatus) return "**Review agents:** Security ✓ | QA ✓ | Quality ✓";
+  const fmt = (cat: string, label: string) =>
+    agentStatus[cat] === "failed" ? `${label} ✗ (failed)` : `${label} ✓`;
+  return `**Review agents:** ${fmt("security", "Security")} | ${fmt("qa", "QA")} | ${fmt("quality", "Quality")}`;
 }
 
 function buildSummary(findings: ReviewFinding[]): string {
@@ -297,10 +332,11 @@ async function mergeWithSummary(
   pr: { number: number; title: string },
   result: ReviewResult,
 ): Promise<void> {
+  const agentLine = formatAgentStatus(result.agentStatus);
   await gh.addIssueComment(
     repo,
     pr.number,
-    `## ✅ Review Passed — Merging\n\n${result.summary}\n\n**Review agents:** Security ✓ | QA ✓ | Quality ✓\n\nMerging now.`,
+    `## ✅ Review Passed — Merging\n\n${result.summary}\n\n${agentLine}\n\nMerging now.`,
   );
   await gh.mergePR(repo, pr.number, `Merge [AI] ${pr.title}`, result.summary);
   console.log(`[MERGE] PR #${pr.number} merged in ${repo}`);

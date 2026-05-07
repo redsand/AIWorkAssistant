@@ -1,17 +1,22 @@
-# AI Assistant
+# AIWorkAssistant
 
-A guarded productivity and engineering agent with local-first calendar, Jira, GitLab, and GitHub integration.
+A personal productivity and engineering agent for CTOs and engineering leaders. Aggregates calendar, Jira, GitLab, GitHub, Jitbit, and HAWK IR into actionable daily briefs, code reviews, product signals, and work tracking — all behind a guardrails system that prevents destructive actions without approval.
 
-**Status:** v0.2.0 — Multi-provider AI with robust agent loop, 100+ tool handlers, full GitHub/GitLab/Jira CRUD, streaming chat, auto-compaction, and comprehensive test coverage.
+**Status:** v0.2.0 — Multi-provider AI with robust agent loop, 267+ tool handlers, full GitHub/GitLab/Jira/Jitbit/HAWK IR CRUD, streaming chat, auto-compaction, push notifications, and comprehensive test coverage.
 
 ## Overview
 
-AI Assistant is a personal productivity and engineering copilot that helps you:
+AIWorkAssistant is a personal productivity and engineering copilot that helps you:
 
-- **Personal Productivity**: Plan your day, protect focus/fitness/mental-health time, manage Jira tickets, and connect GitLab/GitHub activity to Jira work
-- **Engineering Strategy**: Convert vague app ideas into workflow-first designs with thoughtful architecture, scaffolding, and implementation plans — now with real tool dispatch handlers
-- **Calendar Integration**: Local file-based calendar with ICS export for iPhone subscription via Cloudflare tunnel
-- **Multi-Provider AI**: Switch between Ollama (local/cloud), Z.ai, and OpenCode providers with consistent behavior across all three
+- **Personal Productivity** — Plan your day, protect focus/fitness/mental-health time, manage Jira tickets, and connect GitLab/GitHub activity to Jira work
+- **CTO Daily Command Center** — Aggregated daily brief from 8+ integration sources with suggested actions
+- **Personal OS Brief** — Load assessment, open loops, pattern detection, delegation suggestions, focus blocks
+- **Product Chief of Staff** — Customer signals, workflow briefs, roadmap proposals, drift analysis, weekly updates
+- **Code Review** — AI-powered GitHub PR and GitLab MR review with risk scoring and release readiness
+- **Engineering Strategy** — Convert vague app ideas into workflow-first designs with architecture, scaffolding, and Jira tickets
+- **HAWK IR Integration** — Full case management, log search, asset/identity tracking, quarantine, and hybrid tool execution
+- **Work Items** — Internal task tracking with types, statuses, linked resources, and notes
+- **Push Notifications** — Real-time alerts for HAWK IR cases and Jitbit tickets with escalation tiers
 
 **Core Philosophy**: Design from workflows. Scaffold from architecture. Implement with guardrails. Iterate from evidence.
 
@@ -19,251 +24,498 @@ AI Assistant is a personal productivity and engineering copilot that helps you:
 
 Visit **`/capabilities`** in the web UI to browse all available agents, tool categories, and individual tools with descriptions, risk levels, and parameter signatures.
 
-- **GET `/api/agents`** — all agent modes and specialized API capabilities
-- **GET `/api/tools`** — all 267+ tools with metadata
-- **GET `/api/tools/categories`** — tools grouped by category
+## What Works Now
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Chat API | ✅ Real | Streaming, sessions, memory, tool calling, thinking display, multi-step agent loop |
+| Multi-Provider AI | ✅ Real | Ollama, Z.ai, OpenCode with retry/rate-limit handling |
+| Agent Loop | ✅ Real | History accumulation, loop guard, system prompts, JSON protection |
+| Dynamic Tools | ✅ Real | Core set + `discover_tools` for on-demand expansion (267+ tools) |
+| Tool Dispatcher | ✅ Real | 100+ handlers: Jira, GitLab, GitHub, Calendar, Jira, Roadmap, Engineering, HAWK IR |
+| Engineering Tools | ✅ Real | Workflow brief, architecture proposal, scaffolding plan, Jira ticket generation |
+| Policy Engine | ✅ Real | Pattern matching, 3-tier modes |
+| Guardrails | ✅ Real | 18+ critical actions, rate limiting, MFA, dry-run, REST API |
+| Approval Queue | ✅ Real | SQLite-persisted, dispatches approved actions via dispatcher |
+| Jira Integration | ✅ Real | Full CRUD, v2/v3 fallback, comments, transitions, list projects |
+| GitLab Integration | ✅ Real | REST API with retry, commits, MRs, files, pipelines, issues, branches, tags, blame, compare, webhooks |
+| GitHub Integration | ✅ Real | Repos, files, branches, PRs, issues, workflows, releases, tags, commits, blame, compare, code search |
+| Jitbit Integration | ✅ Real | 21 tools: ticket lifecycle, assets CRUD, custom fields, tags, time tracking, automation, comments, companies, users, snapshots |
+| HAWK IR Integration | ✅ Real | 37 tools: cases, assets, identities, logs, search, escalation, quarantine, hybrid tool execution, weekly/monthly reports |
+| File Calendar + ICS | ✅ Real | CRUD, RFC 5545 ICS export, iPhone subscription via tunnel |
+| Cloudflare Tunnel | ✅ Real | Starts at boot for external ICS access |
+| Google Calendar | ✅ Real | OAuth2 + Calendar API |
+| Conversation Memory | ✅ Real | LLM-based auto-compaction, file persistence, search, metadata preservation |
+| Entity Memory | ✅ Real | People, organizations, projects with facts and relationships |
+| Audit Logger | ✅ Real | Write + query with severity filtering and JSONL storage |
+| Roadmap CRUD | ✅ Real | SQLite-backed CRUD + milestones + items + delete + templates |
+| Work Items | ✅ Real | Full CRUD, 10 types, 7 statuses, linked resources, notes, stats |
+| Agent Runs | ✅ Real | SQLite-backed tracing with secret redaction, step timelines, staleness detection |
+| CTO Daily Command Center | ✅ Real | Daily brief from calendar, Jira, GitLab, GitHub, roadmap, work items, Jitbit, HAWK IR, memory |
+| Personal OS Brief | ✅ Real | Load, open loops, decisions, patterns, delegations, focus blocks, energy risks |
+| Product Chief of Staff | ✅ Real | Workflow briefs, roadmap proposals, drift analysis, customer signals, weekly updates |
+| Code Review Agent | ✅ Real | AI-powered PR/MR review (risk, must-fix, security, migration) + release readiness |
+| Push Notifications | ✅ Real | Web Push with VAPID, HAWK IR + Jitbit polling, deduplication, 3-tier escalation |
+| Ticket Bridge | ✅ Real | GitHub/Jira/Roadmap → prompt generation → agent execution → result posting → work item linking |
+| Web UI | ✅ Real | Chat, tool progress, collapsible JSON, export, stop button, sidebar, Agent Runs inspector |
+| Daily Planner | ✅ Real | Jira + GitLab data wired, real issue counts and activity |
+| Discord Bot | ✅ Real | Slash commands, sessions, API integration |
+| Health Endpoints | ✅ Real | `/health` reports GitHub/GitLab/Jira status; `/chat/health` reports AI provider |
+
+## Architecture
+
+```
+Integrations                Services                     API Routes              Tools
+───────────                 ────────                     ──────────              ─────
+Jira Cloud ─┐               CTO Command Center ──────── /api/cto              cto.*
+GitLab ─────┤               Personal OS ────────────── /api/personal-os      personal_os.*
+GitHub ─────┤               Product Chief of Staff ─── /api/product          product.*
+Jitbit ─────┼───► Services  Code Review ───────────── /api/code-review      code_review.*
+HAWK IR ────┤               Guardrails ────────────── /api/guardrails       (policy gates)
+Calendar ───┤               Agent Runs ────────────── /api/agent-runs       (tracing)
+Memory ─────┘               Work Items ────────────── /api/work-items       work_items.*
+                            Ticket Bridge ────────── /api/ticket-bridge    ticket_bridge.*
+                            Push / Polling ────────── /api/push-*           (notifications)
+                            Memory / Entities ─────── /api/memory           memory.*
+                            Roadmap ───────────────── /api/roadmaps         roadmap.*
+                            Approvals ────────────── /approvals             (approval flow)
+```
+
+```
+src/
+├── config/                # Environment, constants, policy rules
+├── agent/
+│   ├── providers/          # AI providers (Ollama, Z.ai, OpenCode)
+│   │   ├── types.ts         # Shared interfaces
+│   │   ├── factory.ts       # Provider factory (switches on AI_PROVIDER env)
+│   │   ├── ollama-provider.ts
+│   │   ├── zai-provider.ts
+│   │   └── opencode-provider.ts
+│   ├── opencode-client.ts   # Provider facade
+│   ├── tool-registry.ts     # 267+ tools with core set + discover_tools
+│   ├── tool-dispatcher.ts   # Tool execution with audit logging
+│   └── prompts.ts           # System prompts
+├── policy/                 # Policy engine with pattern matching
+├── approvals/              # Approval queue (SQLite)
+├── audit/                  # Audit logger (JSONL)
+├── guardrails/             # Action registry, enforcement, REST API
+├── memory/                 # Conversation manager + entity memory
+├── roadmap/                # SQLite-backed CRUD, milestones, templates
+├── work-items/             # Internal task tracking (SQLite)
+├── agent-runs/             # Run tracing with secret redaction (SQLite)
+├── cto/                    # CTO Daily Command Center
+├── personal-os/            # Personal OS brief generator
+├── product/                # Product Chief of Staff
+├── code-review/            # Review assistant (GitHub PR, GitLab MR)
+├── push/                   # Push notifications + polling + escalation
+├── integrations/
+│   ├── jira/               # Jira Cloud REST API (v2/v3)
+│   ├── gitlab/             # GitLab API with retry + webhooks
+│   ├── github/             # GitHub REST API with retry
+│   ├── jitbit/             # Jitbit Helpdesk API (full lifecycle)
+│   ├── hawk-ir/            # HAWK IR REST + WebSocket (cases, search, quarantine)
+│   ├── ticket-bridge/      # Ticket-to-prompt → agent → result → work item
+│   ├── google/             # Google Calendar OAuth2 + Calendar API
+│   ├── discord/            # Discord bot with slash commands
+│   └── file/               # File-based calendar + ICS export + tunnel
+├── engineering/            # Workflow brief, architecture, scaffold, Jira tickets
+├── productivity/           # Daily planner, focus blocks, health breaks, weekly plan
+├── routes/                 # HTTP endpoints
+├── middleware/              # Auth middleware (provider-agnostic)
+└── server.ts               # Fastify entry point
+```
+
+## Integrations
+
+| Integration | Config Required | Features |
+|-------------|-----------------|----------|
+| Jira Cloud | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEYS` | Full CRUD, comments, transitions, project listing |
+| GitLab | `GITLAB_BASE_URL`, `GITLAB_TOKEN`, `GITLAB_DEFAULT_PROJECT` | Projects, MRs, commits, files, pipelines, branches, tags, blame, compare, webhooks |
+| GitHub | `GITHUB_TOKEN`, `GITHUB_DEFAULT_OWNER`, `GITHUB_DEFAULT_REPO` | Repos, files, branches, PRs, issues, workflows, releases, tags, code search |
+| Jitbit | `JITBIT_ENABLED`, `JITBIT_BASE_URL`, `JITBIT_API_TOKEN`, `JITBIT_DEFAULT_CATEGORY_ID` | Ticket lifecycle, assets, custom fields, tags, time tracking, automation, customer snapshots |
+| HAWK IR | `HAWK_IR_ENABLED`, `HAWK_IR_BASE_URL`, `HAWK_IR_ACCESS_TOKEN`, `HAWK_IR_SECRET_KEY` | Cases, assets, identities, log search, escalation, quarantine, hybrid tools, weekly/monthly reports |
+| Google Calendar | `GOOGLE_CALENDAR_CLIENT_ID`, `GOOGLE_CALENDAR_CLIENT_SECRET`, `GOOGLE_CALENDAR_CALENDAR_ID` | OAuth2 + Calendar API |
+| Discord | `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_GUILD_ID` | Slash commands, sessions |
+
+## Agents / Helpers
+
+| Agent / Helper | API Endpoint | What It Does |
+|----------------|-------------|--------------|
+| CTO Daily Command Center | `GET /api/cto/daily-command-center` | Aggregates calendar, Jira, GitLab, GitHub, roadmap, work items, Jitbit, HAWK IR, memory into a daily brief with suggested actions |
+| Personal OS Brief | `GET /api/personal-os/brief` | Load assessment, open loops, decisions, recurring patterns, delegation suggestions, focus blocks, energy risks |
+| Product Chief of Staff | `POST /api/product/workflow-brief` | Workflow briefs, roadmap proposals, drift analysis, customer signals, weekly updates |
+| Code Review | `POST /api/code-review/github/pr` | AI-powered PR/MR review with risk scoring, security analysis, release readiness |
+| Ticket Bridge | `POST /api/ticket-bridge/prompt` | Converts GitHub/Jira/Roadmap issues into AI prompts, runs agents, posts results |
+| Engineering | `POST /engineering/workflow-brief` | Workflow brief, architecture proposal, scaffolding plan, Jira ticket generation |
+| Daily Planner | `GET /productivity/daily-plan` | Jira + GitLab aggregated daily plan |
+| Weekly Plan | `GET /productivity/weekly-plan` | Weekly planning across integrations |
+
+See [docs/agents.md](docs/agents.md) for detailed documentation on each agent.
 
 ## AI Providers
 
-| Provider | Config                           | Notes                                                                                            |
-| -------- | -------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Ollama   | `AI_PROVIDER=ollama`             | Local or cloud models (e.g., `glm-5.1:cloud`). Synthesizes tool call IDs when API omits them.    |
-| Z.ai     | `AI_PROVIDER=zai`                | Z.ai GLM models. Retry + rate-limit handling with Retry-After header support. Chunked streaming. |
-| OpenCode | `AI_PROVIDER=opencode` (default) | OpenCode API with exponential backoff retry.                                                     |
+| Provider | Config | Notes |
+|----------|--------|-------|
+| Ollama | `AI_PROVIDER=ollama` | Local or cloud models. Synthesizes tool call IDs when API omits them. |
+| Z.ai | `AI_PROVIDER=zai` | GLM models. Retry + rate-limit handling with Retry-After header. Chunked streaming. |
+| OpenCode | `AI_PROVIDER=opencode` (default) | OpenCode API with exponential backoff retry. |
 
 All providers support:
-
 - Automatic retry with exponential backoff (429 rate limits handled separately from server errors)
 - Tool calling with dynamic expansion (core set sent first, more loaded on demand)
 - Thinking/reasoning content extraction and display
 - Streaming SSE responses with tool progress indicators
-- `toolChoice: "auto"` — the AI decides when to call tools (not forced)
-- Consistent tool call ID handling — missing IDs are synthesized to prevent collisions
+- `toolChoice: "auto"` — the AI decides when to call tools
 
-## Agent Architecture
+## API Endpoints
 
-The agent loop is designed for reliable multi-step task execution:
-
-1. **System prompts** are injected for every request (new sessions and continued sessions alike), including `TASK_COMPLETION_RULES` that instruct the AI to finish tasks without stopping mid-way
-2. **Tool call history accumulates** across loop iterations — round 3 sees results from rounds 1 and 2, so the AI can build on prior tool outputs
-3. **Loop guard** caps at 25 iterations to prevent infinite loops while allowing complex workflows
-4. **JSON.parse protection** — malformed AI tool arguments are caught gracefully instead of crashing the request
-5. **Compaction preserves metadata** — `toolCalls` and `tool_call_id` are maintained in the correct API message format, so compacted sessions don't break subsequent requests
-6. **LLM-based summarization** — compaction uses the AI provider to generate summaries that preserve tool results, IDs, and decisions (not just "OK")
-
-## Dynamic Tool System
-
-To keep token usage manageable, the system sends a **core set of ~26 tools** initially and adds a `discover_tools` meta-tool. When the AI needs capabilities beyond the core set (e.g., GitLab pipelines, GitHub PRs), it calls `discover_tools` with a category name, and those tools are dynamically added to the next API call.
-
-**Core tools always available:**
-
-- Calendar: list events, create focus/health blocks
-- Jira: list, get, search, create, update issues + add comments + transition
-- GitLab: projects, MRs, files, tree, search, commits, branches, create file
-- GitHub: repos, files, tree, search
-- Planning: daily planner
-
-**Expandable categories:** `gitlab` (29 tools), `github` (35 tools), `jira` (13 tools), `calendar` (3 tools), `roadmap` (11 tools)
-
-## What Works Now
-
-| Feature             | Status  | Notes                                                                                                                       |
-| ------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Chat API            | ✅ Real | Streaming, sessions, memory, tool calling, thinking display, multi-step agent loop                                          |
-| Multi-Provider AI   | ✅ Real | Ollama, Z.ai, OpenCode with retry/rate-limit handling, consistent tool call behavior                                        |
-| Agent Loop          | ✅ Real | History accumulation, loop guard, system prompts on all requests, JSON protection                                           |
-| Dynamic Tools       | ✅ Real | Core set + discover_tools for on-demand expansion                                                                           |
-| Tool Dispatcher     | ✅ Real | 100+ real handlers: Jira, GitLab, GitHub, Calendar, Daily Planner, Roadmap, Engineering                                     |
-| Engineering Tools   | ✅ Real | Workflow brief, architecture proposal, scaffolding plan, Jira ticket generation — all dispatched                            |
-| Policy Engine       | ✅ Real | Pattern matching, 3-tier modes                                                                                              |
-| Guardrails          | ✅ Real | 16 critical actions, rate limiting, REST API                                                                                |
-| Approval Queue      | ✅ Real | SQLite-persisted, executes approved actions via dispatcher                                                                  |
-| Jira Integration    | ✅ Real | Full CRUD, v2/v3 fallback, comments, transitions, list projects                                                             |
-| GitLab Integration  | ✅ Real | REST API with retry logic, commits, MRs, files, pipelines, issues, branches, tags, blame, compare, webhooks                 |
-| GitHub Integration  | ✅ Real | Repos, files, branches, PRs, issues, workflows, releases, tags, commits, blame, compare, code search                        |
-| Jitbit Integration  | ✅ Real | 21 tools: ticket lifecycle (create/close/reopen/assign/delete/merge/forward), assets CRUD, custom fields, tags, time tracking, automation, comments, companies, users, snapshots |
-| File Calendar + ICS | ✅ Real | CRUD, RFC 5545 ICS export, iPhone subscription via tunnel                                                                   |
-| Cloudflare Tunnel   | ✅ Real | Starts at boot for external ICS access                                                                                      |
-| Google Calendar     | ✅ Real | OAuth2 + Calendar API                                                                                                       |
-| Conversation Memory | ✅ Real | LLM-based auto-compaction, file persistence, search, metadata preservation                                                  |
-| Audit Logger        | ✅ Real | Write + query with severity filtering and JSONL storage                                                                     |
-| Roadmap CRUD        | ✅ Real | SQLite-backed CRUD + milestones + items + delete operations + templates                                                     |
-| Web UI              | ✅ Real | Chat with thinking display, tool progress, collapsible JSON, export, stop button, conversation sidebar, delete confirmation |
-| Agent Runs UI       | ✅ Real | Inspect model/tool execution traces from the browser — list, filter, and drill into run details and step timelines |
-| Daily Planner       | ✅ Real | Jira + GitLab data wired, real issue counts and activity                                                                    |
-| CTO Command Center | ✅ Real | Daily brief from calendar, Jira, GitLab, GitHub, roadmap, work items, Jitbit, memory                                       |
-| Personal OS         | ✅ Real | Brief, open loops, pattern detection, delegation suggestions, focus blocks — all with graceful fallbacks                  |
-| Product Chief of Staff | ✅ Real | Workflow briefs, roadmap proposals, drift analysis, customer signals, weekly updates, work item creation               |
-| Code Review Agent   | ✅ Real | AI-powered PR/MR review (risk level, must-fix/should-fix, security, migration risks, suggested comment) + release readiness reports — GitHub and GitLab |
-| Health Endpoints    | ✅ Real | `/health` reports GitHub/GitLab/Jira integration status; `/chat/health` reports active AI provider                          |
-| Discord Bot         | ✅ Real | Slash commands, sessions, API integration                                                                                   |
-
-## Test Coverage
-
-**236 tests across 11 test files, 230+ passing consistently.**
-
-| File                                                 | Tests | Notes                                                                                                    |
-| ---------------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------- |
-| `tests/e2e/workflows.test.ts`                        | 44    | Auth, calendar CRUD, ICS export, approval lifecycle, roadmap CRUD, productivity, engineering, guardrails |
-| `tests/unit/integrations/jira-crud.test.ts`          | 36    | Full Jira CRUD: create, update, transition, search, comments                                             |
-| `tests/unit/integrations/gitlab-client.test.ts`      | 41    | Projects, MRs, commits, branches, pipelines, files, issues, tags, blame, compare                         |
-| `tests/unit/integrations/gitlab-dispatcher.test.ts`  | 24    | Tool dispatch for GitLab operations                                                                      |
-| `tests/e2e/guardrails.test.ts`                       | 21    | Guardrails enforcement, rate limiting, approval flow                                                     |
-| `tests/unit/integrations/jira-key-extractor.test.ts` | 20    | Jira key extraction from text                                                                            |
-| `tests/unit/middleware/auth.test.ts`                 | 18    | Bearer/X-API-Key/query auth, public paths, session auth                                                  |
-| `tests/unit/integrations/jira-client.test.ts`        | 9     | Live Jira API integration                                                                                |
-| `tests/unit/integrations/jira-list-projects.test.ts` | 7     | Project listing                                                                                          |
-| `tests/unit/policy/engine.test.ts`                   | 10    | Policy engine pattern matching                                                                           |
-| `tests/unit/agent/opencode-client.test.ts`           | 6     | Live AI provider chat + tool calling                                                                     |
-| `src/integrations/jitbit/__tests__/jitbit-client.test.ts` | 23  | Jitbit API client: config, tickets, comments, companies, users, retry                                   |
-| `src/integrations/jitbit/__tests__/jitbit-service.test.ts` | 18 | Jitbit service: snapshots, followups, summaries, recent activity                                         |
-| `src/integrations/jitbit/__tests__/jitbit-client-extended.test.ts` | 34 | Jitbit client: lifecycle, attachments, assets, custom fields, tags, sections, time, automation |
-| `src/integrations/jitbit/__tests__/jitbit-service-extended.test.ts` | 31 | Jitbit service: close/reopen/assign, assets, custom fields, tags, time, sections, automation |
-| `tests/unit/product/product-chief-of-staff.test.ts` | 13 | Workflow brief, roadmap proposal, drift analysis, customer signals, work items, weekly update |
-
-## Personal OS
-
-The Personal OS module provides a holistic daily operating brief that aggregates signals across all connected integrations:
-
-- **Brief** (`personal_os.brief`) — Aggregates calendar, Jira, GitLab, GitHub, Jitbit, work items, roadmaps, and memory into a structured daily brief with 9 sections: Today's Load, Open Loops, Decisions Waiting, Recurring Patterns, Suggested Delegations, Suggested Focus Blocks, Energy/Context-Switching Risks, Things To Stop Doing, and Work Items To Create.
-- **Open Loops** (`personal_os.open_loops`) — Finds unresolved decisions, blocked tasks, PRs awaiting review, and follow-ups across all sources.
-- **Pattern Detection** (`personal_os.detect_patterns`) — Analyzes work item and calendar data for recurring patterns like meeting overload, context switching, and review bottlenecks.
-- **Focus Blocks** (`personal_os.suggest_focus`) — Suggests calendar focus blocks based on open loops, priorities, and schedule gaps. Does **not** auto-create calendar events.
-- **Create Work Items** (`personal_os.create_work_items`) — Creates work items from brief suggestions. Requires explicit user approval (medium risk, policy-checked).
-
-### API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/personal-os/brief` | Generate Personal OS brief |
-| GET | `/api/personal-os/open-loops` | Summarize open loops |
-| GET | `/api/personal-os/patterns` | Detect recurring patterns |
-| POST | `/api/personal-os/work-items` | Create work items from brief |
-
-### Design Constraints
-
-- No invasive monitoring — reads existing integration data only
-- No auto-changing calendar — only suggests focus blocks
-- No health/fitness decisions — only suggests protecting focus time
-- Uses existing policy engine for approval gates on `create_work_items`
-- All read-only endpoints are `low` risk; `create_work_items` is `medium` risk
-
-## Product/Roadmap Chief of Staff
-
-The Product Chief of Staff turns ideas, customer signals, support trends, roadmap data, and engineering status into clear product direction.
-
-- **Workflow Brief** (`product.workflow_brief`) — Turns a vague product idea into a structured workflow-first brief: problem, users, actors, job-to-be-done, trigger, desired outcome, current/proposed workflows, friction, automation opportunities, human-in-the-loop, MVP scope, non-goals, risks, and success criteria.
-- **Roadmap Proposal** (`product.roadmap_proposal`) — Generates a roadmap proposal from a theme: why now, customer evidence, engineering impact, proposed milestones with target dates, work items, dependencies, risks, cut line, and demo criteria.
-- **Roadmap Drift** (`product.roadmap_drift`) — Analyzes active roadmaps for shipped-vs-planned drift: completion rates, overdue milestones, at-risk items, and a drift score.
-- **Customer Signals** (`product.customer_signals`) — Extracts customer signals from Jitbit support tickets: repeated asks, high-friction areas, stale support themes, and customers waiting on roadmap promises.
-- **Weekly Update** (`product.weekly_update`) — Generates a weekly product update from roadmap progress, work items, and customer signals: shipped, in-progress, blocked, customer signals, roadmap changes, decisions needed, and next week priorities.
-- **Create Work Items** (`product.create_work_items`) — Creates work items from product proposals or signals. Requires explicit user approval (medium risk, policy-checked).
-
-### API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/product/workflow-brief` | Turn an idea into a workflow brief |
-| POST | `/api/product/roadmap-proposal` | Generate a roadmap proposal |
-| GET  | `/api/product/roadmap-drift` | Analyze roadmap drift |
-| GET  | `/api/product/customer-signals` | Extract customer signals from Jitbit |
-| POST | `/api/product/weekly-update` | Generate weekly product update |
-| POST | `/api/product/work-items` | Create work items from proposals |
-
-### Design Constraints
-
-- No roadmap mutation — drift analysis and proposals are read-only; work items are only created when explicitly requested
-- Read-only endpoints are `low` risk; `create_work_items` is `medium` risk
-- Falls back to structured templates when AI is not configured
-- Jitbit signals degrade gracefully when Jitbit is not configured
-
-## Code Review Agent
-
-The Code Review Agent provides AI-powered code review and release readiness assessments for GitHub PRs and GitLab MRs. It fetches PR/MR metadata, changed files, diffs, CI/pipeline status, and existing comments, then generates a structured review.
-
-### What it produces
-
-**Code Review (`code_review.github_pr` / `code_review.gitlab_mr`):**
-- **Risk Level** — `low` | `medium` | `high` | `critical` (rule-based scoring + AI)
-- **Recommendation** — `low_risk` | `ready_for_human_review` | `needs_changes` | `high_risk_hold`
-- **What Changed** — plain-English summary
-- **Must Fix** — blocking issues before merge
-- **Should Fix** — non-blocking improvements
-- **Test Gaps** — missing coverage
-- **Security Concerns** — auth/token/secret patterns detected
-- **Observability Concerns** — logging/metrics gaps
-- **Migration / Compatibility Risks** — schema migration detection
-- **Rollback Considerations** — what's needed to roll back
-- **Suggested Review Comment** — compact markdown ready to copy-paste to the PR/MR
-
-**Release Readiness (`code_review.release_readiness`):**
-- Go / No-Go / Conditional Go recommendation
-- Included changes, known risks, test status, deployment notes, rollback plan, customer impact, internal comms draft
-
-### Tools
-
-| Tool | Description |
-|------|-------------|
-| `code_review.github_pr` | Review a GitHub PR by owner/repo/number |
-| `code_review.gitlab_mr` | Review a GitLab MR by projectId/mrIid |
-| `code_review.release_readiness` | Generate a release readiness report |
-| `code_review.generate_comment` | Format a review into a full analysis document |
-| `code_review.create_work_item` | Create a `code_review` or `release` work item linked to the PR/MR |
-
-### API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/code-review/github/pr` | Review a GitHub PR |
-| POST | `/api/code-review/gitlab/mr` | Review a GitLab MR |
-| POST | `/api/code-review/release-readiness` | Generate release readiness report |
-
-### Design Constraints
-
-- **No auto-merge** — the agent analyzes only; merging requires explicit `github.merge_pull_request` / `gitlab.merge_merge_request`
-- **No auto-post** — `generate_comment` returns the markdown string; posting requires explicit `github.add_pr_comment` / `gitlab.add_mr_comment`
-- All review tools are `low` risk — no policy gate required
-- Falls back gracefully to rule-based analysis when AI is not configured or returns malformed JSON
-
-### Example
+### Chat
 
 ```
-Tim: "Review PR #42 in org/repo"
-Assistant: [calls code_review.github_pr] → returns CodeReview with risk level, must-fix items, and a suggested review comment
+POST   /chat                         # Send a message
+POST   /chat/stream                   # Stream a response (SSE)
+GET    /chat/health                   # AI provider + integration health
+GET    /chat/sessions                 # List sessions
+POST   /chat/sessions                 # Create session
+GET    /chat/sessions/:id             # Get session
+POST   /chat/sessions/:id/end        # End session
+GET    /chat/sessions/:id/messages    # Get messages
+DELETE /chat/sessions/:id            # Delete session
+POST   /chat/sessions/:id/cancel     # Cancel running session
+GET    /chat/memory/search            # Search memories
+POST   /chat/memory/relevant         # Get relevant memories
+GET    /chat/memory/stats             # Memory statistics
+GET    /chat/tools                    # List available tools
+GET    /chat/todos                    # List todos
+GET    /chat/knowledge/search         # Search knowledge base
+GET    /chat/knowledge/recent         # Recent knowledge
+GET    /chat/knowledge/stats           # Knowledge statistics
+GET    /chat/codebase/search          # Search codebase index
+GET    /chat/codebase/stats            # Codebase index stats
+GET    /chat/graph/summary            # Knowledge graph summary
+GET    /chat/graph/nodes              # Graph nodes
+GET    /chat/graph/nodes/:nodeId      # Get graph node
 ```
 
-## Autonomous Loop (aicoder + reviewer)
+### CTO Command Center
 
-The autonomous loop turns GitHub issues into merged PRs with no human involvement.
-
-**Two agents work in tandem:**
-
-| Agent | Script | Role |
-|-------|--------|------|
-| `aicoder` | `npm run aicoder` | Polls issues, runs coding agent, opens PRs |
-| `reviewer` | `npm run reviewer` | Reviews PRs, auto-merges or posts rework prompts |
-
-**Flow:**
 ```
-Issue (labeled ready-for-agent)
-  → aicoder generates prompt → runs codex/opencode/claude → opens [AI] PR
-  → reviewer reviews PR → merges (clean) or posts rework prompt (findings)
-  → rework picked up by aicoder → repeat until merged
+GET    /api/cto/daily-command-center              # Generate daily brief
+POST   /api/cto/daily-command-center/create-work-items  # Create suggested work items
 ```
 
-**Minimum setup:**
-1. Start the AIWorkAssistant server (`npm run dev`)
-2. Set `AIWORKASSISTANT_URL` + `AIWORKASSISTANT_API_KEY` in the environment
-3. Run `aicoder` in the target project's workspace
-4. Run `reviewer` to watch for PRs
+### Personal OS
 
-**Issue requirements:** Label the issue `ready-for-agent` and include a `## Coding Prompt` section with implementation instructions ending in `Output "FIN" when done.`
+```
+GET    /api/personal-os/brief          # Generate Personal OS brief
+GET    /api/personal-os/open-loops     # Summarize open loops
+GET    /api/personal-os/patterns       # Detect recurring patterns
+POST   /api/personal-os/work-items     # Create work items from brief
+```
 
-See **[docs/autonomous-loop.md](docs/autonomous-loop.md)** for full deployment, CLI reference, issue setup, monitoring, and troubleshooting.
+### Product Chief of Staff
 
----
+```
+POST   /api/product/workflow-brief     # Turn idea into workflow brief
+POST   /api/product/roadmap-proposal   # Generate roadmap proposal
+GET    /api/product/roadmap-drift      # Analyze roadmap drift
+GET    /api/product/customer-signals   # Extract customer signals from Jitbit
+POST   /api/product/weekly-update      # Generate weekly product update
+POST   /api/product/work-items         # Create work items from proposals
+```
 
-## Quick Start
+### Code Review
+
+```
+POST   /api/code-review/github/pr          # Review a GitHub PR
+POST   /api/code-review/gitlab/mr          # Review a GitLab MR
+POST   /api/code-review/release-readiness  # Generate release readiness report
+```
+
+### Work Items
+
+```
+GET    /api/work-items               # List (filter: status, type, priority, source, owner, search)
+POST   /api/work-items               # Create
+GET    /api/work-items/stats          # Counts by status/type/priority
+GET    /api/work-items/:id           # Get
+PATCH  /api/work-items/:id           # Update
+POST   /api/work-items/:id/notes     # Add note
+POST   /api/work-items/:id/links     # Add linked resource
+POST   /api/work-items/:id/complete  # Mark done
+POST   /api/work-items/:id/archive   # Archive
+```
+
+### Agent Runs
+
+```
+GET    /api/agent-runs                # List (filter: status, userId, limit, offset)
+GET    /api/agent-runs/stats          # Aggregate statistics
+GET    /api/agent-runs/:id            # Get run with steps
+GET    /api/agent-runs/:id/steps      # Get steps for a run
+```
+
+### HAWK IR
+
+37 tools exposed via the chat/tool system (not standalone REST routes). Core tools include `hawk_ir.get_cases`, `hawk_ir.get_case`, `hawk_ir.search_logs`, `hawk_ir.escalate_case`, `hawk_ir.quarantine_host`. Additional tools for assets, identities, dashboards, saved searches, and hybrid tool execution available via `discover_tools('hawk_ir')`.
+
+### Jitbit
+
+21 tools exposed via the chat/tool system (not standalone REST routes). Core tools include `jitbit.search_tickets`, `jitbit.get_ticket`, `jitbit.create_ticket`, `jitbit.close_ticket`, `jitbit.assign_ticket`, `jitbit.list_assets`. Additional tools for merges, forwarding, asset management, tags, time tracking, and automation available via `discover_tools('jitbit')`.
+
+### Ticket Bridge
+
+```
+POST   /api/ticket-bridge/prompt     # Generate implementation prompt from ticket
+POST   /api/ticket-bridge/run        # Run agent on a ticket
+```
+
+### Autonomous Loop
+
+```
+GET    /api/autonomous-loop/work      # Find issues labeled ready-for-agent
+POST   /api/autonomous-loop/pr       # Open PR from completed agent work
+POST   /api/autonomous-loop/complete  # Mark agent cycle complete
+```
+
+### Memory / Entities
+
+```
+GET    /api/memory/entities            # List entities
+GET    /api/memory/entities/context    # Get entity context
+GET    /api/memory/entities/:id       # Get entity
+POST   /api/memory/entities/:id/facts # Add fact to entity
+POST   /api/memory/entities/link       # Link two entities
+```
+
+### Push Notifications
+
+```
+POST   /api/push-subscriptions         # Subscribe to push notifications
+DELETE /api/push-subscriptions          # Unsubscribe
+GET    /api/push-subscriptions          # List subscriptions
+POST   /api/push-acknowledge            # Acknowledge a notification
+```
+
+### Calendar
+
+```
+GET    /calendar/events           # List events
+POST   /calendar/events           # Create event
+PATCH  /calendar/events/:eventId  # Update event
+DELETE /calendar/events/:eventId  # Delete event
+POST   /calendar/focus-blocks     # Create focus block
+POST   /calendar/health-blocks    # Create health block
+GET    /calendar/stats             # Statistics
+GET    /calendar/export/ics       # Export ICS (RFC 5545)
+GET    /calendar/subscribe         # Webcal subscription URL
+```
+
+### Productivity
+
+```
+GET    /productivity/daily-plan                # Daily plan (Jira + GitLab)
+GET    /productivity/weekly-plan               # Weekly plan
+GET    /productivity/focus-blocks/recommend    # Focus block recommendations
+POST   /productivity/focus-blocks             # Create focus block
+GET    /productivity/health-breaks/recommend   # Health break recommendations
+POST   /productivity/health-blocks            # Create health block
+GET    /productivity/calendar-summary          # Calendar summary
+```
+
+### Engineering
+
+```
+POST   /engineering/workflow-brief               # Generate workflow brief
+POST   /engineering/architecture-proposal        # Architecture proposal
+POST   /engineering/scaffolding-plan             # Scaffolding plan
+POST   /engineering/jira-tickets                 # Generate Jira tickets
+POST   /engineering/jira-tickets/create          # Create tickets in Jira
+POST   /api/ticket-to-task                       # Convert ticket to task prompt
+```
+
+### Roadmaps
+
+```
+GET    /api/roadmaps                        # List
+POST   /api/roadmaps                        # Create
+GET    /api/roadmaps/:id                    # Get
+PATCH  /api/roadmaps/:id                    # Update
+DELETE /api/roadmaps/:id                    # Delete
+GET    /api/templates                       # List templates
+POST   /api/templates/:id/create-roadmap    # Create from template
+```
+
+### Guardrails
+
+```
+POST   /api/guardrails/check                  # Check an action
+GET    /api/guardrails/approvals/pending      # Pending approvals
+POST   /api/guardrails/approvals/:id/approve  # Approve
+POST   /api/guardrails/approvals/:id/reject   # Reject
+GET    /api/guardrails/history/:userId        # Action history
+GET    /api/guardrails/stats                  # Stats
+```
+
+### Approvals
+
+```
+GET    /approvals                # List pending
+POST   /approvals/:id/approve    # Approve (dispatches via tool dispatcher)
+POST   /approvals/:id/reject     # Reject
+```
+
+### Auth
+
+```
+POST   /auth/login                # Login
+POST   /auth/logout               # Logout
+GET    /auth/status                # Auth status
+GET    /auth/verify                # Verify session
+GET    /auth/google/status         # Google OAuth status
+GET    /auth/google                # Start Google OAuth
+GET    /auth/google/callback       # Google OAuth callback
+POST   /auth/google/logout         # Disconnect Google
+```
+
+### Tools / Agents Metadata
+
+```
+GET    /api/tools                 # All tools with metadata
+GET    /api/tools/categories      # Tools by category
+GET    /api/agents                 # Agent modes and capabilities
+```
+
+### Reviewer
+
+```
+GET    /api/reviewer/config        # Reviewer configuration
+POST   /api/reviewer/review        # Run multi-agent PR review
+```
+
+### Health / Webhooks
+
+```
+GET    /health                     # System health
+POST   /webhooks/gitlab            # GitLab webhook endpoint
+```
+
+## Environment Variables
+
+### Core
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `PORT` | Yes | `3050` | Server port |
+| `NODE_ENV` | No | `development` | Environment |
+| `AUTH_USERNAME` | Yes | — | Login username |
+| `AUTH_PASSWORD` | Yes | — | Login password |
+| `AUTH_SESSION_SECRET` | Yes | — | Session encryption key |
+
+### AI Provider
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `AI_PROVIDER` | Yes | `opencode` | `opencode`, `zai`, or `ollama` |
+| `OPENCODE_API_URL` | If opencode | — | OpenCode API URL |
+| `OPENCODE_API_KEY` | If opencode | — | OpenCode API key |
+| `OPENCODE_MODEL` | No | `GLM-5.1` | Model name |
+| `ZAI_API_URL` | If zai | — | Z.ai API URL |
+| `ZAI_API_KEY` | If zai | — | Z.ai API key |
+| `ZAI_MODEL` | No | `GLM-5.1` | Model name |
+| `OLLAMA_API_URL` | If ollama | `http://localhost:11434` | Ollama API URL |
+| `OLLAMA_API_KEY` | No | — | API key (cloud models) |
+| `OLLAMA_MODEL` | No | `llama3` | Model name |
+| `OLLAMA_MAX_CONTEXT_TOKENS` | No | `128000` | Context window |
+
+### Jira
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `JIRA_BASE_URL` | Yes | — | e.g. `https://your-domain.atlassian.net` |
+| `JIRA_EMAIL` | Yes | — | Atlassian account email |
+| `JIRA_API_TOKEN` | Yes | — | API token |
+| `JIRA_PROJECT_KEYS` | No | — | Comma-separated project keys |
+
+### GitLab
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `GITLAB_BASE_URL` | Yes | `https://gitlab.com` | GitLab instance URL |
+| `GITLAB_TOKEN` | Yes | — | Personal access token |
+| `GITLAB_DEFAULT_PROJECT` | No | — | Default project path |
+| `GITLAB_WEBHOOK_SECRET` | No | — | Webhook verification secret |
+
+### GitHub
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `GITHUB_TOKEN` | Yes | — | Personal access token |
+| `GITHUB_DEFAULT_OWNER` | No | — | Default org/user |
+| `GITHUB_DEFAULT_REPO` | No | — | Default repo |
+
+### Jitbit
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `JITBIT_ENABLED` | No | `false` | Enable Jitbit integration |
+| `JITBIT_BASE_URL` | If enabled | — | Helpdesk URL |
+| `JITBIT_API_TOKEN` | If enabled | — | API token |
+| `JITBIT_DEFAULT_CATEGORY_ID` | No | — | Default ticket category |
+
+### HAWK IR
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `HAWK_IR_ENABLED` | No | `false` | Enable HAWK IR integration |
+| `HAWK_IR_BASE_URL` | If enabled | — | HAWK IR API URL |
+| `HAWK_IR_ACCESS_TOKEN` | If enabled | — | Access token |
+| `HAWK_IR_SECRET_KEY` | If enabled | — | Secret key |
+
+### Google Calendar
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `GOOGLE_CALENDAR_CLIENT_ID` | No | — | OAuth2 client ID |
+| `GOOGLE_CALENDAR_CLIENT_SECRET` | No | — | OAuth2 client secret |
+| `GOOGLE_CALENDAR_CALENDAR_ID` | No | — | Calendar ID |
+
+### Push Notifications
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `VAPID_PUBLIC_KEY` | No | — | VAPID public key |
+| `VAPID_PRIVATE_KEY` | No | — | VAPID private key |
+| `VAPID_ADMIN_EMAIL` | No | — | Admin email for VAPID |
+| `PUSH_POLL_INTERVAL_MIN` | No | `5` | Polling interval in minutes |
+| `PUSH_ESCALATION_L2_MINUTES` | No | `30` | Level 2 escalation timeout |
+| `PUSH_ESCALATION_L3_MINUTES` | No | `60` | Level 3 escalation timeout |
+
+### Policy & Feature Flags
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `POLICY_APPROVAL_MODE` | No | `strict` | `strict`, `balanced`, `permissive` |
+| `POLICY_JIRA_AUTO_CLOSE` | No | `false` | Auto-close Jira on completion |
+| `POLICY_CALENDAR_ALLOW_DELETE` | No | `false` | Allow calendar event deletion |
+| `ENABLE_CALENDAR_WRITE` | No | `true` | Enable calendar write operations |
+| `ENABLE_JIRA_TRANSITIONS` | No | `true` | Enable Jira status transitions |
+| `ENABLE_GITLAB_WEBHOOKS` | No | `true` | Enable GitLab webhooks |
+
+### Other
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_URL` | No | `sqlite:./data/app.db` | SQLite database path |
+| `AUDIT_LOG_FILE` | No | — | Audit log file path |
+| `AUDIT_LOG_LEVEL` | No | — | Minimum audit log severity |
+| `TUNNEL_ENABLED` | No | `false` | Enable Cloudflare tunnel |
+| `TUNNEL_SUBDOMAIN` | No | — | Tunnel subdomain |
+| `DISCORD_BOT_TOKEN` | No | — | Discord bot token |
+| `DISCORD_CLIENT_ID` | No | — | Discord client ID |
+| `DISCORD_GUILD_ID` | No | — | Discord guild ID |
+
+## Development
 
 ### Prerequisites
 
@@ -271,7 +523,7 @@ See **[docs/autonomous-loop.md](docs/autonomous-loop.md)** for full deployment, 
 - TypeScript
 - Ollama (for local/cloud models) or an AI provider API key
 
-### Installation
+### Setup
 
 ```bash
 git clone <repo-url>
@@ -281,258 +533,66 @@ cp .env.example .env
 # Edit .env with your credentials
 ```
 
-### Configuration
-
-Edit `.env` with your credentials:
+### Run
 
 ```bash
-# AI Provider (opencode | zai | ollama)
-AI_PROVIDER=ollama
-
-# Ollama (local and cloud models)
-OLLAMA_API_URL=http://localhost:11434
-OLLAMA_API_KEY=                    # Leave empty for local Ollama, set for cloud models
-OLLAMA_MODEL=llama3                # or glm-5.1:cloud for cloud-proxied models
-OLLAMA_TEMPERATURE=0.7
-OLLAMA_MAX_CONTEXT_TOKENS=128000
-
-# Z.ai (GLM models)
-ZAI_API_URL=https://api.z.ai/api/coding/paas/v4
-ZAI_API_KEY=your_zai_api_key
-ZAI_MODEL=GLM-5.1
-
-# OpenCode
-OPENCODE_API_URL=https://api.opencode.com/v1
-OPENCODE_API_KEY=your_opencode_api_key
-OPENCODE_MODEL=GLM-5.1
-
-# Jira Cloud
-JIRA_BASE_URL=https://your-domain.atlassian.net
-JIRA_EMAIL=your_email@example.com
-JIRA_API_TOKEN=your_jira_api_token
-JIRA_PROJECT_KEYS=PROJ,OTHER
-
-# GitLab
-GITLAB_BASE_URL=https://gitlab.com
-GITLAB_TOKEN=your_gitlab_personal_access_token
-GITLAB_DEFAULT_PROJECT=your/project
-
-# GitHub
-GITHUB_TOKEN=your_github_token
-GITHUB_DEFAULT_OWNER=your_org
-GITHUB_DEFAULT_REPO=your_repo
-
-# Jitbit Helpdesk
-JITBIT_ENABLED=false
-JITBIT_BASE_URL=https://your-company.jitbit.com/helpdesk
-JITBIT_API_TOKEN=your_jitbit_api_token
-JITBIT_DEFAULT_CATEGORY_ID=
-
-# Policy
-POLICY_APPROVAL_MODE=strict   # strict, balanced, permissive
-POLICY_JIRA_AUTO_CLOSE=false
-POLICY_CALENDAR_ALLOW_DELETE=false
-ENABLE_CALENDAR_WRITE=true
-ENABLE_JIRA_TRANSITIONS=true
-ENABLE_GITLAB_WEBHOOKS=true
-```
-
-### Development
-
-```bash
-npm run dev          # Run in development mode (port 3050)
-npm test             # Run tests (vitest)
-npm run test:watch   # Run tests in watch mode
+npm run dev          # Development mode (port 3050, auto-reload)
 npm run build        # Build for production
 npm start            # Start production server
 ```
 
-## API Endpoints
+### Testing
 
-### Chat
-
-```
-POST   /chat                    # Send a message (productivity/engineering mode)
-POST   /chat/stream              # Stream a response (SSE with tool progress + thinking events)
-GET    /chat/health              # AI provider + integration health check
-GET    /chat/sessions             # List sessions
-POST   /chat/sessions             # Create a new session
-GET    /chat/sessions/:id         # Get a session
-POST   /chat/sessions/:id/end    # End a session
-GET    /chat/sessions/:id/messages # Get session messages
-DELETE /chat/sessions/:id         # Delete a session
-GET    /chat/memory/search        # Search memories
-POST   /chat/memory/relevant     # Get relevant memories
-GET    /chat/memory/stats         # Get memory statistics
+```bash
+npm test             # Run all tests (vitest)
+npm run test:watch   # Watch mode
+npm run test:coverage # With coverage report
 ```
 
-### Stream Events
+Integration-specific tests:
 
-The `/chat/stream` endpoint sends Server-Sent Events:
-
-| Event         | Data                   | Description                              |
-| ------------- | ---------------------- | ---------------------------------------- |
-| `session`     | `{ sessionId }`        | Session ID for the conversation          |
-| `tool_start`  | `{ id, name, params }` | Tool call started                        |
-| `tool_result` | `{ id, result }`       | Tool call completed                      |
-| `thinking`    | `{ thinking }`         | AI reasoning content (collapsible in UI) |
-| `content`     | `{ content }`          | Final response content                   |
-| `done`        | `{ usage, model }`     | Stream complete                          |
-| `error`       | `{ error, message }`   | Error occurred                           |
-
-### Approvals
-
-```
-GET    /approvals                # List pending approvals
-POST   /approvals/:id/approve    # Approve an action (dispatches via tool dispatcher)
-POST   /approvals/:id/reject     # Reject an action
+```bash
+npm run test:jira           # Jira live tests
+npm run test:gitlab         # GitLab live tests
+npm run test:roadmap        # Roadmap tests
+npm run test:memory         # Memory tests
+npm run test:guardrails     # Guardrails tests
+npm run test:google-calendar # Google Calendar tests
+npm run test:aicoder        # Aicoder smoke tests
+npm run test:production    # Production smoke tests
 ```
 
-### Calendar
+### Test Coverage
 
-```
-GET    /calendar/events           # List calendar events
-POST   /calendar/events           # Create an event
-PATCH  /calendar/events/:eventId # Update an event
-DELETE /calendar/events/:eventId # Delete an event
-POST   /calendar/focus-blocks    # Create a focus block
-POST   /calendar/health-blocks   # Create a health block
-GET    /calendar/stats            # Get calendar statistics
-GET    /calendar/export/ics       # Export as ICS (RFC 5545)
-GET    /calendar/subscribe        # Get webcal:// subscription URL for iPhone
-```
+**236+ tests across 11+ test files.**
 
-### Productivity
-
-```
-GET    /productivity/daily-plan                # Get daily plan (Jira + GitLab data)
-GET    /productivity/focus-blocks/recommend     # Get focus block recommendations
-POST   /productivity/focus-blocks              # Create focus block
-GET    /productivity/health-breaks/recommend    # Get health break recommendations
-POST   /productivity/health-blocks              # Create health block
-GET    /productivity/calendar-summary            # Get calendar summary
-```
-
-### Engineering
-
-```
-POST   /engineering/workflow-brief               # Generate workflow brief
-POST   /engineering/architecture-proposal        # Generate architecture proposal
-POST   /engineering/scaffolding-plan             # Generate scaffolding plan
-POST   /engineering/jira-tickets                 # Generate Jira tickets from plan
-```
-
-### Webhooks
-
-```
-POST   /webhooks/gitlab           # GitLab webhook endpoint
-```
-
-### Roadmaps
-
-```
-GET    /api/roadmaps              # List roadmaps
-POST   /api/roadmaps              # Create a roadmap
-GET    /api/roadmaps/:id          # Get a roadmap
-PATCH  /api/roadmaps/:id          # Update a roadmap
-DELETE /api/roadmaps/:id          # Delete a roadmap
-GET    /api/templates             # List templates
-POST   /api/templates/:id/create-roadmap  # Create from template
-```
-
-### Guardrails
-
-```
-POST   /api/guardrails/check           # Check an action
-GET    /api/guardrails/approvals/pending  # List pending approvals
-POST   /api/guardrails/approvals/:id/approve  # Approve
-POST   /api/guardrails/approvals/:id/reject   # Reject
-GET    /api/guardrails/history/:userId  # Get action history
-GET    /api/guardrails/stats             # Get stats
-```
-
-### Health
-
-```
-GET    /health                     # System health (GitHub/GitLab/Jira integration status)
-GET    /chat/health                # AI provider + integration health check
-```
-
-### Agent Runs
-
-```
-GET    /api/agent-runs              # List runs (query: status, userId, limit, offset)
-GET    /api/agent-runs/stats        # Aggregate statistics
-GET    /api/agent-runs/:id          # Get run with steps
-GET    /api/agent-runs/:id/steps    # Get steps for a run
-```
-
-### Jitbit
-
-Jitbit support/customer intelligence is exposed through 21 assistant tools rather than standalone REST routes. Core tools include `jitbit.search_tickets`, `jitbit.get_ticket`, `jitbit.create_ticket`, `jitbit.close_ticket`, `jitbit.assign_ticket`, and `jitbit.list_assets`. Additional tools for merges, forwarding, asset management, tags, and time tracking are available via `discover_tools('jitbit')`.
-
-### Work Items
-
-The "Work Items" page in the sidebar lets you create, view, edit, complete, and archive work items. You can filter by status, type, priority, and source. Work items can link to external resources (Jira, GitHub, GitLab, Jitbit, calendar, roadmap) and include notes.
-
-## Architecture
-
-```
-src/
-├── config/                # Environment, constants, policy rules
-├── agent/
-│   ├── providers/          # AI providers (Ollama, Z.ai, OpenCode)
-│   │   ├── types.ts         # Shared interfaces (ChatRequest, ChatResponse, ToolCall)
-│   │   ├── factory.ts        # Provider factory (switches on AI_PROVIDER env)
-│   │   ├── ollama-provider.ts # Ollama with ID synthesis + descriptive error handling
-│   │   ├── zai-provider.ts   # Z.ai with retry + rate limiting + thinking + chunked streaming
-│   │   └── opencode-provider.ts # OpenCode API with exponential backoff retry
-│   ├── opencode-client.ts   # Provider facade (provider-agnostic)
-│   ├── tool-registry.ts     # 100+ tools with core set + discover_tools
-│   ├── tool-dispatcher.ts   # Tool execution with audit logging + engineering handlers
-│   └── prompts.ts           # System prompts with TASK_COMPLETION_RULES
-├── policy/                 # Policy engine with pattern matching
-├── approvals/              # Approval queue (SQLite, dispatches on approve)
-├── audit/                  # Audit logger (write + query with severity filtering)
-├── guardrails/             # Action registry, enforcement, REST API
-├── memory/                 # Conversation manager with LLM-based compaction
-├── roadmap/                # SQLite-backed CRUD, milestones, items, templates
-├── integrations/
-│   ├── jira/               # Jira Cloud REST API (v2/v3)
-│   ├── gitlab/             # GitLab API with retry + webhook support
-│   ├── github/             # GitHub REST API with retry (repos, PRs, issues, workflows, releases)
-│   ├── jitbit/             # Jitbit Helpdesk API (tickets, lifecycle, comments, companies, users, snapshots, assets, tags, time tracking, automation, custom fields)
-│   ├── google/             # Google Calendar OAuth2 + Calendar API
-│   ├── discord/            # Discord bot with slash commands
-│   └── file/               # File-based calendar + ICS export + tunnel
-├── engineering/            # Workflow brief, architecture planner, scaffold planner, Jira tickets
-├── productivity/           # Daily planner (Jira + GitLab), focus blocks, health breaks
-├── routes/                 # HTTP endpoints (chat, calendar, etc.)
-├── middleware/              # Auth middleware (provider-agnostic key validation)
-└── server.ts               # Fastify entry point with provider-aware startup logging
-```
-
-## Error Handling
-
-All AI providers include:
-
-- **Exponential backoff** with jitter for server errors (5xx)
-- **Rate limit handling** (429) with `Retry-After` header support
-- **Thinking/reasoning extraction** — GLM-5.x `reasoning_content` captured and displayed
-- **Tool call ID synthesis** — Ollama and Z.ai synthesize IDs when the API omits them
-- **Descriptive errors** — Ollama 400-with-tools throws a clear error instead of silently degrading
-- **GitLab/GitHub retry** — 429 and 5xx responses automatically retried with backoff; interceptors guarded when token is empty
+| File | Tests | Notes |
+|------|-------|-------|
+| `tests/e2e/workflows.test.ts` | 44 | Auth, calendar, approval lifecycle, roadmap, guardrails |
+| `tests/unit/integrations/jira-crud.test.ts` | 36 | Full Jira CRUD |
+| `tests/unit/integrations/gitlab-client.test.ts` | 41 | Projects, MRs, commits, branches, pipelines |
+| `tests/unit/integrations/gitlab-dispatcher.test.ts` | 24 | GitLab tool dispatch |
+| `tests/e2e/guardrails.test.ts` | 21 | Guardrails enforcement, rate limiting |
+| `tests/unit/integrations/jira-key-extractor.test.ts` | 20 | Jira key extraction |
+| `tests/unit/middleware/auth.test.ts` | 18 | Auth middleware |
+| `src/integrations/jitbit/__tests__/jitbit-client-extended.test.ts` | 34 | Jitbit lifecycle, assets, tags, time |
+| `src/integrations/jitbit/__tests__/jitbit-service-extended.test.ts` | 31 | Jitbit service: close, assign, assets |
+| `src/integrations/jitbit/__tests__/jitbit-client.test.ts` | 23 | Jitbit client |
+| `src/integrations/jitbit/__tests__/jitbit-service.test.ts` | 18 | Jitbit snapshots, followups |
+| `tests/unit/product/product-chief-of-staff.test.ts` | 13 | Workflow brief, roadmap, signals |
 
 ## Security Notes
 
-- Never commit `.env` files
-- Use strong webhook secrets
-- GitLab webhook verification uses `crypto.timingSafeEqual`
-- Auth middleware uses bcrypt password hashing
-- Auth key validation is provider-agnostic (uses active provider's key)
-- Scope API tokens to minimum required permissions
-- Audit logging on all tool dispatches
-- GitHub/GitLab client interceptors are guarded when tokens are empty (prevents crashes)
+- **Guardrails system** — 18+ critical actions require approval. CRITICAL actions (production deploy, schema change, quarantine) require MFA and/or dry run. Rate limits and cooldowns enforced per action.
+- **No auto-push/auto-merge** — Git push and PR merge require explicit approval. The Code Review agent analyzes only; merging requires a separate, explicitly approved action.
+- **No auto-post** — Code review comments are generated as markdown strings; posting to GitHub/GitLab requires a separate action.
+- **Dry-run pattern** — Ticket Bridge and other destructive-capable operations support `dryRun` mode that returns what would happen without executing.
+- **Secret redaction** — Agent Runs sanitizer redacts values for keys matching `apikey`, `api_key`, `token`, `password`, `authorization`, `secret`, `access_token`, `refresh_token` before storage.
+- **Audit logging** — All tool dispatches and guardrails state changes are logged.
+- **Timing-safe comparison** — GitLab webhook verification uses `crypto.timingSafeEqual`.
+- **Auth** — bcrypt password hashing, provider-agnostic key validation, session-based auth.
+- **Token guards** — GitHub/GitLab client interceptors are guarded when tokens are empty (prevents crashes from unconfigured integrations).
+- **Never commit `.env`** — Use `.env.example` as template.
 
 ## License
 
