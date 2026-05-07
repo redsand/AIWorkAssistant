@@ -244,10 +244,45 @@ function gitRun(args: string[], cwd: string): boolean {
   return true;
 }
 
+function getCurrentBranch(): string | null {
+  const result = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
+  });
+  if (result.status !== 0) return null;
+  return result.stdout.trim();
+}
+
 function checkoutBranch(branchName: string): boolean {
-  // Always start from main to avoid stale branch state
+  // Already on the target branch — stage any pending changes and continue
+  const current = getCurrentBranch();
+  if (current === branchName) {
+    runLogger.logGit("Already on branch", branchName);
+    // Stage any leftover changes from a prior interrupted run
+    stageAndCommit(`[AI] resume: staged pending changes`);
+    return true;
+  }
+
+  // Stash or stage any uncommitted changes before switching branches
+  const dirtyResult = spawnSync("git", ["diff", "--quiet"], {
+    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
+  });
+  const hasUncommittedChanges = dirtyResult.status !== 0;
+
+  if (current && current !== "main" && hasUncommittedChanges) {
+    // On a different branch with changes — commit them so they aren't lost
+    runLogger.logGit("Committing uncommitted changes on", current);
+    const saved = stageAndCommit(`[AI] auto-save before switching from ${current}`);
+    if (!saved) {
+      runLogger.logGit("WARN", "Could not save all changes — some files may be left uncommitted");
+    }
+  }
+
   runLogger.logGit("Switching to main", "before creating new branch");
-  gitRun(["checkout", "main"], WORKSPACE);
+  if (!gitRun(["checkout", "main"], WORKSPACE)) {
+    runLogger.logError("Failed to switch to main");
+    return false;
+  }
+
   runLogger.logGit("Creating branch", branchName);
   const create = gitRun(["checkout", "-b", branchName], WORKSPACE);
   if (!create) {
@@ -256,7 +291,9 @@ function checkoutBranch(branchName: string): boolean {
       return false;
     }
     runLogger.logGit("Fast-forwarding existing branch from main", branchName);
-    return gitRun(["merge", "--ff-only", "main"], WORKSPACE);
+    if (!gitRun(["merge", "--ff-only", "main"], WORKSPACE)) {
+      runLogger.logGit("Cannot fast-forward — proceeding with current state", branchName);
+    }
   }
   return true;
 }
@@ -264,6 +301,46 @@ function checkoutBranch(branchName: string): boolean {
 function pushBranch(branchName: string): boolean {
   runLogger.logGit("Pushing to origin", branchName);
   return gitRun(["push", "origin", branchName], WORKSPACE);
+}
+
+function stageAndCommit(message: string): boolean {
+  // Stage new, modified, and deleted files
+  if (!gitRun(["add", "--all"], WORKSPACE)) {
+    // --all can fail on reserved names (e.g. Windows "nul") or permission errors.
+    // Fall back to staging only tracked-file changes, then add new files individually.
+    runLogger.logGit("git add --all failed — retrying with tracked-only + new files", "");
+    gitRun(["add", "-u"], WORKSPACE);
+    // Collect untracked files (excluding .gitignore entries) and add them one by one
+    const lsResult = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], {
+      cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
+    });
+    if (lsResult.status === 0 && lsResult.stdout.trim()) {
+      const newFiles = lsResult.stdout.trim().split("\n");
+      for (const f of newFiles) {
+        if (!f.trim()) continue;
+        if (!gitRun(["add", f.trim()], WORKSPACE)) {
+          runLogger.logGit("Skipping untrackable file", f.trim());
+        }
+      }
+    }
+  }
+
+  // Check if there is anything staged to commit
+  const status = spawnSync("git", ["diff", "--cached", "--quiet"], {
+    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
+  });
+  // exit code 1 means there ARE staged changes; 0 means nothing staged
+  if (status.status === 0) {
+    runLogger.logGit("Nothing staged to commit", "skipping commit");
+    return true;
+  }
+
+  runLogger.logGit("Committing", message);
+  if (!gitRun(["commit", "-m", message], WORKSPACE)) {
+    runLogger.logError("git commit failed");
+    return false;
+  }
+  return true;
 }
 
 async function runAgent(prompt: string): Promise<RunResult> {
@@ -413,6 +490,13 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<void>
   if (!finDetected && exitCode !== 0) {
     runLogger.log(`WARN`, `Agent exited with code ${exitCode} and no FIN signal — skipping push`);
     runLogger.endRun(exitCode);
+    processedIssues.add(item.number);
+    return;
+  }
+
+  if (!stageAndCommit(`[AI] ${item.title}`)) {
+    runLogger.logError("Stage/commit failed — skipping push");
+    runLogger.endRun(1);
     processedIssues.add(item.number);
     return;
   }
