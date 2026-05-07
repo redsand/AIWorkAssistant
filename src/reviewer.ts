@@ -1,4 +1,5 @@
 #!/usr/bin/env tsx
+import "dotenv/config";
 import { execSync } from "child_process";
 import axios from "axios";
 

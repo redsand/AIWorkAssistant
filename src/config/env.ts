@@ -216,13 +216,18 @@ const envSchema = z.object({
   AIWORKASSISTANT_API_KEY: z.string().default(""),
 
   // Autonomous loop — aicoder agent
-  AICODER_AGENT: z.enum(["codex", "opencode", "claude"]).default("opencode"),
+  AICODER_AGENT: z.enum(["codex", "opencode", "claude"]).default("claude"),
   AICODER_OWNER: z.string().default(""),
   AICODER_REPO: z.string().default(""),
   AICODER_LABEL: z.string().default("ready-for-agent"),
   AICODER_POLL_MS: z.coerce.number().default(60000),
   AICODER_MAX_CYCLES: z.coerce.number().default(0),
   AICODER_WORKSPACE: z.string().default(""),
+  AICODER_OLLAMA: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
+  AICODER_MODEL: z.string().default(""),
   FIN_SIGNAL: z.string().default("FIN"),
 
   // Reviewer agent (src/reviewer.ts)

@@ -1,6 +1,9 @@
 #!/usr/bin/env tsx
+import "dotenv/config";
 import { spawn, spawnSync } from "child_process";
 import axios from "axios";
+import { OllamaLauncher } from "./integrations/ollama-launcher";
+import type { ProviderType } from "./integrations/ollama-launcher";
 
 function parseArgv(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -16,7 +19,9 @@ Options:
   --workspace <path>   Target project directory for git operations (default: cwd)
   --repo <name>        GitHub repo to poll (overrides AICODER_REPO)
   --owner <name>       GitHub owner (overrides AICODER_OWNER)
-  --agent <name>       Coding agent: codex | opencode | claude (default: codex)
+  --agent <name>       Coding agent: codex | opencode | claude (default: claude)
+  --ollama             Route agent through Ollama launcher (sets OPENAI_BASE_URL, etc.)
+  --model <name>       Override model for the agent (e.g. glm-5.1:cloud)
   --label <label>      Issue label to filter (default: ready-for-agent)
   --poll-ms <ms>       Poll interval in milliseconds (default: 60000)
   --max-cycles <n>     Stop after n work cycles (0 = unlimited)
@@ -31,6 +36,8 @@ Remote config (fetches everything else from AIWorkAssistant):
     if (argv[i].startsWith("--") && argv[i + 1] && !argv[i + 1].startsWith("--")) {
       out[argv[i].slice(2)] = argv[i + 1];
       i++;
+    } else if (argv[i] === "--ollama") {
+      out["ollama"] = "true";
     }
   }
   return out;
@@ -57,7 +64,7 @@ const ARGV = parseArgv();
  *   AICODER_REPO        GitHub repo name (overrides server default)
  *   AICODER_OWNER       GitHub owner (overrides server default)
  *   AICODER_LABEL       Issue label to poll (default: ready-for-agent)
- *   AICODER_AGENT       Coding agent binary: codex | opencode | claude (default: codex)
+ *   AICODER_AGENT       Coding agent binary: codex | opencode | claude (default: claude)
  *   AICODER_WORKSPACE   Working directory of the target repo (default: cwd)
  *   AICODER_POLL_MS     Poll interval in ms (default: 60000)
  *   AICODER_MAX_CYCLES  Max issues to process before stopping (default: unlimited)
@@ -68,8 +75,11 @@ const FIN_TOKEN = process.env.FIN_SIGNAL || "FIN";
 const POLL_MS = parseInt(ARGV["poll-ms"] || process.env.AICODER_POLL_MS || "60000", 10);
 const MAX_CYCLES = parseInt(ARGV["max-cycles"] || process.env.AICODER_MAX_CYCLES || "0", 10);
 const WORKSPACE = ARGV.workspace || process.env.AICODER_WORKSPACE || process.cwd();
-const AGENT = (ARGV.agent || process.env.AICODER_AGENT || "codex") as "codex" | "opencode" | "claude";
+const AGENT = (ARGV.agent || process.env.AICODER_AGENT || "claude") as ProviderType;
 const LABEL = ARGV.label || process.env.AICODER_LABEL || "ready-for-agent";
+const USE_OLLAMA = "ollama" in ARGV || process.env.AICODER_OLLAMA === "true";
+const MODEL = ARGV.model || process.env.AICODER_MODEL || "";
+const ollamaLauncher = USE_OLLAMA ? new OllamaLauncher() : null;
 
 interface ServerConfig {
   owner: string;
@@ -227,6 +237,55 @@ function pushBranch(branchName: string): boolean {
 }
 
 async function runAgent(prompt: string): Promise<RunResult> {
+  if (ollamaLauncher) {
+    return runAgentViaLauncher(prompt);
+  }
+  return runAgentDirect(prompt);
+}
+
+async function runAgentViaLauncher(prompt: string): Promise<RunResult> {
+  return new Promise((resolve) => {
+    console.log(`[AGENT] Starting ${AGENT} via Ollama launcher`);
+
+    const options: import("./integrations/ollama-launcher").LaunchOptions = {
+      provider: AGENT,
+      prompt,
+      cwd: WORKSPACE,
+      model: MODEL || undefined,
+    };
+
+    ollamaLauncher!.launchStream(options).then((child) => {
+      let finDetected = false;
+      let outputBuf = "";
+
+      child.stdout?.on("data", (chunk: Buffer) => {
+        const text = chunk.toString();
+        process.stdout.write(text);
+        outputBuf += text;
+
+        if (!finDetected && outputBuf.includes(FIN_TOKEN)) {
+          finDetected = true;
+          console.log(`\n[AGENT] FIN signal detected — stopping agent`);
+          child.kill("SIGTERM");
+        }
+      });
+
+      child.on("close", (code) => {
+        resolve({ finDetected, exitCode: code });
+      });
+
+      child.on("error", (err) => {
+        console.error(`[AGENT] Launcher failed:`, err.message);
+        resolve({ finDetected: false, exitCode: -1 });
+      });
+    }).catch((err) => {
+      console.error(`[AGENT] Failed to start ${AGENT} via launcher:`, err.message);
+      resolve({ finDetected: false, exitCode: -1 });
+    });
+  });
+}
+
+async function runAgentDirect(prompt: string): Promise<RunResult> {
   return new Promise((resolve) => {
     console.log(`[AGENT] Starting ${AGENT}`);
 
@@ -325,7 +384,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<void>
 
 async function pollLoop(cfg: ServerConfig): Promise<void> {
   let cycles = 0;
-  console.log(`[START] AiRemoteCoder started (agent: ${AGENT}, workspace: ${WORKSPACE})`);
+  console.log(`[START] AiRemoteCoder started (agent: ${AGENT}, workspace: ${WORKSPACE}${USE_OLLAMA ? ", ollama: on" : ""})`);
   console.log(`[CONFIG] Polling ${cfg.apiUrl} for label="${LABEL}"`);
 
   while (true) {
