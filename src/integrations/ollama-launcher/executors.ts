@@ -10,15 +10,23 @@ export class CodexExecutor implements ProviderExecutor {
   ): { command: string; args: string[] } {
     const model = options.model || defaultModel;
     const approvalMode = options.codexApprovalMode || "full-auto";
+    const args = [
+      "exec",
+      "--model",
+      model,
+      "--json",
+    ];
+    if (options.ollamaUrl) {
+      args.push("--oss", "--local-provider", "ollama");
+    }
+    if (approvalMode === "full-auto") {
+      args.push("--dangerously-bypass-approvals-and-sandbox");
+    } else {
+      args.push("--sandbox", "workspace-write");
+    }
     return {
       command: cliPath,
-      args: [
-        "--model",
-        model,
-        "--approval-mode",
-        approvalMode,
-        "-q",
-      ],
+      args,
     };
   }
 

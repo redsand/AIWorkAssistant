@@ -26,7 +26,7 @@ describe("CodexExecutor", () => {
     expect(executor.providerName).toBe("codex");
   });
 
-  it("builds command with model and approval mode", () => {
+  it("builds exec command with model and full-auto bypass", () => {
     const options: LaunchOptions = {
       provider: "codex",
       prompt: "test prompt",
@@ -34,11 +34,12 @@ describe("CodexExecutor", () => {
     };
     const result = executor.buildCommand(options, "codex", "o4-mini");
     expect(result.command).toBe("codex");
+    expect(result.args).toContain("exec");
     expect(result.args).toContain("--model");
     expect(result.args).toContain("o4-mini");
-    expect(result.args).toContain("--approval-mode");
-    expect(result.args).toContain("full-auto");
-    expect(result.args).toContain("-q");
+    expect(result.args).toContain("--json");
+    expect(result.args).toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(result.args).not.toContain("--approval-mode");
     // Prompt should NOT be in args (piped via stdin)
     expect(result.args).not.toContain("test prompt");
   });
@@ -68,7 +69,7 @@ describe("ClaudeExecutor", () => {
     expect(executor.providerName).toBe("claude");
   });
 
-  it("builds command WITHOUT --model when ollamaUrl is set", () => {
+  it("builds command with Claude alias when ollamaUrl is set", () => {
     const options: LaunchOptions = {
       provider: "claude",
       prompt: "test prompt",
@@ -84,8 +85,8 @@ describe("ClaudeExecutor", () => {
     expect(result.args).toContain("--permission-mode");
     expect(result.args).toContain("bypassPermissions");
     expect(result.args).toContain("--dangerously-skip-permissions");
-    // --model must NOT be present when ollamaUrl is set (Ollama model names are invalid for Claude CLI)
-    expect(result.args).not.toContain("--model");
+    expect(result.args).toContain("--model");
+    expect(result.args).toContain("opus");
     // Prompt must NOT be in args (piped via stdin)
     expect(result.args).not.toContain("test prompt");
   });
@@ -128,7 +129,7 @@ describe("ClaudeExecutor", () => {
     }
   });
 
-  it("handles glm-5.1:cloud model gracefully with ollamaUrl (skips --model)", () => {
+  it("handles glm-5.1:cloud model gracefully with ollamaUrl", () => {
     const options: LaunchOptions = {
       provider: "claude",
       prompt: "implement feature X",
@@ -136,9 +137,8 @@ describe("ClaudeExecutor", () => {
       model: "glm-5.1:cloud",
     };
     const result = executor.buildCommand(options, "claude", "glm-5.1:cloud");
-    // The key fix: ollamaUrl is set, so --model is skipped entirely
-    // because "glm-5.1:cloud" is not a valid Anthropic model name
-    expect(result.args).not.toContain("--model");
+    expect(result.args).toContain("--model");
+    expect(result.args).toContain("opus");
     expect(result.args).not.toContain("glm-5.1:cloud");
   });
 });
@@ -518,7 +518,7 @@ describe("SourceResolver", () => {
 // ─── Integration: Launcher + Executor ─────────────────────────────────────────
 
 describe("Launcher + Executor integration", () => {
-  it("ClaudeExecutor + ollama produces no --model flag and correct env", () => {
+  it("ClaudeExecutor + ollama produces alias model flag and correct env", () => {
     const executor = new ClaudeExecutor();
     const options: LaunchOptions = {
       provider: "claude",
@@ -530,8 +530,8 @@ describe("Launcher + Executor integration", () => {
     const { args } = executor.buildCommand(options, "claude", "claude-sonnet-4-6");
     const env = executor.buildEnv(options, "http://localhost:11434");
 
-    // Model flag must NOT be present — Ollama model names are invalid for Claude CLI
-    expect(args).not.toContain("--model");
+    expect(args).toContain("--model");
+    expect(args).toContain("opus");
     expect(args).not.toContain("glm-5.1:cloud");
 
     // Env must route Claude Code's Anthropic SDK to Ollama
@@ -606,9 +606,9 @@ describe("Regression: glm-5.1:cloud must not reach Claude CLI", () => {
       };
       const { args } = executor.buildCommand(options, "claude", model);
 
-      // The --model flag must NOT appear when ollamaUrl is set
       const modelIdx = args.indexOf("--model");
-      expect(modelIdx).toBe(-1);
+      expect(modelIdx).toBeGreaterThanOrEqual(0);
+      expect(args[modelIdx + 1]).toBe("opus");
 
       // The model name must NOT appear in args
       expect(args).not.toContain(model);

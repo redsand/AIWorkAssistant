@@ -56,16 +56,19 @@ class CodexClient {
       "o4-mini";
     const approvalMode = options.approvalMode || "suggest";
 
-    const args: string[] = [];
+    const args: string[] = ["exec", "--model", model, "--json"];
 
-    args.push("--model", model);
-    args.push("--approval-mode", approvalMode);
-
-    if (options.maxTokens) {
-      args.push("--max-tokens", String(options.maxTokens));
+    if (process.env.OLLAMA_API_URL && !process.env.OPENAI_API_KEY && !process.env.CODEX_API_KEY) {
+      args.push("--oss", "--local-provider", "ollama");
     }
 
-    args.push("-q", prompt);
+    if (approvalMode === "full-auto") {
+      args.push("--dangerously-bypass-approvals-and-sandbox");
+    } else {
+      args.push("--sandbox", "workspace-write");
+    }
+
+    args.push(prompt);
 
     const startTime = Date.now();
     const extraEnv = this.getEffectiveEnv();

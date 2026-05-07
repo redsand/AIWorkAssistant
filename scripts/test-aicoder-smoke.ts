@@ -80,14 +80,19 @@ async function checkAsync(name: string, fn: () => Promise<boolean>): Promise<voi
 function testExecutorCommands(): void {
   console.log("\n=== Executor Command Generation ===\n");
 
-  check("CodexExecutor includes model and approval mode", () => {
+  check("CodexExecutor includes exec model and full-auto bypass", () => {
     const ex = new CodexExecutor();
     const { args } = ex.buildCommand(
       { provider: "codex", prompt: "test", codexApprovalMode: "full-auto" },
       "codex",
       "o4-mini",
     );
-    return args.includes("--model") && args.includes("o4-mini") && args.includes("--approval-mode");
+    return args.includes("exec") &&
+      args.includes("--model") &&
+      args.includes("o4-mini") &&
+      args.includes("--json") &&
+      args.includes("--dangerously-bypass-approvals-and-sandbox") &&
+      !args.includes("--approval-mode");
   });
 
   check("ClaudeExecutor includes --verbose flag", () => {
@@ -134,14 +139,14 @@ function testExecutorCommands(): void {
 function testOllamaRouting(): void {
   console.log("\n=== Ollama Routing for Claude ===\n");
 
-  check("ClaudeExecutor skips --model when ollamaUrl is set", () => {
+  check("ClaudeExecutor uses alias model when ollamaUrl is set", () => {
     const ex = new ClaudeExecutor();
     const { args } = ex.buildCommand(
       { provider: "claude", prompt: "test", ollamaUrl: "http://localhost:11434", model: "glm-5.1:cloud" },
       "claude",
       "glm-5.1:cloud",
     );
-    return !args.includes("--model") && !args.includes("glm-5.1:cloud");
+    return args.includes("--model") && args.includes("opus") && !args.includes("glm-5.1:cloud");
   });
 
   check("ClaudeExecutor sets OPENAI_BASE_URL when ollamaUrl is set", () => {

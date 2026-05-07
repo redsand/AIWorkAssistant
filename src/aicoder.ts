@@ -367,7 +367,13 @@ async function runAgentDirect(prompt: string): Promise<RunResult> {
 function buildAgentArgs(agent: string): string[] {
   switch (agent) {
     case "codex":
-      return ["--model", process.env.CODEX_MODEL || "o4-mini", "--approval-mode", "full-auto", "-q"];
+      return [
+        "exec",
+        "--model",
+        process.env.CODEX_MODEL || "o4-mini",
+        "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
+      ];
     case "opencode":
       return [];
     case "claude":
