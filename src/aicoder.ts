@@ -31,6 +31,8 @@ Options:
   --lookup <mode>      Source auto-detect mode: memory | llm (default: memory)
   --poll-ms <ms>       Poll interval in milliseconds (default: 60000)
   --max-cycles <n>     Stop after n work cycles (0 = unlimited)
+  --issue <number>     Work on a specific issue by number (skips polling, runs once)
+  --base <branch>      Base branch to start from (default: main). Use this to chain PRs.
   --help               Show this help
 
 Remote config (fetches everything else from AIWorkAssistant):
@@ -75,6 +77,7 @@ const ARGV = parseArgv();
  *   AICODER_WORKSPACE   Working directory of the target repo (default: cwd)
  *   AICODER_POLL_MS     Poll interval in ms (default: 60000)
  *   AICODER_MAX_CYCLES  Max issues to process before stopping (default: unlimited)
+ *   AICODER_BASE_BRANCH Base branch for new branches (default: main)
  *   FIN_SIGNAL          Token to detect in agent stdout (default: FIN)
  */
 
@@ -90,6 +93,8 @@ const LOOKUP = (ARGV.lookup || process.env.AICODER_LOOKUP || "memory") as Lookup
 const USE_OLLAMA = "ollama" in ARGV || process.env.AICODER_OLLAMA === "true";
 const MODEL = ARGV.model || process.env.AICODER_MODEL || "";
 const OLLAMA_URL = process.env.OLLAMA_API_URL || "http://localhost:11434";
+const TARGET_ISSUE = ARGV.issue ? parseInt(ARGV.issue, 10) : null;
+const BASE_BRANCH = ARGV.base || process.env.AICODER_BASE_BRANCH || "main";
 
 process.env.AICODER_AGENT = AGENT;
 process.env.AICODER_MODEL = MODEL;
@@ -252,6 +257,18 @@ function getCurrentBranch(): string | null {
   return result.stdout.trim();
 }
 
+function pullAndUpdateBase(): boolean {
+  runLogger.logGit("Pulling latest", BASE_BRANCH);
+  if (!gitRun(["checkout", BASE_BRANCH], WORKSPACE)) {
+    runLogger.logError(`Failed to switch to ${BASE_BRANCH}`);
+    return false;
+  }
+  if (!gitRun(["pull", "--ff-only", "origin", BASE_BRANCH], WORKSPACE)) {
+    runLogger.logGit("WARN", `Pull --ff-only failed — proceeding with local ${BASE_BRANCH}`);
+  }
+  return true;
+}
+
 function checkoutBranch(branchName: string): boolean {
   // Already on the target branch — stage any pending changes and continue
   const current = getCurrentBranch();
@@ -268,7 +285,7 @@ function checkoutBranch(branchName: string): boolean {
   });
   const hasUncommittedChanges = dirtyResult.status !== 0;
 
-  if (current && current !== "main" && hasUncommittedChanges) {
+  if (current && current !== BASE_BRANCH && hasUncommittedChanges) {
     // On a different branch with changes — commit them so they aren't lost
     runLogger.logGit("Committing uncommitted changes on", current);
     const saved = stageAndCommit(`[AI] auto-save before switching from ${current}`);
@@ -277,9 +294,8 @@ function checkoutBranch(branchName: string): boolean {
     }
   }
 
-  runLogger.logGit("Switching to main", "before creating new branch");
-  if (!gitRun(["checkout", "main"], WORKSPACE)) {
-    runLogger.logError("Failed to switch to main");
+  // Pull latest base branch so new branches include all merged PRs
+  if (!pullAndUpdateBase()) {
     return false;
   }
 
@@ -290,8 +306,8 @@ function checkoutBranch(branchName: string): boolean {
     if (!gitRun(["checkout", branchName], WORKSPACE)) {
       return false;
     }
-    runLogger.logGit("Fast-forwarding existing branch from main", branchName);
-    if (!gitRun(["merge", "--ff-only", "main"], WORKSPACE)) {
+    runLogger.logGit(`Fast-forwarding existing branch from ${BASE_BRANCH}`, branchName);
+    if (!gitRun(["merge", "--ff-only", BASE_BRANCH], WORKSPACE)) {
       runLogger.logGit("Cannot fast-forward — proceeding with current state", branchName);
     }
   }
@@ -519,11 +535,54 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<void>
 }
 
 async function pollLoop(cfg: ServerConfig): Promise<void> {
-  let cycles = 0;
-  runLogger.logConfig(`AiRemoteCoder started (agent: ${AGENT}, workspace: ${WORKSPACE}${USE_OLLAMA ? ", ollama: on" : ""})`);
+  runLogger.logConfig(`AiRemoteCoder started (agent: ${AGENT}, workspace: ${WORKSPACE}${USE_OLLAMA ? ", ollama: on" : ""}, base: ${BASE_BRANCH})`);
+
+  // --issue <number>: work on a specific issue and exit (no polling)
+  if (TARGET_ISSUE) {
+    runLogger.logConfig(`Targeting issue #${TARGET_ISSUE} directly`);
+    const items = await fetchWork(cfg);
+    const target = items.find((i) => i.number === TARGET_ISSUE);
+    if (!target) {
+      // Issue not in the label queue — fetch it directly from GitHub
+      runLogger.logConfig(`Issue #${TARGET_ISSUE} not in label queue — fetching from GitHub`);
+      const ghToken = process.env.GITHUB_TOKEN;
+      if (!ghToken) {
+        runLogger.logError("GITHUB_TOKEN required to fetch issue by number");
+        process.exit(1);
+      }
+      const owner = cfg.owner || "redsand";
+      const repo = cfg.repo || "AIWorkAssistant";
+      const resp = await axios.get(`https://api.github.com/repos/${owner}/${repo}/issues/${TARGET_ISSUE}`, {
+        headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" },
+      }).catch(() => null);
+
+      if (!resp || !resp.data?.title) {
+        runLogger.logError(`Could not find issue #${TARGET_ISSUE}`);
+        process.exit(1);
+      }
+
+      const slug = resp.data.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+      const item: WorkItem = {
+        id: String(TARGET_ISSUE),
+        number: TARGET_ISSUE,
+        title: resp.data.title,
+        url: resp.data.html_url || "",
+        owner,
+        repo,
+        suggestedBranch: `ai/issue-${TARGET_ISSUE}-${slug}`,
+        labels: (resp.data.labels || []).map((l: any) => typeof l === "string" ? l : l.name),
+      };
+      await processWorkItem(cfg, item);
+    } else {
+      await processWorkItem(cfg, target);
+    }
+    return;
+  }
+
   runLogger.logConfig(`Polling ${cfg.apiUrl} for label="${LABEL}"`);
   runLogger.logConfig(`Source: ${SOURCE}, Priority mode: ${PRIORITY}, Lookup: ${LOOKUP}`);
 
+  let cycles = 0;
   while (true) {
     if (MAX_CYCLES > 0 && cycles >= MAX_CYCLES) {
       runLogger.log("STOP", `Reached max cycles (${MAX_CYCLES})`);
