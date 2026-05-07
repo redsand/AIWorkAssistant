@@ -135,10 +135,13 @@ async function fetchWork(cfg: ServerConfig): Promise<WorkItem[]> {
   if (cfg.owner) params.owner = cfg.owner;
   if (cfg.repo) params.repo = cfg.repo;
 
-  const resp = await axios.get<{ success: boolean; items: WorkItem[] }>(
+  const resp = await axios.get<{ success: boolean; items: WorkItem[]; error?: string }>(
     `${cfg.apiUrl}/api/autonomous-loop/work`,
     { headers: authHeaders(cfg), params },
   );
+  if (!resp.data.success) {
+    throw new Error(resp.data.error || "Server returned unsuccessful response");
+  }
   return resp.data.items ?? [];
 }
 
