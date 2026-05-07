@@ -98,9 +98,9 @@ The `aicoder` and `reviewer` CLIs authenticate using `AIWORKASSISTANT_API_KEY`. 
 Create a `.env` or export these in the shell where you run `aicoder`:
 
 ```bash
-# Required — where the AIWorkAssistant server is
-AIWORKASSISTANT_URL=http://localhost:3050
-AIWORKASSISTANT_API_KEY=your-server-api-key
+# AIWORKASSISTANT_URL defaults to http://localhost:3050 — only set if running remotely
+# AIWORKASSISTANT_URL=http://your-remote-server:3050
+AIWORKASSISTANT_API_KEY=your-server-api-key   # must match AIWORKASSISTANT_API_KEY in server .env
 
 # Optional overrides (server provides defaults from its own .env)
 AICODER_OWNER=your-org            # GitHub owner
@@ -171,9 +171,9 @@ npx tsx /path/to/ai-assist-tim/src/aicoder.ts \
 ### 3.1 Environment variables (reviewer)
 
 ```bash
-# Required — connects to AIWorkAssistant for review delegation
-AIWORKASSISTANT_URL=http://localhost:3050
-AIWORKASSISTANT_API_KEY=your-server-api-key
+# AIWORKASSISTANT_URL defaults to http://localhost:3050 — only set if running remotely
+# AIWORKASSISTANT_URL=http://your-remote-server:3050
+AIWORKASSISTANT_API_KEY=your-server-api-key   # must match AIWORKASSISTANT_API_KEY in server .env
 
 # Required — GitHub access for listing/merging PRs
 GITHUB_TOKEN=ghp_your_token_here

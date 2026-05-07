@@ -104,6 +104,8 @@ export function getAuthPassword(): string {
 }
 
 export function getApiKeyForAuth(): string {
+  // Dedicated loop key takes priority — used by aicoder + reviewer
+  if (env.AIWORKASSISTANT_API_KEY) return env.AIWORKASSISTANT_API_KEY;
   const provider = env.AI_PROVIDER;
   if (provider === "zai") return env.ZAI_API_KEY || "";
   if (provider === "ollama") return env.OLLAMA_API_KEY || "";

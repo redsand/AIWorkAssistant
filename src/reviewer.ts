@@ -19,8 +19,8 @@ Options:
   --help            Show this help
 
 Remote config (fetches everything else from AIWorkAssistant):
-  AIWORKASSISTANT_URL      Base URL of the AIWorkAssistant server
-  AIWORKASSISTANT_API_KEY  API key for authentication
+  AIWORKASSISTANT_URL      Base URL of the server (default: http://localhost:3050)
+  AIWORKASSISTANT_API_KEY  API key for authentication (required)
 
 Local config (.env):
   GITHUB_TOKEN              GitHub personal access token
@@ -89,10 +89,10 @@ interface ReviewResult {
 }
 
 async function loadConfig(): Promise<ReviewerConfig> {
-  const remoteUrl = process.env.AIWORKASSISTANT_URL?.replace(/\/$/, "");
+  const remoteUrl = (process.env.AIWORKASSISTANT_URL || "http://localhost:3050").replace(/\/$/, "");
   const remoteKey = process.env.AIWORKASSISTANT_API_KEY;
 
-  if (remoteUrl && remoteKey) {
+  if (remoteKey) {
     console.log(`[CONFIG] Fetching reviewer config from ${remoteUrl}`);
     const response = await axios.get<ReviewerConfig>(
       `${remoteUrl}/api/reviewer/config`,
@@ -106,7 +106,7 @@ async function loadConfig(): Promise<ReviewerConfig> {
     return cfg;
   }
 
-  console.log("[CONFIG] Using local .env config");
+  console.log("[CONFIG] No AIWORKASSISTANT_API_KEY — using local .env config only");
   return {
     githubToken: process.env.GITHUB_TOKEN || "",
     owner: ARGV.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand",

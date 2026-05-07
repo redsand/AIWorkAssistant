@@ -23,8 +23,8 @@ Options:
   --help               Show this help
 
 Remote config (fetches everything else from AIWorkAssistant):
-  AIWORKASSISTANT_URL      Base URL of the AIWorkAssistant server
-  AIWORKASSISTANT_API_KEY  API key for authentication
+  AIWORKASSISTANT_URL      Base URL of the server (default: http://localhost:3050)
+  AIWORKASSISTANT_API_KEY  API key for authentication (required)
 `);
       process.exit(0);
     }
@@ -100,13 +100,11 @@ interface RunResult {
 }
 
 function loadServerConfig(): ServerConfig {
-  const apiUrl = (process.env.AIWORKASSISTANT_URL || "").replace(/\/$/, "");
+  const apiUrl = (process.env.AIWORKASSISTANT_URL || "http://localhost:3050").replace(/\/$/, "");
   const apiKey = process.env.AIWORKASSISTANT_API_KEY || "";
 
-  if (!apiUrl || !apiKey) {
-    console.error(
-      "[ERROR] AIWORKASSISTANT_URL and AIWORKASSISTANT_API_KEY are required",
-    );
+  if (!apiKey) {
+    console.error("[ERROR] AIWORKASSISTANT_API_KEY is required");
     process.exit(1);
   }
 
