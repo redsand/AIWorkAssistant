@@ -119,6 +119,44 @@ function makeGithubClient(token: string, owner: string) {
   };
 }
 
+async function runAiReview(
+  remoteUrl: string,
+  remoteKey: string,
+  owner: string,
+  repo: string,
+  prNumber: number,
+): Promise<ReviewResult> {
+  console.log(`[REVIEW] Delegating PR #${prNumber} review to AIWorkAssistant`);
+  try {
+    const response = await axios.post<{
+      success: boolean;
+      clean?: boolean;
+      findings?: ReviewFinding[];
+      summary?: string;
+      error?: string;
+    }>(
+      `${remoteUrl}/api/reviewer/review`,
+      { owner, repo, prNumber },
+      { headers: { Authorization: `Bearer ${remoteKey}` } },
+    );
+
+    const data = response.data;
+    if (!data.success) {
+      throw new Error(data.error ?? "Unknown review error");
+    }
+
+    const findings = data.findings ?? [];
+    return {
+      clean: data.clean ?? false,
+      findings,
+      summary: data.summary ?? buildSummary(findings),
+    };
+  } catch (err) {
+    console.error("[ERROR] AI review failed, returning empty findings:", err instanceof Error ? err.message : err);
+    return { clean: true, findings: [], summary: "AI review unavailable — treating as clean" };
+  }
+}
+
 async function pollPRs(
   config: ReviewerConfig,
   gh: ReturnType<typeof makeGithubClient>,
@@ -136,8 +174,7 @@ async function pollPRs(
         continue;
       }
 
-      const diff = await gh.getPRDiff(repo, pr.number);
-      const result = await runMultiAgentReview(config, diff);
+      const result = await runMultiAgentReview(config, repo, pr.number);
 
       if (result.clean) {
         await mergeWithSummary(gh, repo, pr, result);
@@ -150,8 +187,21 @@ async function pollPRs(
 
 async function runMultiAgentReview(
   config: ReviewerConfig,
-  diff: string,
+  repo: string,
+  prNumber: number,
 ): Promise<ReviewResult> {
+  const remoteUrl = process.env.AIWORKASSISTANT_URL?.replace(/\/$/, "");
+  const remoteKey = process.env.AIWORKASSISTANT_API_KEY;
+
+  if (remoteUrl && remoteKey) {
+    return runAiReview(remoteUrl, remoteKey, config.owner, repo, prNumber);
+  }
+
+  const diff = await (async () => {
+    const gh = makeGithubClient(config.githubToken, config.owner);
+    return gh.getPRDiff(repo, prNumber);
+  })();
+
   const findings: ReviewFinding[] = [
     ...runAgentReview(diff, "security", config.securityAgentCmd),
     ...runAgentReview(diff, "qa", config.qaAgentCmd),

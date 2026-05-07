@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "description": "Guarded productivity and engineering agent with AI Assistant integration",
   "main": "dist/server.js",
+  "bin": {
+    "aicoder": "src/aicoder.ts",
+    "reviewer": "src/reviewer.ts",
+    "ai-assistant": "src/cli/cli.ts"
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
@@ -30,6 +35,7 @@
     "docker:logs": "docker-compose logs -f",
     "cli": "tsx src/cli/cli.ts",
     "reviewer": "tsx src/reviewer.ts",
+    "aicoder": "tsx src/aicoder.ts",
     "bot:discord": "tsx src/integrations/discord/bot-server.ts",
     "bot:signal": "tsx src/integrations/signal/bot-server.ts",
     "lint": "eslint src --ext .ts",

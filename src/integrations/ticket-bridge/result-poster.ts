@@ -9,7 +9,7 @@ export interface PostResultsOptions {
   branchName: string | null;
   agent: AgentType | null;
   agentExitCode: number | null;
-  workDir: string;
+  workspace: string;
   runDurationMs?: number;
   sessionUrl?: string;
   dryRun?: boolean;
@@ -66,7 +66,7 @@ const ADAPTERS: ReadonlyMap<TicketSourceType, SourceAdapter> = new Map([
 
 class ResultPoster {
   async post(options: PostResultsOptions): Promise<PostedResult> {
-    const gitSummary = this.gatherGitSummary(options.workDir);
+    const gitSummary = this.gatherGitSummary(options.workspace);
     const comment = this.buildComment({ ...options, gitSummary });
 
     if (options.dryRun) {

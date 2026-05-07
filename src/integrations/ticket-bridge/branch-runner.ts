@@ -198,7 +198,7 @@ class BranchRunner {
         branchName,
         agent: options.agent,
         agentExitCode,
-        workDir,
+        workspace: workDir,
         runDurationMs: runDurationMs ?? undefined,
         sessionUrl: options.sessionUrl,
       });
