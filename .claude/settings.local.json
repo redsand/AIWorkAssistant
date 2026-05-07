@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rtk vitest *)",
+      "Bash(npx tsx *)",
+      "Bash(Get-Content \"C:\\\\Users\\\\TIMSHE~1\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-TimShelton-source-repos-ai-assist-tim\\\\c8e42c59-e76f-4aa3-a5a5-c4ab3a840b74\\\\tasks\\\\bfqx7ojdm.output\" -Wait)",
+      "Bash(Select-String --line-buffered \".\")",
+      "Bash(Get-Content *)",
+      "PowerShell(Get-Content *)",
+      "Bash(AICODER_AGENT=claude npx tsx *)"
+    ]
+  }
+}
