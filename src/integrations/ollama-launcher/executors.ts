@@ -51,9 +51,6 @@ export class ClaudeExecutor implements ProviderExecutor {
       "bypassPermissions",
       "--dangerously-skip-permissions",
     ];
-    // When --ollama is active, skip --model since Ollama model names
-    // aren't valid Anthropic model names. The Ollama proxy handles routing.
-    // Without --ollama, pass the model through normally.
     if (!options.ollamaUrl) {
       const model = options.model || defaultModel;
       if (model) {
@@ -67,9 +64,6 @@ export class ClaudeExecutor implements ProviderExecutor {
     options: LaunchOptions,
     ollamaUrl: string,
   ): Record<string, string> {
-    // When --ollama is active, route Claude Code's Anthropic SDK to Ollama's
-    // Anthropic-compatible endpoint. ANTHROPIC_BASE_URL is what the SDK reads;
-    // OPENAI_BASE_URL is ignored by the Claude CLI process.
     if (options.ollamaUrl) {
       return {
         ANTHROPIC_BASE_URL: ollamaUrl,
@@ -78,7 +72,6 @@ export class ClaudeExecutor implements ProviderExecutor {
         ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || "ollama",
       };
     }
-    // Otherwise use the native Anthropic API
     const env: Record<string, string> = {};
     if (process.env.ANTHROPIC_API_KEY) {
       env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
