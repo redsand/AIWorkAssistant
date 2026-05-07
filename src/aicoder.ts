@@ -562,15 +562,17 @@ async function fetchReworkPrompt(
   ghToken: string,
   owner: string,
   repo: string,
+  prNumber: number,
   issueNumber: number,
 ): Promise<string | null> {
   const headers = { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" };
+  // Check issue comments first (where the reviewer posts the coding prompt)
   try {
-    const resp = await axios.get(
+    const issueResp = await axios.get(
       `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
       { headers, params: { per_page: 20, sort: "created", direction: "desc" } },
     );
-    for (const c of resp.data || []) {
+    for (const c of issueResp.data || []) {
       const body: string = c.body || "";
       if (body.includes("Rework from PR Review")) {
         return body;
@@ -578,6 +580,21 @@ async function fetchReworkPrompt(
     }
   } catch {
     // Issue comments not available
+  }
+  // Also check PR comments (where review findings are posted)
+  try {
+    const prResp = await axios.get(
+      `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments`,
+      { headers, params: { per_page: 20, sort: "created", direction: "desc" } },
+    );
+    for (const c of prResp.data || []) {
+      const body: string = c.body || "";
+      if (body.includes("Review Failed — Rework Required")) {
+        return body;
+      }
+    }
+  } catch {
+    // PR comments not available
   }
   return null;
 }
@@ -931,7 +948,7 @@ async function focusedProcessWorkItem(
       const issueMatch = (item.url || "").match(/#(\d+)/);
       const issueNumber = issueMatch ? parseInt(issueMatch[1], 10) : item.number;
 
-      const reworkPrompt = await fetchReworkPrompt(ghToken, owner, repo, issueNumber);
+      const reworkPrompt = await fetchReworkPrompt(ghToken, owner, repo, prNumber, issueNumber);
       if (!reworkPrompt) {
         runLogger.logError("Could not fetch rework prompt — skipping rework");
         return;

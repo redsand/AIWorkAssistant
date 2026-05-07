@@ -159,6 +159,10 @@ function makeGithubClient(token: string, owner: string) {
       await client.post(`/repos/${owner}/${repo}/issues/${issueNumber}/comments`, { body });
     },
 
+    async addLabel(repo: string, issueNumber: number, label: string): Promise<void> {
+      await client.post(`/repos/${owner}/${repo}/issues/${issueNumber}/labels`, { labels: [label] });
+    },
+
     async mergePR(repo: string, prNumber: number, commitTitle: string, commitMessage: string): Promise<void> {
       await client.put(`/repos/${owner}/${repo}/pulls/${prNumber}/merge`, {
         commit_title: commitTitle,
@@ -392,6 +396,10 @@ async function postReworkPrompt(
   }
   const issueNumber = parseInt(issueMatch[1], 10);
   await gh.addIssueComment(repo, issueNumber, buildReworkPrompt(result));
+  // Re-label the issue so aicoder picks it up for rework
+  await gh.addLabel(repo, issueNumber, "ready-for-agent").catch(() => {
+    console.log(`[WARN] Could not add ready-for-agent label to issue #${issueNumber}`);
+  });
   console.log(`[REWORK] Posted rework prompt on issue #${issueNumber} for PR #${pr.number}`);
 }
 
