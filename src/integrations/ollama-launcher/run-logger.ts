@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 
 export class RunLogger {
-  private logStream: fs.WriteStream | null = null;
+  private logFile: string | null = null;
   private startTime: Date = new Date();
   private logDir: string;
 
@@ -12,11 +12,9 @@ export class RunLogger {
   }
 
   startRun(issueNumber: number, title: string): void {
-    this.close();
     this.startTime = new Date();
     const ts = this.startTime.toISOString().replace(/[:.]/g, "-");
-    const logFile = path.join(this.logDir, `run-${issueNumber}-${ts}.log`);
-    this.logStream = fs.createWriteStream(logFile, { flags: "a" });
+    this.logFile = path.join(this.logDir, `run-${issueNumber}-${ts}.log`);
     this.write(`[AICODER] Run started at ${this.startTime.toISOString()}`);
     this.write(`[AICODER] Issue #${issueNumber}: ${title}`);
   }
@@ -73,19 +71,12 @@ export class RunLogger {
     const duration = Date.now() - this.startTime.getTime();
     const seconds = (duration / 1000).toFixed(1);
     this.write(`[AICODER] Run completed (duration: ${seconds}s, exit: ${exitCode ?? "unknown"})`);
-    this.close();
+    this.logFile = null;
   }
 
   private write(line: string): void {
-    if (this.logStream && !this.logStream.destroyed) {
-      this.logStream.write(line + "\n");
-    }
-  }
-
-  private close(): void {
-    if (this.logStream && !this.logStream.destroyed) {
-      this.logStream.end();
-      this.logStream = null;
+    if (this.logFile) {
+      fs.appendFileSync(this.logFile, line + "\n", "utf-8");
     }
   }
 }

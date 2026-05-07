@@ -24,6 +24,8 @@
     "test:guardrails": "tsx scripts/test-guardrails.ts",
     "test:google-calendar": "tsx scripts/test-google-calendar.ts",
     "test:production": "tsx scripts/test-production.ts",
+    "test:aicoder": "tsx scripts/test-aicoder-smoke.ts",
+    "test:aicoder:live": "tsx scripts/test-aicoder-smoke.ts --live",
     "init:roadmap": "tsx scripts/init-roadmap.ts",
     "deploy": "bash scripts/deploy.sh",
     "deploy:production": "bash scripts/deploy.sh deploy production",
