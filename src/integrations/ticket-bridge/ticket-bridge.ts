@@ -63,7 +63,7 @@ class TicketBridge {
       case "roadmap":
         return this.generateFromRoadmap(source, ctx);
       case "gitlab":
-        return this.generateFromGitHub(source, ctx); // GitLab uses same prompt format for now
+        return this.generateFromGitHub(source, ctx); // GitLab uses same prompt format
       case "jitbit":
         return this.generateFromJira(source, ctx); // Jitbit uses similar format to Jira
     }

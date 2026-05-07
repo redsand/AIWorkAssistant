@@ -240,6 +240,9 @@ function gitRun(args: string[], cwd: string): boolean {
 }
 
 function checkoutBranch(branchName: string): boolean {
+  // Always start from main to avoid stale branch state
+  runLogger.logGit("Switching to main", "before creating new branch");
+  gitRun(["checkout", "main"], WORKSPACE);
   runLogger.logGit("Creating branch", branchName);
   const create = gitRun(["checkout", "-b", branchName], WORKSPACE);
   if (!create) {

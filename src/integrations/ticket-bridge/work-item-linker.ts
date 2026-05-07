@@ -32,6 +32,10 @@ function toWorkItemSource(type: TicketSourceType): WorkItemSource {
       return "jira";
     case "roadmap":
       return "roadmap";
+    case "gitlab":
+      return "gitlab";
+    case "jitbit":
+      return "jitbit";
   }
 }
 
@@ -44,6 +48,12 @@ function externalIdFromSource(source: TicketSource): string {
     case "jira":
       return source.id;
     case "roadmap":
+      return source.id;
+    case "gitlab": {
+      const match = source.id.match(/#?(\d+)$/);
+      return match ? match[1] : source.id;
+    }
+    case "jitbit":
       return source.id;
   }
 }

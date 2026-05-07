@@ -68,6 +68,15 @@ class BranchRunner {
       }
       case "roadmap":
         return slug ? `ticket-roadmap-${slug}` : `ticket-roadmap`;
+      case "gitlab": {
+        const glMatch = source.id.match(/#?(\d+)$/);
+        const glNum = glMatch ? glMatch[1] : source.id.replace(/[^0-9]/g, "").slice(0, 8) || "0";
+        return slug ? `ticket-${glNum}-${slug}` : `ticket-${glNum}`;
+      }
+      case "jitbit": {
+        const jbNum = source.id.replace(/[^0-9]/g, "").slice(0, 8) || "0";
+        return slug ? `ticket-${jbNum}-${slug}` : `ticket-${jbNum}`;
+      }
     }
   }
 
