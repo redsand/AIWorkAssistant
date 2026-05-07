@@ -232,6 +232,37 @@ Tim: "Review PR #42 in org/repo"
 Assistant: [calls code_review.github_pr] → returns CodeReview with risk level, must-fix items, and a suggested review comment
 ```
 
+## Autonomous Loop (aicoder + reviewer)
+
+The autonomous loop turns GitHub issues into merged PRs with no human involvement.
+
+**Two agents work in tandem:**
+
+| Agent | Script | Role |
+|-------|--------|------|
+| `aicoder` | `npm run aicoder` | Polls issues, runs coding agent, opens PRs |
+| `reviewer` | `npm run reviewer` | Reviews PRs, auto-merges or posts rework prompts |
+
+**Flow:**
+```
+Issue (labeled ready-for-agent)
+  → aicoder generates prompt → runs codex/opencode/claude → opens [AI] PR
+  → reviewer reviews PR → merges (clean) or posts rework prompt (findings)
+  → rework picked up by aicoder → repeat until merged
+```
+
+**Minimum setup:**
+1. Start the AIWorkAssistant server (`npm run dev`)
+2. Set `AIWORKASSISTANT_URL` + `AIWORKASSISTANT_API_KEY` in the environment
+3. Run `aicoder` in the target project's workspace
+4. Run `reviewer` to watch for PRs
+
+**Issue requirements:** Label the issue `ready-for-agent` and include a `## Coding Prompt` section with implementation instructions ending in `Output "FIN" when done.`
+
+See **[docs/autonomous-loop.md](docs/autonomous-loop.md)** for full deployment, CLI reference, issue setup, monitoring, and troubleshooting.
+
+---
+
 ## Quick Start
 
 ### Prerequisites
