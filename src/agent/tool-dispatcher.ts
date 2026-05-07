@@ -39,6 +39,7 @@ import { todoManager } from "./todo-manager";
 import { knowledgeStore } from "./knowledge-store";
 import { aiClient } from "./opencode-client";
 import { workItemDatabase } from "../work-items/database";
+import { dryRunResult } from "./dry-run";
 import { workflowExecutor } from "./workflow-executor";
 import { mcpClient } from "../integrations/mcp";
 import { codebaseIndexer } from "./codebase-indexer";
@@ -56,6 +57,7 @@ export interface ToolCallResult {
   error?: string;
   requiresApproval?: boolean;
   approvalId?: string;
+  dryRun?: boolean;
 }
 
 const recentDiagnostics = new Map<string, DiagnosticItem[]>();
@@ -98,6 +100,21 @@ async function handleCalendarListEvents(
 async function handleCalendarCreateFocusBlock(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
+  if (params.dryRun === true) {
+    return { success: true, dryRun: true, data: dryRunResult({
+      toolName: "calendar.create_focus_block",
+      summary: `Would create focus block "${params.title}" at ${params.startTime}`,
+      targetSystem: "calendar",
+      changes: [
+        { field: "event", description: `Create focus block "${params.title}"` },
+        { field: "startTime", to: params.startTime as string, description: "Set start time" },
+        { field: "duration", to: String(params.duration), description: "Set duration in minutes" },
+        ...(params.description ? [{ field: "description" as const, to: params.description as string, description: "Set description" }] : []),
+      ],
+      riskLevel: "low",
+      paramsPreview: { title: params.title, startTime: params.startTime, duration: params.duration, description: params.description },
+    }) };
+  }
   if (!env.ENABLE_CALENDAR_WRITE) {
     return { success: false, error: "Calendar write operations are disabled" };
   }
@@ -113,6 +130,21 @@ async function handleCalendarCreateFocusBlock(
 async function handleCalendarCreateHealthBlock(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
+  if (params.dryRun === true) {
+    return { success: true, dryRun: true, data: dryRunResult({
+      toolName: "calendar.create_health_block",
+      summary: `Would create health block "${params.title}" at ${params.startTime}`,
+      targetSystem: "calendar",
+      changes: [
+        { field: "event", description: `Create ${params.type || "health"} block "${params.title}"` },
+        { field: "startTime", to: params.startTime as string, description: "Set start time" },
+        { field: "duration", to: String(params.duration), description: "Set duration in minutes" },
+        { field: "type", to: params.type as string, description: "Set block type" },
+      ],
+      riskLevel: "low",
+      paramsPreview: { title: params.title, startTime: params.startTime, duration: params.duration, type: params.type },
+    }) };
+  }
   if (!env.ENABLE_CALENDAR_WRITE) {
     return { success: false, error: "Calendar write operations are disabled" };
   }
@@ -207,6 +239,18 @@ async function handleJiraAddComment(
   params: Record<string, unknown>,
   userId: string,
 ): Promise<ToolCallResult> {
+  if (params.dryRun === true) {
+    return { success: true, dryRun: true, data: dryRunResult({
+      toolName: "jira.add_comment",
+      summary: `Would add comment to Jira issue ${params.key}`,
+      targetSystem: "jira",
+      changes: [
+        { field: "comment", to: params.body as string, description: "Add comment to issue" },
+      ],
+      riskLevel: "low",
+      paramsPreview: { key: params.key, body: params.body },
+    }) };
+  }
   if (!env.ENABLE_JIRA_TRANSITIONS) {
     return { success: false, error: "Jira write operations are disabled" };
   }
@@ -257,6 +301,21 @@ async function handleJiraCreateIssue(
   params: Record<string, unknown>,
   _userId: string,
 ): Promise<ToolCallResult> {
+  if (params.dryRun === true) {
+    return { success: true, dryRun: true, data: dryRunResult({
+      toolName: "jira.create_issue",
+      summary: `Would create Jira issue "${params.summary}" in project ${params.project}`,
+      targetSystem: "jira",
+      changes: [
+        { field: "issue", description: `Create new ${params.issueType || "Task"} "${params.summary}"` },
+        { field: "description", to: params.description as string, description: "Set issue description" },
+        { field: "priority", to: params.priority as string, description: "Set priority" },
+        { field: "labels", to: params.labels as string, description: "Set labels" },
+      ],
+      riskLevel: "medium",
+      paramsPreview: { project: params.project, summary: params.summary, issueType: params.issueType, priority: params.priority },
+    }) };
+  }
   if (!jiraClient.isConfigured()) {
     return { success: false, error: "Jira client not configured" };
   }
@@ -405,6 +464,23 @@ async function handleJiraUpdateIssue(
   params: Record<string, unknown>,
   _userId: string,
 ): Promise<ToolCallResult> {
+  if (params.dryRun === true) {
+    const key = params.key as string;
+    const changes: Array<{ field: string; from?: string; to?: string; description: string }> = [];
+    if (params.summary) changes.push({ field: "summary", to: params.summary as string, description: "Update summary" });
+    if (params.description) changes.push({ field: "description", to: params.description as string, description: "Update description" });
+    if (params.assignee) changes.push({ field: "assignee", to: params.assignee as string, description: "Reassign issue" });
+    if (params.priority) changes.push({ field: "priority", to: params.priority as string, description: "Update priority" });
+    if (params.labels) changes.push({ field: "labels", to: params.labels as string, description: "Update labels" });
+    return { success: true, dryRun: true, data: dryRunResult({
+      toolName: "jira.update_issue",
+      summary: `Would update Jira issue ${key}`,
+      targetSystem: "jira",
+      changes,
+      riskLevel: "medium",
+      paramsPreview: { key, summary: params.summary, description: params.description, assignee: params.assignee, priority: params.priority, labels: params.labels },
+    }) };
+  }
   if (!jiraClient.isConfigured()) {
     return { success: false, error: "Jira client not configured" };
   }
@@ -449,6 +525,19 @@ async function handleJiraCloseIssue(
   params: Record<string, unknown>,
   _userId: string,
 ): Promise<ToolCallResult> {
+  if (params.dryRun === true) {
+    return { success: true, dryRun: true, data: dryRunResult({
+      toolName: "jira.close_issue",
+      summary: `Would close Jira issue ${params.key}`,
+      targetSystem: "jira",
+      changes: [
+        { field: "status", description: `Transition ${params.key} to Done/Closed` },
+        ...(params.comment ? [{ field: "comment" as const, to: params.comment as string, description: "Add closing comment" }] : []),
+      ],
+      riskLevel: "high",
+      paramsPreview: { key: params.key, comment: params.comment },
+    }) };
+  }
   if (!jiraClient.isConfigured()) {
     return { success: false, error: "Jira client not configured" };
   }
@@ -675,6 +764,22 @@ async function handleGitlabGetMergeRequest(
 async function handleGitlabCreateMergeRequest(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
+  if (params.dryRun === true) {
+    return { success: true, dryRun: true, data: dryRunResult({
+      toolName: "gitlab.create_merge_request",
+      summary: `Would create MR "${params.title}" in ${params.projectId || "default project"}`,
+      targetSystem: "gitlab",
+      changes: [
+        { field: "merge_request", description: `Create MR "${params.title}"` },
+        { field: "sourceBranch", to: params.sourceBranch as string, description: "Set source branch" },
+        { field: "targetBranch", to: params.targetBranch as string, description: "Set target branch" },
+        ...(params.description ? [{ field: "description" as const, to: params.description as string, description: "Set MR description" }] : []),
+        ...(params.labels ? [{ field: "labels" as const, to: params.labels as string, description: "Set labels" }] : []),
+      ],
+      riskLevel: "medium",
+      paramsPreview: { projectId: params.projectId, sourceBranch: params.sourceBranch, targetBranch: params.targetBranch, title: params.title },
+    }) };
+  }
   if (!gitlabClient.isConfigured()) {
     return { success: false, error: "GitLab client not configured" };
   }
@@ -747,6 +852,18 @@ async function handleGitlabMergeMergeRequest(
 async function handleGitlabAddMrComment(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
+  if (params.dryRun === true) {
+    return { success: true, dryRun: true, data: dryRunResult({
+      toolName: "gitlab.add_mr_comment",
+      summary: `Would add comment to MR !${params.mrIid}`,
+      targetSystem: "gitlab",
+      changes: [
+        { field: "comment", to: params.body as string, description: "Add comment to merge request" },
+      ],
+      riskLevel: "low",
+      paramsPreview: { projectId: params.projectId, mrIid: params.mrIid, body: params.body },
+    }) };
+  }
   if (!gitlabClient.isConfigured()) {
     return { success: false, error: "GitLab client not configured" };
   }
@@ -1634,6 +1751,18 @@ async function handleGithubListPrComments(
 async function handleGithubAddPrComment(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
+  if (params.dryRun === true) {
+    return { success: true, dryRun: true, data: dryRunResult({
+      toolName: "github.add_pr_comment",
+      summary: `Would add comment to PR #${params.prNumber}`,
+      targetSystem: "github",
+      changes: [
+        { field: "comment", to: params.body as string, description: "Add comment to pull request" },
+      ],
+      riskLevel: "low",
+      paramsPreview: { owner: params.owner, repo: params.repo, prNumber: params.prNumber, body: params.body },
+    }) };
+  }
   if (!githubClient.isConfigured()) {
     return { success: false, error: "GitHub client not configured" };
   }
@@ -1717,6 +1846,23 @@ async function handleGithubGetIssue(
 async function handleGithubCreateIssue(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
+  if (params.dryRun === true) {
+    const owner = params.owner as string | undefined;
+    const repo = params.repo as string | undefined;
+    return { success: true, dryRun: true, data: dryRunResult({
+      toolName: "github.create_issue",
+      summary: `Would create GitHub issue "${params.title}" in ${owner || "default"}/${repo || "default"}`,
+      targetSystem: "github",
+      changes: [
+        { field: "issue", description: `Create new issue "${params.title}"` },
+        ...(params.body ? [{ field: "body" as const, to: params.body as string, description: "Set issue body" }] : []),
+        ...(params.labels ? [{ field: "labels" as const, to: params.labels as string, description: "Set labels" }] : []),
+        ...(params.assignees ? [{ field: "assignees" as const, to: params.assignees as string, description: "Set assignees" }] : []),
+      ],
+      riskLevel: "medium",
+      paramsPreview: { owner, repo, title: params.title, labels: params.labels, assignees: params.assignees },
+    }) };
+  }
   if (!githubClient.isConfigured()) {
     return { success: false, error: "GitHub client not configured" };
   }
@@ -4127,6 +4273,21 @@ async function handleWorkItemsCreate(
   params: Record<string, unknown>,
   _userId: string,
 ): Promise<ToolCallResult> {
+  if (params.dryRun === true) {
+    return { success: true, dryRun: true, data: dryRunResult({
+      toolName: "work_items.create",
+      summary: `Would create work item "${params.title}" of type ${params.type}`,
+      targetSystem: "work_items",
+      changes: [
+        { field: "work_item", description: `Create new ${params.type || "task"} "${params.title}"` },
+        ...(params.description ? [{ field: "description" as const, to: params.description as string, description: "Set description" }] : []),
+        ...(params.priority ? [{ field: "priority" as const, to: params.priority as string, description: "Set priority" }] : []),
+        ...(params.owner ? [{ field: "owner" as const, to: params.owner as string, description: "Set owner" }] : []),
+      ],
+      riskLevel: "low",
+      paramsPreview: { type: params.type, title: params.title, priority: params.priority, owner: params.owner },
+    }) };
+  }
   try {
     const item = workItemDatabase.createWorkItem({
       type: params.type as any,
@@ -4228,6 +4389,19 @@ async function handleJitbitFindFollowups(
 async function handleJitbitAddTicketComment(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
+  if (params.dryRun === true) {
+    return { success: true, dryRun: true, data: dryRunResult({
+      toolName: "jitbit.add_ticket_comment",
+      summary: `Would add comment to Jitbit ticket #${params.ticketId}`,
+      targetSystem: "jitbit",
+      changes: [
+        { field: "comment", to: params.body as string, description: "Add comment to ticket" },
+        ...(params.forTechsOnly ? [{ field: "forTechsOnly" as const, to: String(params.forTechsOnly), description: "Set as technician-only" }] : []),
+      ],
+      riskLevel: "low",
+      paramsPreview: { ticketId: params.ticketId, body: params.body, forTechsOnly: params.forTechsOnly },
+    }) };
+  }
   if (!jitbitService.isConfigured()) {
     return { success: false, error: "Jitbit client not configured" };
   }
@@ -4803,6 +4977,18 @@ async function handleHawkIrGetRiskyOpenCases(
   }
   const data = await hawkIrService.getRiskyOpenCases({
     minRiskLevel: params.minRiskLevel as any,
+    limit: params.limit as number | undefined,
+  });
+  return { success: true, data };
+}
+
+async function handleHawkIrGetEscalatedCases(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.getEscalatedCases({
     limit: params.limit as number | undefined,
   });
   return { success: true, data };
@@ -5617,6 +5803,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "hawk_ir.get_case": handleHawkIrGetCase,
   "hawk_ir.get_case_summary": handleHawkIrGetCaseSummary,
   "hawk_ir.get_risky_open_cases": handleHawkIrGetRiskyOpenCases,
+  "hawk_ir.get_escalated_cases": handleHawkIrGetEscalatedCases,
   "hawk_ir.deescalate_case": handleHawkIrDeescalateCase,
   "hawk_ir.add_case_note": handleHawkIrAddCaseNote,
   "hawk_ir.update_case_status": handleHawkIrUpdateCaseStatus,

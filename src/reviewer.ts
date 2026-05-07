@@ -220,6 +220,25 @@ async function runAiReview(
 
 const reviewedPRs = new Set<string>(); // "repo/prNumber"
 
+function isServiceUnavailable(result: ReviewResult): boolean {
+  return result.serviceUnavailable === true ||
+    result.findings.some((f) => f.message.startsWith("AI review service unavailable"));
+}
+
+async function postPostponed(
+  gh: ReturnType<typeof makeGithubClient>,
+  repo: string,
+  pr: { number: number; title: string },
+  result: ReviewResult,
+): Promise<void> {
+  await gh.addIssueComment(
+    repo,
+    pr.number,
+    `## ⚠️ Review Postponed — Service Unavailable\n\n${result.summary}\n\nThe review service could not be reached. No rework prompt will be posted. Review will be retried on the next cycle.`,
+  );
+  console.log(`[POSTPONED] PR #${pr.number} review postponed due to service unavailability`);
+}
+
 async function pollPRs(
   config: ReviewerConfig,
   gh: ReturnType<typeof makeGithubClient>,
@@ -249,15 +268,9 @@ async function pollPRs(
 
       if (result.clean) {
         await mergeWithSummary(gh, repo, pr, result);
-      } else if (result.serviceUnavailable) {
-        // Don't post rework for service outages — just warn once
-        await gh.addIssueComment(
-          repo,
-          pr.number,
-          `## ⚠️ Review Postponed — Service Unavailable\n\n${result.summary}\n\nThe review service could not be reached. No rework prompt will be posted. Review will be retried on next start.`,
-        );
-        console.log(`[WARN] Review service unavailable for PR #${pr.number} — posted warning, not rework`);
-        // Remove from reviewed set so next reviewer session retries
+      } else if (isServiceUnavailable(result)) {
+        await postPostponed(gh, repo, pr, result);
+        // Remove from reviewed so next cycle retries
         reviewedPRs.delete(prKey);
       } else {
         await postReworkPrompt(gh, repo, pr, result);

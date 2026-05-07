@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { enforceMaxRange, todayRange, HawkIrService } from "../../../src/integrations/hawk-ir/hawk-ir-service";
 import { HawkIrClient } from "../../../src/integrations/hawk-ir/hawk-ir-client";
+import type { HawkCase } from "../../../src/integrations/hawk-ir/types";
 
 describe("HawkIrService helpers", () => {
   describe("todayRange", () => {
@@ -197,6 +198,185 @@ describe("HawkIrService write operations", () => {
     it("delegates read-only category and label discovery", async () => {
       await expect(service.getCaseCategories()).resolves.toEqual(["False Positive"]);
       await expect(service.getCaseLabels()).resolves.toEqual({ categories: [], ignoreLabels: [] });
+    });
+  });
+});
+
+describe("HawkIrService getRiskyOpenCases and getEscalatedCases", () => {
+  let service: HawkIrService;
+  let mockClient: HawkIrClient;
+
+  const makeCase = (overrides: Partial<HawkCase> & Record<string, unknown> = {}): HawkCase => ({
+    rid: overrides.rid ?? "#1",
+    name: overrides.name ?? "Test Case",
+    groupId: overrides.groupId ?? "default",
+    riskLevel: overrides.riskLevel ?? "high",
+    progressStatus: overrides.progressStatus ?? "open",
+    category: overrides.category ?? null,
+    owner: overrides.owner ?? null,
+    ownerName: overrides.ownerName ?? null,
+    escalated: overrides.escalated ?? false,
+    escalationTicket: overrides.escalationTicket ?? null,
+    escalationModule: overrides.escalationModule ?? null,
+    escalationId: overrides.escalationId ?? null,
+    escalationTimestamp: overrides.escalationTimestamp ?? null,
+    firstSeen: overrides.firstSeen ?? "2026-05-01T00:00:00Z",
+    lastSeen: overrides.lastSeen ?? "2026-05-07T00:00:00Z",
+    ipSrcs: overrides.ipSrcs ?? [],
+    ipDsts: overrides.ipDsts ?? [],
+    alertNames: overrides.alertNames ?? [],
+    analytics: overrides.analytics ?? [],
+    summary: overrides.summary ?? null,
+    rootCause: overrides.rootCause ?? null,
+    feedback: overrides.feedback ?? null,
+    feedbackDetails: overrides.feedbackDetails ?? null,
+    actions: overrides.actions ?? [],
+    notes: overrides.notes ?? [],
+    events: overrides.events ?? [],
+    linkedCount: overrides.linkedCount ?? 0,
+    ...overrides,
+  }) as HawkCase;
+
+  beforeEach(() => {
+    mockClient = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      getCases: vi.fn(),
+    } as unknown as HawkIrClient;
+    service = new HawkIrService(mockClient);
+  });
+
+  describe("getRiskyOpenCases", () => {
+    it("excludes escalated cases", async () => {
+      (mockClient.getCases as any).mockResolvedValue([
+        makeCase({ rid: "#1", name: "Escalated", riskLevel: "high", escalated: true }),
+        makeCase({ rid: "#2", name: "Not Escalated", riskLevel: "high", escalated: false }),
+      ]);
+      const result = await service.getRiskyOpenCases({ minRiskLevel: "high" });
+      expect(result).toHaveLength(1);
+      expect(result[0].name).toBe("Not Escalated");
+    });
+
+    it("excludes closed and resolved cases", async () => {
+      (mockClient.getCases as any).mockResolvedValue([
+        makeCase({ rid: "#1", name: "Closed", riskLevel: "high", progressStatus: "closed" }),
+        makeCase({ rid: "#2", name: "Resolved", riskLevel: "high", progressStatus: "resolved" }),
+        makeCase({ rid: "#3", name: "Open", riskLevel: "high", progressStatus: "open" }),
+      ]);
+      const result = await service.getRiskyOpenCases({ minRiskLevel: "high" });
+      expect(result).toHaveLength(1);
+      expect(result[0].name).toBe("Open");
+    });
+
+    it("handles 'moderate' risk level from API", async () => {
+      (mockClient.getCases as any).mockResolvedValue([
+        makeCase({ rid: "#1", name: "Moderate Risk", riskLevel: "moderate", progressStatus: "open" }),
+        makeCase({ rid: "#2", name: "Low Risk", riskLevel: "low", progressStatus: "open" }),
+      ]);
+      const result = await service.getRiskyOpenCases({ minRiskLevel: "moderate" });
+      expect(result).toHaveLength(1);
+      expect(result[0].name).toBe("Moderate Risk");
+    });
+
+    it("handles snake_case risk_level field", async () => {
+      (mockClient.getCases as any).mockResolvedValue([
+        makeCase({ rid: "#1", riskLevel: undefined, risk_level: "high", progressStatus: "open" }),
+      ]);
+      const result = await service.getRiskyOpenCases({ minRiskLevel: "high" });
+      expect(result).toHaveLength(1);
+    });
+
+    it("handles escalated field as string 'true'", async () => {
+      (mockClient.getCases as any).mockResolvedValue([
+        makeCase({ rid: "#1", name: "String True", riskLevel: "high", escalated: "true" }),
+        makeCase({ rid: "#2", name: "String False", riskLevel: "high", escalated: "false" }),
+      ]);
+      const result = await service.getRiskyOpenCases({ minRiskLevel: "high" });
+      expect(result).toHaveLength(1);
+      expect(result[0].name).toBe("String False");
+    });
+
+    it("handles escalated field as number 1", async () => {
+      (mockClient.getCases as any).mockResolvedValue([
+        makeCase({ rid: "#1", name: "Number One", riskLevel: "high", escalated: 1 }),
+        makeCase({ rid: "#2", name: "Number Zero", riskLevel: "high", escalated: 0 }),
+      ]);
+      const result = await service.getRiskyOpenCases({ minRiskLevel: "high" });
+      expect(result).toHaveLength(1);
+      expect(result[0].name).toBe("Number Zero");
+    });
+
+    it("sorts by risk level descending (critical first)", async () => {
+      (mockClient.getCases as any).mockResolvedValue([
+        makeCase({ rid: "#1", name: "High", riskLevel: "high", progressStatus: "open" }),
+        makeCase({ rid: "#2", name: "Critical", riskLevel: "critical", progressStatus: "open" }),
+        makeCase({ rid: "#3", name: "Medium", riskLevel: "medium", progressStatus: "open" }),
+      ]);
+      const result = await service.getRiskyOpenCases({ minRiskLevel: "medium" });
+      expect(result[0].name).toBe("Critical");
+      expect(result[1].name).toBe("High");
+      expect(result[2].name).toBe("Medium");
+    });
+  });
+
+  describe("getEscalatedCases", () => {
+    it("returns only escalated cases", async () => {
+      (mockClient.getCases as any).mockResolvedValue([
+        makeCase({ rid: "#1", name: "Escalated", riskLevel: "high", escalated: true, progressStatus: "open" }),
+        makeCase({ rid: "#2", name: "Not Escalated", riskLevel: "high", escalated: false, progressStatus: "open" }),
+        makeCase({ rid: "#3", name: "Also Escalated", riskLevel: "critical", escalated: true, progressStatus: "in_progress" }),
+      ]);
+      const result = await service.getEscalatedCases();
+      expect(result).toHaveLength(2);
+      expect(result.every((c) => c.escalated === true)).toBe(true);
+    });
+
+    it("excludes closed and resolved escalated cases", async () => {
+      (mockClient.getCases as any).mockResolvedValue([
+        makeCase({ rid: "#1", name: "Escalated Open", escalated: true, progressStatus: "open" }),
+        makeCase({ rid: "#2", name: "Escalated Closed", escalated: true, progressStatus: "closed" }),
+        makeCase({ rid: "#3", name: "Escalated Resolved", escalated: true, progressStatus: "resolved" }),
+      ]);
+      const result = await service.getEscalatedCases();
+      expect(result).toHaveLength(1);
+      expect(result[0].name).toBe("Escalated Open");
+    });
+
+    it("handles escalated as string 'true'", async () => {
+      (mockClient.getCases as any).mockResolvedValue([
+        makeCase({ rid: "#1", name: "String True", riskLevel: "high", escalated: "true", progressStatus: "open" }),
+        makeCase({ rid: "#2", name: "String One", riskLevel: "high", escalated: "1", progressStatus: "open" }),
+      ]);
+      const result = await service.getEscalatedCases();
+      expect(result).toHaveLength(2);
+    });
+
+    it("handles escalated as number 1", async () => {
+      (mockClient.getCases as any).mockResolvedValue([
+        makeCase({ rid: "#1", name: "Number One", riskLevel: "high", escalated: 1, progressStatus: "open" }),
+        makeCase({ rid: "#2", name: "Number Zero", riskLevel: "high", escalated: 0, progressStatus: "open" }),
+      ]);
+      const result = await service.getEscalatedCases();
+      expect(result).toHaveLength(1);
+      expect(result[0].name).toBe("Number One");
+    });
+
+    it("sorts by escalationTimestamp descending", async () => {
+      (mockClient.getCases as any).mockResolvedValue([
+        makeCase({ rid: "#1", name: "Earlier", escalated: true, progressStatus: "open", escalationTimestamp: "2026-05-01T00:00:00Z" }),
+        makeCase({ rid: "#2", name: "Later", escalated: true, progressStatus: "open", escalationTimestamp: "2026-05-05T00:00:00Z" }),
+      ]);
+      const result = await service.getEscalatedCases();
+      expect(result[0].name).toBe("Later");
+      expect(result[1].name).toBe("Earlier");
+    });
+
+    it("returns all risk levels (not just high+)", async () => {
+      (mockClient.getCases as any).mockResolvedValue([
+        makeCase({ rid: "#1", name: "Low Escalated", riskLevel: "low", escalated: true, progressStatus: "open" }),
+        makeCase({ rid: "#2", name: "Critical Escalated", riskLevel: "critical", escalated: true, progressStatus: "open" }),
+      ]);
+      const result = await service.getEscalatedCases();
+      expect(result).toHaveLength(2);
     });
   });
 });

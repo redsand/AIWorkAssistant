@@ -20,7 +20,15 @@ import type {
   CaseRiskLevel,
 } from "./types";
 
-const riskPriority: Record<string, number> = { low: 1, medium: 2, high: 3, critical: 4 };
+const riskPriority: Record<string, number> = { low: 1, medium: 2, moderate: 2, high: 3, critical: 4, informational: 0 };
+
+function isEscalated(c: HawkCase | any): boolean {
+  const raw = c.escalated ?? c["escalated"];
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "string") return raw.toLowerCase() === "true" || raw === "1";
+  if (typeof raw === "number") return raw !== 0;
+  return false;
+}
 
 const MAX_QUERY_RANGE_DAYS = 10;
 
@@ -124,13 +132,44 @@ export class HawkIrService {
       .filter((c) => {
         const risk = String(c.riskLevel ?? c["risk_level"] ?? "low").toLowerCase();
         const status = String(c.progressStatus ?? c["progress_status"] ?? "").toLowerCase();
-        const escalated = c.escalated ?? c["escalated"] ?? false;
-        return (riskPriority[risk] ?? 0) >= minPriority && !escalated && status !== "closed" && status !== "resolved";
+        return (riskPriority[risk] ?? 0) >= minPriority && !isEscalated(c) && status !== "closed" && status !== "resolved";
       })
       .sort((a, b) => {
         const ra = String(a.riskLevel ?? a["risk_level"] ?? "low").toLowerCase();
         const rb = String(b.riskLevel ?? b["risk_level"] ?? "low").toLowerCase();
         return (riskPriority[rb] ?? 0) - (riskPriority[ra] ?? 0);
+      })
+      .slice(0, limit);
+  }
+
+  /**
+   * Returns cases that have been escalated — for customer briefings and escalation tracking.
+   * Filters for escalated=true regardless of risk level, sorted by most recent first.
+   */
+  async getEscalatedCases(params: {
+    limit?: number;
+    offset?: number;
+  } = {}): Promise<HawkCase[]> {
+    const limit = params.limit ?? 25;
+    const offset = params.offset ?? 0;
+    const range = last10Days();
+
+    const cases = await this.client.getCases({
+      limit: Math.min(limit * 4, 100),
+      offset,
+      startDate: range.from,
+      stopDate: range.to,
+    });
+
+    return cases
+      .filter((c) => {
+        const status = String(c.progressStatus ?? c["progress_status"] ?? "").toLowerCase();
+        return isEscalated(c) && status !== "closed" && status !== "resolved";
+      })
+      .sort((a, b) => {
+        const ta = String(a.escalationTimestamp ?? a["escalation_timestamp"] ?? a.lastSeen ?? "");
+        const tb = String(b.escalationTimestamp ?? b["escalation_timestamp"] ?? b.lastSeen ?? "");
+        return tb.localeCompare(ta);
       })
       .slice(0, limit);
   }

@@ -114,6 +114,11 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
         description: "What to work on",
         required: false,
       },
+      dryRun: {
+        type: "boolean",
+        description: "Preview what would happen without executing",
+        required: false,
+      },
     },
     actionType: "calendar.focus_block.create",
     riskLevel: "medium",
@@ -137,6 +142,11 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
         type: "string",
         description: "Type: fitness, meal, mental_health",
         required: true,
+      },
+      dryRun: {
+        type: "boolean",
+        description: "Preview what would happen without executing",
+        required: false,
       },
     },
     actionType: "calendar.health_block.create",
@@ -279,6 +289,11 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     params: {
       key: { type: "string", description: "Jira issue key", required: true },
       body: { type: "string", description: "Comment body", required: true },
+      dryRun: {
+        type: "boolean",
+        description: "Preview what would happen without executing",
+        required: false,
+      },
     },
     actionType: "jira.comment.create",
     riskLevel: "medium",
@@ -388,6 +403,11 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
         description: "Comma-separated list of labels to apply",
         required: false,
       },
+      dryRun: {
+        type: "boolean",
+        description: "Preview what would happen without executing",
+        required: false,
+      },
     },
     actionType: "jira.issue.create",
     riskLevel: "medium",
@@ -442,6 +462,11 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
         description: "Comma-separated list of labels",
         required: false,
       },
+      dryRun: {
+        type: "boolean",
+        description: "Preview what would happen without executing",
+        required: false,
+      },
     },
     actionType: "jira.issue.update",
     riskLevel: "medium",
@@ -459,6 +484,11 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       comment: {
         type: "string",
         description: "Optional comment explaining why it was closed",
+        required: false,
+      },
+      dryRun: {
+        type: "boolean",
+        description: "Preview what would happen without executing",
         required: false,
       },
     },
@@ -622,6 +652,11 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
         description: "Squash commits on merge (default: false)",
         required: false,
       },
+      dryRun: {
+        type: "boolean",
+        description: "Preview what would happen without executing",
+        required: false,
+      },
     },
     actionType: "gitlab.mr.create",
     riskLevel: "medium",
@@ -675,6 +710,11 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
         type: "string",
         description: "Comment body (markdown)",
         required: true,
+      },
+      dryRun: {
+        type: "boolean",
+        description: "Preview what would happen without executing",
+        required: false,
       },
     },
     actionType: "gitlab.mr.comment",
@@ -1593,6 +1633,11 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
         description: "Comment body (markdown)",
         required: true,
       },
+      dryRun: {
+        type: "boolean",
+        description: "Preview what would happen without executing",
+        required: false,
+      },
     },
     actionType: "github.pr.comment",
     riskLevel: "medium",
@@ -1683,6 +1728,11 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       assignees: {
         type: "string",
         description: "Comma-separated list of assignee usernames",
+        required: false,
+      },
+      dryRun: {
+        type: "boolean",
+        description: "Preview what would happen without executing",
         required: false,
       },
     },
@@ -3626,6 +3676,11 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
         description: "Whether the comment is internal/technician-only",
         required: false,
       },
+      dryRun: {
+        type: "boolean",
+        description: "Preview what would happen without executing",
+        required: false,
+      },
     },
     actionType: "jitbit.add_ticket_comment",
     riskLevel: "medium",
@@ -4418,11 +4473,11 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "hawk_ir.get_risky_open_cases",
     description:
-      "Get HAWK IR cases that are high risk, unescalated, and not closed/resolved. Primary signal for CTO briefs and product insights.",
+      "Get HAWK IR cases that are high risk and NOT yet escalated (excludes escalated cases). Use this for finding cases that need attention or escalation. For already-escalated cases, use hawk_ir.get_escalated_cases instead.",
     params: {
       minRiskLevel: {
         type: "string",
-        description: "Minimum risk level: low, medium, high, critical (default: high)",
+        description: "Minimum risk level: low, medium, moderate, high, critical (default: high)",
         required: false,
       },
       limit: {
@@ -4432,6 +4487,20 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       },
     },
     actionType: "hawk_ir.get_risky_open_cases",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.get_escalated_cases",
+    description:
+      "Get HAWK IR cases that have been escalated (escalated=true). Use this for customer briefings, escalation reports, and tracking which incidents have been elevated. Returns open escalated cases sorted by escalation time.",
+    params: {
+      limit: {
+        type: "number",
+        description: "Max cases to return (default 25)",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.get_escalated_cases",
     riskLevel: "low",
   },
   {
@@ -5213,6 +5282,11 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
         description: 'Array of tag strings, e.g. ["security","urgent"]',
         required: false,
       },
+      dryRun: {
+        type: "boolean",
+        description: "Preview what would happen without executing",
+        required: false,
+      },
     },
     actionType: "work_items.create",
     riskLevel: "medium",
@@ -5299,6 +5373,11 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       tags: {
         type: "array",
         description: 'New set of tags, e.g. ["security","urgent"]',
+        required: false,
+      },
+      dryRun: {
+        type: "boolean",
+        description: "Preview what would happen without executing",
         required: false,
       },
     },
@@ -5682,6 +5761,7 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_case")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_case_summary")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_risky_open_cases")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_escalated_cases")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.search_logs")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_available_indexes")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_assets")!,
