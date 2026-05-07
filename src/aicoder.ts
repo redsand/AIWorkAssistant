@@ -298,6 +298,21 @@ function checkoutBranch(branchName: string): boolean {
   return true;
 }
 
+function runTests(): boolean {
+  runLogger.logGit("Running tests", "npm test");
+  const result = spawnSync("npm", ["test"], {
+    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8", timeout: 300_000,
+  });
+  if (result.status !== 0) {
+    const stderr = (result.stderr || "").trim();
+    const lastLines = stderr.split("\n").slice(-10).join("\n");
+    runLogger.logError(`Tests failed:\n${lastLines || `exit code ${result.status}`}`);
+    return false;
+  }
+  runLogger.logGit("Tests passed", "npm test");
+  return true;
+}
+
 function pushBranch(branchName: string): boolean {
   runLogger.logGit("Pushing to origin", branchName);
   return gitRun(["push", "origin", branchName], WORKSPACE);
@@ -496,6 +511,13 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<void>
 
   if (!stageAndCommit(`[AI] ${item.title}`)) {
     runLogger.logError("Stage/commit failed — skipping push");
+    runLogger.endRun(1);
+    processedIssues.add(item.number);
+    return;
+  }
+
+  if (!runTests()) {
+    runLogger.logError("Tests failed — skipping push");
     runLogger.endRun(1);
     processedIssues.add(item.number);
     return;
