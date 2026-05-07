@@ -6,6 +6,19 @@ import { codebaseIndexer } from "../agent/codebase-indexer";
 
 export type TicketToTaskAgent = "codex" | "cursor" | "claude" | "generic";
 
+export class MissingCodingPromptError extends Error {
+  readonly issueNumber: number;
+  readonly labels: string[];
+  constructor(issueNumber: number, labels: string[]) {
+    super(
+      `Issue #${issueNumber} is tagged missing-coding-prompt. Add a ## Coding Prompt section before handing to an agent.`,
+    );
+    this.name = "MissingCodingPromptError";
+    this.issueNumber = issueNumber;
+    this.labels = labels;
+  }
+}
+
 export interface TicketToTaskOptions {
   owner: string;
   repo: string;
@@ -15,6 +28,7 @@ export interface TicketToTaskOptions {
   includeRoadmap?: boolean;
   includeCodebase?: boolean;
   maxCodebaseFiles?: number;
+  skipIfMissingPrompt?: boolean;
 }
 
 export interface ImplementationPrompt {
@@ -31,6 +45,8 @@ export interface ImplementationPrompt {
     relatedIssues: number[];
     relevantFiles: string[];
     roadmapItemId: string | null;
+    hasCodingPrompt: boolean;
+    codingPrompt: string | null;
   };
 }
 
@@ -66,6 +82,7 @@ class TicketToTaskGenerator {
     const includeRoadmap = options.includeRoadmap ?? true;
     const includeCodebase = options.includeCodebase ?? true;
     const maxCodebaseFiles = options.maxCodebaseFiles ?? 10;
+    const skipIfMissingPrompt = options.skipIfMissingPrompt ?? true;
 
     const { issue, comments } = await this.fetchIssue({
       owner: resolved.owner,
@@ -74,7 +91,13 @@ class TicketToTaskGenerator {
       includeComments,
     });
 
+    const labels = this.labelNames(issue);
+    if (skipIfMissingPrompt && labels.includes("missing-coding-prompt")) {
+      throw new MissingCodingPromptError(options.issueNumber, labels);
+    }
+
     const body = issue.body || "";
+    const codingPrompt = this.extractCodingPrompt(body);
     const relatedIssues = this.extractRelatedIssues(body, comments, options.issueNumber);
     const acceptanceCriteria = this.extractAcceptanceCriteria(body);
     const roadmapMatch = includeRoadmap ? this.findRoadmapMatch(issue, relatedIssues) : null;
@@ -92,6 +115,7 @@ class TicketToTaskGenerator {
       roadmapMatch,
       relevantFiles,
       agent,
+      codingPrompt,
     });
 
     const prompt: ImplementationPrompt = {
@@ -100,7 +124,7 @@ class TicketToTaskGenerator {
       metadata: {
         issueNumber: issue.number,
         issueUrl: issue.html_url,
-        labels: this.labelNames(issue),
+        labels,
         milestone: issue.milestone?.title || null,
         assignee: issue.assignee?.login || null,
         createdAt: issue.created_at,
@@ -108,6 +132,8 @@ class TicketToTaskGenerator {
         relatedIssues,
         relevantFiles: relevantFiles.map((f) => f.file),
         roadmapItemId: roadmapMatch?.item.id || null,
+        hasCodingPrompt: codingPrompt !== null,
+        codingPrompt,
       },
     };
 
@@ -157,6 +183,31 @@ class TicketToTaskGenerator {
 
     pendingIssueFetches.set(key, fetchPromise);
     return fetchPromise;
+  }
+
+  private extractCodingPrompt(body: string): string | null {
+    const headingPattern = /^#{1,3}\s+coding\s+prompt\b/im;
+    const match = headingPattern.exec(body);
+    if (!match) return null;
+
+    const start = match.index;
+    const afterHeading = body.slice(start);
+    const nextH2 = afterHeading.slice(match[0].length).search(/\n#{1,2}\s+\S/);
+    const section =
+      nextH2 === -1
+        ? afterHeading
+        : afterHeading.slice(0, match[0].length + nextH2);
+
+    return section.trim() || null;
+  }
+
+  hasCodingPromptContent(body: string): boolean {
+    return (
+      /^#{1,3}\s+coding\s+prompt\b/im.test(body) ||
+      /^#{1,3}\s+current\s+code\b/im.test(body) ||
+      /^#{1,3}\s+replacement\s+code\b/im.test(body) ||
+      /^#{1,3}\s+file:/im.test(body)
+    );
   }
 
   private extractAcceptanceCriteria(body: string): string[] {
@@ -328,6 +379,7 @@ class TicketToTaskGenerator {
     roadmapMatch: RoadmapMatch | null;
     relevantFiles: RelevantFile[];
     agent: TicketToTaskAgent;
+    codingPrompt: string | null;
   }): string {
     const labels = this.labelNames(input.issue);
     const milestone = input.issue.milestone;
@@ -349,6 +401,10 @@ class TicketToTaskGenerator {
           .join("\n\n")
       : "No comments included.";
 
+    const codingPromptSection = input.codingPrompt
+      ? `\n## ⚡ Coding Prompt (Authoritative — Follow Exactly)\n\n${input.codingPrompt}\n`
+      : `\n## ⚠️ Coding Prompt Missing\n\nNo \`## Coding Prompt\` section was found in this issue. The agent should derive implementation intent from the full spec above, but precision may be reduced.\n`;
+
     return `# Implementation Task: ${input.issue.title}
 
 ## Source
@@ -359,7 +415,7 @@ class TicketToTaskGenerator {
 - **Assignee**: ${input.issue.assignee?.login || "Unassigned"}
 - **Roadmap Item**: ${roadmap ? `${roadmap.item.title} (priority: ${roadmap.item.priority}, status: ${roadmap.item.status})` : "No roadmap match found"}
 - **Issue Updated**: ${input.issue.updated_at}
-
+${codingPromptSection}
 ## Objective
 ${objective}
 

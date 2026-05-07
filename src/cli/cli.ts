@@ -8,9 +8,14 @@ import { Command } from "commander";
 import { loadEnv } from "../config/env";
 import { OllamaLauncher } from "../integrations/ollama-launcher";
 import type { LaunchOptions } from "../integrations/ollama-launcher";
-import { ticketToTaskGenerator, TicketToTaskAgent } from "../engineering/ticket-to-task";
+import {
+  ticketToTaskGenerator,
+  TicketToTaskAgent,
+  MissingCodingPromptError,
+} from "../engineering/ticket-to-task";
 import { ticketBridge } from "../integrations/ticket-bridge/ticket-bridge";
-import { spawn } from "child_process";
+import { branchRunner } from "../integrations/ticket-bridge/branch-runner";
+import type { AgentType } from "../integrations/ticket-bridge/branch-runner";
 import axios from "axios";
 import * as fs from "fs";
 
@@ -284,6 +289,12 @@ async function generateTicketToTaskPrompt(
     includeCodebase?: boolean;
     noCodebase?: boolean;
     maxCodebaseFiles?: string;
+    autoBranch?: boolean;
+    run?: string;
+    dryRun?: boolean;
+    workDir?: string;
+    noComment?: boolean;
+    force?: boolean;
   },
 ): Promise<void> {
   const issue = Number(issueNumber);
@@ -302,15 +313,67 @@ async function generateTicketToTaskPrompt(
       includeRoadmap: options.noRoadmap ? false : (options.includeRoadmap ?? true),
       includeCodebase: options.noCodebase ? false : (options.includeCodebase ?? true),
       maxCodebaseFiles: options.maxCodebaseFiles ? Number(options.maxCodebaseFiles) : undefined,
+      skipIfMissingPrompt: !options.force,
     });
+
+    const agentRunner = resolveAgent(options as TicketToPromptOptions);
+    const hasActions = options.autoBranch || agentRunner || options.dryRun;
 
     if (options.output) {
       fs.writeFileSync(options.output, result.body, "utf-8");
       console.log(`Wrote implementation prompt to ${options.output}`);
-    } else {
+      if (!hasActions) return;
+    }
+
+    if (!hasActions) {
       console.log(result.body);
+      return;
+    }
+
+    const sourceId = githubSourceIdFromMetadata(result.metadata.issueUrl, issue);
+
+    if (options.dryRun) {
+      const preview = branchRunner.dryRun({
+        source: { type: "github", id: sourceId },
+        prompt: result.body,
+        title: result.title.replace(/^Implementation Task:\s*/i, ""),
+        autoBranch: options.autoBranch ?? false,
+        agent: agentRunner,
+        workDir: options.workDir,
+        postComment: !options.noComment,
+      });
+      for (const line of preview) {
+        console.log(line);
+      }
+      return;
+    }
+
+    const runResult = await branchRunner.run({
+      source: { type: "github", id: sourceId },
+      prompt: result.body,
+      title: result.title.replace(/^Implementation Task:\s*/i, ""),
+      autoBranch: options.autoBranch ?? false,
+      agent: agentRunner,
+      workDir: options.workDir,
+      postComment: !options.noComment,
+    });
+
+    if (runResult.branchCreated) {
+      console.log(`Created branch: ${runResult.branchName}`);
+    }
+    if (runResult.commentPosted) {
+      console.log(`Posted comment to GitHub issue #${issue}`);
+    }
+    if (runResult.agentExitCode !== null) {
+      process.exit(runResult.agentExitCode ?? 0);
     }
   } catch (error) {
+    if (error instanceof MissingCodingPromptError) {
+      console.log(`Skipped: Issue #${error.issueNumber} has label "missing-coding-prompt".`);
+      console.log(`  Add a ## Coding Prompt section to the issue, then rerun.`);
+      console.log(`  Use --force to generate anyway.`);
+      process.exit(0);
+    }
     console.error(
       "Failed to generate ticket-to-task prompt:",
       error instanceof Error ? error.message : error,
@@ -319,19 +382,34 @@ async function generateTicketToTaskPrompt(
   }
 }
 
+function githubSourceIdFromMetadata(issueUrl: string, fallbackNumber: number): string {
+  const match = issueUrl.match(/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)/);
+  if (match) return `${match[1]}/${match[2]}#${match[3]}`;
+  const owner = env.GITHUB_DEFAULT_OWNER;
+  const repo = env.GITHUB_DEFAULT_REPO;
+  return owner && repo ? `${owner}/${repo}#${fallbackNumber}` : `unknown/unknown#${fallbackNumber}`;
+}
+
+interface TicketToPromptOptions {
+  output?: string;
+  outputDir?: string;
+  milestone?: string;
+  runCodex?: boolean;
+  runOpencode?: boolean;
+  run?: string;
+  autoBranch?: boolean;
+  dryRun?: boolean;
+  workDir?: string;
+  noComment?: boolean;
+  includeCodebase?: boolean;
+  noCodebase?: boolean;
+  maxFiles?: string;
+}
+
 async function runTicketToPrompt(
   sourceType: "github" | "jira" | "roadmap",
   sourceId: string,
-  options: {
-    output?: string;
-    outputDir?: string;
-    milestone?: string;
-    runCodex?: boolean;
-    runOpencode?: boolean;
-    includeCodebase?: boolean;
-    noCodebase?: boolean;
-    maxFiles?: string;
-  },
+  options: TicketToPromptOptions,
 ): Promise<void> {
   const ctx = {
     includeCodebaseIndex: options.noCodebase ? false : (options.includeCodebase ?? true),
@@ -357,6 +435,8 @@ async function runTicketToPrompt(
     return;
   }
 
+  const agent = resolveAgent(options);
+
   try {
     const generated = await ticketBridge.generatePrompt(
       { type: sourceType, id: sourceId },
@@ -371,23 +451,62 @@ async function runTicketToPrompt(
       return;
     }
 
-    if (options.runCodex || options.runOpencode) {
-      const provider = options.runCodex ? "codex" : "opencode";
-      console.log(`Piping prompt to ${provider}...\n`);
-      const child = spawn(
-        provider,
-        ["--prompt", generated.prompt],
-        { stdio: "inherit", shell: true },
-      );
-      child.on("exit", (code) => process.exit(code ?? 0));
+    if (!options.autoBranch && !agent && !options.dryRun) {
+      process.stdout.write(generated.prompt);
       return;
     }
 
-    process.stdout.write(generated.prompt);
+    if (options.dryRun) {
+      const preview = branchRunner.dryRun({
+        source: { type: sourceType, id: sourceId },
+        prompt: generated.prompt,
+        title: generated.title,
+        autoBranch: options.autoBranch ?? false,
+        agent,
+        workDir: options.workDir,
+        postComment: !options.noComment,
+      });
+      for (const line of preview) {
+        console.log(line);
+      }
+      return;
+    }
+
+    const result = await branchRunner.run({
+      source: { type: sourceType, id: sourceId },
+      prompt: generated.prompt,
+      title: generated.title,
+      autoBranch: options.autoBranch ?? false,
+      agent,
+      workDir: options.workDir,
+      postComment: !options.noComment,
+    });
+
+    if (result.branchCreated) {
+      console.log(`Created branch: ${result.branchName}`);
+    }
+    if (result.commentPosted) {
+      console.log(`Posted comment to ${sourceType} ${sourceId}`);
+    }
+    if (result.agentExitCode !== null) {
+      process.exit(result.agentExitCode ?? 0);
+    }
   } catch (err) {
     console.error("Failed:", err instanceof Error ? err.message : err);
     process.exit(1);
   }
+}
+
+function resolveAgent(options: TicketToPromptOptions): AgentType | null {
+  if (options.run) {
+    const valid: AgentType[] = ["codex", "opencode", "claude"];
+    if (valid.includes(options.run as AgentType)) return options.run as AgentType;
+    console.error(`Unknown agent "${options.run}". Valid: codex, opencode, claude`);
+    process.exit(1);
+  }
+  if (options.runCodex) return "codex";
+  if (options.runOpencode) return "opencode";
+  return null;
 }
 
 // ==================== Helper: launch provider ====================
@@ -493,6 +612,15 @@ program
   .option("--include-codebase", "Include codebase context")
   .option("--no-codebase", "Do not include codebase context")
   .option("--max-codebase-files <number>", "Maximum relevant files to include", "10")
+  .option("--auto-branch", "Create a feature branch (ticket-{number}-{slug}) before running")
+  .option("--run <agent>", "Run agent after generating prompt (codex|opencode|claude)")
+  .option("--dry-run", "Preview what would happen without executing")
+  .option("--work-dir <path>", "Working directory for git and agent (default: cwd)")
+  .option("--no-comment", "Skip posting a comment back to the ticket source")
+  .option(
+    "--force",
+    "Generate even if the issue has the missing-coding-prompt label",
+  )
   .action(async (issueNumber, options) => {
     await generateTicketToTaskPrompt(issueNumber, options);
   });
@@ -503,50 +631,61 @@ const ttpCmd = program
     "Generate a coding-agent implementation prompt from a ticket (GitHub issue, Jira, or roadmap item)",
   );
 
-ttpCmd
-  .command("github <repoAndIssue>")
-  .description(
-    'Generate prompt from a GitHub issue. Format: "owner/repo#25" or "owner/repo 25"',
-  )
-  .option("--output <file>", "Write prompt to a file")
-  .option("--run-codex", "Pipe prompt directly to Codex CLI")
-  .option("--run-opencode", "Pipe prompt directly to OpenCode CLI")
-  .option("--include-codebase", "Include codebase file context")
-  .option("--no-codebase", "Skip codebase file context")
-  .option("--max-files <number>", "Max codebase files to include", "10")
-  .action(async (repoAndIssue: string, opts) => {
-    await runTicketToPrompt("github", repoAndIssue, opts);
-  });
+const BRANCH_RUN_OPTIONS = (cmd: ReturnType<typeof ttpCmd.command>) =>
+  cmd
+    .option("--auto-branch", "Create a feature branch (ticket-{id}-{slug}) before running")
+    .option("--run <agent>", "Run agent after generating (codex|opencode|claude)")
+    .option("--dry-run", "Preview what would happen without executing")
+    .option("--work-dir <path>", "Working directory for git and agent (default: cwd)")
+    .option("--no-comment", "Skip posting a comment back to the ticket source");
 
-ttpCmd
-  .command("jira <key>")
-  .description("Generate prompt from a Jira issue (e.g., PROJ-123)")
-  .option("--output <file>", "Write prompt to a file")
-  .option("--run-codex", "Pipe prompt directly to Codex CLI")
-  .option("--run-opencode", "Pipe prompt directly to OpenCode CLI")
-  .option("--include-codebase", "Include codebase file context")
-  .option("--no-codebase", "Skip codebase file context")
-  .option("--max-files <number>", "Max codebase files to include", "10")
-  .action(async (key: string, opts) => {
-    await runTicketToPrompt("jira", key, opts);
-  });
+BRANCH_RUN_OPTIONS(
+  ttpCmd
+    .command("github <repoAndIssue>")
+    .description(
+      'Generate prompt from a GitHub issue. Format: "owner/repo#25" or "owner/repo 25"',
+    )
+    .option("--output <file>", "Write prompt to a file")
+    .option("--run-codex", "Pipe prompt directly to Codex CLI (deprecated: use --run codex)")
+    .option("--run-opencode", "Pipe prompt directly to OpenCode CLI (deprecated: use --run opencode)")
+    .option("--include-codebase", "Include codebase file context")
+    .option("--no-codebase", "Skip codebase file context")
+    .option("--max-files <number>", "Max codebase files to include", "10"),
+).action(async (repoAndIssue: string, opts) => {
+  await runTicketToPrompt("github", repoAndIssue, opts);
+});
 
-ttpCmd
-  .command("roadmap <id>")
-  .description(
-    "Generate prompt from a roadmap item UUID, or batch-generate for a milestone",
-  )
-  .option("--milestone <name>", "Filter by milestone name (for batch mode)")
-  .option("--output <file>", "Write prompt to a file (single item)")
-  .option("--output-dir <dir>", "Write prompts to a directory (batch mode)")
-  .option("--run-codex", "Pipe prompt directly to Codex CLI")
-  .option("--run-opencode", "Pipe prompt directly to OpenCode CLI")
-  .option("--include-codebase", "Include codebase file context")
-  .option("--no-codebase", "Skip codebase file context")
-  .option("--max-files <number>", "Max codebase files to include", "10")
-  .action(async (id: string, opts) => {
-    await runTicketToPrompt("roadmap", id, opts);
-  });
+BRANCH_RUN_OPTIONS(
+  ttpCmd
+    .command("jira <key>")
+    .description("Generate prompt from a Jira issue (e.g., PROJ-123)")
+    .option("--output <file>", "Write prompt to a file")
+    .option("--run-codex", "Pipe prompt directly to Codex CLI (deprecated: use --run codex)")
+    .option("--run-opencode", "Pipe prompt directly to OpenCode CLI (deprecated: use --run opencode)")
+    .option("--include-codebase", "Include codebase file context")
+    .option("--no-codebase", "Skip codebase file context")
+    .option("--max-files <number>", "Max codebase files to include", "10"),
+).action(async (key: string, opts) => {
+  await runTicketToPrompt("jira", key, opts);
+});
+
+BRANCH_RUN_OPTIONS(
+  ttpCmd
+    .command("roadmap <id>")
+    .description(
+      "Generate prompt from a roadmap item UUID, or batch-generate for a milestone",
+    )
+    .option("--milestone <name>", "Filter by milestone name (for batch mode)")
+    .option("--output <file>", "Write prompt to a file (single item)")
+    .option("--output-dir <dir>", "Write prompts to a directory (batch mode)")
+    .option("--run-codex", "Pipe prompt directly to Codex CLI (deprecated: use --run codex)")
+    .option("--run-opencode", "Pipe prompt directly to OpenCode CLI (deprecated: use --run opencode)")
+    .option("--include-codebase", "Include codebase file context")
+    .option("--no-codebase", "Skip codebase file context")
+    .option("--max-files <number>", "Max codebase files to include", "10"),
+).action(async (id: string, opts) => {
+  await runTicketToPrompt("roadmap", id, opts);
+});
 
 // Management commands
 program
