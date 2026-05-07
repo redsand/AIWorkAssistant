@@ -88,6 +88,7 @@ interface ReviewResult {
   findings: ReviewFinding[];
   summary: string;
   agentStatus?: Record<string, "passed" | "failed">;
+  serviceUnavailable?: boolean;
 }
 
 async function loadConfig(): Promise<ReviewerConfig> {
@@ -204,6 +205,7 @@ async function runAiReview(
     console.error("[ERROR] AI review failed:", message);
     return {
       clean: false,
+      serviceUnavailable: true,
       findings: [{
         severity: "critical",
         category: "security",
@@ -216,6 +218,8 @@ async function runAiReview(
   }
 }
 
+const reviewedPRs = new Set<string>(); // "repo/prNumber"
+
 async function pollPRs(
   config: ReviewerConfig,
   gh: ReturnType<typeof makeGithubClient>,
@@ -225,18 +229,36 @@ async function pollPRs(
 
     for (const pr of prs) {
       if (!pr.user?.login.includes("ai") && !pr.title.startsWith("[AI]")) continue;
+
+      const prKey = `${repo}/${pr.number}`;
+      if (reviewedPRs.has(prKey)) {
+        continue;
+      }
+
       console.log(`[REVIEW] Found AI PR #${pr.number} in ${repo}: ${pr.title}`);
 
       const reviewCycleCount = await getReviewCycleCount(gh, repo, pr.number);
       if (reviewCycleCount >= config.maxReviewCycles) {
         console.log(`[BLOCKED] PR #${pr.number} exceeded max review cycles (${config.maxReviewCycles})`);
+        reviewedPRs.add(prKey);
         continue;
       }
 
       const result = await runMultiAgentReview(config, repo, pr.number);
+      reviewedPRs.add(prKey);
 
       if (result.clean) {
         await mergeWithSummary(gh, repo, pr, result);
+      } else if (result.serviceUnavailable) {
+        // Don't post rework for service outages — just warn once
+        await gh.addIssueComment(
+          repo,
+          pr.number,
+          `## ⚠️ Review Postponed — Service Unavailable\n\n${result.summary}\n\nThe review service could not be reached. No rework prompt will be posted. Review will be retried on next start.`,
+        );
+        console.log(`[WARN] Review service unavailable for PR #${pr.number} — posted warning, not rework`);
+        // Remove from reviewed set so next reviewer session retries
+        reviewedPRs.delete(prKey);
       } else {
         await postReworkPrompt(gh, repo, pr, result);
       }
