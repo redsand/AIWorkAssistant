@@ -271,7 +271,10 @@ function checkoutBranch(branchName: string): boolean {
   if (current && current !== "main" && hasUncommittedChanges) {
     // On a different branch with changes — commit them so they aren't lost
     runLogger.logGit("Committing uncommitted changes on", current);
-    stageAndCommit(`[AI] auto-save before switching from ${current}`);
+    const saved = stageAndCommit(`[AI] auto-save before switching from ${current}`);
+    if (!saved) {
+      runLogger.logGit("WARN", "Could not save all changes — some files may be left uncommitted");
+    }
   }
 
   runLogger.logGit("Switching to main", "before creating new branch");
@@ -301,11 +304,25 @@ function pushBranch(branchName: string): boolean {
 }
 
 function stageAndCommit(message: string): boolean {
-  runLogger.logGit("Staging all changes", "add + rm");
   // Stage new, modified, and deleted files
   if (!gitRun(["add", "--all"], WORKSPACE)) {
-    runLogger.logError("git add --all failed");
-    return false;
+    // --all can fail on reserved names (e.g. Windows "nul") or permission errors.
+    // Fall back to staging only tracked-file changes, then add new files individually.
+    runLogger.logGit("git add --all failed — retrying with tracked-only + new files", "");
+    gitRun(["add", "-u"], WORKSPACE);
+    // Collect untracked files (excluding .gitignore entries) and add them one by one
+    const lsResult = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], {
+      cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
+    });
+    if (lsResult.status === 0 && lsResult.stdout.trim()) {
+      const newFiles = lsResult.stdout.trim().split("\n");
+      for (const f of newFiles) {
+        if (!f.trim()) continue;
+        if (!gitRun(["add", f.trim()], WORKSPACE)) {
+          runLogger.logGit("Skipping untrackable file", f.trim());
+        }
+      }
+    }
   }
 
   // Check if there is anything staged to commit
