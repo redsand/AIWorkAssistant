@@ -89,7 +89,12 @@ const SOURCE = (ARGV.source || process.env.AICODER_SOURCE || "auto") as TicketSo
 const LOOKUP = (ARGV.lookup || process.env.AICODER_LOOKUP || "memory") as LookupMode;
 const USE_OLLAMA = "ollama" in ARGV || process.env.AICODER_OLLAMA === "true";
 const MODEL = ARGV.model || process.env.AICODER_MODEL || "";
-const ollamaLauncher = USE_OLLAMA ? new OllamaLauncher() : null;
+const OLLAMA_URL = process.env.OLLAMA_API_URL || "http://localhost:11434";
+
+process.env.AICODER_AGENT = AGENT;
+process.env.AICODER_MODEL = MODEL;
+process.env.AICODER_OLLAMA = USE_OLLAMA ? "true" : "false";
+const ollamaLauncher = USE_OLLAMA ? new OllamaLauncher({ ollamaUrl: OLLAMA_URL }) : null;
 const runLogger = new RunLogger(WORKSPACE);
 
 interface ServerConfig {
@@ -247,7 +252,11 @@ function checkoutBranch(branchName: string): boolean {
   const create = gitRun(["checkout", "-b", branchName], WORKSPACE);
   if (!create) {
     runLogger.logGit("Switching to existing branch", branchName);
-    return gitRun(["checkout", branchName], WORKSPACE);
+    if (!gitRun(["checkout", branchName], WORKSPACE)) {
+      return false;
+    }
+    runLogger.logGit("Fast-forwarding existing branch from main", branchName);
+    return gitRun(["merge", "--ff-only", "main"], WORKSPACE);
   }
   return true;
 }
@@ -272,6 +281,7 @@ async function runAgentViaLauncher(prompt: string): Promise<RunResult> {
       provider: AGENT,
       prompt,
       cwd: WORKSPACE,
+      ollamaUrl: OLLAMA_URL,
       model: MODEL || undefined,
     };
 
