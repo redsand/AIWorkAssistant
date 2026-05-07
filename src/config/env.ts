@@ -220,6 +220,7 @@ const envSchema = z.object({
   AICODER_OWNER: z.string().default(""),
   AICODER_REPO: z.string().default(""),
   AICODER_LABEL: z.string().default("ready-for-agent"),
+  AICODER_PRIORITY: z.enum(["label", "auto"]).default("label"),
   AICODER_POLL_MS: z.coerce.number().default(60000),
   AICODER_MAX_CYCLES: z.coerce.number().default(0),
   AICODER_WORKSPACE: z.string().default(""),

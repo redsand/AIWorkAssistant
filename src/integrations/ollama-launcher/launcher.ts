@@ -1,4 +1,7 @@
 import { spawn, ChildProcess } from "child_process";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import axios from "axios";
 import type {
   ProviderType,
@@ -107,6 +110,11 @@ export class OllamaLauncher {
       ...extraEnv,
     };
 
+    // Write prompt to temp file to avoid command-line length limits on Windows
+    const promptFile = path.join(os.tmpdir(), `aicoder-prompt-${Date.now()}.md`);
+    fs.writeFileSync(promptFile, options.prompt, "utf-8");
+    const promptContent = options.prompt;
+
     const child = spawn(command, args, {
       cwd: options.cwd || process.cwd(),
       env: childEnv,
@@ -115,6 +123,10 @@ export class OllamaLauncher {
       windowsHide: true,
     });
 
+    // Pipe prompt via stdin instead of embedding in args
+    child.stdin?.write(promptContent);
+    child.stdin?.end();
+
     // Propagate SIGINT to child
     const onSigInt = () => {
       child.kill("SIGINT");
@@ -122,9 +134,9 @@ export class OllamaLauncher {
     process.on("SIGINT", onSigInt);
     child.on("close", () => {
       process.removeListener("SIGINT", onSigInt);
+      try { fs.unlinkSync(promptFile); } catch {}
     });
 
-    child.stdin?.end();
     return child;
   }
 
@@ -142,6 +154,11 @@ export class OllamaLauncher {
       ...process.env,
       ...extraEnv,
     };
+
+    // Write prompt to temp file to avoid command-line length limits on Windows
+    const promptFile = path.join(os.tmpdir(), `aicoder-prompt-${Date.now()}.md`);
+    fs.writeFileSync(promptFile, options.prompt, "utf-8");
+    const promptContent = options.prompt;
 
     const startTime = Date.now();
     const cmdStr = `${command} ${args.join(" ")}`;
@@ -166,7 +183,12 @@ export class OllamaLauncher {
         stderr += data.toString();
       });
 
+      // Pipe prompt via stdin instead of embedding in args
+      child.stdin?.write(promptContent);
+      child.stdin?.end();
+
       child.on("close", (code) => {
+        try { fs.unlinkSync(promptFile); } catch {}
         resolve({
           success: code === 0,
           exitCode: code,
@@ -179,6 +201,7 @@ export class OllamaLauncher {
       });
 
       child.on("error", (err) => {
+        try { fs.unlinkSync(promptFile); } catch {}
         resolve({
           success: false,
           exitCode: -1,
@@ -197,8 +220,6 @@ export class OllamaLauncher {
       child.on("close", () => {
         process.removeListener("SIGINT", onSigInt);
       });
-
-      child.stdin?.end();
     });
   }
 

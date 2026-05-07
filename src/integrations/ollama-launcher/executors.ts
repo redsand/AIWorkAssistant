@@ -18,7 +18,6 @@ export class CodexExecutor implements ProviderExecutor {
         "--approval-mode",
         approvalMode,
         "-q",
-        options.prompt,
       ],
     };
   }
@@ -55,7 +54,6 @@ export class ClaudeExecutor implements ProviderExecutor {
     if (model) {
       args.push("--model", model);
     }
-    args.push("--", options.prompt);
     return { command: cliPath, args };
   }
 
@@ -77,13 +75,13 @@ export class OpenCodeExecutor implements ProviderExecutor {
   readonly providerName: ProviderType = "opencode";
 
   buildCommand(
-    options: LaunchOptions,
+    _options: LaunchOptions,
     cliPath: string,
     _defaultModel: string,
   ): { command: string; args: string[] } {
     return {
       command: cliPath,
-      args: [options.prompt],
+      args: [],
     };
   }
 

@@ -3,6 +3,8 @@ import "dotenv/config";
 import { spawn, spawnSync } from "child_process";
 import axios from "axios";
 import { OllamaLauncher } from "./integrations/ollama-launcher";
+import { RunLogger } from "./integrations/ollama-launcher/run-logger";
+import { prioritizeItems, type PriorityMode } from "./integrations/ollama-launcher/priority-sorter";
 import type { ProviderType } from "./integrations/ollama-launcher";
 
 function parseArgv(): Record<string, string> {
@@ -23,6 +25,7 @@ Options:
   --ollama             Route agent through Ollama launcher (sets OPENAI_BASE_URL, etc.)
   --model <name>       Override model for the agent (e.g. glm-5.1:cloud)
   --label <label>      Issue label to filter (default: ready-for-agent)
+  --priority <mode>    Ticket priority: label | auto (default: label)
   --poll-ms <ms>       Poll interval in milliseconds (default: 60000)
   --max-cycles <n>     Stop after n work cycles (0 = unlimited)
   --help               Show this help
@@ -64,6 +67,7 @@ const ARGV = parseArgv();
  *   AICODER_REPO        GitHub repo name (overrides server default)
  *   AICODER_OWNER       GitHub owner (overrides server default)
  *   AICODER_LABEL       Issue label to poll (default: ready-for-agent)
+ *   AICODER_PRIORITY    Ticket priority mode: label | auto (default: label)
  *   AICODER_AGENT       Coding agent binary: codex | opencode | claude (default: claude)
  *   AICODER_WORKSPACE   Working directory of the target repo (default: cwd)
  *   AICODER_POLL_MS     Poll interval in ms (default: 60000)
@@ -77,9 +81,11 @@ const MAX_CYCLES = parseInt(ARGV["max-cycles"] || process.env.AICODER_MAX_CYCLES
 const WORKSPACE = ARGV.workspace || process.env.AICODER_WORKSPACE || process.cwd();
 const AGENT = (ARGV.agent || process.env.AICODER_AGENT || "claude") as ProviderType;
 const LABEL = ARGV.label || process.env.AICODER_LABEL || "ready-for-agent";
+const PRIORITY = (ARGV.priority || process.env.AICODER_PRIORITY || "label") as PriorityMode;
 const USE_OLLAMA = "ollama" in ARGV || process.env.AICODER_OLLAMA === "true";
 const MODEL = ARGV.model || process.env.AICODER_MODEL || "";
 const ollamaLauncher = USE_OLLAMA ? new OllamaLauncher() : null;
+const runLogger = new RunLogger(WORKSPACE);
 
 interface ServerConfig {
   owner: string;
@@ -96,6 +102,7 @@ interface WorkItem {
   owner: string;
   repo: string;
   suggestedBranch: string;
+  labels?: string[];
 }
 
 interface GeneratedPrompt {
@@ -114,7 +121,8 @@ function loadServerConfig(): ServerConfig {
   const apiKey = process.env.AIWORKASSISTANT_API_KEY || "";
 
   if (!apiKey) {
-    console.error("[ERROR] AIWORKASSISTANT_API_KEY is required");
+    const logger = new RunLogger(WORKSPACE);
+    logger.logError("AIWORKASSISTANT_API_KEY is required");
     process.exit(1);
   }
 
@@ -185,7 +193,7 @@ async function createPR(
       ? { prNumber: resp.data.prNumber, url: resp.data.url }
       : null;
   } catch (err) {
-    console.error("[ERROR] PR creation failed:", (err as Error).message);
+    runLogger.logError(`PR creation failed: ${(err as Error).message}`);
     return null;
   }
 }
@@ -218,24 +226,24 @@ async function notifyComplete(
 function gitRun(args: string[], cwd: string): boolean {
   const result = spawnSync("git", args, { cwd, stdio: "pipe", encoding: "utf-8" });
   if (result.status !== 0) {
-    console.error(`[GIT] git ${args.join(" ")} failed: ${result.stderr?.trim()}`);
+    runLogger.logGit(`git ${args.join(" ")}`, `failed: ${result.stderr?.trim()}`);
     return false;
   }
   return true;
 }
 
 function checkoutBranch(branchName: string): boolean {
-  console.log(`[GIT] Creating branch ${branchName}`);
+  runLogger.logGit("Creating branch", branchName);
   const create = gitRun(["checkout", "-b", branchName], WORKSPACE);
   if (!create) {
-    console.log(`[GIT] Branch exists, switching to ${branchName}`);
+    runLogger.logGit("Switching to existing branch", branchName);
     return gitRun(["checkout", branchName], WORKSPACE);
   }
   return true;
 }
 
 function pushBranch(branchName: string): boolean {
-  console.log(`[GIT] Pushing ${branchName} to origin`);
+  runLogger.logGit("Pushing to origin", branchName);
   return gitRun(["push", "origin", branchName], WORKSPACE);
 }
 
@@ -248,7 +256,7 @@ async function runAgent(prompt: string): Promise<RunResult> {
 
 async function runAgentViaLauncher(prompt: string): Promise<RunResult> {
   return new Promise((resolve) => {
-    console.log(`[AGENT] Starting ${AGENT} via Ollama launcher`);
+    runLogger.logAgent(`Starting ${AGENT} via Ollama launcher`);
 
     const options: import("./integrations/ollama-launcher").LaunchOptions = {
       provider: AGENT,
@@ -268,7 +276,7 @@ async function runAgentViaLauncher(prompt: string): Promise<RunResult> {
 
         if (!finDetected && outputBuf.includes(FIN_TOKEN)) {
           finDetected = true;
-          console.log(`\n[AGENT] FIN signal detected — stopping agent`);
+          runLogger.logAgent("FIN signal detected — stopping agent");
           child.kill("SIGTERM");
         }
       });
@@ -278,11 +286,11 @@ async function runAgentViaLauncher(prompt: string): Promise<RunResult> {
       });
 
       child.on("error", (err) => {
-        console.error(`[AGENT] Launcher failed:`, err.message);
+        runLogger.logError(`Launcher failed: ${err.message}`);
         resolve({ finDetected: false, exitCode: -1 });
       });
     }).catch((err) => {
-      console.error(`[AGENT] Failed to start ${AGENT} via launcher:`, err.message);
+      runLogger.logError(`Failed to start ${AGENT} via launcher: ${err.message}`);
       resolve({ finDetected: false, exitCode: -1 });
     });
   });
@@ -290,9 +298,9 @@ async function runAgentViaLauncher(prompt: string): Promise<RunResult> {
 
 async function runAgentDirect(prompt: string): Promise<RunResult> {
   return new Promise((resolve) => {
-    console.log(`[AGENT] Starting ${AGENT}`);
+    runLogger.logAgent(`Starting ${AGENT}`);
 
-    const agentArgs = buildAgentArgs(AGENT, prompt);
+    const agentArgs = buildAgentArgs(AGENT);
     const child = spawn(AGENT, agentArgs, {
       cwd: WORKSPACE,
       stdio: ["pipe", "pipe", "inherit"],
@@ -302,6 +310,10 @@ async function runAgentDirect(prompt: string): Promise<RunResult> {
     let finDetected = false;
     let outputBuf = "";
 
+    // Pipe prompt via stdin to avoid command-line length limits
+    child.stdin?.write(prompt);
+    child.stdin?.end();
+
     child.stdout?.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       process.stdout.write(text);
@@ -309,34 +321,32 @@ async function runAgentDirect(prompt: string): Promise<RunResult> {
 
       if (!finDetected && outputBuf.includes(FIN_TOKEN)) {
         finDetected = true;
-        console.log(`\n[AGENT] FIN signal detected — stopping agent`);
+        runLogger.logAgent("FIN signal detected — stopping agent");
         child.kill("SIGTERM");
       }
     });
-
-    child.stdin?.end();
 
     child.on("close", (code) => {
       resolve({ finDetected, exitCode: code });
     });
 
     child.on("error", (err) => {
-      console.error(`[AGENT] Failed to start ${AGENT}:`, err.message);
+      runLogger.logError(`Failed to start ${AGENT}: ${err.message}`);
       resolve({ finDetected: false, exitCode: -1 });
     });
   });
 }
 
-function buildAgentArgs(agent: string, prompt: string): string[] {
+function buildAgentArgs(agent: string): string[] {
   switch (agent) {
     case "codex":
-      return ["--model", process.env.CODEX_MODEL || "o4-mini", "--approval-mode", "full-auto", "-q", prompt];
+      return ["--model", process.env.CODEX_MODEL || "o4-mini", "--approval-mode", "full-auto", "-q"];
     case "opencode":
-      return [prompt];
+      return [];
     case "claude":
-      return ["-p", "--print", "--dangerously-skip-permissions", "--", prompt];
+      return ["-p", "--print", "--dangerously-skip-permissions"];
     default:
-      return [prompt];
+      return [];
   }
 }
 
@@ -344,55 +354,62 @@ const processedIssues = new Set<number>();
 
 async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<void> {
   if (processedIssues.has(item.number)) {
-    console.log(`[SKIP] Issue #${item.number} already processed this session`);
+    runLogger.logSkip(`Issue #${item.number} already processed this session`);
     return;
   }
 
-  console.log(`\n[WORK] Starting issue #${item.number}: ${item.title}`);
+  runLogger.startRun(item.number, item.title);
+  runLogger.logWork(`Starting issue #${item.number}: ${item.title}`);
 
   const generated = await generatePrompt(cfg, item);
   if (generated.skipped) {
-    console.log(`[SKIP] Issue #${item.number}: ${generated.skipReason}`);
+    runLogger.logSkip(`Issue #${item.number}: ${generated.skipReason}`);
+    runLogger.endRun(null);
     return;
   }
 
   const branchName = item.suggestedBranch;
   if (!checkoutBranch(branchName)) {
-    console.error(`[ERROR] Could not create branch ${branchName} — skipping`);
+    runLogger.logError(`Could not create branch ${branchName} — skipping`);
+    runLogger.endRun(1);
     return;
   }
 
   const { finDetected, exitCode } = await runAgent(generated.prompt);
 
   if (!finDetected && exitCode !== 0) {
-    console.warn(`[WARN] Agent exited with code ${exitCode} and no FIN signal — skipping push`);
+    runLogger.log(`WARN`, `Agent exited with code ${exitCode} and no FIN signal — skipping push`);
+    runLogger.endRun(exitCode);
     processedIssues.add(item.number);
     return;
   }
 
   if (!pushBranch(branchName)) {
-    console.error(`[ERROR] Push failed — PR not created`);
+    runLogger.logError(`Push failed — PR not created`);
+    runLogger.endRun(1);
     processedIssues.add(item.number);
     return;
   }
 
   const pr = await createPR(cfg, item, branchName);
   if (pr) {
-    console.log(`[PR] Opened PR #${pr.prNumber}: ${pr.url}`);
+    runLogger.logPR(`Opened PR #${pr.prNumber}: ${pr.url}`);
     await notifyComplete(cfg, item, pr.prNumber, branchName, exitCode);
   }
 
+  runLogger.endRun(exitCode);
   processedIssues.add(item.number);
 }
 
 async function pollLoop(cfg: ServerConfig): Promise<void> {
   let cycles = 0;
-  console.log(`[START] AiRemoteCoder started (agent: ${AGENT}, workspace: ${WORKSPACE}${USE_OLLAMA ? ", ollama: on" : ""})`);
-  console.log(`[CONFIG] Polling ${cfg.apiUrl} for label="${LABEL}"`);
+  runLogger.logConfig(`AiRemoteCoder started (agent: ${AGENT}, workspace: ${WORKSPACE}${USE_OLLAMA ? ", ollama: on" : ""})`);
+  runLogger.logConfig(`Polling ${cfg.apiUrl} for label="${LABEL}"`);
+  runLogger.logConfig(`Priority mode: ${PRIORITY}`);
 
   while (true) {
     if (MAX_CYCLES > 0 && cycles >= MAX_CYCLES) {
-      console.log(`[STOP] Reached max cycles (${MAX_CYCLES})`);
+      runLogger.log("STOP", `Reached max cycles (${MAX_CYCLES})`);
       break;
     }
 
@@ -400,15 +417,17 @@ async function pollLoop(cfg: ServerConfig): Promise<void> {
       const items = await fetchWork(cfg);
 
       if (items.length === 0) {
-        console.log(`[POLL] No qualifying issues found — waiting ${POLL_MS / 1000}s`);
+        runLogger.logPoll(`No qualifying issues found — waiting ${POLL_MS / 1000}s`);
       } else {
-        for (const item of items) {
+        const sorted = await prioritizeItems(items, PRIORITY, cfg.apiUrl, cfg.apiKey);
+        runLogger.logConfig(`Prioritized ${sorted.length} issues (mode=${PRIORITY}): ${sorted.map((i) => `#${i.number}`).join(", ")}`);
+        for (const item of sorted) {
           await processWorkItem(cfg, item);
         }
         cycles++;
       }
     } catch (err) {
-      console.error("[ERROR]", (err as Error).message);
+      runLogger.logError((err as Error).message);
     }
 
     await new Promise((r) => setTimeout(r, POLL_MS));
