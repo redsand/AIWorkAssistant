@@ -4982,6 +4982,18 @@ async function handleHawkIrGetRiskyOpenCases(
   return { success: true, data };
 }
 
+async function handleHawkIrGetEscalatedCases(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const data = await hawkIrService.getEscalatedCases({
+    limit: params.limit as number | undefined,
+  });
+  return { success: true, data };
+}
+
 async function handleHawkIrDeescalateCase(
   params: Record<string, unknown>,
   _userId: string,
@@ -5791,6 +5803,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "hawk_ir.get_case": handleHawkIrGetCase,
   "hawk_ir.get_case_summary": handleHawkIrGetCaseSummary,
   "hawk_ir.get_risky_open_cases": handleHawkIrGetRiskyOpenCases,
+  "hawk_ir.get_escalated_cases": handleHawkIrGetEscalatedCases,
   "hawk_ir.deescalate_case": handleHawkIrDeescalateCase,
   "hawk_ir.add_case_note": handleHawkIrAddCaseNote,
   "hawk_ir.update_case_status": handleHawkIrUpdateCaseStatus,

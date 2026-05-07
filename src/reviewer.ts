@@ -88,6 +88,7 @@ interface ReviewResult {
   findings: ReviewFinding[];
   summary: string;
   agentStatus?: Record<string, "passed" | "failed">;
+  serviceUnavailable?: boolean;
 }
 
 async function loadConfig(): Promise<ReviewerConfig> {
@@ -204,6 +205,7 @@ async function runAiReview(
     console.error("[ERROR] AI review failed:", message);
     return {
       clean: false,
+      serviceUnavailable: true,
       findings: [{
         severity: "critical",
         category: "security",
@@ -216,6 +218,27 @@ async function runAiReview(
   }
 }
 
+const reviewedPRs = new Set<string>(); // "repo/prNumber"
+
+function isServiceUnavailable(result: ReviewResult): boolean {
+  return result.serviceUnavailable === true ||
+    result.findings.some((f) => f.message.startsWith("AI review service unavailable"));
+}
+
+async function postPostponed(
+  gh: ReturnType<typeof makeGithubClient>,
+  repo: string,
+  pr: { number: number; title: string },
+  result: ReviewResult,
+): Promise<void> {
+  await gh.addIssueComment(
+    repo,
+    pr.number,
+    `## ⚠️ Review Postponed — Service Unavailable\n\n${result.summary}\n\nThe review service could not be reached. No rework prompt will be posted. Review will be retried on the next cycle.`,
+  );
+  console.log(`[POSTPONED] PR #${pr.number} review postponed due to service unavailability`);
+}
+
 async function pollPRs(
   config: ReviewerConfig,
   gh: ReturnType<typeof makeGithubClient>,
@@ -225,18 +248,30 @@ async function pollPRs(
 
     for (const pr of prs) {
       if (!pr.user?.login.includes("ai") && !pr.title.startsWith("[AI]")) continue;
+
+      const prKey = `${repo}/${pr.number}`;
+      if (reviewedPRs.has(prKey)) {
+        continue;
+      }
+
       console.log(`[REVIEW] Found AI PR #${pr.number} in ${repo}: ${pr.title}`);
 
       const reviewCycleCount = await getReviewCycleCount(gh, repo, pr.number);
       if (reviewCycleCount >= config.maxReviewCycles) {
         console.log(`[BLOCKED] PR #${pr.number} exceeded max review cycles (${config.maxReviewCycles})`);
+        reviewedPRs.add(prKey);
         continue;
       }
 
       const result = await runMultiAgentReview(config, repo, pr.number);
+      reviewedPRs.add(prKey);
 
       if (result.clean) {
         await mergeWithSummary(gh, repo, pr, result);
+      } else if (isServiceUnavailable(result)) {
+        await postPostponed(gh, repo, pr, result);
+        // Remove from reviewed so next cycle retries
+        reviewedPRs.delete(prKey);
       } else {
         await postReworkPrompt(gh, repo, pr, result);
       }

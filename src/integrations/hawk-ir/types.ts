@@ -1,6 +1,6 @@
 // === Case Types ===
 
-export type CaseRiskLevel = "low" | "medium" | "high" | "critical";
+export type CaseRiskLevel = "low" | "medium" | "moderate" | "high" | "critical" | "informational";
 export type CaseProgressStatus = "new" | "open" | "in_progress" | "closed" | "resolved";
 
 export interface HawkCase {

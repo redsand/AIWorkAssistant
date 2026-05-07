@@ -4473,11 +4473,11 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "hawk_ir.get_risky_open_cases",
     description:
-      "Get HAWK IR cases that are high risk, unescalated, and not closed/resolved. Primary signal for CTO briefs and product insights.",
+      "Get HAWK IR cases that are high risk and NOT yet escalated (excludes escalated cases). Use this for finding cases that need attention or escalation. For already-escalated cases, use hawk_ir.get_escalated_cases instead.",
     params: {
       minRiskLevel: {
         type: "string",
-        description: "Minimum risk level: low, medium, high, critical (default: high)",
+        description: "Minimum risk level: low, medium, moderate, high, critical (default: high)",
         required: false,
       },
       limit: {
@@ -4487,6 +4487,20 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       },
     },
     actionType: "hawk_ir.get_risky_open_cases",
+    riskLevel: "low",
+  },
+  {
+    name: "hawk_ir.get_escalated_cases",
+    description:
+      "Get HAWK IR cases that have been escalated (escalated=true). Use this for customer briefings, escalation reports, and tracking which incidents have been elevated. Returns open escalated cases sorted by escalation time.",
+    params: {
+      limit: {
+        type: "number",
+        description: "Max cases to return (default 25)",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.get_escalated_cases",
     riskLevel: "low",
   },
   {
@@ -5747,6 +5761,7 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_case")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_case_summary")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_risky_open_cases")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_escalated_cases")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.search_logs")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_available_indexes")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_assets")!,
