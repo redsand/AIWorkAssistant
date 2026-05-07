@@ -51,7 +51,9 @@ export class ClaudeExecutor implements ProviderExecutor {
       "bypassPermissions",
       "--dangerously-skip-permissions",
     ];
-    if (!options.ollamaUrl) {
+    if (options.ollamaUrl) {
+      args.push("--model", "opus");
+    } else {
       const model = options.model || defaultModel;
       if (model) {
         args.push("--model", model);
@@ -65,11 +67,15 @@ export class ClaudeExecutor implements ProviderExecutor {
     ollamaUrl: string,
   ): Record<string, string> {
     if (options.ollamaUrl) {
+      const model = options.model || "glm-5.1:cloud";
       return {
         ANTHROPIC_BASE_URL: ollamaUrl,
         OPENAI_BASE_URL: `${ollamaUrl}/v1`,
         OPENAI_API_KEY: process.env.OPENAI_API_KEY || "ollama",
         ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || "ollama",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: model,
+        ANTHROPIC_DEFAULT_SONNET_MODEL: model,
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: model,
       };
     }
     const env: Record<string, string> = {};
