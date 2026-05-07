@@ -64,6 +64,7 @@
     "fastify": "^5.2.0",
     "googleapis": "^171.4.0",
     "localtunnel": "^2.0.2",
+    "tsx": "^4.19.2",
     "uuid": "^14.0.0",
     "web-push": "^3.6.7",
     "ws": "^8.20.0",
@@ -80,7 +81,6 @@
     "eslint": "^9.17.0",
     "happy-dom": "^20.9.0",
     "prettier": "^3.4.2",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }

@@ -1,5 +1,48 @@
+#!/usr/bin/env tsx
 import { execSync } from "child_process";
 import axios from "axios";
+
+function parseArgv(): Record<string, string> {
+  const out: Record<string, string> = {};
+  const argv = process.argv.slice(2);
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--help" || argv[i] === "-h") {
+      console.log(`
+reviewer — AIWorkAssistant autonomous PR review agent
+
+Usage: reviewer [options]
+
+Options:
+  --repo <name>     Comma-separated repos to watch (overrides REVIEW_REPOS)
+  --owner <name>    GitHub owner (overrides GITHUB_DEFAULT_OWNER)
+  --poll-ms <ms>    Poll interval in milliseconds (default: 30000)
+  --help            Show this help
+
+Remote config (fetches everything else from AIWorkAssistant):
+  AIWORKASSISTANT_URL      Base URL of the AIWorkAssistant server
+  AIWORKASSISTANT_API_KEY  API key for authentication
+
+Local config (.env):
+  GITHUB_TOKEN              GitHub personal access token
+  GITHUB_DEFAULT_OWNER      Default repo owner
+  REVIEW_REPOS              Comma-separated repo names to watch
+  REVIEW_POLL_INTERVAL_MS   Poll interval (default: 30000)
+  REVIEW_MAX_CYCLES         Max review cycles per PR (default: 5)
+  SECURITY_AGENT_CMD        External security review command
+  QA_AGENT_CMD              External QA review command
+  QUALITY_AGENT_CMD         External code quality command
+`);
+      process.exit(0);
+    }
+    if (argv[i].startsWith("--") && argv[i + 1] && !argv[i + 1].startsWith("--")) {
+      out[argv[i].slice(2)] = argv[i + 1];
+      i++;
+    }
+  }
+  return out;
+}
+
+const ARGV = parseArgv();
 
 /**
  * Reviewer configuration — loaded from the local .env or fetched from
@@ -56,6 +99,9 @@ async function loadConfig(): Promise<ReviewerConfig> {
       { headers: { Authorization: `Bearer ${remoteKey}` } },
     );
     const cfg = response.data;
+    if (ARGV.repo) cfg.reviewRepos = ARGV.repo.split(",").filter(Boolean);
+    if (ARGV.owner) cfg.owner = ARGV.owner;
+    if (ARGV["poll-ms"]) cfg.pollIntervalMs = parseInt(ARGV["poll-ms"], 10);
     console.log(`[CONFIG] Remote config loaded (repos: ${cfg.reviewRepos.join(", ") || "none"})`);
     return cfg;
   }
@@ -63,9 +109,9 @@ async function loadConfig(): Promise<ReviewerConfig> {
   console.log("[CONFIG] Using local .env config");
   return {
     githubToken: process.env.GITHUB_TOKEN || "",
-    owner: process.env.GITHUB_DEFAULT_OWNER || "redsand",
-    reviewRepos: (process.env.REVIEW_REPOS || "").split(",").filter(Boolean),
-    pollIntervalMs: parseInt(process.env.REVIEW_POLL_INTERVAL_MS || "30000", 10),
+    owner: ARGV.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand",
+    reviewRepos: (ARGV.repo || process.env.REVIEW_REPOS || "").split(",").filter(Boolean),
+    pollIntervalMs: parseInt(ARGV["poll-ms"] || process.env.REVIEW_POLL_INTERVAL_MS || "30000", 10),
     maxReviewCycles: parseInt(process.env.REVIEW_MAX_CYCLES || "5", 10),
     securityAgentCmd: process.env.SECURITY_AGENT_CMD || "review-agent --category security",
     qaAgentCmd: process.env.QA_AGENT_CMD || "review-agent --category qa",

@@ -1,5 +1,42 @@
+#!/usr/bin/env tsx
 import { spawn, spawnSync } from "child_process";
 import axios from "axios";
+
+function parseArgv(): Record<string, string> {
+  const out: Record<string, string> = {};
+  const argv = process.argv.slice(2);
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--help" || argv[i] === "-h") {
+      console.log(`
+aicoder — AiRemoteCoder autonomous coding agent
+
+Usage: aicoder [options]
+
+Options:
+  --workspace <path>   Target project directory for git operations (default: cwd)
+  --repo <name>        GitHub repo to poll (overrides AICODER_REPO)
+  --owner <name>       GitHub owner (overrides AICODER_OWNER)
+  --agent <name>       Coding agent: codex | opencode | claude (default: codex)
+  --label <label>      Issue label to filter (default: ready-for-agent)
+  --poll-ms <ms>       Poll interval in milliseconds (default: 60000)
+  --max-cycles <n>     Stop after n work cycles (0 = unlimited)
+  --help               Show this help
+
+Remote config (fetches everything else from AIWorkAssistant):
+  AIWORKASSISTANT_URL      Base URL of the AIWorkAssistant server
+  AIWORKASSISTANT_API_KEY  API key for authentication
+`);
+      process.exit(0);
+    }
+    if (argv[i].startsWith("--") && argv[i + 1] && !argv[i + 1].startsWith("--")) {
+      out[argv[i].slice(2)] = argv[i + 1];
+      i++;
+    }
+  }
+  return out;
+}
+
+const ARGV = parseArgv();
 
 /**
  * AiRemoteCoder — autonomous coding agent (Agent 1 in the two-agent loop).
@@ -28,11 +65,11 @@ import axios from "axios";
  */
 
 const FIN_TOKEN = process.env.FIN_SIGNAL || "FIN";
-const POLL_MS = parseInt(process.env.AICODER_POLL_MS || "60000", 10);
-const MAX_CYCLES = parseInt(process.env.AICODER_MAX_CYCLES || "0", 10);
-const WORKSPACE = process.env.AICODER_WORKSPACE || process.cwd();
-const AGENT = (process.env.AICODER_AGENT || "codex") as "codex" | "opencode" | "claude";
-const LABEL = process.env.AICODER_LABEL || "ready-for-agent";
+const POLL_MS = parseInt(ARGV["poll-ms"] || process.env.AICODER_POLL_MS || "60000", 10);
+const MAX_CYCLES = parseInt(ARGV["max-cycles"] || process.env.AICODER_MAX_CYCLES || "0", 10);
+const WORKSPACE = ARGV.workspace || process.env.AICODER_WORKSPACE || process.cwd();
+const AGENT = (ARGV.agent || process.env.AICODER_AGENT || "codex") as "codex" | "opencode" | "claude";
+const LABEL = ARGV.label || process.env.AICODER_LABEL || "ready-for-agent";
 
 interface ServerConfig {
   owner: string;
@@ -76,8 +113,8 @@ function loadServerConfig(): ServerConfig {
   return {
     apiUrl,
     apiKey,
-    owner: process.env.AICODER_OWNER || "",
-    repo: process.env.AICODER_REPO || "",
+    owner: ARGV.owner || process.env.AICODER_OWNER || "",
+    repo: ARGV.repo || process.env.AICODER_REPO || "",
   };
 }
 
