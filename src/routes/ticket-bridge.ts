@@ -47,7 +47,7 @@ export async function ticketBridgeRoutes(fastify: FastifyInstance) {
       context?: Partial<PromptContext>;
       autoBranch?: boolean;
       agent?: string;
-      workDir?: string;
+      workspace?: string;
       dryRun?: boolean;
       postComment?: boolean;
       postResults?: boolean;
@@ -102,7 +102,7 @@ export async function ticketBridgeRoutes(fastify: FastifyInstance) {
         title: generated.title,
         autoBranch: body.autoBranch ?? false,
         agent: (body.agent as AgentType | undefined) ?? null,
-        workDir: body.workDir,
+        workspace: body.workspace,
         dryRun: body.dryRun ?? false,
         postComment: body.postComment,
         postResults: body.postResults ?? false,

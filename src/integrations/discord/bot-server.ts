@@ -6,6 +6,7 @@
 
 import { DiscordAgentBot } from "./discord-bot";
 import { loadEnv } from "../../config/env";
+import { resolveClientConfig } from "../../config/client-config";
 import { getApiKeyForAuth } from "../../middleware/auth";
 
 async function main() {
@@ -31,13 +32,18 @@ async function main() {
     process.exit(1);
   }
 
-  // Create and start bot
+  const clientConfig = resolveClientConfig();
+  const apiKey =
+    Object.values(clientConfig.authHeaders)[0]?.replace(/^Bearer /, "") ||
+    getApiKeyForAuth() ||
+    undefined;
+
   const bot = new DiscordAgentBot({
     token: env.DISCORD_BOT_TOKEN,
     clientId: env.DISCORD_CLIENT_ID,
     guildId: env.DISCORD_GUILD_ID,
     allowedUserId: env.DISCORD_ALLOWED_USER_ID || undefined,
-    apiKey: getApiKeyForAuth() || undefined,
+    apiKey,
   });
 
   try {

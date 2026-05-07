@@ -15,7 +15,7 @@ export interface BranchRunOptions {
   title: string;
   autoBranch: boolean;
   agent: AgentType | null;
-  workDir?: string;
+  workspace?: string;
   dryRun?: boolean;
   postComment?: boolean;
   postResults?: boolean;
@@ -72,7 +72,7 @@ class BranchRunner {
   }
 
   dryRun(options: BranchRunOptions): string[] {
-    const workDir = options.workDir || process.cwd();
+    const workDir = options.workspace ?? process.cwd();
     const branchName = options.autoBranch
       ? this.makeBranchName(options.source, options.title)
       : null;
@@ -148,7 +148,7 @@ class BranchRunner {
       };
     }
 
-    const workDir = options.workDir || process.cwd();
+    const workDir = options.workspace ?? process.cwd();
     let branchName: string | null = null;
     let branchCreated = false;
     let previousBranch: string | null = null;

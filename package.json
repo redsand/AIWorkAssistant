@@ -29,6 +29,7 @@
     "docker:down": "docker-compose down",
     "docker:logs": "docker-compose logs -f",
     "cli": "tsx src/cli/cli.ts",
+    "reviewer": "tsx src/reviewer.ts",
     "bot:discord": "tsx src/integrations/discord/bot-server.ts",
     "bot:signal": "tsx src/integrations/signal/bot-server.ts",
     "lint": "eslint src --ext .ts",

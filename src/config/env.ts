@@ -210,6 +210,14 @@ const envSchema = z.object({
   PUSH_POLL_INTERVAL_MIN: z.coerce.number().default(5),
   PUSH_ESCALATION_L2_MINUTES: z.coerce.number().default(5),
   PUSH_ESCALATION_L3_MINUTES: z.coerce.number().default(15),
+
+  // Reviewer agent (src/reviewer.ts)
+  REVIEW_REPOS: z.string().default(""),
+  REVIEW_POLL_INTERVAL_MS: z.coerce.number().default(30000),
+  REVIEW_MAX_CYCLES: z.coerce.number().default(5),
+  SECURITY_AGENT_CMD: z.string().default("review-agent --category security"),
+  QA_AGENT_CMD: z.string().default("review-agent --category qa"),
+  QUALITY_AGENT_CMD: z.string().default("review-agent --category quality"),
 });
 
 export type Env = z.infer<typeof envSchema>;

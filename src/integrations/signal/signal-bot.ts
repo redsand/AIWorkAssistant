@@ -10,7 +10,10 @@ import axios from "axios";
 import { spawn } from "child_process";
 import { join } from "path";
 
-const API_BASE = process.env.API_BASE_URL || "http://localhost:3000";
+const API_BASE =
+  process.env.AIWORKASSISTANT_URL ||
+  process.env.API_BASE_URL ||
+  "http://localhost:3050";
 
 interface SignalMessage {
   type: "sent" | "received";

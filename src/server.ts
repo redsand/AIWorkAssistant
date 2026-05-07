@@ -32,6 +32,7 @@ import { initPushDispatcher } from "./push/dispatcher";
 import { startPollingEngine, stopPollingEngine } from "./push/polling-engine";
 import { toolsRoutes } from "./routes/tools";
 import { ticketBridgeRoutes } from "./routes/ticket-bridge";
+import { reviewerConfigRoutes } from "./routes/reviewer-config";
 import {
   authMiddleware,
   isAuthConfigured,
@@ -101,6 +102,7 @@ export async function buildServer() {
   await server.register(pushAcknowledgeRoutes, { prefix: "/api" });
   await server.register(toolsRoutes, { prefix: "/api" });
   await server.register(ticketBridgeRoutes, { prefix: "/api/ticket-bridge" });
+  await server.register(reviewerConfigRoutes, { prefix: "/api/reviewer" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 

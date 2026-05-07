@@ -14,7 +14,10 @@ import {
 } from "discord.js";
 import axios from "axios";
 
-const API_BASE = process.env.API_BASE_URL || "http://localhost:3050";
+const API_BASE =
+  process.env.AIWORKASSISTANT_URL ||
+  process.env.API_BASE_URL ||
+  "http://localhost:3050";
 
 interface DiscordConfig {
   token: string;

@@ -506,6 +506,19 @@ export class GithubClient {
     return response.data;
   }
 
+  async getPullRequestDiff(
+    prNumber: number,
+    owner?: string,
+    repo?: string,
+  ): Promise<string> {
+    const { owner: o, repo: r } = this.resolveRepo(owner, repo);
+    const response = await this.client.get(
+      `/repos/${o}/${r}/pulls/${prNumber}`,
+      { headers: { Accept: "application/vnd.github.v3.diff" } },
+    );
+    return response.data as string;
+  }
+
   async getPullRequestFiles(
     prNumber: number,
     owner?: string,

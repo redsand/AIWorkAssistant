@@ -6,6 +6,7 @@
 
 import { Command } from "commander";
 import { loadEnv } from "../config/env";
+import { resolveClientConfig } from "../config/client-config";
 import { OllamaLauncher } from "../integrations/ollama-launcher";
 import type { LaunchOptions } from "../integrations/ollama-launcher";
 import {
@@ -21,16 +22,11 @@ import * as fs from "fs";
 
 // Load environment variables
 const env = loadEnv();
-const API_BASE_URL = `http://localhost:${env.PORT}`;
+const clientConfig = resolveClientConfig();
+const API_BASE_URL = clientConfig.apiBaseUrl;
 
 function cliAuthHeaders(): Record<string, string> {
-  const providerKeys: Record<string, string> = {
-    opencode: env.OPENCODE_API_KEY,
-    zai: env.ZAI_API_KEY,
-    ollama: env.OLLAMA_API_KEY,
-  };
-  const token = providerKeys[env.AI_PROVIDER] || "";
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return clientConfig.authHeaders;
 }
 
 interface ChatResponse {
@@ -292,7 +288,7 @@ async function generateTicketToTaskPrompt(
     autoBranch?: boolean;
     run?: string;
     dryRun?: boolean;
-    workDir?: string;
+    workspace?: string;
     noComment?: boolean;
     postResults?: boolean;
     createWorkItem?: boolean;
@@ -341,7 +337,7 @@ async function generateTicketToTaskPrompt(
         title: result.title.replace(/^Implementation Task:\s*/i, ""),
         autoBranch: options.autoBranch ?? false,
         agent: agentRunner,
-        workDir: options.workDir,
+        workspace: options.workspace,
         postComment: !options.noComment,
         postResults: options.postResults ?? false,
         createWorkItem: options.createWorkItem ?? false,
@@ -358,7 +354,7 @@ async function generateTicketToTaskPrompt(
       title: result.title.replace(/^Implementation Task:\s*/i, ""),
       autoBranch: options.autoBranch ?? false,
       agent: agentRunner,
-      workDir: options.workDir,
+      workspace: options.workspace,
       postComment: !options.noComment,
       postResults: options.postResults ?? false,
       createWorkItem: options.createWorkItem ?? false,
@@ -411,7 +407,7 @@ interface TicketToPromptOptions {
   run?: string;
   autoBranch?: boolean;
   dryRun?: boolean;
-  workDir?: string;
+  workspace?: string;
   noComment?: boolean;
   postResults?: boolean;
   createWorkItem?: boolean;
@@ -477,7 +473,7 @@ async function runTicketToPrompt(
         title: generated.title,
         autoBranch: options.autoBranch ?? false,
         agent,
-        workDir: options.workDir,
+        workspace: options.workspace,
         postComment: !options.noComment,
         postResults: options.postResults ?? false,
         createWorkItem: options.createWorkItem ?? false,
@@ -494,7 +490,7 @@ async function runTicketToPrompt(
       title: generated.title,
       autoBranch: options.autoBranch ?? false,
       agent,
-      workDir: options.workDir,
+      workspace: options.workspace,
       postComment: !options.noComment,
       postResults: options.postResults ?? false,
       createWorkItem: options.createWorkItem ?? false,
@@ -638,7 +634,7 @@ program
   .option("--auto-branch", "Create a feature branch (ticket-{number}-{slug}) before running")
   .option("--run <agent>", "Run agent after generating prompt (codex|opencode|claude)")
   .option("--dry-run", "Preview what would happen without executing")
-  .option("--work-dir <path>", "Working directory for git and agent (default: cwd)")
+  .option("--workspace <path>", "Working directory for git and agent operations (default: cwd)")
   .option("--no-comment", "Skip posting a comment back to the ticket source")
   .option("--post-results", "Post structured results summary back to the ticket source after agent run")
   .option("--create-work-item", "Create or update a Work Item tracking this handoff (idempotent)")
@@ -661,7 +657,7 @@ const BRANCH_RUN_OPTIONS = (cmd: ReturnType<typeof ttpCmd.command>) =>
     .option("--auto-branch", "Create a feature branch (ticket-{id}-{slug}) before running")
     .option("--run <agent>", "Run agent after generating (codex|opencode|claude)")
     .option("--dry-run", "Preview what would happen without executing")
-    .option("--work-dir <path>", "Working directory for git and agent (default: cwd)")
+    .option("--workspace <path>", "Working directory for git and agent operations (default: cwd)")
     .option("--no-comment", "Skip posting a comment back to the ticket source")
     .option("--post-results", "Post structured results summary back to the ticket source after agent run")
     .option("--create-work-item", "Create or update a Work Item tracking this handoff (idempotent)");
@@ -944,7 +940,7 @@ launchCmd
   .option("--prompt <prompt>", "Prompt to send")
   .option("--approval-mode <mode>", "Codex approval mode", "full-auto")
   .option("--ollama-url <url>", "Ollama base URL", process.env.OLLAMA_API_URL || "http://localhost:11434")
-  .option("--cwd <path>", "Working directory")
+  .option("--workspace <path>", "Working directory")
   .action(async (opts) => {
     requirePrompt(opts);
     const options: LaunchOptions = {
@@ -953,7 +949,7 @@ launchCmd
       model: opts.model,
       ollamaUrl: opts.ollamaUrl,
       codexApprovalMode: opts.approvalMode,
-      cwd: opts.cwd,
+      cwd: opts.workspace,
     };
     console.log(`Launching Codex (model: ${opts.model}, approval: ${opts.approvalMode})...\n`);
     await launchProvider(options);
@@ -964,14 +960,14 @@ launchCmd
   .description("Launch Claude CLI with --dangerously-skip-permissions")
   .option("--model <model>", "Claude model to use")
   .option("--prompt <prompt>", "Prompt to send")
-  .option("--cwd <path>", "Working directory")
+  .option("--workspace <path>", "Working directory")
   .action(async (opts) => {
     requirePrompt(opts);
     const options: LaunchOptions = {
       provider: "claude",
       prompt: opts.prompt,
       model: opts.model,
-      cwd: opts.cwd,
+      cwd: opts.workspace,
     };
     console.log("Launching Claude (with --dangerously-skip-permissions)...\n");
     await launchProvider(options);
@@ -982,14 +978,14 @@ launchCmd
   .description("Launch OpenCode CLI")
   .option("--prompt <prompt>", "Prompt to send")
   .option("--ollama-url <url>", "Ollama base URL (routes through Ollama if set)")
-  .option("--cwd <path>", "Working directory")
+  .option("--workspace <path>", "Working directory")
   .action(async (opts) => {
     requirePrompt(opts);
     const options: LaunchOptions = {
       provider: "opencode",
       prompt: opts.prompt,
       ollamaUrl: opts.ollamaUrl,
-      cwd: opts.cwd,
+      cwd: opts.workspace,
     };
     console.log("Launching OpenCode...\n");
     await launchProvider(options);
@@ -1004,7 +1000,7 @@ program
   .option("--prompt <prompt>", "Prompt to send")
   .option("--approval-mode <mode>", "Codex approval mode", "full-auto")
   .option("--ollama-url <url>", "Ollama base URL", process.env.OLLAMA_API_URL || "http://localhost:11434")
-  .option("--cwd <path>", "Working directory")
+  .option("--workspace <path>", "Working directory")
   .action(async (opts) => {
     requirePrompt(opts);
     const options: LaunchOptions = {
@@ -1013,7 +1009,7 @@ program
       model: opts.model,
       ollamaUrl: opts.ollamaUrl,
       codexApprovalMode: opts.approvalMode,
-      cwd: opts.cwd,
+      cwd: opts.workspace,
     };
     console.log(`Launching Codex (model: ${opts.model}, approval: ${opts.approvalMode})...\n`);
     await launchProvider(options);
@@ -1024,14 +1020,14 @@ program
   .description("Launch Claude CLI with --dangerously-skip-permissions (shortcut for 'ollama launch claude')")
   .option("--model <model>", "Claude model to use")
   .option("--prompt <prompt>", "Prompt to send")
-  .option("--cwd <path>", "Working directory")
+  .option("--workspace <path>", "Working directory")
   .action(async (opts) => {
     requirePrompt(opts);
     const options: LaunchOptions = {
       provider: "claude",
       prompt: opts.prompt,
       model: opts.model,
-      cwd: opts.cwd,
+      cwd: opts.workspace,
     };
     console.log("Launching Claude (with --dangerously-skip-permissions)...\n");
     await launchProvider(options);
@@ -1042,14 +1038,14 @@ program
   .description("Launch OpenCode CLI (shortcut for 'ollama launch opencode')")
   .option("--prompt <prompt>", "Prompt to send")
   .option("--ollama-url <url>", "Ollama base URL (routes through Ollama if set)")
-  .option("--cwd <path>", "Working directory")
+  .option("--workspace <path>", "Working directory")
   .action(async (opts) => {
     requirePrompt(opts);
     const options: LaunchOptions = {
       provider: "opencode",
       prompt: opts.prompt,
       ollamaUrl: opts.ollamaUrl,
-      cwd: opts.cwd,
+      cwd: opts.workspace,
     };
     console.log("Launching OpenCode...\n");
     await launchProvider(options);
