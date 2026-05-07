@@ -9,7 +9,7 @@ import {
   MissingCodingPromptError,
 } from "../../engineering/ticket-to-task";
 
-export type TicketSourceType = "github" | "jira" | "roadmap";
+export type TicketSourceType = "github" | "jira" | "roadmap" | "gitlab" | "jitbit";
 
 export interface TicketSource {
   type: TicketSourceType;
@@ -62,6 +62,10 @@ class TicketBridge {
         return this.generateFromJira(source, ctx);
       case "roadmap":
         return this.generateFromRoadmap(source, ctx);
+      case "gitlab":
+        return this.generateFromGitHub(source, ctx); // GitLab uses same prompt format for now
+      case "jitbit":
+        return this.generateFromJira(source, ctx); // Jitbit uses similar format to Jira
     }
   }
 

@@ -5,6 +5,7 @@ import axios from "axios";
 import { OllamaLauncher } from "./integrations/ollama-launcher";
 import { RunLogger } from "./integrations/ollama-launcher/run-logger";
 import { prioritizeItems, type PriorityMode } from "./integrations/ollama-launcher/priority-sorter";
+import { type TicketSourceType, type LookupMode } from "./integrations/source-resolver";
 import type { ProviderType } from "./integrations/ollama-launcher";
 
 function parseArgv(): Record<string, string> {
@@ -19,13 +20,15 @@ Usage: aicoder [options]
 
 Options:
   --workspace <path>   Target project directory for git operations (default: cwd)
-  --repo <name>        GitHub repo to poll (overrides AICODER_REPO)
-  --owner <name>       GitHub owner (overrides AICODER_OWNER)
+  --source <type>      Issue source: github | gitlab | jira | jitbit | auto (default: auto)
+  --owner <name>       GitHub/GitLab owner (overrides server default)
+  --repo <name>        Repository/project name (overrides server default)
   --agent <name>       Coding agent: codex | opencode | claude (default: claude)
   --ollama             Route agent through Ollama launcher (sets OPENAI_BASE_URL, etc.)
   --model <name>       Override model for the agent (e.g. glm-5.1:cloud)
   --label <label>      Issue label to filter (default: ready-for-agent)
   --priority <mode>    Ticket priority: label | auto (default: label)
+  --lookup <mode>      Source auto-detect mode: memory | llm (default: memory)
   --poll-ms <ms>       Poll interval in milliseconds (default: 60000)
   --max-cycles <n>     Stop after n work cycles (0 = unlimited)
   --help               Show this help
@@ -82,6 +85,8 @@ const WORKSPACE = ARGV.workspace || process.env.AICODER_WORKSPACE || process.cwd
 const AGENT = (ARGV.agent || process.env.AICODER_AGENT || "claude") as ProviderType;
 const LABEL = ARGV.label || process.env.AICODER_LABEL || "ready-for-agent";
 const PRIORITY = (ARGV.priority || process.env.AICODER_PRIORITY || "label") as PriorityMode;
+const SOURCE = (ARGV.source || process.env.AICODER_SOURCE || "auto") as TicketSourceType | "auto";
+const LOOKUP = (ARGV.lookup || process.env.AICODER_LOOKUP || "memory") as LookupMode;
 const USE_OLLAMA = "ollama" in ARGV || process.env.AICODER_OLLAMA === "true";
 const MODEL = ARGV.model || process.env.AICODER_MODEL || "";
 const ollamaLauncher = USE_OLLAMA ? new OllamaLauncher() : null;
@@ -90,6 +95,7 @@ const runLogger = new RunLogger(WORKSPACE);
 interface ServerConfig {
   owner: string;
   repo: string;
+  source: string;
   apiUrl: string;
   apiKey: string;
 }
@@ -131,6 +137,7 @@ function loadServerConfig(): ServerConfig {
     apiKey,
     owner: ARGV.owner || process.env.AICODER_OWNER || "",
     repo: ARGV.repo || process.env.AICODER_REPO || "",
+    source: SOURCE,
   };
 }
 
@@ -139,7 +146,7 @@ function authHeaders(cfg: ServerConfig): Record<string, string> {
 }
 
 async function fetchWork(cfg: ServerConfig): Promise<WorkItem[]> {
-  const params: Record<string, string> = { label: LABEL, limit: "5" };
+  const params: Record<string, string> = { label: LABEL, limit: "5", source: cfg.source };
   if (cfg.owner) params.owner = cfg.owner;
   if (cfg.repo) params.repo = cfg.repo;
 
@@ -266,6 +273,7 @@ async function runAgentViaLauncher(prompt: string): Promise<RunResult> {
     };
 
     ollamaLauncher!.launchStream(options).then((child) => {
+      activeChild = child;
       let finDetected = false;
       let outputBuf = "";
 
@@ -282,14 +290,17 @@ async function runAgentViaLauncher(prompt: string): Promise<RunResult> {
       });
 
       child.on("close", (code) => {
+        activeChild = null;
         resolve({ finDetected, exitCode: code });
       });
 
       child.on("error", (err) => {
+        activeChild = null;
         runLogger.logError(`Launcher failed: ${err.message}`);
         resolve({ finDetected: false, exitCode: -1 });
       });
     }).catch((err) => {
+      activeChild = null;
       runLogger.logError(`Failed to start ${AGENT} via launcher: ${err.message}`);
       resolve({ finDetected: false, exitCode: -1 });
     });
@@ -306,6 +317,7 @@ async function runAgentDirect(prompt: string): Promise<RunResult> {
       stdio: ["pipe", "pipe", "inherit"],
       shell: process.platform === "win32",
     });
+    activeChild = child;
 
     let finDetected = false;
     let outputBuf = "";
@@ -327,10 +339,12 @@ async function runAgentDirect(prompt: string): Promise<RunResult> {
     });
 
     child.on("close", (code) => {
+      activeChild = null;
       resolve({ finDetected, exitCode: code });
     });
 
     child.on("error", (err) => {
+      activeChild = null;
       runLogger.logError(`Failed to start ${AGENT}: ${err.message}`);
       resolve({ finDetected: false, exitCode: -1 });
     });
@@ -344,7 +358,7 @@ function buildAgentArgs(agent: string): string[] {
     case "opencode":
       return [];
     case "claude":
-      return ["-p", "--print", "--dangerously-skip-permissions"];
+      return ["-p", "--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"];
     default:
       return [];
   }
@@ -405,7 +419,7 @@ async function pollLoop(cfg: ServerConfig): Promise<void> {
   let cycles = 0;
   runLogger.logConfig(`AiRemoteCoder started (agent: ${AGENT}, workspace: ${WORKSPACE}${USE_OLLAMA ? ", ollama: on" : ""})`);
   runLogger.logConfig(`Polling ${cfg.apiUrl} for label="${LABEL}"`);
-  runLogger.logConfig(`Priority mode: ${PRIORITY}`);
+  runLogger.logConfig(`Source: ${SOURCE}, Priority mode: ${PRIORITY}, Lookup: ${LOOKUP}`);
 
   while (true) {
     if (MAX_CYCLES > 0 && cycles >= MAX_CYCLES) {
@@ -433,5 +447,17 @@ async function pollLoop(cfg: ServerConfig): Promise<void> {
     await new Promise((r) => setTimeout(r, POLL_MS));
   }
 }
+
+// Kill active agent child process on exit
+let activeChild: import("child_process").ChildProcess | null = null;
+
+function cleanup() {
+  if (activeChild && !activeChild.killed) {
+    activeChild.kill("SIGTERM");
+  }
+}
+
+process.on("SIGINT", () => { cleanup(); process.exit(130); });
+process.on("SIGTERM", () => { cleanup(); process.exit(143); });
 
 pollLoop(loadServerConfig());

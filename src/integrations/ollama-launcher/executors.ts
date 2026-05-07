@@ -47,6 +47,7 @@ export class ClaudeExecutor implements ProviderExecutor {
       "--print",
       "--output-format",
       "stream-json",
+      "--verbose",
       "--permission-mode",
       "bypassPermissions",
       "--dangerously-skip-permissions",

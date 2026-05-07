@@ -1,10 +1,26 @@
 import { FastifyInstance } from "fastify";
 import { githubClient } from "../integrations/github/github-client";
+import { gitlabClient } from "../integrations/gitlab/gitlab-client";
+import { jiraClient } from "../integrations/jira/jira-client";
+import { jitbitClient } from "../integrations/jitbit/jitbit-client";
 import { ticketToTaskGenerator } from "../engineering/ticket-to-task";
 import { env } from "../config/env";
+import type { TicketSourceType } from "../integrations/source-resolver";
 
 const AI_BRANCH_PREFIX = "ai/issue-";
 const DEFAULT_WORK_LABEL = "ready-for-agent";
+
+interface NormalizedWorkItem {
+  id: string;
+  type: string;
+  title: string;
+  number: number;
+  url: string;
+  owner: string;
+  repo: string;
+  labels: string[];
+  suggestedBranch: string;
+}
 
 export async function autonomousLoopRoutes(fastify: FastifyInstance) {
   fastify.get("/work", async (request, _reply) => {
@@ -13,51 +29,34 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
       owner?: string;
       label?: string;
       limit?: string;
+      source?: string;
     };
 
-    const owner = query.owner || env.GITHUB_DEFAULT_OWNER;
-    const repo = query.repo || env.GITHUB_DEFAULT_REPO;
+    const source = (query.source || "auto") as TicketSourceType | "auto";
     const label = query.label || DEFAULT_WORK_LABEL;
     const limit = Math.min(parseInt(query.limit || "10", 10), 50);
 
-    if (!owner || !repo) {
-      return {
-        success: false,
-        error: "owner and repo are required (or set GITHUB_DEFAULT_OWNER/REPO)",
-      };
-    }
-
     try {
-      const issues = await githubClient.listIssues("open", label, owner, repo);
+      let items: NormalizedWorkItem[] = [];
 
-      const qualifying = issues
-        .filter((issue: any) => {
-          if (issue.pull_request) return false;
-          const issueLabels: string[] = (issue.labels || []).map((l: any) =>
-            typeof l === "string" ? l : l.name,
-          );
-          if (issueLabels.includes("missing-coding-prompt")) return false;
-          return ticketToTaskGenerator.hasCodingPromptContent(issue.body || "");
-        })
-        .slice(0, limit);
+      const resolvedSource = await resolveSource(source, query);
 
-      return {
-        success: true,
-        items: qualifying.map((issue: any) => ({
-          id: String(issue.number),
-          type: "github_issue",
-          title: issue.title,
-          number: issue.number,
-          url: issue.html_url,
-          owner,
-          repo,
-          labels: (issue.labels || []).map((l: any) =>
-            typeof l === "string" ? l : l.name,
-          ),
-          suggestedBranch: makeBranchName(issue.number, issue.title),
-        })),
-        total: qualifying.length,
-      };
+      switch (resolvedSource) {
+        case "github":
+          items = await fetchGitHubWork(label, limit, query);
+          break;
+        case "gitlab":
+          items = await fetchGitLabWork(label, limit);
+          break;
+        case "jira":
+          items = await fetchJiraWork(label, limit);
+          break;
+        case "jitbit":
+          items = await fetchJitbitWork(label, limit);
+          break;
+      }
+
+      return { success: true, items, total: items.length };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -156,4 +155,171 @@ function makeBranchName(issueNumber: number, title: string): string {
   return slug
     ? `${AI_BRANCH_PREFIX}${issueNumber}-${slug}`
     : `${AI_BRANCH_PREFIX}${issueNumber}`;
+}
+
+function resolveSource(
+  source: TicketSourceType | "auto",
+  query: { owner?: string; repo?: string },
+): TicketSourceType {
+  if (source !== "auto") return source;
+
+  // Auto-detect: use whichever integration is configured
+  if (query.owner || query.repo || env.GITHUB_DEFAULT_OWNER || env.GITHUB_DEFAULT_REPO) {
+    return "github";
+  }
+  if (env.GITLAB_DEFAULT_PROJECT) return "gitlab";
+  if (env.JIRA_BASE_URL) return "jira";
+  if (env.JITBIT_ENABLED) return "jitbit";
+
+  return "github";
+}
+
+async function fetchGitHubWork(
+  label: string,
+  limit: number,
+  query: { owner?: string; repo?: string },
+): Promise<NormalizedWorkItem[]> {
+  const owner = query.owner || env.GITHUB_DEFAULT_OWNER;
+  const repo = query.repo || env.GITHUB_DEFAULT_REPO;
+
+  if (!owner || !repo) {
+    throw new Error("owner and repo are required for GitHub (or set GITHUB_DEFAULT_OWNER/REPO)");
+  }
+
+  const issues = await githubClient.listIssues("open", label, owner, repo);
+
+  return issues
+    .filter((issue: any) => {
+      if (issue.pull_request) return false;
+      const issueLabels: string[] = (issue.labels || []).map((l: any) =>
+        typeof l === "string" ? l : l.name,
+      );
+      if (issueLabels.includes("missing-coding-prompt")) return false;
+      return ticketToTaskGenerator.hasCodingPromptContent(issue.body || "");
+    })
+    .slice(0, limit)
+    .map((issue: any) => ({
+      id: String(issue.number),
+      type: "github_issue" as const,
+      title: issue.title,
+      number: issue.number,
+      url: issue.html_url,
+      owner,
+      repo,
+      labels: (issue.labels || []).map((l: any) =>
+        typeof l === "string" ? l : l.name,
+      ),
+      suggestedBranch: makeBranchName(issue.number, issue.title),
+    }));
+}
+
+async function fetchGitLabWork(
+  label: string,
+  limit: number,
+): Promise<NormalizedWorkItem[]> {
+  if (!env.GITLAB_DEFAULT_PROJECT) {
+    throw new Error("GITLAB_DEFAULT_PROJECT is required for GitLab source");
+  }
+
+  const issues = await gitlabClient.listIssues(
+    env.GITLAB_DEFAULT_PROJECT,
+    "opened",
+    label,
+  );
+
+  return issues
+    .filter((issue: any) => {
+      const issueLabels: string[] = (issue.labels || []);
+      if (issueLabels.includes("missing-coding-prompt")) return false;
+      return ticketToTaskGenerator.hasCodingPromptContent(issue.description || "");
+    })
+    .slice(0, limit)
+    .map((issue: any) => ({
+      id: String(issue.iid),
+      type: "gitlab_issue" as const,
+      title: issue.title,
+      number: issue.iid,
+      url: issue.web_url,
+      owner: String(issue.project_id),
+      repo: env.GITLAB_DEFAULT_PROJECT!,
+      labels: issue.labels || [],
+      suggestedBranch: makeBranchName(issue.iid, issue.title),
+    }));
+}
+
+async function fetchJiraWork(
+  label: string,
+  limit: number,
+): Promise<NormalizedWorkItem[]> {
+  if (!env.JIRA_BASE_URL) {
+    throw new Error("JIRA_BASE_URL is required for Jira source");
+  }
+
+  const jql = `labels = "${label}" AND statusCategory = "In Progress" ORDER BY priority ASC`;
+  const issues = await jiraClient.searchIssues(jql, limit);
+
+  return issues
+    .filter((issue: any) => {
+      const issueLabels: string[] = issue.fields?.labels || [];
+      if (issueLabels.includes("missing-coding-prompt")) return false;
+      return ticketToTaskGenerator.hasCodingPromptContent(
+        issue.fields?.description ? extractJiraBodyText(issue.fields.description) : "",
+      );
+    })
+    .slice(0, limit)
+    .map((issue: any) => ({
+      id: issue.key,
+      type: "jira_issue" as const,
+      title: issue.fields?.summary || "",
+      number: parseInt(issue.key.split("-").pop() || "0", 10),
+      url: `${env.JIRA_BASE_URL}/browse/${issue.key}`,
+      owner: issue.fields?.project?.key || "",
+      repo: issue.fields?.project?.key || "",
+      labels: issue.fields?.labels || [],
+      suggestedBranch: makeBranchName(
+        parseInt(issue.key.split("-").pop() || "0", 10),
+        issue.fields?.summary || "",
+      ),
+    }));
+}
+
+async function fetchJitbitWork(
+  label: string,
+  limit: number,
+): Promise<NormalizedWorkItem[]> {
+  if (!env.JITBIT_ENABLED) {
+    throw new Error("JITBIT_ENABLED must be true for Jitbit source");
+  }
+
+  const tickets = await jitbitClient.listTickets({ tagName: label });
+
+  return tickets
+    .slice(0, limit)
+    .filter((ticket: any) => {
+      const body = ticket.body || "";
+      if (body.includes("missing-coding-prompt")) return false;
+      return ticketToTaskGenerator.hasCodingPromptContent(body);
+    })
+    .map((ticket: any) => ({
+      id: String(ticket.ticketID),
+      type: "jitbit_ticket" as const,
+      title: ticket.subject || "",
+      number: ticket.ticketID,
+      url: `${env.JITBIT_BASE_URL}/ticket/${ticket.ticketID}`,
+      owner: "",
+      repo: "",
+      labels: ticket.tags ? ticket.tags.split(",").map((t: string) => t.trim()) : [],
+      suggestedBranch: makeBranchName(ticket.ticketID, ticket.subject || ""),
+    }));
+}
+
+function extractJiraBodyText(description: any): string {
+  if (typeof description === "string") return description;
+  // ADF format
+  if (description?.content) {
+    return description.content
+      .map((node: any) => node?.text || node?.content?.map((c: any) => c?.text || "").join(" ") || "")
+      .join("\n");
+  }
+  return "";
 }
