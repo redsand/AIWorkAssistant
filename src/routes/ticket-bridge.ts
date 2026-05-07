@@ -50,6 +50,9 @@ export async function ticketBridgeRoutes(fastify: FastifyInstance) {
       workDir?: string;
       dryRun?: boolean;
       postComment?: boolean;
+      postResults?: boolean;
+      createWorkItem?: boolean;
+      sessionUrl?: string;
     };
 
     if (!body.source?.type || !body.source?.id) {
@@ -102,6 +105,9 @@ export async function ticketBridgeRoutes(fastify: FastifyInstance) {
         workDir: body.workDir,
         dryRun: body.dryRun ?? false,
         postComment: body.postComment,
+        postResults: body.postResults ?? false,
+        createWorkItem: body.createWorkItem ?? false,
+        sessionUrl: body.sessionUrl,
       });
 
       return {

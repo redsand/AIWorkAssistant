@@ -285,6 +285,15 @@ class WorkItemDatabase {
     return this.getWorkItem(id);
   }
 
+  findByTicketSource(source: string, externalId: string): WorkItem | null {
+    const row = this.db
+      .prepare(
+        "SELECT * FROM work_items WHERE source = ? AND source_external_id = ? ORDER BY created_at DESC LIMIT 1",
+      )
+      .get(source, externalId) as Record<string, unknown> | undefined;
+    return row ? this.mapRow(row) : null;
+  }
+
   getStats(): WorkItemStats {
     const totalRow = this.db
       .prepare("SELECT COUNT(*) as count FROM work_items WHERE status != 'archived'")

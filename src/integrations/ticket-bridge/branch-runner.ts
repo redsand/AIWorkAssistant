@@ -5,6 +5,7 @@ import { OllamaLauncher } from "../ollama-launcher";
 import type { ProviderType } from "../ollama-launcher/types";
 import type { TicketSource } from "./ticket-bridge";
 import { resultPoster } from "./result-poster";
+import { workItemLinker } from "./work-item-linker";
 
 export type AgentType = ProviderType;
 
@@ -17,6 +18,10 @@ export interface BranchRunOptions {
   workDir?: string;
   dryRun?: boolean;
   postComment?: boolean;
+  postResults?: boolean;
+  createWorkItem?: boolean;
+  ticketUrl?: string;
+  sessionUrl?: string;
   model?: string;
   ollamaUrl?: string;
   codexApprovalMode?: "suggest" | "auto-edit" | "full-auto";
@@ -28,7 +33,13 @@ export interface BranchRunResult {
   previousBranch: string | null;
   agentStarted: boolean;
   agentExitCode: number | null;
+  runDurationMs: number | null;
   commentPosted: boolean;
+  resultComment: string | null;
+  filesChanged: string[];
+  commitMessages: string[];
+  workItemId: string | null;
+  workItemCreated: boolean;
   dryRunPreview?: string[];
 }
 
@@ -84,7 +95,11 @@ class BranchRunner {
       );
     }
 
-    if (options.postComment !== false) {
+    if (options.postResults) {
+      steps.push(
+        `[DRY RUN] Would post structured results comment to ${options.source.type} ${options.source.id}`,
+      );
+    } else if (options.postComment !== false) {
       switch (options.source.type) {
         case "github":
           steps.push(
@@ -102,6 +117,12 @@ class BranchRunner {
       }
     }
 
+    if (options.createWorkItem) {
+      steps.push(
+        `[DRY RUN] Would create/update Work Item for ${options.source.type} ${options.source.id}`,
+      );
+    }
+
     steps.push(`[DRY RUN] Safety: no git push, no merge, no ticket close`);
     return steps;
   }
@@ -116,7 +137,13 @@ class BranchRunner {
         previousBranch: null,
         agentStarted: false,
         agentExitCode: null,
+        runDurationMs: null,
         commentPosted: false,
+        resultComment: null,
+        filesChanged: [],
+        commitMessages: [],
+        workItemId: null,
+        workItemCreated: false,
         dryRunPreview: this.dryRun(options),
       };
     }
@@ -138,9 +165,11 @@ class BranchRunner {
 
     let agentStarted = false;
     let agentExitCode: number | null = null;
+    let runDurationMs: number | null = null;
 
     if (options.agent) {
       agentStarted = true;
+      const agentStart = Date.now();
       try {
         const child = await this.launcher.launchStream({
           provider: options.agent,
@@ -151,6 +180,7 @@ class BranchRunner {
           codexApprovalMode: options.codexApprovalMode,
         });
         agentExitCode = await this.launcher.waitForExit(child);
+        runDurationMs = Date.now() - agentStart;
       } catch (err) {
         agentStarted = false;
         throw err;
@@ -158,7 +188,25 @@ class BranchRunner {
     }
 
     let commentPosted = false;
-    if (options.postComment !== false && (branchCreated || agentStarted)) {
+    let resultComment: string | null = null;
+    let filesChanged: string[] = [];
+    let commitMessages: string[] = [];
+
+    if (options.postResults && options.postComment !== false) {
+      const posted = await resultPoster.post({
+        source: options.source,
+        branchName,
+        agent: options.agent,
+        agentExitCode,
+        workDir,
+        runDurationMs: runDurationMs ?? undefined,
+        sessionUrl: options.sessionUrl,
+      });
+      commentPosted = posted.commentPosted;
+      resultComment = posted.comment;
+      filesChanged = posted.filesChanged;
+      commitMessages = posted.commitMessages;
+    } else if (options.postComment !== false && (branchCreated || agentStarted)) {
       try {
         await this.postComment(
           options.source,
@@ -172,13 +220,48 @@ class BranchRunner {
       }
     }
 
+    let workItemId: string | null = null;
+    let workItemCreated = false;
+
+    if (options.createWorkItem) {
+      try {
+        const linkResult = workItemLinker.createOrUpdateHandoff({
+          source: options.source,
+          ticketTitle: options.title,
+          ticketUrl: options.ticketUrl ?? null,
+          branchName,
+          agent: options.agent,
+        });
+        workItemId = linkResult.workItemId;
+        workItemCreated = linkResult.created;
+
+        if (agentExitCode !== null) {
+          workItemLinker.completeHandoff({
+            workItemId: linkResult.workItemId,
+            agentExitCode,
+            filesChanged,
+            commitMessages,
+            runDurationMs,
+          });
+        }
+      } catch {
+        // work item creation is non-fatal
+      }
+    }
+
     return {
       branchName,
       branchCreated,
       previousBranch,
       agentStarted,
       agentExitCode,
+      runDurationMs,
       commentPosted,
+      resultComment,
+      filesChanged,
+      commitMessages,
+      workItemId,
+      workItemCreated,
     };
   }
 

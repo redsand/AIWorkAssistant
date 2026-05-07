@@ -294,6 +294,8 @@ async function generateTicketToTaskPrompt(
     dryRun?: boolean;
     workDir?: string;
     noComment?: boolean;
+    postResults?: boolean;
+    createWorkItem?: boolean;
     force?: boolean;
   },
 ): Promise<void> {
@@ -341,6 +343,8 @@ async function generateTicketToTaskPrompt(
         agent: agentRunner,
         workDir: options.workDir,
         postComment: !options.noComment,
+        postResults: options.postResults ?? false,
+        createWorkItem: options.createWorkItem ?? false,
       });
       for (const line of preview) {
         console.log(line);
@@ -356,6 +360,9 @@ async function generateTicketToTaskPrompt(
       agent: agentRunner,
       workDir: options.workDir,
       postComment: !options.noComment,
+      postResults: options.postResults ?? false,
+      createWorkItem: options.createWorkItem ?? false,
+      ticketUrl: result.metadata.issueUrl,
     });
 
     if (runResult.branchCreated) {
@@ -363,6 +370,11 @@ async function generateTicketToTaskPrompt(
     }
     if (runResult.commentPosted) {
       console.log(`Posted comment to GitHub issue #${issue}`);
+    }
+    if (runResult.workItemId) {
+      console.log(
+        `Work Item: ${runResult.workItemCreated ? "Created" : "Updated"} (${runResult.workItemId})`,
+      );
     }
     if (runResult.agentExitCode !== null) {
       process.exit(runResult.agentExitCode ?? 0);
@@ -401,6 +413,8 @@ interface TicketToPromptOptions {
   dryRun?: boolean;
   workDir?: string;
   noComment?: boolean;
+  postResults?: boolean;
+  createWorkItem?: boolean;
   includeCodebase?: boolean;
   noCodebase?: boolean;
   maxFiles?: string;
@@ -465,6 +479,8 @@ async function runTicketToPrompt(
         agent,
         workDir: options.workDir,
         postComment: !options.noComment,
+        postResults: options.postResults ?? false,
+        createWorkItem: options.createWorkItem ?? false,
       });
       for (const line of preview) {
         console.log(line);
@@ -480,6 +496,8 @@ async function runTicketToPrompt(
       agent,
       workDir: options.workDir,
       postComment: !options.noComment,
+      postResults: options.postResults ?? false,
+      createWorkItem: options.createWorkItem ?? false,
     });
 
     if (result.branchCreated) {
@@ -487,6 +505,11 @@ async function runTicketToPrompt(
     }
     if (result.commentPosted) {
       console.log(`Posted comment to ${sourceType} ${sourceId}`);
+    }
+    if (result.workItemId) {
+      console.log(
+        `Work Item: ${result.workItemCreated ? "Created" : "Updated"} (${result.workItemId})`,
+      );
     }
     if (result.agentExitCode !== null) {
       process.exit(result.agentExitCode ?? 0);
@@ -617,6 +640,8 @@ program
   .option("--dry-run", "Preview what would happen without executing")
   .option("--work-dir <path>", "Working directory for git and agent (default: cwd)")
   .option("--no-comment", "Skip posting a comment back to the ticket source")
+  .option("--post-results", "Post structured results summary back to the ticket source after agent run")
+  .option("--create-work-item", "Create or update a Work Item tracking this handoff (idempotent)")
   .option(
     "--force",
     "Generate even if the issue has the missing-coding-prompt label",
@@ -637,7 +662,9 @@ const BRANCH_RUN_OPTIONS = (cmd: ReturnType<typeof ttpCmd.command>) =>
     .option("--run <agent>", "Run agent after generating (codex|opencode|claude)")
     .option("--dry-run", "Preview what would happen without executing")
     .option("--work-dir <path>", "Working directory for git and agent (default: cwd)")
-    .option("--no-comment", "Skip posting a comment back to the ticket source");
+    .option("--no-comment", "Skip posting a comment back to the ticket source")
+    .option("--post-results", "Post structured results summary back to the ticket source after agent run")
+    .option("--create-work-item", "Create or update a Work Item tracking this handoff (idempotent)");
 
 BRANCH_RUN_OPTIONS(
   ttpCmd

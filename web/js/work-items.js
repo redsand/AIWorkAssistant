@@ -107,6 +107,28 @@ function dateInputValue(iso) {
   return iso.slice(0, 10);
 }
 
+function parseHandoffMeta(item) {
+  if (!item.metadataJson) return null;
+  try {
+    const meta = JSON.parse(item.metadataJson);
+    return meta && meta.handoff ? meta.handoff : null;
+  } catch {
+    return null;
+  }
+}
+
+function handoffBadgeHtml(handoff) {
+  if (!handoff) return "";
+  const icons = { running: "🔄", completed: "✅", failed: "❌" };
+  const icon = icons[handoff.handoffStatus] || "🤖";
+  const label = handoff.handoffStatus === "running"
+    ? "In Agent"
+    : handoff.handoffStatus === "completed"
+      ? "Agent Done"
+      : "Agent Failed";
+  return `<span style="background:#ede9fe;color:#7c3aed;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:600;white-space:nowrap;">${icon} ${label}</span>`;
+}
+
 function renderOptions(values, selected) {
   return values
     .map(
@@ -172,12 +194,14 @@ export async function loadWorkItems() {
         item.status !== "done" &&
         item.status !== "archived";
 
+      const handoff = parseHandoffMeta(item);
       html += `
         <div class="work-item-row" onclick="window.viewWorkItem('${escapeAttr(item.id)}')" style="cursor:pointer;">
           <div class="work-item-row-header">
             <span style="width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0;display:inline-block;"></span>
             <span class="work-item-type-icon">${typeIcon}</span>
             <span class="work-item-title">${escapeHtml(item.title)}</span>
+            ${handoffBadgeHtml(handoff)}
             <span class="work-item-priority" style="color:${priorityColor};">${escapeHtml(item.priority)}</span>
             ${isOverdue
               ? '<span style="color:#ef4444;font-size:11px;font-weight:600;">OVERDUE</span>'
@@ -278,6 +302,36 @@ async function loadWorkItemDetail(id, detailEl) {
         html += `<span style="background:#f3f4f6;border-radius:4px;padding:2px 8px;font-size:11px;color:#555;">${escapeHtml(tag)}</span>`;
       }
       html += `</div>`;
+    }
+
+    const handoff = parseHandoffMeta(item);
+    if (handoff) {
+      const statusColors = { running: "#7c3aed", completed: "#059669", failed: "#dc2626" };
+      const sColor = statusColors[handoff.handoffStatus] || "#666";
+      html += `<div style="margin-top:10px;padding:10px;background:#faf5ff;border:1px solid #ede9fe;border-radius:6px;">
+        <div style="font-size:13px;font-weight:600;color:#7c3aed;margin-bottom:6px;">🤖 Agent Handoff</div>
+        <div style="font-size:12px;line-height:1.8;color:#555;">
+          <div><strong>Status:</strong> <span style="color:${sColor};font-weight:600;">${escapeHtml(handoff.handoffStatus)}</span></div>
+          ${handoff.agent ? `<div><strong>Agent:</strong> ${escapeHtml(handoff.agent)}</div>` : ""}
+          ${handoff.branch ? `<div><strong>Branch:</strong> <code style="font-size:11px;">${escapeHtml(handoff.branch)}</code></div>` : ""}
+          ${handoff.startedAt ? `<div><strong>Started:</strong> ${escapeHtml(formatDate(handoff.startedAt))}</div>` : ""}
+          ${handoff.completedAt ? `<div><strong>Completed:</strong> ${escapeHtml(formatDate(handoff.completedAt))}</div>` : ""}
+          ${handoff.exitCode != null ? `<div><strong>Exit Code:</strong> ${handoff.exitCode === 0 ? "✅ 0" : `❌ ${handoff.exitCode}`}</div>` : ""}
+          ${handoff.runDurationMs ? `<div><strong>Duration:</strong> ${Math.round(handoff.runDurationMs / 1000)}s</div>` : ""}
+        </div>
+        ${handoff.filesChanged && handoff.filesChanged.length > 0 ? `
+          <div style="margin-top:6px;font-size:12px;">
+            <strong>Files Changed (${handoff.filesChanged.length}):</strong>
+            <div style="margin-top:2px;max-height:80px;overflow-y:auto;">
+              ${handoff.filesChanged.map(f => `<div style="color:#555;font-family:monospace;font-size:11px;">${escapeHtml(f)}</div>`).join("")}
+            </div>
+          </div>` : ""}
+        ${handoff.commitMessages && handoff.commitMessages.length > 0 ? `
+          <div style="margin-top:6px;font-size:12px;">
+            <strong>Commits:</strong>
+            ${handoff.commitMessages.map(c => `<div style="color:#555;font-size:11px;">• ${escapeHtml(c)}</div>`).join("")}
+          </div>` : ""}
+      </div>`;
     }
 
     if (resources.length > 0) {

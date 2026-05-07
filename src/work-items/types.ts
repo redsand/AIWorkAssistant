@@ -122,3 +122,19 @@ export interface WorkItemStats {
   byPriority: Record<string, number>;
   overdue: number;
 }
+
+export type HandoffStatus = "running" | "completed" | "failed";
+
+export interface WorkItemHandoffMeta {
+  handoff: {
+    handoffStatus: HandoffStatus;
+    agent: string | null;
+    branch: string | null;
+    startedAt: string;
+    completedAt?: string;
+    exitCode?: number;
+    filesChanged?: string[];
+    commitMessages?: string[];
+    runDurationMs?: number;
+  };
+}
