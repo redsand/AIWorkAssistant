@@ -446,7 +446,7 @@ ${comments}
 - Keep the implementation scoped to the issue and verify with focused tests plus \`npx tsc --noEmit\`.
 - Write tests BEFORE implementation code (TDD). Unit tests in \`tests/unit/\`, integration tests in \`tests/integration/\`.
 - Coverage thresholds are enforced: 80% lines, 80% functions, 70% branches, 80% statements.
-- Run \`npm test\` frequently during development, not just at the end.
+- Run the project's test command frequently during development, not just at the end.
 
 ## Agent-Specific Instructions
 ${agentInstructions}
@@ -505,7 +505,7 @@ ${prompt.body}
   }
 
   private agentInstructions(agent: TicketToTaskAgent): string {
-    const tddBase = "Follow TDD discipline: write failing tests first, then implement to make them pass. Unit tests in tests/unit/, integration tests in tests/integration/. Run npm test frequently during development.";
+    const tddBase = "Follow TDD discipline: write failing tests first, then implement to make them pass. Unit tests in tests/unit/, integration tests in tests/integration/. Run the project's test command frequently during development.";
     switch (agent) {
       case "codex":
         return `Codex reads AGENTS.md automatically. Make the requested code changes directly, keep edits scoped, avoid unrelated refactors, and run the relevant verification commands before reporting completion. ${tddBase}`;

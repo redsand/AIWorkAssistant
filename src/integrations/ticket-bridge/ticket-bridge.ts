@@ -498,12 +498,12 @@ ${this.architectureSection()}
 
 ## TDD Requirements
 - **Write tests first.** Before implementing any new behavior, write a failing test that describes the expected outcome.
-- **Run \`npm test\` frequently** during development — not just at the end.
+- **Run the project's test command frequently** during development — not just at the end.
 - **Unit tests go in \`tests/unit/\`** — they must be fast, isolated, and have no external dependencies.
 - **Integration tests go in \`tests/integration/\`** — they test cross-module interactions and may use real services.
 - **All new code must meet coverage thresholds** (lines >= 80%, functions >= 80%, branches >= 70%, statements >= 80%). If your changes lower coverage below these thresholds, add more tests.
 - **Do not skip or delete existing tests.** If a test is failing because of your changes, fix the code or update the test with a justification.
-- **Run \`npm run build\` and \`npm test\` before finishing.** Both must pass with zero failures.
+- **Run build and test commands before finishing.** Both must pass with zero failures.
 `;
   }
 
@@ -558,16 +558,28 @@ ${this.architectureSection()}
 
 ## TDD Requirements
 - **Write tests first.** Before implementing any new behavior, write a failing test that describes the expected outcome.
-- **Run \`npm test\` frequently** during development — not just at the end.
+- **Run the project's test command frequently** during development — not just at the end.
 - **Unit tests go in \`tests/unit/\`** — they must be fast, isolated, and have no external dependencies.
 - **Integration tests go in \`tests/integration/\`** — they test cross-module interactions and may use real services.
 - **All new code must meet coverage thresholds** (lines >= 80%, functions >= 80%, branches >= 70%, statements >= 80%). If your changes lower coverage, add more tests.
 - **Do not skip or delete existing tests.** If a test is failing because of your changes, fix the code or update the test with a justification.
-- **Run \`npm run build\` and \`npm test\` before finishing.** Both must pass with zero failures.
+- **Run build and test commands before finishing.** Both must pass with zero failures.
 `;
   }
 
-  private architectureSection(): string {
+  private architectureSection(projectType?: string): string {
+    const testCmd = projectType === "python" ? "pytest"
+      : projectType === "rust" ? "cargo test"
+      : projectType === "go" ? "go test ./..."
+      : "npm test";
+    const coverageCmd = projectType === "python" ? "pytest --cov"
+      : projectType === "rust" ? "cargo tarpaulin"
+      : "npm run test:coverage";
+    const buildCmd = projectType === "python" ? "python -m build"
+      : projectType === "rust" ? "cargo build"
+      : projectType === "go" ? "go build ./..."
+      : "npm run build";
+
     return `## Architecture Constraints
 - TypeScript strict mode (noUnusedLocals, noUnusedParameters, noImplicitReturns)
 - ES2022 modules with import/export
@@ -584,10 +596,9 @@ ${this.architectureSection()}
 - Coverage thresholds are enforced: 80% lines, 80% functions, 70% branches, 80% statements.
 
 ## Commands
-- \`npm run dev\` — tsx watch with hot-reload
-- \`npm run build\` — tsc compilation
-- \`npm test\` — Vitest run (all tests)
-- \`npm run test:coverage\` — Vitest run with coverage report and threshold enforcement
+- \`${buildCmd}\` — build the project
+- \`${testCmd}\` — run all tests
+- \`${coverageCmd}\` — run tests with coverage report and threshold enforcement
 - \`npm run lint\` — ESLint on src/**/*.{ts,tsx}\``;
   }
 }

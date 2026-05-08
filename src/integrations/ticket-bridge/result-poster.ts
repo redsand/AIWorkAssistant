@@ -202,7 +202,7 @@ class ResultPoster {
     lines.push("## Test Status");
     if (agentExitCode === 0) {
       lines.push(
-        "✅ Agent exited cleanly. Per AGENTS.md, the agent should have run `npm run build` and `npm test` before finishing.",
+        "✅ Agent exited cleanly. Per AGENTS.md, the agent should have run build and test commands before finishing.",
       );
     } else if (agentExitCode !== null) {
       lines.push(
@@ -218,7 +218,7 @@ class ResultPoster {
       if (branchName) {
         lines.push(`- Review changes on branch \`${branchName}\``);
       }
-      lines.push("- Run tests locally: `npm test`");
+      lines.push("- Run the project's test command locally to verify changes");
       lines.push("- Create a pull request when ready");
     } else {
       lines.push("- Check agent output for error details");

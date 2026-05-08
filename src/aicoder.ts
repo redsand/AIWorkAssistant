@@ -1,6 +1,8 @@
 #!/usr/bin/env tsx
 import "dotenv/config";
 import { spawn, spawnSync } from "child_process";
+import * as fs from "fs";
+import * as path from "path";
 import axios from "axios";
 import { OllamaLauncher } from "./integrations/ollama-launcher";
 import { RunLogger } from "./integrations/ollama-launcher/run-logger";
@@ -165,6 +167,150 @@ interface TestSuiteResult {
   timedOut: boolean;
   error: string | null;
   kind: TestSuiteOutcome;
+}
+
+interface ProjectConfig {
+  type: "node" | "python" | "rust" | "go" | "make" | "unknown";
+  testCommand: string[];
+  unitTestCommand: string[];
+  integrationTestCommand: string[];
+  coverageCommand: string[];
+  buildCommand: string[];
+  hasTests: boolean;
+}
+
+function detectProjectConfig(workspace: string): ProjectConfig {
+  const envTest = process.env.AICODER_TEST_CMD;
+  const envUnit = process.env.AICODER_UNIT_TEST_CMD;
+  const envIntegration = process.env.AICODER_INTEGRATION_TEST_CMD;
+  const envCoverage = process.env.AICODER_COVERAGE_CMD;
+
+  if (envTest) {
+    const testCmd = envTest.split(" ");
+    return {
+      type: "unknown",
+      testCommand: testCmd,
+      unitTestCommand: envUnit ? envUnit.split(" ") : testCmd,
+      integrationTestCommand: envIntegration ? envIntegration.split(" ") : testCmd,
+      coverageCommand: envCoverage ? envCoverage.split(" ") : [],
+      buildCommand: [],
+      hasTests: true,
+    };
+  }
+
+  const pkgJsonPath = path.join(workspace, "package.json");
+  const pyprojectPath = path.join(workspace, "pyproject.toml");
+  const setupPyPath = path.join(workspace, "setup.py");
+  const pytestIniPath = path.join(workspace, "pytest.ini");
+  const cargoPath = path.join(workspace, "Cargo.toml");
+  const goModPath = path.join(workspace, "go.mod");
+  const makefilePath = path.join(workspace, "Makefile");
+
+  if (fs.existsSync(pkgJsonPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8"));
+      const scripts = pkg.scripts ?? {};
+      const testCmd: string[] = "test" in scripts ? ["npm", "test"] : [];
+      const hasTestScript = "test" in scripts;
+      const unitCmd: string[] = "test-unit" in scripts
+        ? ["npm", "run", "test-unit"]
+        : hasTestScript ? ["npm", "test", "--", "tests/unit"] : [];
+      const integrationCmd: string[] = "test-integration" in scripts
+        ? ["npm", "run", "test-integration"]
+        : hasTestScript ? ["npm", "test", "--", "tests/integration"] : [];
+      const coverageCmd: string[] = "test:coverage" in scripts
+        ? ["npm", "run", "test:coverage"]
+        : [];
+      const buildCmd: string[] = "build" in scripts
+        ? ["npm", "run", "build"]
+        : [];
+      return {
+        type: "node",
+        testCommand: testCmd,
+        unitTestCommand: envUnit ? envUnit.split(" ") : unitCmd,
+        integrationTestCommand: envIntegration ? envIntegration.split(" ") : integrationCmd,
+        coverageCommand: envCoverage ? envCoverage.split(" ") : coverageCmd,
+        buildCommand: buildCmd,
+        hasTests: hasTestScript,
+      };
+    } catch {
+      return { type: "node", testCommand: [], unitTestCommand: [], integrationTestCommand: [], coverageCommand: [], buildCommand: [], hasTests: false };
+    }
+  }
+
+  if (fs.existsSync(pyprojectPath) || fs.existsSync(setupPyPath) || fs.existsSync(pytestIniPath)) {
+    return {
+      type: "python",
+      testCommand: ["pytest"],
+      unitTestCommand: envUnit ? envUnit.split(" ") : ["pytest", "tests/unit/"],
+      integrationTestCommand: envIntegration ? envIntegration.split(" ") : ["pytest", "tests/integration/"],
+      coverageCommand: envCoverage ? envCoverage.split(" ") : ["pytest", "--cov"],
+      buildCommand: [],
+      hasTests: true,
+    };
+  }
+
+  if (fs.existsSync(cargoPath)) {
+    return {
+      type: "rust",
+      testCommand: ["cargo", "test"],
+      unitTestCommand: envUnit ? envUnit.split(" ") : ["cargo", "test", "--lib"],
+      integrationTestCommand: envIntegration ? envIntegration.split(" ") : ["cargo", "test"],
+      coverageCommand: [],
+      buildCommand: ["cargo", "build"],
+      hasTests: true,
+    };
+  }
+
+  if (fs.existsSync(goModPath)) {
+    return {
+      type: "go",
+      testCommand: ["go", "test", "./..."],
+      unitTestCommand: envUnit ? envUnit.split(" ") : ["go", "test", "./...", "-short"],
+      integrationTestCommand: envIntegration ? envIntegration.split(" ") : ["go", "test", "./..."],
+      coverageCommand: [],
+      buildCommand: ["go", "build", "./..."],
+      hasTests: true,
+    };
+  }
+
+  if (fs.existsSync(makefilePath)) {
+    const makeContent = fs.readFileSync(makefilePath, "utf-8");
+    const hasTarget = (name: string) => new RegExp(`^${name}:`, "m").test(makeContent);
+    const testCmd: string[] = hasTarget("test") ? ["make", "test"] : [];
+    const unitCmd: string[] = hasTarget("test-unit") ? ["make", "test-unit"] : testCmd.length > 0 ? ["make", "test"] : [];
+    const integrationCmd: string[] = hasTarget("test-integration") ? ["make", "test-integration"] : testCmd.length > 0 ? ["make", "test"] : [];
+    const coverageCmd: string[] = hasTarget("test-coverage") ? ["make", "test-coverage"] : [];
+    const buildCmd: string[] = hasTarget("build") ? ["make", "build"] : [];
+    return {
+      type: "make",
+      testCommand: testCmd,
+      unitTestCommand: envUnit ? envUnit.split(" ") : unitCmd,
+      integrationTestCommand: envIntegration ? envIntegration.split(" ") : integrationCmd,
+      coverageCommand: envCoverage ? envCoverage.split(" ") : coverageCmd,
+      buildCommand: buildCmd,
+      hasTests: testCmd.length > 0,
+    };
+  }
+
+  return {
+    type: "unknown",
+    testCommand: [],
+    unitTestCommand: [],
+    integrationTestCommand: [],
+    coverageCommand: [],
+    buildCommand: [],
+    hasTests: false,
+  };
+}
+
+let projectConfig: ProjectConfig | null = null;
+function getProjectConfig(): ProjectConfig {
+  if (!projectConfig) {
+    projectConfig = detectProjectConfig(WORKSPACE);
+    runLogger.logConfig(`Detected project type: ${projectConfig.type}, test: ${projectConfig.testCommand.join(" ") || "none"}`);
+  }
+  return projectConfig;
 }
 
 const UNIT_TEST_TIMEOUT = parseInt(process.env.AICODER_UNIT_TEST_TIMEOUT || "180000", 10);
@@ -424,25 +570,32 @@ function checkoutBranch(branchName: string, fromBranch?: string): boolean {
 }
 
 function runTestSuite(suiteKind: TestSuiteKind = "all"): TestSuiteResult {
-  let args: string[];
+  const cfg = getProjectConfig();
+
+  let command: string[];
   let timeout: number;
 
   switch (suiteKind) {
     case "unit":
-      args = ["test", "tests/unit"];
+      command = cfg.unitTestCommand;
       timeout = UNIT_TEST_TIMEOUT;
       break;
     case "integration":
-      args = ["test", "tests/integration"];
+      command = cfg.integrationTestCommand;
       timeout = INTEGRATION_TEST_TIMEOUT;
       break;
     default:
-      args = ["test"];
+      command = cfg.testCommand;
       timeout = 300_000;
   }
 
-  runLogger.logGit(`Running ${suiteKind} tests`, `npm ${args.join(" ")}`);
-  const result = spawnSync("npm", args, {
+  if (command.length === 0) {
+    runLogger.logConfig(`No ${suiteKind} test command detected — skipping`);
+    return { passed: true, output: `No ${suiteKind} test command detected — skipping`, exitCode: 0, signal: null, timedOut: false, error: null, kind: "pass" };
+  }
+
+  runLogger.logGit(`Running ${suiteKind} tests`, command.join(" "));
+  const result = spawnSync(command[0], command.slice(1), {
     cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8", timeout,
   });
 
@@ -479,15 +632,22 @@ function runTestSuite(suiteKind: TestSuiteKind = "all"): TestSuiteResult {
         runLogger.logError(`${suiteKind} tests failed (exit code ${result.status}):\n${lastLines || "no output captured"}`);
     }
   } else {
-    runLogger.logGit(`${suiteKind} tests passed`, `npm ${args.join(" ")}`);
+    runLogger.logGit(`${suiteKind} tests passed`, command.join(" "));
   }
 
   return { passed, output: combined, exitCode: result.status, signal, timedOut, error: spawnError, kind };
 }
 
 function checkCoverage(): { passed: boolean; kind: TestSuiteOutcome } {
-  runLogger.logGit("Checking coverage thresholds", "npm run test:coverage");
-  const result = spawnSync("npm", ["run", "test:coverage"], {
+  const cfg = getProjectConfig();
+
+  if (cfg.coverageCommand.length === 0) {
+    runLogger.logConfig("No coverage command detected — skipping coverage check");
+    return { passed: true, kind: "pass" };
+  }
+
+  runLogger.logGit("Checking coverage thresholds", cfg.coverageCommand.join(" "));
+  const result = spawnSync(cfg.coverageCommand[0], cfg.coverageCommand.slice(1), {
     cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8", timeout: 300_000,
   });
 
@@ -533,6 +693,8 @@ function buildBaselineFixPrompt(testOutput: string, item: WorkItem): string {
   const truncatedOutput = testOutput.length > maxOutputLen
     ? testOutput.slice(testOutput.length - maxOutputLen)
     : testOutput;
+  const cfg = getProjectConfig();
+  const testCmd = cfg.testCommand.join(" ") || "npm test";
 
   return `# URGENT: Fix Failing Baseline Tests
 
@@ -551,13 +713,20 @@ ${truncatedOutput}
 1. **Read the test failure output carefully.** Identify which test files and assertions are failing.
 2. **Fix the root cause.** This is typically a missing import, a type error, a configuration issue, or a test that references code that was recently changed.
 3. **Do NOT skip or delete failing tests.** Fix the underlying code or update tests only if they test incorrect/outdated behavior.
-4. **Run \`npm test\` locally after each fix** to verify your changes resolve the failures.
+4. **Run \`${testCmd}\` locally after each fix** to verify your changes resolve the failures.
 5. **Commit your fix** with a descriptive message like "fix: resolve baseline test failure in X".
 
 Focus ONLY on fixing the failing tests. Do not implement new features or make unrelated changes.`;
 }
 
 async function fixBaselineTests(_cfg: ServerConfig, item: WorkItem): Promise<boolean> {
+  const cfg = getProjectConfig();
+
+  if (!cfg.hasTests) {
+    runLogger.logConfig("No test infrastructure detected — skipping baseline check");
+    return true;
+  }
+
   runLogger.logWork("Running baseline test check before agent starts");
 
   const baseline = runTestSuite("all");
@@ -572,7 +741,7 @@ async function fixBaselineTests(_cfg: ServerConfig, item: WorkItem): Promise<boo
   }
 
   if (baseline.kind === "spawn_error") {
-    runLogger.logError(`Baseline tests could not start: ${baseline.error} — check that npm is available in the workspace.`);
+    runLogger.logError(`Baseline tests could not start: ${baseline.error} — check that the test runner is available in the workspace.`);
     return false;
   }
 
