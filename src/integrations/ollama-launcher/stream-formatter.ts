@@ -3,10 +3,18 @@
  * instead of dumping raw JSON to the console.
  *
  * The Claude CLI with `--output-format stream-json` emits newline-delimited JSON.
- * Each line is a JSON object with a `type` field like "system", "assistant",
- * "tool_result", or "result". This module buffers incoming chunks, parses
- * complete JSON lines, and formats them for human consumption.
+ * Each line is a JSON object with a `type` field. This module buffers incoming
+ * chunks, parses complete JSON lines, and formats them for human consumption.
+ *
+ * Design principle: show something for every event. Never silently drop activity.
+ * Unknown event types get a brief summary line so the user always sees progress.
+ *
+ * Debug mode: set AICODER_STREAM_DEBUG=1 to log raw events to
+ * .aicoder/logs/stream-debug.log for troubleshooting.
  */
+
+import * as fs from "fs";
+import * as path from "path";
 
 export interface StreamFormatter {
   /** Feed raw bytes from the agent's stdout. Returns formatted text to write to console. */
@@ -27,11 +35,22 @@ interface StreamEvent {
   cost_usd?: number;
   duration_ms?: number;
   duration_api_ms?: number;
+  duration_api?: number;
   num_turns?: number;
   session_id?: string;
+  model?: string;
   thinking?: string;
+  reasoning_content?: string;
+  reasoning?: string;
   progress?: number;
   total?: number;
+  // Claude API streaming fields
+  delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string; [key: string]: unknown };
+  stop_reason?: string;
+  // Content block fields
+  partial_json?: string;
+  index?: number;
+  id?: string;
   [key: string]: unknown;
 }
 
@@ -40,6 +59,11 @@ interface ContentBlock {
   text?: string;
   name?: string;
   input?: Record<string, unknown>;
+  id?: string;
+  partial_json?: string;
+  thinking?: string;
+  reasoning_content?: string;
+  reasoning?: string;
 }
 
 const TOOL_DISPLAY_NAMES: Record<string, string> = {
@@ -54,6 +78,12 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   Create: "create",
   Delete: "delete",
   MultiEdit: "edit",
+  NotebookEdit: "notebook-edit",
+  TaskCreate: "task-create",
+  TaskUpdate: "task-update",
+  AskUserQuestion: "ask",
+  EnterPlanMode: "plan",
+  ExitPlanMode: "plan-done",
 };
 
 function toolDisplayName(name: string): string {
@@ -93,13 +123,11 @@ function formatReadableValue(raw: string, maxLen: number = 200): string {
   try {
     const parsed = JSON.parse(trimmed);
     if (Array.isArray(parsed)) {
-      // Format as comma-separated list
       const items = parsed.map(String);
       const joined = items.join(", ");
       return truncate(joined, maxLen);
     }
     if (typeof parsed === "object" && parsed !== null) {
-      // Format as key=value pairs
       const pairs = Object.entries(parsed)
         .map(([k, v]) => `${k}=${v}`)
         .join(", ");
@@ -112,6 +140,14 @@ function formatReadableValue(raw: string, maxLen: number = 200): string {
     const unescaped = unescapeJsonString(trimmed);
     return truncate(unescaped, maxLen);
   }
+}
+
+/**
+ * Extract text content from a content block, checking multiple fields
+ * that different providers use for thinking/reasoning content.
+ */
+function extractBlockText(block: ContentBlock): string | undefined {
+  return block.text || block.thinking || block.reasoning_content || block.reasoning || undefined;
 }
 
 function formatToolUse(name: string, input?: Record<string, unknown>): string {
@@ -148,7 +184,76 @@ function formatToolUse(name: string, input?: Record<string, unknown>): string {
   }
 }
 
-export function createStreamFormatter(agent: string): StreamFormatter {
+/**
+ * Extract the most useful display text from an event, checking all known fields.
+ * This is the fallback for events that don't have a specific handler.
+ */
+function extractEventContent(event: StreamEvent): string | undefined {
+  // Check top-level text fields in priority order
+  const text = event.thinking || event.reasoning_content || event.reasoning
+    || event.message || event.result || event.content;
+  if (typeof text === "string" && text.trim()) {
+    return text.trim();
+  }
+  // Check content array
+  if (Array.isArray(event.content)) {
+    for (const block of event.content) {
+      const blockText = extractBlockText(block as ContentBlock);
+      if (blockText) return blockText;
+    }
+  }
+  // Check delta
+  if (event.delta) {
+    const delta = event.delta;
+    if (typeof delta.text === "string" && delta.text.trim()) return delta.text.trim();
+    if (typeof delta.thinking === "string" && delta.thinking.trim()) return delta.thinking.trim();
+    if (typeof delta.reasoning_content === "string" && delta.reasoning_content.trim()) return delta.reasoning_content.trim();
+    if (typeof delta.partial_json === "string" && delta.partial_json.trim()) return delta.partial_json.trim();
+  }
+  return undefined;
+}
+
+/**
+ * Summarize an unknown or partially-handled event for console visibility.
+ */
+function summarizeUnknownEvent(event: StreamEvent): string {
+  const type = event.type ?? "unknown";
+  const subtype = event.subtype;
+  const parts: string[] = [`[${type}]`];
+
+  if (subtype) parts.push(String(subtype));
+
+  const content = extractEventContent(event);
+  if (content) {
+    parts.push(truncate(content.split("\n")[0], 80));
+  }
+
+  const toolName = event.tool_name;
+  if (toolName) parts.push(`tool=${toolName}`);
+
+  const model = event.model;
+  if (model) parts.push(`model=${model}`);
+
+  return `  ${parts.join(" ")}`;
+}
+
+// --- Debug logging ---
+const STREAM_DEBUG = process.env.AICODER_STREAM_DEBUG === "1";
+
+function debugLog(workspace: string, line: string): void {
+  if (!STREAM_DEBUG) return;
+  try {
+    const logDir = path.join(workspace, ".aicoder", "logs");
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    const logPath = path.join(logDir, "stream-debug.log");
+    const ts = new Date().toISOString();
+    fs.appendFileSync(logPath, `${ts} ${line}\n`, "utf-8");
+  } catch {
+    // Debug logging is best-effort
+  }
+}
+
+export function createStreamFormatter(agent: string, workspace?: string): StreamFormatter {
   // For non-Claude agents, pass through raw output
   if (agent !== "claude") {
     return {
@@ -179,6 +284,10 @@ export function createStreamFormatter(agent: string): StreamFormatter {
           // Not valid JSON — pass through as plain text
           lines.push(line);
           continue;
+        }
+
+        if (STREAM_DEBUG && workspace) {
+          debugLog(workspace, line.length > 500 ? line.slice(0, 500) + "..." : line);
         }
 
         const formatted = formatEvent(event);
@@ -212,30 +321,91 @@ export function createStreamFormatter(agent: string): StreamFormatter {
       case "system": {
         const subtype = event.subtype ?? "";
         if (subtype === "init") {
-          return `[agent] Session started`;
+          const model = typeof event.model === "string" ? event.model : "";
+          const sessionId = typeof event.session_id === "string" ? event.session_id.slice(0, 8) : "";
+          const parts: string[] = ["[agent] Session started"];
+          if (model) parts.push(`model=${model}`);
+          if (sessionId) parts.push(`session=${sessionId}`);
+          return parts.join(" · ");
         }
-        return "";
+        // Show other system events (warnings, errors, task notifications)
+        const msg = event.message;
+        if (typeof msg === "string" && msg.trim()) {
+          return `[system] ${subtype ? subtype + ": " : ""}${truncate(msg.trim(), 120)}`;
+        }
+        if (subtype) {
+          return `[system] ${subtype}`;
+        }
+        return summarizeUnknownEvent(event);
       }
 
       case "assistant": {
         const subtype = event.subtype ?? "";
+
+        // --- Thinking / reasoning content ---
+        if (subtype === "thinking" || subtype === "thinking_delta") {
+          const thinking = event.thinking || event.reasoning_content || event.reasoning;
+          if (typeof thinking === "string" && thinking.trim()) {
+            return `  [thinking] ${truncate(thinking.trim().split("\n")[0], 100)}`;
+          }
+          // Check content array for thinking blocks
+          if (Array.isArray(event.content)) {
+            for (const block of event.content) {
+              const b = block as ContentBlock;
+              if (b.type === "thinking" || b.type === "reasoning") {
+                const blockText = extractBlockText(b);
+                if (blockText) return `  [thinking] ${truncate(blockText.split("\n")[0], 100)}`;
+              }
+            }
+          }
+          return "  [thinking] …";
+        }
+
+        // --- Text content ---
         if (subtype === "text" || !subtype) {
-          // Assistant text message
           let text = "";
           if (typeof event.content === "string") {
             text = event.content;
           } else if (Array.isArray(event.content)) {
-            text = event.content
-              .filter((b: ContentBlock) => b.type === "text" && b.text)
-              .map((b: ContentBlock) => b.text ?? "")
-              .join("\n");
+            // Extract text from content blocks, including thinking/reasoning blocks
+            const parts: string[] = [];
+            for (const block of event.content) {
+              const b = block as ContentBlock;
+              if (b.type === "thinking" || b.type === "reasoning") {
+                const blockText = extractBlockText(b);
+                if (blockText) parts.push(`[thinking] ${truncate(blockText, 80)}`);
+              } else if (b.type === "text" || !b.type) {
+                if (b.text) parts.push(b.text);
+              }
+            }
+            text = parts.join("\n");
           }
+
+          // Also check top-level thinking/reasoning fields
+          const thinking = event.thinking || event.reasoning_content || event.reasoning;
+          if (typeof thinking === "string" && thinking.trim()) {
+            return `  [thinking] ${truncate(thinking.trim().split("\n")[0], 100)}`;
+          }
+
           if (text) {
             const firstLine = text.trim().split("\n")[0];
             return `[agent] ${formatReadableValue(firstLine, 120)}`;
           }
-          return "";
+
+          // Content is empty — check if there's a message field
+          if (event.message && typeof event.message === "string" && event.message.trim()) {
+            return `[agent] ${truncate(event.message.trim().split("\n")[0], 120)}`;
+          }
+
+          // Try to show something useful from content blocks
+          if (Array.isArray(event.content) && event.content.length > 0) {
+            return summarizeUnknownEvent(event);
+          }
+
+          return "[agent] …";
         }
+
+        // --- Tool use ---
         if (subtype === "tool_use") {
           turnCount++;
           const toolName = event.tool_name ?? "";
@@ -251,9 +421,20 @@ export function createStreamFormatter(agent: string): StreamFormatter {
               return formatToolUse(toolBlock.name, toolBlock.input);
             }
           }
-          return "";
+          return "  > tool_use (unknown)";
         }
-        return "";
+
+        // Any other assistant subtype — show what we can
+        return summarizeUnknownEvent(event);
+      }
+
+      case "user": {
+        // User messages sent back to the model (tool results, confirmations, etc.)
+        const content = extractEventContent(event);
+        if (content) {
+          return `  [user] ${truncate(content.split("\n")[0], 100)}`;
+        }
+        return "  [user]";
       }
 
       case "tool_result": {
@@ -264,15 +445,20 @@ export function createStreamFormatter(agent: string): StreamFormatter {
           if (formatted) {
             return `  < ${formatted}`;
           }
-          return `  < ${result.trim().split("\n").length} lines`;
+          const lineCount = result.trim().split("\n").length;
+          return `  < ${lineCount} lines`;
         }
-        return "";
+        // Non-string result (could be an object)
+        if (result !== undefined && result !== null) {
+          return summarizeUnknownEvent(event);
+        }
+        return "  < (empty result)";
       }
 
       case "result": {
         const resultText = event.result ?? event.message ?? "";
         const cost = event.cost_usd;
-        const durationMs = event.duration_ms ?? event.duration_api_ms;
+        const durationMs = event.duration_ms ?? event.duration_api_ms ?? (typeof event.duration_api === "number" ? event.duration_api : undefined);
         const turns = event.num_turns ?? turnCount;
 
         const parts: string[] = ["[agent] ✓ Complete"];
@@ -285,7 +471,7 @@ export function createStreamFormatter(agent: string): StreamFormatter {
 
         const summary = parts.join(" · ");
 
-        if (resultText && resultText.trim()) {
+        if (resultText && typeof resultText === "string" && resultText.trim()) {
           const firstLine = resultText.trim().split("\n")[0];
           return `${summary}\n  ${formatReadableValue(firstLine, 200)}`;
         }
@@ -302,21 +488,79 @@ export function createStreamFormatter(agent: string): StreamFormatter {
         if (current !== undefined) {
           return `  … step ${current}`;
         }
-        return "";
+        return "  …";
       }
 
       case "thinking": {
-        const thinking = event.thinking ?? event.content;
+        const thinking = event.thinking || event.reasoning_content || event.reasoning || event.content;
         if (typeof thinking === "string" && thinking.trim()) {
-          const firstLine = thinking.trim().split("\n")[0];
-          return `  [thinking] ${truncate(firstLine, 100)}`;
+          return `  [thinking] ${truncate(thinking.trim().split("\n")[0], 100)}`;
         }
+        if (Array.isArray(thinking)) {
+          // Thinking content blocks
+          for (const block of thinking) {
+            const b = block as ContentBlock;
+            const blockText = extractBlockText(b);
+            if (blockText) return `  [thinking] ${truncate(blockText.split("\n")[0], 100)}`;
+          }
+        }
+        return "  [thinking] …";
+      }
+
+      // Content block streaming events — show incremental progress
+      case "content_block_start":
+      case "content_block_delta":
+      case "content_block_stop": {
+        // Tool input deltas
+        if (event.partial_json && typeof event.partial_json === "string" && event.partial_json.trim()) {
+          return `  … ${truncate(event.partial_json.trim(), 80)}`;
+        }
+        // Text delta from content block
+        if (event.content && typeof event.content === "string" && event.content.trim()) {
+          return `  … ${truncate(event.content.trim(), 80)}`;
+        }
+        // Check delta object
+        if (event.delta) {
+          const delta = event.delta;
+          if (typeof delta.text === "string" && delta.text.trim()) {
+            return `  … ${truncate(delta.text.trim(), 80)}`;
+          }
+          if (typeof delta.thinking === "string" && delta.thinking.trim()) {
+            return `  [thinking] ${truncate(delta.thinking.trim(), 80)}`;
+          }
+          if (typeof delta.reasoning_content === "string" && delta.reasoning_content.trim()) {
+            return `  [thinking] ${truncate(delta.reasoning_content.trim(), 80)}`;
+          }
+          if (typeof delta.partial_json === "string" && delta.partial_json.trim()) {
+            return `  … ${truncate(delta.partial_json.trim(), 80)}`;
+          }
+        }
+        // Suppress empty streaming deltas to reduce noise
+        return "";
+      }
+
+      // Message-level streaming events
+      case "message_start": {
+        const model = event.model;
+        if (model) {
+          return `[agent] model: ${model}`;
+        }
+        return "";
+      }
+      case "message_delta": {
+        if (event.stop_reason) {
+          return `[agent] stop: ${event.stop_reason}`;
+        }
+        return "";
+      }
+      case "message_stop": {
         return "";
       }
 
       default: {
-        // Unknown event type — skip
-        return "";
+        // Show every unknown event type so the user always sees activity.
+        // Never silently drop events.
+        return summarizeUnknownEvent(event);
       }
     }
   }
