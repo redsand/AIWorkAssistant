@@ -2518,7 +2518,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "local.read_file",
     description:
-      "Read a file from the local filesystem. Returns file content as text. Use to inspect source code, configs, docs, and any local files.",
+      "Read a file from the local filesystem. Returns file content as text. For files over 1MB, use local.file_summary to see the structure, local.read_section to read specific symbols, or local.file_chunks to read in sections.",
     params: {
       path: {
         type: "string",
@@ -2589,6 +2589,80 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "low",
   },
 
+  {
+    name: "local.file_summary",
+    description:
+      "Get a structural summary of a file — total lines, size, language, list of exports/functions/classes with line ranges, and imports. Use before reading a large file to understand its layout, then target specific sections with local.read_section or local.read_file.",
+    params: {
+      path: {
+        type: "string",
+        description:
+          "Absolute or relative path to the file (relative to project root)",
+        required: true,
+      },
+    },
+    actionType: "local.file.summary",
+    riskLevel: "low",
+  },
+  {
+    name: "local.read_section",
+    description:
+      "Read a specific section of a file by symbol name (function, class, interface) or line range. For large files, use local.file_summary first to find symbol names and line ranges, then target sections precisely.",
+    params: {
+      path: {
+        type: "string",
+        description:
+          "Absolute or relative path to the file (relative to project root)",
+        required: true,
+      },
+      symbol: {
+        type: "string",
+        description:
+          "Symbol name (function, class, interface) to read. Returns from its start line to the next symbol or file end.",
+        required: false,
+      },
+      startLine: {
+        type: "number",
+        description:
+          "1-indexed start line. Used if no symbol given. Defaults to beginning of file.",
+        required: false,
+      },
+      endLine: {
+        type: "number",
+        description:
+          "1-indexed end line. Used if no symbol given. Defaults to startLine + 200, max 500 lines.",
+        required: false,
+      },
+    },
+    actionType: "local.file.section",
+    riskLevel: "low",
+  },
+  {
+    name: "local.file_chunks",
+    description:
+      "Get a chunk manifest for a large file, or read a specific chunk by ID. In manifest mode (no chunkId), returns a list of chunks with line ranges and previews. With chunkId, returns that chunk's content. Use for files too large to read in one call.",
+    params: {
+      path: {
+        type: "string",
+        description:
+          "Absolute or relative path to the file (relative to project root)",
+        required: true,
+      },
+      chunkSize: {
+        type: "number",
+        description: "Lines per chunk (default 200, max 500)",
+        required: false,
+      },
+      chunkId: {
+        type: "number",
+        description:
+          "If provided, returns just that chunk's content instead of the manifest",
+        required: false,
+      },
+    },
+    actionType: "local.file.chunk",
+    riskLevel: "low",
+  },
   {
     name: "codebase.search",
     description:

@@ -50,6 +50,11 @@ import { lspManager } from "../integrations/lsp/index.js";
 import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
 import { reviewAssistant } from "../code-review/review-assistant";
 import { ticketBridge } from "../integrations/ticket-bridge/ticket-bridge";
+import {
+  getFileSummary,
+  readFileSection,
+  getFileChunks,
+} from "./file-symbol-parser";
 
 export interface ToolCallResult {
   success: boolean;
@@ -3206,7 +3211,7 @@ async function handleLocalReadFile(
     if (stat.size > 1024 * 1024) {
       return {
         success: false,
-        error: `File too large (${Math.round(stat.size / 1024)}KB). Use offset/limit to read portions.`,
+        error: `File too large (${Math.round(stat.size / 1024)}KB). Use local.file_summary to see the file structure, local.read_section to read specific symbols, or local.file_chunks to read in sections.`,
       };
     }
 
@@ -3440,6 +3445,56 @@ async function handleLocalSearchCode(
       results,
     },
   };
+}
+
+async function handleLocalFileSummary(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const filePath = params.path as string;
+  if (!filePath) return { success: false, error: "path is required" };
+
+  const result = getFileSummary(filePath, PROJECT_ROOT);
+  if ("error" in result) {
+    return { success: false, error: result.error };
+  }
+
+  return { success: true, data: result };
+}
+
+async function handleLocalReadSection(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const filePath = params.path as string;
+  if (!filePath) return { success: false, error: "path is required" };
+
+  const result = readFileSection(filePath, PROJECT_ROOT, {
+    symbol: params.symbol as string | undefined,
+    startLine: params.startLine as number | undefined,
+    endLine: params.endLine as number | undefined,
+  });
+
+  if ("error" in result) {
+    return { success: false, error: result.error };
+  }
+
+  return { success: true, data: result };
+}
+
+async function handleLocalFileChunks(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const filePath = params.path as string;
+  if (!filePath) return { success: false, error: "path is required" };
+
+  const chunkSize = Math.min(Math.max((params.chunkSize as number) || 200, 50), 500);
+  const chunkId = params.chunkId as number | undefined;
+
+  const result = getFileChunks(filePath, PROJECT_ROOT, chunkSize, chunkId);
+  if ("error" in result) {
+    return { success: false, error: result.error };
+  }
+
+  return { success: true, data: result };
 }
 
 async function handleTodoCreateList(
@@ -5928,6 +5983,9 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "local.read_file": handleLocalReadFile,
   "local.list_tree": handleLocalListTree,
   "local.search_code": handleLocalSearchCode,
+  "local.file_summary": handleLocalFileSummary,
+  "local.read_section": handleLocalReadSection,
+  "local.file_chunks": handleLocalFileChunks,
 
   "mcp.call_tool": handleMcpCallTool,
   "mcp.list_tools": handleMcpListTools,

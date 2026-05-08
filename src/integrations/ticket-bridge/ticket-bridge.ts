@@ -495,7 +495,15 @@ ${this.architectureSection()}
 - Follow the acceptance criteria exactly. Do not skip any item.
 - Do NOT add features or changes not specified in the ticket.
 - If you find ambiguities, prefer the simplest interpretation.
-- Run \`npm run build\` and \`npm test\` before finishing.
+
+## TDD Requirements
+- **Write tests first.** Before implementing any new behavior, write a failing test that describes the expected outcome.
+- **Run \`npm test\` frequently** during development — not just at the end.
+- **Unit tests go in \`tests/unit/\`** — they must be fast, isolated, and have no external dependencies.
+- **Integration tests go in \`tests/integration/\`** — they test cross-module interactions and may use real services.
+- **All new code must meet coverage thresholds** (lines >= 80%, functions >= 80%, branches >= 70%, statements >= 80%). If your changes lower coverage below these thresholds, add more tests.
+- **Do not skip or delete existing tests.** If a test is failing because of your changes, fix the code or update the test with a justification.
+- **Run \`npm run build\` and \`npm test\` before finishing.** Both must pass with zero failures.
 `;
   }
 
@@ -547,7 +555,15 @@ ${this.architectureSection()}
 - Follow the acceptance criteria exactly. Do not skip any item.
 - Do NOT add features or changes not specified in the item.
 - If you find ambiguities, prefer the simplest interpretation.
-- Run \`npm run build\` and \`npm test\` before finishing.
+
+## TDD Requirements
+- **Write tests first.** Before implementing any new behavior, write a failing test that describes the expected outcome.
+- **Run \`npm test\` frequently** during development — not just at the end.
+- **Unit tests go in \`tests/unit/\`** — they must be fast, isolated, and have no external dependencies.
+- **Integration tests go in \`tests/integration/\`** — they test cross-module interactions and may use real services.
+- **All new code must meet coverage thresholds** (lines >= 80%, functions >= 80%, branches >= 70%, statements >= 80%). If your changes lower coverage, add more tests.
+- **Do not skip or delete existing tests.** If a test is failing because of your changes, fix the code or update the test with a justification.
+- **Run \`npm run build\` and \`npm test\` before finishing.** Both must pass with zero failures.
 `;
   }
 
@@ -561,10 +577,17 @@ ${this.architectureSection()}
 - Zod for validation
 - No comments unless explicitly requested
 
+## TDD Requirements
+- Write tests BEFORE implementation code (red-green-refactor cycle).
+- Unit tests in \`tests/unit/\` must be fast and isolated.
+- Integration tests in \`tests/integration/\` test cross-module behavior.
+- Coverage thresholds are enforced: 80% lines, 80% functions, 70% branches, 80% statements.
+
 ## Commands
 - \`npm run dev\` — tsx watch with hot-reload
 - \`npm run build\` — tsc compilation
-- \`npm test\` — Vitest run
+- \`npm test\` — Vitest run (all tests)
+- \`npm run test:coverage\` — Vitest run with coverage report and threshold enforcement
 - \`npm run lint\` — ESLint on src/**/*.{ts,tsx}\``;
   }
 }

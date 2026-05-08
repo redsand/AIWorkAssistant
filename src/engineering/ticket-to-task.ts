@@ -444,6 +444,9 @@ ${comments}
 - Use configured GitHub defaults when owner/repo are omitted.
 - Handle missing roadmap matches and missing acceptance criteria gracefully.
 - Keep the implementation scoped to the issue and verify with focused tests plus \`npx tsc --noEmit\`.
+- Write tests BEFORE implementation code (TDD). Unit tests in \`tests/unit/\`, integration tests in \`tests/integration/\`.
+- Coverage thresholds are enforced: 80% lines, 80% functions, 70% branches, 80% statements.
+- Run \`npm test\` frequently during development, not just at the end.
 
 ## Agent-Specific Instructions
 ${agentInstructions}
@@ -502,15 +505,16 @@ ${prompt.body}
   }
 
   private agentInstructions(agent: TicketToTaskAgent): string {
+    const tddBase = "Follow TDD discipline: write failing tests first, then implement to make them pass. Unit tests in tests/unit/, integration tests in tests/integration/. Run npm test frequently during development.";
     switch (agent) {
       case "codex":
-        return "Codex reads AGENTS.md automatically. Make the requested code changes directly, keep edits scoped, avoid unrelated refactors, and run the relevant verification commands before reporting completion.";
+        return `Codex reads AGENTS.md automatically. Make the requested code changes directly, keep edits scoped, avoid unrelated refactors, and run the relevant verification commands before reporting completion. ${tddBase}`;
       case "cursor":
-        return "Use the file table as the first navigation map. Prefer small file-level edits, preserve existing style, and update tests close to the changed behavior.";
+        return `Use the file table as the first navigation map. Prefer small file-level edits, preserve existing style, and update tests close to the changed behavior. ${tddBase}`;
       case "claude":
-        return "Use the complete issue, comments, roadmap context, and file map as the implementation source. State assumptions before coding if a requirement is ambiguous.";
+        return `Use the complete issue, comments, roadmap context, and file map as the implementation source. State assumptions before coding if a requirement is ambiguous. ${tddBase}`;
       default:
-        return "Use the full issue spec, acceptance criteria, roadmap context, and file map to implement the task with focused tests.";
+        return `Use the full issue spec, acceptance criteria, roadmap context, and file map to implement the task with focused tests. ${tddBase}`;
     }
   }
 

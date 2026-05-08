@@ -5,7 +5,8 @@ import axios from "axios";
 import { OllamaLauncher } from "./integrations/ollama-launcher";
 import { RunLogger } from "./integrations/ollama-launcher/run-logger";
 import { prioritizeItems, type PriorityMode } from "./integrations/ollama-launcher/priority-sorter";
-import { type TicketSourceType, type LookupMode } from "./integrations/source-resolver";
+import { type TicketSourceType, type LookupMode, SourceResolver } from "./integrations/source-resolver";
+import { jiraClient } from "./integrations/jira/jira-client";
 import type { ProviderType } from "./integrations/ollama-launcher";
 
 function parseArgv(): Record<string, string> {
@@ -104,8 +105,9 @@ const LOOKUP = (ARGV.lookup || process.env.AICODER_LOOKUP || "memory") as Lookup
 const USE_OLLAMA = "ollama" in ARGV || process.env.AICODER_OLLAMA === "true";
 const MODEL = ARGV.model || process.env.AICODER_MODEL || "";
 const OLLAMA_URL = process.env.OLLAMA_API_URL || "http://localhost:11434";
-const TARGET_ISSUE = ARGV.issue ? parseInt(ARGV.issue, 10) : null;
-const BASE_BRANCH = ARGV.base || process.env.AICODER_BASE_BRANCH || "main";
+const TARGET_ISSUE_KEY = ARGV.issue || null;
+const BASE_BRANCH_CANDIDATES = [ARGV.base || process.env.AICODER_BASE_BRANCH, "main", "master"].filter(Boolean) as string[];
+const BASE_BRANCH = BASE_BRANCH_CANDIDATES[0];
 const FOCUSED_MODE = !("poll" in ARGV || process.env.AICODER_POLL_MODE === "true");
 const MAX_REWORK = parseInt(ARGV["max-rework"] || process.env.AICODER_MAX_REWORK || "5", 10);
 const REVIEW_POLL_MS = parseInt(ARGV["review-poll-ms"] || process.env.AICODER_REVIEW_POLL_MS || "30000", 10);
@@ -152,6 +154,23 @@ interface RunResult {
   exitCode: number | null;
 }
 
+type TestSuiteKind = "unit" | "integration" | "all";
+type TestSuiteOutcome = "pass" | "fail" | "timeout" | "spawn_error";
+
+interface TestSuiteResult {
+  passed: boolean;
+  output: string;
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  error: string | null;
+  kind: TestSuiteOutcome;
+}
+
+const UNIT_TEST_TIMEOUT = parseInt(process.env.AICODER_UNIT_TEST_TIMEOUT || "180000", 10);
+const INTEGRATION_TEST_TIMEOUT = parseInt(process.env.AICODER_INTEGRATION_TEST_TIMEOUT || "300000", 10);
+const BASELINE_MAX_FIX_ATTEMPTS = parseInt(process.env.AICODER_BASELINE_MAX_FIX || "2", 10);
+
 function loadServerConfig(): ServerConfig {
   const apiUrl = (process.env.AIWORKASSISTANT_URL || "http://localhost:3050").replace(/\/$/, "");
   const apiKey = process.env.AIWORKASSISTANT_API_KEY || "";
@@ -194,12 +213,19 @@ async function generatePrompt(
   cfg: ServerConfig,
   item: WorkItem,
 ): Promise<GeneratedPrompt> {
+  // Determine source type: Jira keys (IR-82, PROJ-123) vs numeric GitHub issues
+  const isJira = /^[A-Z]+-\d+$/.test(item.id);
+  const sourceType = isJira ? "jira" : "github";
+  const sourceId = isJira
+    ? item.id
+    : `${item.owner || cfg.owner}/${item.repo || cfg.repo}#${item.number}`;
+
   const resp = await axios.post<GeneratedPrompt>(
     `${cfg.apiUrl}/api/ticket-bridge/prompt`,
     {
       source: {
-        type: "github",
-        id: `${item.owner || cfg.owner}/${item.repo || cfg.repo}#${item.number}`,
+        type: sourceType,
+        id: sourceId,
       },
       context: { includeCodebaseIndex: true, skipMissingCodingPrompt: true },
     },
@@ -277,14 +303,66 @@ function getCurrentBranch(): string | null {
   return result.stdout.trim();
 }
 
+/**
+ * Resolve the actual default branch by checking git remote HEAD,
+ * then falling back to trying each candidate branch that exists locally.
+ */
+function resolveBaseBranch(): string {
+  // Try git remote HEAD first (e.g., refs/remotes/origin/master)
+  const headResult = spawnSync("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], {
+    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
+  });
+  if (headResult.status === 0) {
+    const match = headResult.stdout.trim().match(/refs\/remotes\/origin\/(.+)/);
+    if (match) {
+      const resolved = match[1];
+      runLogger.logGit("Base branch resolved from remote HEAD", resolved);
+      return resolved;
+    }
+  }
+
+  // Fall back: try each candidate until one exists as a local or remote branch
+  for (const candidate of BASE_BRANCH_CANDIDATES) {
+    const verify = spawnSync("git", ["rev-parse", "--verify", candidate], {
+      cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
+    });
+    if (verify.status === 0) {
+      runLogger.logGit("Base branch resolved from local", candidate);
+      return candidate;
+    }
+    // Also try as remote ref
+    const remoteVerify = spawnSync("git", ["rev-parse", "--verify", `origin/${candidate}`], {
+      cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
+    });
+    if (remoteVerify.status === 0) {
+      runLogger.logGit("Base branch resolved from remote", candidate);
+      return candidate;
+    }
+  }
+
+  // Last resort: use whatever branch we're on
+  const current = getCurrentBranch();
+  runLogger.logGit("WARN", `Could not resolve base branch — using current: ${current}`);
+  return current ?? "main";
+}
+
+let _resolvedBaseBranch: string | null = null;
+function getBaseBranch(): string {
+  if (!_resolvedBaseBranch) {
+    _resolvedBaseBranch = resolveBaseBranch();
+  }
+  return _resolvedBaseBranch;
+}
+
 function pullAndUpdateBase(): boolean {
-  runLogger.logGit("Pulling latest", BASE_BRANCH);
-  if (!gitRun(["checkout", BASE_BRANCH], WORKSPACE)) {
-    runLogger.logError(`Failed to switch to ${BASE_BRANCH}`);
+  const base = getBaseBranch();
+  runLogger.logGit("Pulling latest", base);
+  if (!gitRun(["checkout", base], WORKSPACE)) {
+    runLogger.logError(`Failed to switch to ${base}`);
     return false;
   }
-  if (!gitRun(["pull", "--ff-only", "origin", BASE_BRANCH], WORKSPACE)) {
-    runLogger.logGit("WARN", `Pull --ff-only failed — proceeding with local ${BASE_BRANCH}`);
+  if (!gitRun(["pull", "--ff-only", "origin", base], WORKSPACE)) {
+    runLogger.logGit("WARN", `Pull --ff-only failed — proceeding with local ${base}`);
   }
   return true;
 }
@@ -305,7 +383,7 @@ function checkoutBranch(branchName: string, fromBranch?: string): boolean {
   });
   const hasUncommittedChanges = dirtyResult.status !== 0;
 
-  if (current && current !== (fromBranch || BASE_BRANCH) && hasUncommittedChanges) {
+  if (current && current !== (fromBranch || getBaseBranch()) && hasUncommittedChanges) {
     // On a different branch with changes — commit them so they aren't lost
     runLogger.logGit("Committing uncommitted changes on", current);
     const saved = stageAndCommit(`[AI] auto-save before switching from ${current}`);
@@ -337,27 +415,202 @@ function checkoutBranch(branchName: string, fromBranch?: string): boolean {
     if (!gitRun(["checkout", branchName], WORKSPACE)) {
       return false;
     }
-    runLogger.logGit(`Fast-forwarding existing branch from ${BASE_BRANCH}`, branchName);
-    if (!gitRun(["merge", "--ff-only", BASE_BRANCH], WORKSPACE)) {
+    runLogger.logGit(`Fast-forwarding existing branch from ${getBaseBranch()}`, branchName);
+    if (!gitRun(["merge", "--ff-only", getBaseBranch()], WORKSPACE)) {
       runLogger.logGit("Cannot fast-forward — proceeding with current state", branchName);
     }
   }
   return true;
 }
 
-function runTests(): boolean {
-  runLogger.logGit("Running tests", "npm test");
-  const result = spawnSync("npm", ["test"], {
+function runTestSuite(suiteKind: TestSuiteKind = "all"): TestSuiteResult {
+  let args: string[];
+  let timeout: number;
+
+  switch (suiteKind) {
+    case "unit":
+      args = ["test", "tests/unit"];
+      timeout = UNIT_TEST_TIMEOUT;
+      break;
+    case "integration":
+      args = ["test", "tests/integration"];
+      timeout = INTEGRATION_TEST_TIMEOUT;
+      break;
+    default:
+      args = ["test"];
+      timeout = 300_000;
+  }
+
+  runLogger.logGit(`Running ${suiteKind} tests`, `npm ${args.join(" ")}`);
+  const result = spawnSync("npm", args, {
+    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8", timeout,
+  });
+
+  const stdout = (result.stdout || "").trim();
+  const stderr = (result.stderr || "").trim();
+  const combined = `${stdout}\n${stderr}`;
+  const spawnError = result.error?.message ?? null;
+  const timedOut = (result as any).timedOut === true;
+  const signal = result.signal ?? null;
+
+  let kind: TestSuiteOutcome;
+  if (result.status === 0) {
+    kind = "pass";
+  } else if (spawnError) {
+    kind = "spawn_error";
+  } else if (timedOut || (result.status === null && signal)) {
+    kind = "timeout";
+  } else {
+    kind = "fail";
+  }
+
+  const passed = kind === "pass";
+
+  if (!passed) {
+    const lastLines = combined.split("\n").slice(-15).join("\n");
+    switch (kind) {
+      case "spawn_error":
+        runLogger.logError(`${suiteKind} tests could not start: ${spawnError}`);
+        break;
+      case "timeout":
+        runLogger.logError(`${suiteKind} tests timed out after ${timeout}ms${signal ? ` (killed by ${signal})` : ""}${lastLines ? `\n${lastLines}` : ""}`);
+        break;
+      default:
+        runLogger.logError(`${suiteKind} tests failed (exit code ${result.status}):\n${lastLines || "no output captured"}`);
+    }
+  } else {
+    runLogger.logGit(`${suiteKind} tests passed`, `npm ${args.join(" ")}`);
+  }
+
+  return { passed, output: combined, exitCode: result.status, signal, timedOut, error: spawnError, kind };
+}
+
+function checkCoverage(): { passed: boolean; kind: TestSuiteOutcome } {
+  runLogger.logGit("Checking coverage thresholds", "npm run test:coverage");
+  const result = spawnSync("npm", ["run", "test:coverage"], {
     cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8", timeout: 300_000,
   });
-  if (result.status !== 0) {
-    const stderr = (result.stderr || "").trim();
-    const lastLines = stderr.split("\n").slice(-10).join("\n");
-    runLogger.logError(`Tests failed:\n${lastLines || `exit code ${result.status}`}`);
+
+  const stdout = (result.stdout || "").trim();
+  const stderr = (result.stderr || "").trim();
+  const combined = `${stdout}\n${stderr}`;
+  const spawnError = result.error?.message ?? null;
+  const timedOut = (result as any).timedOut === true;
+  const signal = result.signal ?? null;
+
+  let kind: TestSuiteOutcome;
+  if (result.status === 0) {
+    kind = "pass";
+  } else if (spawnError) {
+    kind = "spawn_error";
+  } else if (timedOut || (result.status === null && signal)) {
+    kind = "timeout";
+  } else {
+    kind = "fail";
+  }
+
+  if (kind !== "pass") {
+    const lastLines = combined.split("\n").slice(-20).join("\n");
+    switch (kind) {
+      case "spawn_error":
+        runLogger.logError(`Coverage check could not start: ${spawnError}`);
+        break;
+      case "timeout":
+        runLogger.logError(`Coverage check timed out after 300000ms${signal ? ` (killed by ${signal})` : ""}${lastLines ? `\n${lastLines}` : ""}`);
+        break;
+      default:
+        runLogger.logError(`Coverage check failed (exit code ${result.status}):\n${lastLines || "no output captured"}`);
+    }
+    return { passed: false, kind };
+  }
+
+  runLogger.logGit("Coverage thresholds met");
+  return { passed: true, kind };
+}
+
+function buildBaselineFixPrompt(testOutput: string, item: WorkItem): string {
+  const maxOutputLen = 8000;
+  const truncatedOutput = testOutput.length > maxOutputLen
+    ? testOutput.slice(testOutput.length - maxOutputLen)
+    : testOutput;
+
+  return `# URGENT: Fix Failing Baseline Tests
+
+The existing test suite is currently failing on the branch for issue #${item.number}: ${item.title}.
+
+Before implementing new work, the existing tests must pass. The test failure output is below.
+
+## Test Failure Output
+
+\`\`\`
+${truncatedOutput}
+\`\`\`
+
+## Instructions
+
+1. **Read the test failure output carefully.** Identify which test files and assertions are failing.
+2. **Fix the root cause.** This is typically a missing import, a type error, a configuration issue, or a test that references code that was recently changed.
+3. **Do NOT skip or delete failing tests.** Fix the underlying code or update tests only if they test incorrect/outdated behavior.
+4. **Run \`npm test\` locally after each fix** to verify your changes resolve the failures.
+5. **Commit your fix** with a descriptive message like "fix: resolve baseline test failure in X".
+
+Focus ONLY on fixing the failing tests. Do not implement new features or make unrelated changes.`;
+}
+
+async function fixBaselineTests(_cfg: ServerConfig, item: WorkItem): Promise<boolean> {
+  runLogger.logWork("Running baseline test check before agent starts");
+
+  const baseline = runTestSuite("all");
+  if (baseline.passed) {
+    runLogger.logConfig("Baseline tests passed — proceeding");
+    return true;
+  }
+
+  if (baseline.kind === "timeout") {
+    runLogger.logError("Baseline tests timed out — cannot auto-fix a timeout. Increase timeout or investigate workspace setup.");
     return false;
   }
-  runLogger.logGit("Tests passed", "npm test");
-  return true;
+
+  if (baseline.kind === "spawn_error") {
+    runLogger.logError(`Baseline tests could not start: ${baseline.error} — check that npm is available in the workspace.`);
+    return false;
+  }
+
+  runLogger.logError("Baseline tests FAILED — attempting to fix");
+
+  let attempts = 0;
+  const maxAttempts = Math.min(BASELINE_MAX_FIX_ATTEMPTS, MAX_REWORK);
+  let lastOutput = baseline.output;
+
+  while (attempts < maxAttempts) {
+    attempts++;
+    runLogger.logWork(`Baseline fix attempt ${attempts}/${maxAttempts}`);
+
+    const fixPrompt = buildBaselineFixPrompt(lastOutput, item);
+    const { finDetected, exitCode } = await runAgent(fixPrompt);
+
+    if (!finDetected && exitCode !== 0) {
+      runLogger.logError(`Baseline fix agent exited with code ${exitCode ?? "unknown"} — stopping`);
+      return false;
+    }
+
+    if (!stageAndCommit(`[AI] baseline test fix attempt ${attempts}`)) {
+      runLogger.logError("Baseline fix stage/commit failed — stopping");
+      return false;
+    }
+
+    const retest = runTestSuite("all");
+    if (retest.passed) {
+      runLogger.logConfig(`Baseline tests fixed after attempt ${attempts}`);
+      return true;
+    }
+
+    runLogger.logError(`Baseline tests still failing after attempt ${attempts}`);
+    lastOutput = retest.output;
+  }
+
+  runLogger.logError(`Baseline tests still failing after ${maxAttempts} fix attempts — aborting`);
+  return false;
 }
 
 function pushBranch(branchName: string, force: boolean = false): boolean {
@@ -514,7 +767,7 @@ async function resolveDependencyBranch(
   // All merged → branch from main; some open → branch from the open PR
   return openBranch
     ? { branch: openBranch, source: "open_pr" }
-    : { branch: BASE_BRANCH, source: "merged" };
+    : { branch: getBaseBranch(), source: "merged" };
 }
 
 // --- Review polling ---
@@ -607,6 +860,10 @@ async function runAgent(prompt: string): Promise<RunResult> {
 }
 
 async function runAgentViaLauncher(prompt: string): Promise<RunResult> {
+  if (!prompt) {
+    runLogger.logError("No prompt provided to agent — skipping");
+    return { finDetected: false, exitCode: -1 };
+  }
   return new Promise((resolve) => {
     runLogger.logAgent(`Starting ${AGENT} via Ollama launcher`);
 
@@ -754,7 +1011,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
         return null;
       }
       fromBranch = resolved.source === "open_pr" ? resolved.branch : undefined;
-      runLogger.logGit("Base branch resolved", fromBranch || BASE_BRANCH);
+      runLogger.logGit("Base branch resolved", fromBranch || getBaseBranch());
     }
   }
 
@@ -769,6 +1026,14 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   if (!checkoutBranch(branchName, fromBranch)) {
     runLogger.logError(`Could not create branch ${branchName} — skipping`);
     runLogger.endRun(1);
+    return null;
+  }
+
+  // TDD: Run baseline tests first; if they fail, try to fix before starting work
+  if (!(await fixBaselineTests(cfg, item))) {
+    runLogger.logError("Baseline tests could not be fixed — aborting");
+    runLogger.endRun(1);
+    processedIssues.add(item.number);
     return null;
   }
 
@@ -788,18 +1053,31 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     return null;
   }
 
-  if (!runTests()) {
-    runLogger.logError("Tests failed — skipping push");
+  // TDD: Run unit tests first (fast fail)
+  const unitResult = runTestSuite("unit");
+  if (!unitResult.passed) {
+    runLogger.logError(`Unit tests ${unitResult.kind} — skipping integration tests and push`);
     runLogger.endRun(1);
     processedIssues.add(item.number);
     return null;
   }
 
-  if (!runTests()) {
-    runLogger.logError("Tests failed — skipping push");
+  // TDD: Run integration tests (only if unit tests passed)
+  const integrationResult = runTestSuite("integration");
+  if (!integrationResult.passed) {
+    runLogger.logError(`Integration tests ${integrationResult.kind} — skipping push`);
     runLogger.endRun(1);
     processedIssues.add(item.number);
-    return;
+    return null;
+  }
+
+  // TDD: Check coverage thresholds
+  const coverageResult = checkCoverage();
+  if (!coverageResult.passed) {
+    runLogger.logError(`Coverage check ${coverageResult.kind} — skipping push`);
+    runLogger.endRun(1);
+    processedIssues.add(item.number);
+    return null;
   }
 
   if (!pushBranch(branchName)) {
@@ -826,14 +1104,12 @@ async function focusedLoop(cfg: ServerConfig): Promise<void> {
   const owner = cfg.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand";
   const repo = cfg.repo || process.env.AICODER_REPO || "";
 
-  // --issue <number>: work on a specific issue with review loop
-  if (TARGET_ISSUE) {
-    runLogger.logConfig(`Targeting issue #${TARGET_ISSUE} directly`);
-    const items = await fetchWork(cfg);
-    const target = items.find((i) => i.number === TARGET_ISSUE) ??
-      await fetchIssueDirectly(cfg, TARGET_ISSUE);
+  // --issue <key>: work on a specific issue with review loop
+  if (TARGET_ISSUE_KEY) {
+    runLogger.logConfig(`Targeting issue ${TARGET_ISSUE_KEY} directly`);
+    const target = await fetchIssueByKey(cfg, TARGET_ISSUE_KEY);
     if (!target) {
-      runLogger.logError(`Could not find issue #${TARGET_ISSUE}`);
+      runLogger.logError(`Could not find issue ${TARGET_ISSUE_KEY}`);
       process.exit(1);
     }
     await focusedProcessWorkItem(cfg, target, ghToken, owner, repo);
@@ -867,6 +1143,61 @@ async function focusedLoop(cfg: ServerConfig): Promise<void> {
     }
 
     await new Promise((r) => setTimeout(r, POLL_MS));
+  }
+}
+
+/**
+ * Resolves an issue key to the correct source system and fetches it.
+ * Uses SourceResolver for smart routing — Jira-style keys (IR-82, PROJ-123)
+ * go to Jira, numeric keys go to GitHub, and the resolver's memory/cache
+ * is consulted for anything ambiguous.
+ */
+async function fetchIssueByKey(cfg: ServerConfig, key: string): Promise<WorkItem | null> {
+  const resolver = new SourceResolver(WORKSPACE, LOOKUP, cfg.apiUrl, cfg.apiKey);
+
+  // If --source is explicitly set (not "auto"), trust it; otherwise resolve
+  const source = cfg.source !== "auto"
+    ? (cfg.source as TicketSourceType)
+    : await resolver.resolve(key, "");
+
+  runLogger.logConfig(`Resolved issue ${key} → source: ${source}`);
+
+  if (source === "jira") {
+    return fetchJiraIssueDirectly(key);
+  }
+
+  // Default: treat as a numeric GitHub issue number
+  const num = parseInt(key, 10);
+  if (Number.isNaN(num)) {
+    runLogger.logError(`Issue key "${key}" resolved to GitHub but is not a number. Use --source jira for Jira keys.`);
+    return null;
+  }
+  return fetchIssueDirectly(cfg, num);
+}
+
+async function fetchJiraIssueDirectly(key: string): Promise<WorkItem | null> {
+  if (!jiraClient.isConfigured()) {
+    runLogger.logError("Jira client not configured — set JIRA_* env vars for Jira issue lookups");
+    return null;
+  }
+  try {
+    const issue = await jiraClient.getIssue(key);
+    const fields = issue.fields as typeof issue.fields & { labels?: any[] };
+    const slug = (fields?.summary ?? issue.key ?? key)
+      .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+    return {
+      id: key,
+      number: parseInt(key.replace(/^[A-Z]+-/, ""), 10) || 0,
+      title: fields?.summary ?? key,
+      url: `${process.env.JIRA_BASE_URL ?? "https://hawksolutionstech.atlassian.net"}/browse/${key}`,
+      owner: "",
+      repo: "",
+      suggestedBranch: `ai/issue-${key.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${slug}`,
+      labels: (fields?.labels ?? []).map((l: any) => typeof l === "string" ? l : l.name),
+    };
+  } catch (err) {
+    runLogger.logError(`Failed to fetch Jira issue ${key}: ${err instanceof Error ? err.message : err}`);
+    return null;
   }
 }
 
@@ -920,9 +1251,9 @@ async function focusedProcessWorkItem(
     const reviewResult = await pollForReviewResult(ghToken, owner, repo, prNumber);
 
     if (reviewResult === "passed" || reviewResult === "merged") {
-      runLogger.logConfig(`PR #${prNumber} passed review — pulling latest ${BASE_BRANCH}`);
-      gitRun(["checkout", BASE_BRANCH], WORKSPACE);
-      gitRun(["pull", "--ff-only", "origin", BASE_BRANCH], WORKSPACE);
+      runLogger.logConfig(`PR #${prNumber} passed review — pulling latest ${getBaseBranch()}`);
+      gitRun(["checkout", getBaseBranch()], WORKSPACE);
+      gitRun(["pull", "--ff-only", "origin", getBaseBranch()], WORKSPACE);
       return;
     }
 
@@ -978,8 +1309,20 @@ async function focusedProcessWorkItem(
         return;
       }
 
-      if (!runTests()) {
-        runLogger.logError("Rework tests failed — stopping");
+      // TDD: Tiered test gate after rework
+      const reworkUnitResult = runTestSuite("unit");
+      if (!reworkUnitResult.passed) {
+        runLogger.logError(`Rework unit tests ${reworkUnitResult.kind} — stopping`);
+        return;
+      }
+      const reworkIntegrationResult = runTestSuite("integration");
+      if (!reworkIntegrationResult.passed) {
+        runLogger.logError(`Rework integration tests ${reworkIntegrationResult.kind} — stopping`);
+        return;
+      }
+      const reworkCoverageResult = checkCoverage();
+      if (!reworkCoverageResult.passed) {
+        runLogger.logError(`Rework coverage check ${reworkCoverageResult.kind} — stopping`);
         return;
       }
 
@@ -1000,14 +1343,12 @@ async function focusedProcessWorkItem(
 async function pollLoop(cfg: ServerConfig): Promise<void> {
   runLogger.logConfig(`AiRemoteCoder started in poll mode (agent: ${AGENT}, workspace: ${WORKSPACE}${USE_OLLAMA ? ", ollama: on" : ""}, base: ${BASE_BRANCH})`);
 
-  // --issue <number>: work on a specific issue and exit (no polling)
-  if (TARGET_ISSUE) {
-    runLogger.logConfig(`Targeting issue #${TARGET_ISSUE} directly`);
-    const items = await fetchWork(cfg);
-    const target = items.find((i) => i.number === TARGET_ISSUE) ??
-      await fetchIssueDirectly(cfg, TARGET_ISSUE);
+  // --issue <key>: work on a specific issue and exit (no polling)
+  if (TARGET_ISSUE_KEY) {
+    runLogger.logConfig(`Targeting issue ${TARGET_ISSUE_KEY} directly`);
+    const target = await fetchIssueByKey(cfg, TARGET_ISSUE_KEY);
     if (!target) {
-      runLogger.logError(`Could not find issue #${TARGET_ISSUE}`);
+      runLogger.logError(`Could not find issue ${TARGET_ISSUE_KEY}`);
       process.exit(1);
     }
     await processWorkItem(cfg, target);

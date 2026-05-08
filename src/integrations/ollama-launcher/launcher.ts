@@ -111,9 +111,12 @@ export class OllamaLauncher {
     };
 
     // Write prompt to temp file to avoid command-line length limits on Windows
+    const promptContent = options.prompt || "";
+    if (!promptContent) {
+      throw new Error("No prompt provided to Ollama launcher — cannot start agent");
+    }
     const promptFile = path.join(os.tmpdir(), `aicoder-prompt-${Date.now()}.md`);
-    fs.writeFileSync(promptFile, options.prompt, "utf-8");
-    const promptContent = options.prompt;
+    fs.writeFileSync(promptFile, promptContent, "utf-8");
 
     const child = spawn(command, args, {
       cwd: options.cwd || process.cwd(),
@@ -156,9 +159,12 @@ export class OllamaLauncher {
     };
 
     // Write prompt to temp file to avoid command-line length limits on Windows
+    const promptContent = options.prompt || "";
+    if (!promptContent) {
+      throw new Error("No prompt provided to Ollama launcher — cannot start agent");
+    }
     const promptFile = path.join(os.tmpdir(), `aicoder-prompt-${Date.now()}.md`);
-    fs.writeFileSync(promptFile, options.prompt, "utf-8");
-    const promptContent = options.prompt;
+    fs.writeFileSync(promptFile, promptContent, "utf-8");
 
     const startTime = Date.now();
     const cmdStr = `${command} ${args.join(" ")}`;

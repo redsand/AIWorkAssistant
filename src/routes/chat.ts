@@ -47,7 +47,7 @@ const createSessionSchema = z.object({
   context: z.object({}).optional(),
 });
 
-const MAX_TOOL_LOOPS = 25;
+const MAX_TOOL_LOOPS = env.MAX_TOOL_LOOPS;
 
 class ToolLoopLimitError extends Error {
   constructor(limit: number) {

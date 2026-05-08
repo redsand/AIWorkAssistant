@@ -211,6 +211,9 @@ const envSchema = z.object({
   PUSH_ESCALATION_L2_MINUTES: z.coerce.number().default(5),
   PUSH_ESCALATION_L3_MINUTES: z.coerce.number().default(15),
 
+  // Tool loop limit (max iterations before forcing a final response)
+  MAX_TOOL_LOOPS: z.coerce.number().default(75),
+
   // Autonomous loop — shared (aicoder + reviewer)
   AIWORKASSISTANT_URL: z.string().url().default("http://localhost:3050"),
   AIWORKASSISTANT_API_KEY: z.string().default(""),
