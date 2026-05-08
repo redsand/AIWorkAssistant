@@ -2,25 +2,18 @@ import { FastifyInstance } from "fastify";
 import { notificationStore } from "../push/notification-store";
 
 export async function acknowledgeRoutes(server: FastifyInstance) {
-  // Acknowledge a HAWK IR case
-  server.get<{ Params: { caseId: string } }>(
-    "/hawk-ir/cases/:caseId",
-    async (request, reply) => {
-      const { caseId } = request.params;
-      return reply.type("text/html").send(acknowledgePage("hawk-ir", caseId));
-    },
-  );
+  // Single acknowledge endpoint — ?source=hawk-ir&id=123 or ?source=jitbit&id=456
+  server.get<{
+    Querystring: { source: string; id: string };
+  }>("/acknowledge", async (request, reply) => {
+    const { source, id } = request.query;
+    if (!source || !id) {
+      return reply.code(400).type("text/html").send(acknowledgePage("", "", "Missing source or id parameter"));
+    }
+    return reply.type("text/html").send(acknowledgePage(source, id));
+  });
 
-  // Acknowledge a Jitbit ticket
-  server.get<{ Params: { ticketId: string } }>(
-    "/support/tickets/:ticketId",
-    async (request, reply) => {
-      const { ticketId } = request.params;
-      return reply.type("text/html").send(acknowledgePage("jitbit", ticketId));
-    },
-  );
-
-  // API endpoint to check acknowledge status
+  // API: check acknowledge status (requires auth)
   server.get<{
     Querystring: { source: string; sourceId: string };
   }>("/api/acknowledge-status", async (request) => {
@@ -34,15 +27,20 @@ export async function acknowledgeRoutes(server: FastifyInstance) {
     if (item && item.acknowledgedAt) {
       return { found: true, acknowledged: true, acknowledgedAt: item.acknowledgedAt };
     }
-    // Item exists but may be acknowledged (not in unacknowledged list)
     return { found: true, acknowledged: false };
   });
 }
 
-function acknowledgePage(source: string, externalId: string): string {
+function acknowledgePage(source: string, externalId: string, error?: string): string {
+  if (error) {
+    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{font-family:sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{background:#1e293b;border-radius:12px;padding:32px;max-width:420px;width:90%;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,0.4)}
+.error{color:#fca5a5;font-size:14px}</style></head><body><div class="card"><p class="error">${error}</p></div></body></html>`;
+  }
+
   const sourceLabel = source === "hawk-ir" ? "HAWK IR Case" : "Support Ticket";
   const icon = source === "hawk-ir" ? "&#x1F6A8;" : "&#x1F4E9;";
-  const apiBase = "/api";
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -83,6 +81,7 @@ function acknowledgePage(source: string, externalId: string): string {
     .status.pending { background: #7c2d12; color: #fed7aa; border: 1px solid #c2410c; }
     .status.acknowledged { background: #14532d; color: #bbf7d0; border: 1px solid #16a34a; }
     .status.error { background: #450a0a; color: #fca5a5; border: 1px solid #dc2626; }
+    .status.auth { background: #1e3a5f; color: #93c5fd; border: 1px solid #3b82f6; }
     .btn {
       background: #3b82f6;
       color: #fff;
@@ -115,26 +114,46 @@ function acknowledgePage(source: string, externalId: string): string {
   <script>
     const source = "${source}";
     const sourceId = "${externalId}";
-    const apiBase = "${apiBase}";
 
-    // Get auth token from cookie or query param
-    function getAuthToken() {
-      const params = new URLSearchParams(window.location.search);
-      if (params.get('token')) return params.get('token');
-      const match = document.cookie.match(/(?:^|; )session_token=([^;]*)/);
-      return match ? match[1] : null;
+    function getToken() {
+      return localStorage.getItem('authToken');
     }
 
     const statusEl = document.getElementById('status');
     const ackBtn = document.getElementById('ackBtn');
     const tsEl = document.getElementById('timestamp');
 
+    function requireAuth() {
+      const token = getToken();
+      if (!token) {
+        statusEl.className = 'status auth';
+        statusEl.textContent = 'Sign in required to acknowledge';
+        ackBtn.textContent = 'Sign In';
+        ackBtn.classList.remove('hidden');
+        ackBtn.onclick = function() {
+          const returnUrl = encodeURIComponent(window.location.href);
+          window.location.href = '/?redirect=' + returnUrl;
+        };
+        return false;
+      }
+      return true;
+    }
+
     async function checkStatus() {
-      const token = getAuthToken();
-      const headers = token ? { 'Authorization': 'Bearer ' + token, 'X-API-Key': token } : {};
+      if (!requireAuth()) return;
+
+      const token = getToken();
+      const headers = { 'Authorization': 'Bearer ' + token };
 
       try {
-        const res = await fetch(apiBase + '/acknowledge-status?source=' + encodeURIComponent(source) + '&sourceId=' + encodeURIComponent(sourceId), { headers });
+        const res = await fetch('/api/acknowledge-status?source=' + encodeURIComponent(source) + '&sourceId=' + encodeURIComponent(sourceId), { headers });
+
+        if (res.status === 401 || res.status === 403) {
+          localStorage.removeItem('authToken');
+          requireAuth();
+          return;
+        }
+
         const data = await res.json();
 
         if (data.acknowledged) {
@@ -160,22 +179,27 @@ function acknowledgePage(source: string, externalId: string): string {
     }
 
     async function acknowledge() {
+      if (!requireAuth()) return;
+
       ackBtn.disabled = true;
       ackBtn.textContent = 'Acknowledging...';
 
-      const token = getAuthToken();
-      const headers = { 'Content-Type': 'application/json' };
-      if (token) {
-        headers['Authorization'] = 'Bearer ' + token;
-        headers['X-API-Key'] = token;
-      }
+      const token = getToken();
+      const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token };
 
       try {
-        const res = await fetch(apiBase + '/push-acknowledge', {
+        const res = await fetch('/api/push-acknowledge', {
           method: 'POST',
           headers,
           body: JSON.stringify({ source, sourceId }),
         });
+
+        if (res.status === 401 || res.status === 403) {
+          localStorage.removeItem('authToken');
+          requireAuth();
+          return;
+        }
+
         const data = await res.json();
 
         if (res.ok && data.acknowledged) {
@@ -191,12 +215,14 @@ function acknowledgePage(source: string, externalId: string): string {
           statusEl.textContent = 'Error: ' + (data.error || 'Failed to acknowledge');
           ackBtn.disabled = false;
           ackBtn.textContent = 'Retry';
+          ackBtn.onclick = acknowledge;
         }
       } catch (err) {
         statusEl.className = 'status error';
         statusEl.textContent = 'Network error — please try again';
         ackBtn.disabled = false;
         ackBtn.textContent = 'Retry';
+        ackBtn.onclick = acknowledge;
       }
     }
 

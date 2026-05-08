@@ -121,7 +121,7 @@ export class OllamaLauncher {
     const child = spawn(command, args, {
       cwd: options.cwd || process.cwd(),
       env: childEnv,
-      stdio: ["pipe", "inherit", "inherit"],
+      stdio: ["pipe", "pipe", "inherit"],
       shell: process.platform === "win32",
       windowsHide: true,
     });

@@ -19,6 +19,19 @@ export async function checkAuth() {
   const { loadRoadmaps } = await import("./sidebar.js");
   const { loadConversations } = await import("./conversations.js");
 
+  // If redirected from acknowledge page and already authenticated, go there now
+  const params = new URLSearchParams(window.location.search);
+  const redirect = params.get("redirect");
+  if (redirect && authToken) {
+    const verifyRes = await fetch(`${API_BASE}/auth/verify`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    if (verifyRes.ok) {
+      window.location.href = decodeURIComponent(redirect);
+      return;
+    }
+  }
+
   if (!authToken) {
     showLoginOverlay();
     return;
@@ -82,6 +95,15 @@ export async function login() {
       setAuthToken(data.token);
       localStorage.setItem("authToken", data.token);
       hideLoginOverlay();
+
+      // If redirected from acknowledge page, send them back
+      const params = new URLSearchParams(window.location.search);
+      const redirect = params.get("redirect");
+      if (redirect) {
+        window.location.href = decodeURIComponent(redirect);
+        return;
+      }
+
       initializeChat();
       loadRoadmaps();
     } else {

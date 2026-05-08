@@ -50,7 +50,7 @@ export class HawkIRPoller {
       const message: PushMessage = {
         title: `HAWK IR: ${isCritical ? "Critical" : "High-Risk"} Case`,
         body: `Case #${caseId} — ${(c as any).name || (c as any).title || "Action needed"}`,
-        url: `/hawk-ir/cases/${caseId}`,
+        url: `/acknowledge?source=hawk-ir&id=${caseId}`,
         urgency: isCritical ? "high" : "normal",
         requireInteraction: isCritical,
         tag: `hawk-ir-${caseId}`,

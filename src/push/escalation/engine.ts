@@ -30,9 +30,7 @@ function getBaseUrl(): string {
 
 function buildDeepLink(source: string, externalId: string): string {
   const base = getBaseUrl();
-  return source === "hawk-ir"
-    ? `${base}/hawk-ir/cases/${externalId}`
-    : `${base}/support/tickets/${externalId}`;
+  return `${base}/acknowledge?source=${encodeURIComponent(source)}&id=${encodeURIComponent(externalId)}`;
 }
 
 export class EscalationEngine {
@@ -68,13 +66,14 @@ export class EscalationEngine {
 
         if (this.config.level2Channels.includes("email") && this.config.onCallEmail) {
           if (isEmailConfigured()) {
-            await sendEscalationEmail(
+            const sent = await sendEscalationEmail(
               this.config.onCallEmail,
               subject,
               `${message}\n\nAcknowledge: ${deepLink}`,
             );
+            console.log(`[Escalation L2] Email to ${this.config.onCallEmail}: ${sent ? "sent" : "failed"}`);
           } else {
-            console.log(`[Escalation L2] Would email: ${this.config.onCallEmail}`);
+            console.log(`[Escalation L2] Email not configured — would email: ${this.config.onCallEmail}`);
           }
         }
 
@@ -100,13 +99,14 @@ export class EscalationEngine {
 
         if (this.config.backupEmail) {
           if (isEmailConfigured()) {
-            await sendEscalationEmail(
+            const sent = await sendEscalationEmail(
               this.config.backupEmail,
               subject,
               message,
             );
+            console.log(`[Escalation L3] Email to ${this.config.backupEmail}: ${sent ? "sent" : "failed"}`);
           } else {
-            console.log(`[Escalation L3] Would email: ${this.config.backupEmail}`);
+            console.log(`[Escalation L3] Email not configured — would email: ${this.config.backupEmail}`);
           }
         }
 

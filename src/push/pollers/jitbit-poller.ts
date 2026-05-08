@@ -60,7 +60,7 @@ export class JitbitPoller {
       const message: PushMessage = {
         title: `Support: ${isCritical ? "Critical" : "High-Priority"} Ticket`,
         body: `Ticket #${ticketId} — ${ticket.Subject || "Needs attention"}`,
-        url: `/support/tickets/${ticketId}`,
+        url: `/acknowledge?source=jitbit&id=${ticketId}`,
         urgency: isCritical ? "high" : "normal",
         requireInteraction: isCritical,
         tag: `jitbit-${ticketId}`,

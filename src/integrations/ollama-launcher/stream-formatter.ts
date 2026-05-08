@@ -62,6 +62,55 @@ function truncate(text: string, maxLen: number): string {
   return text.slice(0, maxLen - 1) + "…";
 }
 
+/**
+ * Unescape a JSON-encoded string value. If the input looks like a JSON string
+ * literal (starts and ends with `"`), parse it. Otherwise return as-is.
+ */
+function unescapeJsonString(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return raw;
+    }
+  }
+  return raw;
+}
+
+/**
+ * Format a raw string that may contain JSON into human-readable text.
+ * Handles: JSON arrays, JSON objects, JSON-encoded strings, and plain text.
+ */
+function formatReadableValue(raw: string, maxLen: number = 200): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+
+  // Try parsing as JSON (array or object)
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) {
+      // Format as comma-separated list
+      const items = parsed.map(String);
+      const joined = items.join(", ");
+      return truncate(joined, maxLen);
+    }
+    if (typeof parsed === "object" && parsed !== null) {
+      // Format as key=value pairs
+      const pairs = Object.entries(parsed)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(", ");
+      return truncate(pairs, maxLen);
+    }
+    // Parsed to a primitive (string, number, boolean)
+    return truncate(String(parsed), maxLen);
+  } catch {
+    // Not valid JSON — try unescaping as a JSON string literal
+    const unescaped = unescapeJsonString(trimmed);
+    return truncate(unescaped, maxLen);
+  }
+}
+
 function formatToolUse(name: string, input?: Record<string, unknown>): string {
   const display = toolDisplayName(name);
   if (!input) return `  > ${display}`;
@@ -180,7 +229,7 @@ export function createStreamFormatter(agent: string): StreamFormatter {
           }
           if (text) {
             const firstLine = text.trim().split("\n")[0];
-            return `[agent] ${truncate(firstLine, 120)}`;
+            return `[agent] ${formatReadableValue(firstLine, 120)}`;
           }
           return "";
         }
@@ -208,9 +257,9 @@ export function createStreamFormatter(agent: string): StreamFormatter {
         const result = event.tool_result ?? event.result;
         if (typeof result === "string" && result.trim()) {
           const firstLine = result.trim().split("\n")[0];
-          // Only show if it's a short, meaningful result
-          if (firstLine.length < 150) {
-            return `  < ${truncate(firstLine, 120)}`;
+          const formatted = formatReadableValue(firstLine, 120);
+          if (formatted) {
+            return `  < ${formatted}`;
           }
           return `  < ${result.trim().split("\n").length} lines`;
         }
@@ -235,7 +284,7 @@ export function createStreamFormatter(agent: string): StreamFormatter {
 
         if (resultText && resultText.trim()) {
           const firstLine = resultText.trim().split("\n")[0];
-          return `${summary}\n  ${truncate(firstLine, 200)}`;
+          return `${summary}\n  ${formatReadableValue(firstLine, 200)}`;
         }
         return summary;
       }

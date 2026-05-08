@@ -182,6 +182,61 @@ interface ProjectConfig {
   hasTests: boolean;
 }
 
+/**
+ * Find a Python test subdirectory by searching for common test layouts.
+ * Searches for directories matching one of `keywords` at any depth under
+ * common test roots (tests/, test/, src/test/, <package>/test/).
+ * Returns the relative path from `workspace` (e.g. "hawkSoar/test/unit")
+ * or undefined if no match found.
+ */
+function findPythonTestDir(workspace: string, keywords: string[]): string | undefined {
+  // Gather candidate root directories to search under
+  const topDirs = fs.readdirSync(workspace, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name);
+
+  // Common test roots: tests/, test/, and <package>/test/ (for src-layout packages)
+  const testRoots = ["tests", "test"];
+  for (const top of topDirs) {
+    const subTest = path.join(top, "test");
+    const subTests = path.join(top, "tests");
+    if (fs.existsSync(path.join(workspace, subTest))) testRoots.push(subTest);
+    if (fs.existsSync(path.join(workspace, subTests))) testRoots.push(subTests);
+  }
+
+  for (const root of testRoots) {
+    const rootPath = path.join(workspace, root);
+    if (!fs.existsSync(rootPath) || !fs.statSync(rootPath).isDirectory()) continue;
+
+    // Direct child: tests/unit/, test/integration/
+    for (const kw of keywords) {
+      const direct = path.join(workspace, root, kw);
+      if (fs.existsSync(direct) && fs.statSync(direct).isDirectory()) {
+        // Return forward-slash relative path
+        return path.relative(workspace, direct).replace(/\\/g, "/");
+      }
+    }
+
+    // Nested: tests/<package>/unit/, e.g. tests/hawkSoar/unit/
+    try {
+      const entries = fs.readdirSync(rootPath, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        for (const kw of keywords) {
+          const nested = path.join(workspace, root, entry.name, kw);
+          if (fs.existsSync(nested) && fs.statSync(nested).isDirectory()) {
+            return path.relative(workspace, nested).replace(/\\/g, "/");
+          }
+        }
+      }
+    } catch {
+      // Permission or OS error — skip this root
+    }
+  }
+
+  return undefined;
+}
+
 function detectProjectConfig(workspace: string): ProjectConfig {
   const envTest = process.env.AICODER_TEST_CMD;
   const envUnit = process.env.AICODER_UNIT_TEST_CMD;
@@ -242,11 +297,16 @@ function detectProjectConfig(workspace: string): ProjectConfig {
   }
 
   if (fs.existsSync(pyprojectPath) || fs.existsSync(setupPyPath) || fs.existsSync(pytestIniPath)) {
+    // Auto-detect test directories instead of hardcoding conventions.
+    // Common layouts: tests/unit/, hawkSoar/test/unit/, src/test/unit/, etc.
+    const unitDir = findPythonTestDir(workspace, ["unit", "units"]);
+    const integrationDir = findPythonTestDir(workspace, ["integration", "integrations", "functional", "e2e"]);
+
     return {
       type: "python",
       testCommand: ["pytest"],
-      unitTestCommand: envUnit ? envUnit.split(" ") : ["pytest", "tests/unit/"],
-      integrationTestCommand: envIntegration ? envIntegration.split(" ") : ["pytest", "tests/integration/"],
+      unitTestCommand: envUnit ? envUnit.split(" ") : unitDir ? ["pytest", unitDir] : ["pytest"],
+      integrationTestCommand: envIntegration ? envIntegration.split(" ") : integrationDir ? ["pytest", integrationDir] : ["pytest"],
       coverageCommand: envCoverage ? envCoverage.split(" ") : ["pytest", "--cov"],
       buildCommand: [],
       hasTests: true,
@@ -1335,9 +1395,9 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   // TDD: Run unit tests first (fast fail)
   const unitResult = runTestSuite("unit");
   if (!unitResult.passed) {
-    runLogger.logError(`Unit tests ${unitResult.kind} — skipping integration tests and push`);
+    runLogger.logError(`Unit tests ${unitResult.kind} — skipping integration tests and push. Issue will be retried.`);
     runLogger.endRun(1);
-    saveProcessedIssue(issueKey);
+    // Don't save to processedIssues — allow retry on next aicoder cycle
     trackStep(run.id, "tool_call", `Unit tests ${unitResult.kind}`, { toolName: "test_unit", success: false, errorMessage: unitResult.kind });
     agentRunDatabase.failRun(run.id, `Unit tests ${unitResult.kind}`);
     return null;
@@ -1347,9 +1407,9 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   // TDD: Run integration tests (only if unit tests passed)
   const integrationResult = runTestSuite("integration");
   if (!integrationResult.passed) {
-    runLogger.logError(`Integration tests ${integrationResult.kind} — skipping push`);
+    runLogger.logError(`Integration tests ${integrationResult.kind} — skipping push. Issue will be retried.`);
     runLogger.endRun(1);
-    saveProcessedIssue(issueKey);
+    // Don't save to processedIssues — allow retry on next aicoder cycle
     trackStep(run.id, "tool_call", `Integration tests ${integrationResult.kind}`, { toolName: "test_integration", success: false, errorMessage: integrationResult.kind });
     agentRunDatabase.failRun(run.id, `Integration tests ${integrationResult.kind}`);
     return null;
@@ -1359,9 +1419,9 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   // TDD: Check coverage thresholds
   const coverageResult = checkCoverage();
   if (!coverageResult.passed) {
-    runLogger.logError(`Coverage check ${coverageResult.kind} — skipping push`);
+    runLogger.logError(`Coverage check ${coverageResult.kind} — skipping push. Issue will be retried.`);
     runLogger.endRun(1);
-    saveProcessedIssue(issueKey);
+    // Don't save to processedIssues — allow retry on next aicoder cycle
     trackStep(run.id, "tool_call", `Coverage check ${coverageResult.kind}`, { toolName: "coverage", success: false });
     agentRunDatabase.failRun(run.id, `Coverage check ${coverageResult.kind}`);
     return null;
@@ -1691,6 +1751,31 @@ function cleanup() {
 
 process.on("SIGINT", () => { cleanup(); process.exit(130); });
 process.on("SIGTERM", () => { cleanup(); process.exit(143); });
+
+/**
+ * Ensure `nul` is in .gitignore for the workspace.
+ * On Windows, `nul` is a reserved device name — if it exists as a file,
+ * `git add --all` fails. Adding it to .gitignore prevents this.
+ */
+function ensureNulInGitignore(workspace: string): void {
+  const gitignorePath = path.join(workspace, ".gitignore");
+  const nulLine = "nul";
+  try {
+    let content = "";
+    if (fs.existsSync(gitignorePath)) {
+      content = fs.readFileSync(gitignorePath, "utf-8");
+    }
+    const lines = content.split(/\r?\n/);
+    if (!lines.some((line) => line.trim() === nulLine)) {
+      const separator = content.length > 0 && !content.endsWith("\n") ? "\n" : "";
+      fs.writeFileSync(gitignorePath, content + separator + nulLine + "\n", "utf-8");
+      runLogger.logConfig("Added 'nul' to .gitignore (Windows reserved device name guard)");
+    }
+  } catch (err) {
+    runLogger.logError(`Failed to ensure 'nul' in .gitignore: ${(err as Error).message}`);
+  }
+}
+ensureNulInGitignore(WORKSPACE);
 
 loadProcessedIssues();
 

@@ -17,6 +17,7 @@ const PUBLIC_PATHS = new Set([
   "/api/tools",
   "/api/tools/categories",
   "/api/agents",
+  "/acknowledge",
 ]);
 
 const SESSION_TOKEN_BYTES = 32;
