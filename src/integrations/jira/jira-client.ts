@@ -654,6 +654,27 @@ export class JiraClient {
   }
 
   /**
+   * Add labels to an issue (preserves existing labels)
+   */
+  async addLabels(key: string, labels: string[]): Promise<void> {
+    if (!this.isConfigured()) {
+      throw new Error("Jira client not configured");
+    }
+
+    try {
+      const issue = await this.getIssue(key);
+      const existing: string[] = issue.fields?.labels || [];
+      const merged = [...new Set([...existing, ...labels])];
+      await this.updateIssue(key, { labels: merged });
+      console.log(`[Jira] Added labels ${labels.join(", ")} to ${key}`);
+    } catch (error) {
+      throw new Error(
+        `Failed to add labels to ${key}: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
+  /**
    * Update issue fields
    */
   async updateIssue(

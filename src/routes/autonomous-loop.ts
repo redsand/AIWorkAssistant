@@ -255,7 +255,7 @@ async function fetchJiraWork(
     throw new Error("JIRA_BASE_URL is required for Jira source");
   }
 
-  const jql = `labels = "${label}" AND statusCategory = "In Progress" ORDER BY priority ASC`;
+  const jql = `labels = "${label}" AND statusCategory in ("To Do", "In Progress") ORDER BY priority ASC`;
   const issues = await jiraClient.searchIssues(jql, limit);
 
   return issues
