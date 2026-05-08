@@ -577,25 +577,37 @@ function pullAndUpdateBase(): boolean {
 }
 
 function checkoutBranch(branchName: string, fromBranch?: string): boolean {
-  // Already on the target branch — stage any pending changes and continue
+  // Already on the target branch — stage any pending changes, then rebase onto base
   const current = getCurrentBranch();
   if (current === branchName) {
     runLogger.logGit("Already on branch", branchName);
     // Stage any leftover changes from a prior interrupted run
     stageAndCommit(`[AI] resume: staged pending changes`);
+    // Pull latest base, then rebase this branch onto it
+    if (!pullAndUpdateBase()) {
+      runLogger.logGit("WARN", `Could not pull latest ${getBaseBranch()} before rebase`);
+    }
+    runLogger.logGit("Rebasing onto latest", getBaseBranch());
+    if (!gitRun(["checkout", branchName], WORKSPACE)) {
+      runLogger.logGit("WARN", `Could not switch back to ${branchName} after pull`);
+    }
+    if (!gitRun(["rebase", getBaseBranch()], WORKSPACE)) {
+      runLogger.logGit("WARN", `Rebase onto ${getBaseBranch()} had conflicts — aborting rebase`);
+      gitRun(["rebase", "--abort"], WORKSPACE);
+    }
     return true;
   }
 
-  // Stash or stage any uncommitted changes before switching branches
+  // Stage/commit ALL uncommitted changes before switching branches.
+  // This includes .gitignore edits, leftover agent output, etc.
   const dirtyResult = spawnSync("git", ["diff", "--quiet"], {
     cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
   });
   const hasUncommittedChanges = dirtyResult.status !== 0;
 
-  if (current && current !== (fromBranch || getBaseBranch()) && hasUncommittedChanges) {
-    // On a different branch with changes — commit them so they aren't lost
-    runLogger.logGit("Committing uncommitted changes on", current);
-    const saved = stageAndCommit(`[AI] auto-save before switching from ${current}`);
+  if (hasUncommittedChanges) {
+    runLogger.logGit("Committing uncommitted changes before branch switch", current || "(detached)");
+    const saved = stageAndCommit(`[AI] auto-save before switching from ${current || "detached"}`);
     if (!saved) {
       runLogger.logGit("WARN", "Could not save all changes — some files may be left uncommitted");
     }
@@ -620,13 +632,33 @@ function checkoutBranch(branchName: string, fromBranch?: string): boolean {
   runLogger.logGit("Creating branch", branchName);
   const create = gitRun(["checkout", "-b", branchName], WORKSPACE);
   if (!create) {
+    // Branch already exists — checkout and rebase onto latest base
     runLogger.logGit("Switching to existing branch", branchName);
     if (!gitRun(["checkout", branchName], WORKSPACE)) {
-      return false;
-    }
-    runLogger.logGit(`Fast-forwarding existing branch from ${getBaseBranch()}`, branchName);
-    if (!gitRun(["merge", "--ff-only", getBaseBranch()], WORKSPACE)) {
-      runLogger.logGit("Cannot fast-forward — proceeding with current state", branchName);
+      // Checkout may fail due to uncommitted changes — stash, retry, then pop
+      runLogger.logGit("Stashing uncommitted changes before checkout");
+      gitRun(["stash"], WORKSPACE);
+      if (!gitRun(["checkout", branchName], WORKSPACE)) {
+        runLogger.logError(`Could not checkout branch ${branchName}`);
+        gitRun(["stash", "pop"], WORKSPACE);
+        return false;
+      }
+      // Stage any changes on the target branch before rebasing
+      stageAndCommit(`[AI] resume: staged pending changes on ${branchName}`);
+      runLogger.logGit("Rebasing existing branch onto latest", getBaseBranch());
+      if (!gitRun(["rebase", getBaseBranch()], WORKSPACE)) {
+        runLogger.logGit("WARN", `Rebase had conflicts — aborting rebase, proceeding with current state`);
+        gitRun(["rebase", "--abort"], WORKSPACE);
+      }
+      gitRun(["stash", "pop"], WORKSPACE);
+    } else {
+      // Successfully checked out — stage any dirty changes, then rebase
+      stageAndCommit(`[AI] resume: staged pending changes on ${branchName}`);
+      runLogger.logGit("Rebasing existing branch onto latest", getBaseBranch());
+      if (!gitRun(["rebase", getBaseBranch()], WORKSPACE)) {
+        runLogger.logGit("WARN", `Rebase had conflicts — aborting rebase, proceeding with current state`);
+        gitRun(["rebase", "--abort"], WORKSPACE);
+      }
     }
   }
   return true;
@@ -1756,6 +1788,7 @@ process.on("SIGTERM", () => { cleanup(); process.exit(143); });
  * Ensure `nul` is in .gitignore for the workspace.
  * On Windows, `nul` is a reserved device name — if it exists as a file,
  * `git add --all` fails. Adding it to .gitignore prevents this.
+ * Commits the change immediately so it doesn't block branch switches.
  */
 function ensureNulInGitignore(workspace: string): void {
   const gitignorePath = path.join(workspace, ".gitignore");
@@ -1770,6 +1803,9 @@ function ensureNulInGitignore(workspace: string): void {
       const separator = content.length > 0 && !content.endsWith("\n") ? "\n" : "";
       fs.writeFileSync(gitignorePath, content + separator + nulLine + "\n", "utf-8");
       runLogger.logConfig("Added 'nul' to .gitignore (Windows reserved device name guard)");
+      // Commit the .gitignore change so it doesn't block later branch switches
+      gitRun(["add", ".gitignore"], workspace);
+      gitRun(["commit", "-m", "[AI] add nul to .gitignore (Windows guard)"], workspace);
     }
   } catch (err) {
     runLogger.logError(`Failed to ensure 'nul' in .gitignore: ${(err as Error).message}`);

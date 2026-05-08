@@ -29,6 +29,9 @@ interface StreamEvent {
   duration_api_ms?: number;
   num_turns?: number;
   session_id?: string;
+  thinking?: string;
+  progress?: number;
+  total?: number;
   [key: string]: unknown;
 }
 
@@ -287,6 +290,28 @@ export function createStreamFormatter(agent: string): StreamFormatter {
           return `${summary}\n  ${formatReadableValue(firstLine, 200)}`;
         }
         return summary;
+      }
+
+      case "progress": {
+        const current = event.progress;
+        const total = event.total;
+        if (current !== undefined && total !== undefined && total > 0) {
+          const pct = Math.round((current / total) * 100);
+          return `  … ${pct}% (${current}/${total})`;
+        }
+        if (current !== undefined) {
+          return `  … step ${current}`;
+        }
+        return "";
+      }
+
+      case "thinking": {
+        const thinking = event.thinking ?? event.content;
+        if (typeof thinking === "string" && thinking.trim()) {
+          const firstLine = thinking.trim().split("\n")[0];
+          return `  [thinking] ${truncate(firstLine, 100)}`;
+        }
+        return "";
       }
 
       default: {
