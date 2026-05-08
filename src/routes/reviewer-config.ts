@@ -4,6 +4,7 @@ import { reviewAssistant } from "../code-review/review-assistant";
 import type { CodeReview } from "../code-review/types";
 
 export interface ReviewerConfig {
+  source: string;
   githubToken: string;
   owner: string;
   reviewRepos: string[];
@@ -12,6 +13,7 @@ export interface ReviewerConfig {
   securityAgentCmd: string;
   qaAgentCmd: string;
   qualityAgentCmd: string;
+  gitlabProject: string;
 }
 
 export interface ReviewFinding {
@@ -65,6 +67,7 @@ function codeReviewToFindings(review: CodeReview): ReviewFinding[] {
 export async function reviewerConfigRoutes(fastify: FastifyInstance) {
   fastify.get("/config", async (_request, _reply): Promise<ReviewerConfig> => {
     return {
+      source: env.REVIEW_SOURCE,
       githubToken: env.GITHUB_TOKEN,
       owner: env.GITHUB_DEFAULT_OWNER || "redsand",
       reviewRepos: env.REVIEW_REPOS.split(",").filter(Boolean),
@@ -73,6 +76,7 @@ export async function reviewerConfigRoutes(fastify: FastifyInstance) {
       securityAgentCmd: env.SECURITY_AGENT_CMD,
       qaAgentCmd: env.QA_AGENT_CMD,
       qualityAgentCmd: env.QUALITY_AGENT_CMD,
+      gitlabProject: env.GITLAB_DEFAULT_PROJECT,
     };
   });
 

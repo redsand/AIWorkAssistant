@@ -206,6 +206,19 @@ const envSchema = z.object({
     .default("mailto:admin@ai-work-assistant.example"),
   VAPID_SUBJECT: z.string().default(""),
 
+  // Escalation email (SMTP)
+  ESCALATION_SMTP_HOST: z.string().default(""),
+  ESCALATION_SMTP_PORT: z.coerce.number().default(587),
+  ESCALATION_SMTP_SECURE: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
+  ESCALATION_SMTP_USER: z.string().default(""),
+  ESCALATION_SMTP_PASS: z.string().default(""),
+  ESCALATION_EMAIL_FROM: z.string().default("alerts@ai-work-assistant.example"),
+  ESCALATION_EMAIL_TO: z.string().default(""),
+  ESCALATION_EMAIL_TO_L3: z.string().default(""),
+
   // Push notification polling
   PUSH_POLL_INTERVAL_MIN: z.coerce.number().default(5),
   PUSH_ESCALATION_L2_MINUTES: z.coerce.number().default(5),
@@ -240,6 +253,7 @@ const envSchema = z.object({
   REVIEW_REPOS: z.string().default(""),
   REVIEW_POLL_INTERVAL_MS: z.coerce.number().default(30000),
   REVIEW_MAX_CYCLES: z.coerce.number().default(5),
+  REVIEW_SOURCE: z.enum(["github", "gitlab"]).default("github"),
   SECURITY_AGENT_CMD: z.string().default("review-agent --category security"),
   QA_AGENT_CMD: z.string().default("review-agent --category qa"),
   QUALITY_AGENT_CMD: z.string().default("review-agent --category quality"),

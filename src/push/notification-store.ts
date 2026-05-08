@@ -6,6 +6,7 @@ export interface NotifiedItem {
   notifiedAt: string;
   acknowledgedAt?: string;
   escalationLevel: number;
+  lastPushedAt?: string;
 }
 
 export interface NotificationStore {
@@ -14,8 +15,12 @@ export interface NotificationStore {
   markAcknowledged(source: string, externalId: string): Promise<void>;
   getUnacknowledgedPastThreshold(minutes: number): Promise<NotifiedItem[]>;
   markEscalated(source: string, externalId: string, level: number): Promise<void>;
+  shouldSendPush(source: string, externalId: string, cooldownMs: number): Promise<boolean>;
+  markPushed(source: string, externalId: string): Promise<void>;
   cleanup(retentionDays: number): Promise<number>;
 }
+
+const PUSH_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
 
 export class MemoryNotificationStore implements NotificationStore {
   private store = new Map<string, NotifiedItem>();
@@ -25,7 +30,15 @@ export class MemoryNotificationStore implements NotificationStore {
   }
 
   async markNotified(item: NotifiedItem): Promise<void> {
-    this.store.set(`${item.source}:${item.externalId}`, item);
+    const key = `${item.source}:${item.externalId}`;
+    const existing = this.store.get(key);
+    if (existing) {
+      // Preserve push cooldown and acknowledgment state
+      existing.riskLevel = item.riskLevel;
+      existing.escalationLevel = Math.max(existing.escalationLevel, item.escalationLevel);
+    } else {
+      this.store.set(key, { ...item, lastPushedAt: item.notifiedAt });
+    }
   }
 
   async markAcknowledged(source: string, externalId: string): Promise<void> {
@@ -49,6 +62,24 @@ export class MemoryNotificationStore implements NotificationStore {
     const item = this.store.get(key);
     if (item) {
       item.escalationLevel = level;
+      this.store.set(key, item);
+    }
+  }
+
+  async shouldSendPush(source: string, externalId: string, cooldownMs: number = PUSH_COOLDOWN_MS): Promise<boolean> {
+    const key = `${source}:${externalId}`;
+    const item = this.store.get(key);
+    if (!item) return true;
+    if (item.acknowledgedAt) return false;
+    if (!item.lastPushedAt) return true;
+    return Date.now() - new Date(item.lastPushedAt).getTime() >= cooldownMs;
+  }
+
+  async markPushed(source: string, externalId: string): Promise<void> {
+    const key = `${source}:${externalId}`;
+    const item = this.store.get(key);
+    if (item) {
+      item.lastPushedAt = new Date().toISOString();
       this.store.set(key, item);
     }
   }

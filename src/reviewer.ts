@@ -2,6 +2,8 @@
 import "dotenv/config";
 import { execSync } from "child_process";
 import axios from "axios";
+import { gitlabClient } from "./integrations/gitlab/gitlab-client";
+import { jiraClient } from "./integrations/jira/jira-client";
 
 function parseArgv(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -9,15 +11,17 @@ function parseArgv(): Record<string, string> {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--help" || argv[i] === "-h") {
       console.log(`
-reviewer — AIWorkAssistant autonomous PR review agent
+reviewer — AIWorkAssistant autonomous PR/MR review agent
 
 Usage: reviewer [options]
 
 Options:
-  --repo <name>     Comma-separated repos to watch (overrides REVIEW_REPOS)
-  --owner <name>    GitHub owner (overrides GITHUB_DEFAULT_OWNER)
-  --poll-ms <ms>    Poll interval in milliseconds (default: 30000)
-  --help            Show this help
+  --source <type>        Source platform: github | gitlab (default: github)
+  --repo <name>         Comma-separated repos/projects to watch (overrides REVIEW_REPOS)
+  --owner <name>        GitHub owner (overrides GITHUB_DEFAULT_OWNER)
+  --gitlab-project <id> GitLab project path or ID (overrides GITLAB_DEFAULT_PROJECT)
+  --poll-ms <ms>        Poll interval in milliseconds (default: 30000)
+  --help                 Show this help
 
 Remote config (fetches everything else from AIWorkAssistant):
   AIWORKASSISTANT_URL      Base URL of the server (default: http://localhost:3050)
@@ -27,11 +31,21 @@ Local config (.env):
   GITHUB_TOKEN              GitHub personal access token
   GITHUB_DEFAULT_OWNER      Default repo owner
   REVIEW_REPOS              Comma-separated repo names to watch
+  REVIEW_SOURCE             Source platform: github | gitlab (default: github)
   REVIEW_POLL_INTERVAL_MS   Poll interval (default: 30000)
-  REVIEW_MAX_CYCLES         Max review cycles per PR (default: 5)
+  REVIEW_MAX_CYCLES         Max review cycles per PR/MR (default: 5)
   SECURITY_AGENT_CMD        External security review command
   QA_AGENT_CMD              External QA review command
   QUALITY_AGENT_CMD         External code quality command
+
+GitLab-specific:
+  GITLAB_DEFAULT_PROJECT    GitLab project path (e.g. siem/octorepl)
+  GITLAB_TOKEN              GitLab personal access token
+
+Jira (for re-linking review failures):
+  JIRA_BASE_URL             Jira instance URL
+  JIRA_EMAIL                Jira user email
+  JIRA_API_TOKEN            Jira API token
 `);
       process.exit(0);
     }
@@ -45,25 +59,16 @@ Local config (.env):
 
 const ARGV = parseArgv();
 
-/**
- * Reviewer configuration — loaded from the local .env or fetched from
- * AIWorkAssistant via GET /api/reviewer/config.
- *
- * Minimal .env for remote mode (AiRemoteCoder deployment):
- *   AIWORKASSISTANT_URL=https://your-server:3050
- *   AIWORKASSISTANT_API_KEY=your-api-key
- *
- * Full .env for local mode (running inside the AIWorkAssistant project):
- *   GITHUB_TOKEN=ghp_...
- *   GITHUB_DEFAULT_OWNER=redsand
- *   REVIEW_REPOS=repo1,repo2
- *   REVIEW_POLL_INTERVAL_MS=30000
- *   REVIEW_MAX_CYCLES=5
- *   SECURITY_AGENT_CMD=review-agent --category security
- *   QA_AGENT_CMD=review-agent --category qa
- *   QUALITY_AGENT_CMD=review-agent --category quality
- */
+type SourceType = "github" | "gitlab";
+
+interface RepoTarget {
+  name: string;
+  source: SourceType;
+  gitlabProject?: string; // for gitlab targets, the project path
+}
+
 interface ReviewerConfig {
+  source: SourceType;
   githubToken: string;
   owner: string;
   reviewRepos: string[];
@@ -72,6 +77,29 @@ interface ReviewerConfig {
   securityAgentCmd: string;
   qaAgentCmd: string;
   qualityAgentCmd: string;
+  gitlabProject: string;
+}
+
+/** Parse repo entries like "github:AIWorkAssistant" or "gitlab:siem/octorepl" or plain "my-repo" */
+function parseRepoTargets(
+  repos: string[],
+  defaultSource: SourceType,
+  defaultGitlabProject: string,
+): RepoTarget[] {
+  return repos.map((entry) => {
+    const trimmed = entry.trim();
+    if (trimmed.startsWith("github:")) {
+      return { name: trimmed.slice(7), source: "github" as SourceType };
+    }
+    if (trimmed.startsWith("gitlab:")) {
+      return { name: trimmed.slice(7), source: "gitlab" as SourceType, gitlabProject: trimmed.slice(7) };
+    }
+    // Unprefixed: use default source
+    if (defaultSource === "gitlab") {
+      return { name: trimmed, source: "gitlab" as SourceType, gitlabProject: defaultGitlabProject || trimmed };
+    }
+    return { name: trimmed, source: defaultSource };
+  });
 }
 
 interface ReviewFinding {
@@ -105,12 +133,15 @@ async function loadConfig(): Promise<ReviewerConfig> {
     if (ARGV.repo) cfg.reviewRepos = ARGV.repo.split(",").filter(Boolean);
     if (ARGV.owner) cfg.owner = ARGV.owner;
     if (ARGV["poll-ms"]) cfg.pollIntervalMs = parseInt(ARGV["poll-ms"], 10);
-    console.log(`[CONFIG] Remote config loaded (repos: ${cfg.reviewRepos.join(", ") || "none"})`);
+    cfg.source = (ARGV.source || process.env.REVIEW_SOURCE || cfg.source || "github") as SourceType;
+    cfg.gitlabProject = ARGV["gitlab-project"] || process.env.GITLAB_DEFAULT_PROJECT || cfg.gitlabProject || "";
+    console.log(`[CONFIG] Remote config loaded (source: ${cfg.source}, repos: ${cfg.reviewRepos.join(", ") || "none"})`);
     return cfg;
   }
 
   console.log("[CONFIG] No AIWORKASSISTANT_API_KEY — using local .env config only");
   return {
+    source: (ARGV.source || process.env.REVIEW_SOURCE || "github") as SourceType,
     githubToken: process.env.GITHUB_TOKEN || "",
     owner: ARGV.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand",
     reviewRepos: (ARGV.repo || process.env.REVIEW_REPOS || "").split(",").filter(Boolean),
@@ -119,9 +150,13 @@ async function loadConfig(): Promise<ReviewerConfig> {
     securityAgentCmd: process.env.SECURITY_AGENT_CMD || "review-agent --category security",
     qaAgentCmd: process.env.QA_AGENT_CMD || "review-agent --category qa",
     qualityAgentCmd: process.env.QUALITY_AGENT_CMD || "review-agent --category quality",
+    gitlabProject: ARGV["gitlab-project"] || process.env.GITLAB_DEFAULT_PROJECT || "",
   };
 }
 
+// ---------------------------------------------------------------------------
+// GitHub client (inline, as before)
+// ---------------------------------------------------------------------------
 function makeGithubClient(token: string, owner: string) {
   const client = axios.create({
     baseURL: "https://api.github.com",
@@ -138,6 +173,7 @@ function makeGithubClient(token: string, owner: string) {
       const res = await client.get(`/repos/${owner}/${repo}/pulls`, {
         params: { state: "open", per_page: 50, sort: "updated", direction: "desc" },
       });
+      console.log(`[GitHub] Found ${res.data.length} open PRs in ${owner}/${repo}`);
       return res.data;
     },
 
@@ -172,6 +208,171 @@ function makeGithubClient(token: string, owner: string) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Platform-agnostic interfaces
+// ---------------------------------------------------------------------------
+interface MergeRequest {
+  number: number;
+  title: string;
+  body: string | null;
+  author: string;
+  diff: string;
+}
+
+interface VcsClient {
+  listOpenMergeRequests(project: string): Promise<MergeRequest[]>;
+  getDiff(project: string, mrNumber: number): Promise<string>;
+  addComment(project: string, mrNumber: number, body: string): Promise<void>;
+  listComments(project: string, mrNumber: number): Promise<Array<{ body: string }>>;
+  merge(project: string, mrNumber: number, title: string, message: string): Promise<void>;
+  addLabelToIssue(project: string, issueNumber: number, label: string): Promise<void>;
+  addCommentToIssue(project: string, issueNumber: number, body: string): Promise<void>;
+  extractLinkedIssueKey(mrBody: string | null): string | null;
+}
+
+// ---------------------------------------------------------------------------
+// GitHub VCS adapter
+// ---------------------------------------------------------------------------
+class GithubVcsClient implements VcsClient {
+  constructor(private gh: ReturnType<typeof makeGithubClient>) {}
+
+  async listOpenMergeRequests(repo: string): Promise<MergeRequest[]> {
+    const prs = await this.gh.listOpenPRs(repo);
+    return prs.map((pr: any) => ({
+      number: pr.number,
+      title: pr.title,
+      body: pr.body || null,
+      author: pr.user?.login || "",
+      diff: "",
+    }));
+  }
+
+  async getDiff(repo: string, prNumber: number): Promise<string> {
+    return this.gh.getPRDiff(repo, prNumber);
+  }
+
+  async addComment(repo: string, mrNumber: number, body: string): Promise<void> {
+    return this.gh.addIssueComment(repo, mrNumber, body);
+  }
+
+  async listComments(repo: string, mrNumber: number): Promise<Array<{ body: string }>> {
+    return this.gh.listIssueComments(repo, mrNumber);
+  }
+
+  async merge(repo: string, mrNumber: number, title: string, message: string): Promise<void> {
+    return this.gh.mergePR(repo, mrNumber, title, message);
+  }
+
+  async addLabelToIssue(repo: string, issueNumber: number, label: string): Promise<void> {
+    return this.gh.addLabel(repo, issueNumber, label);
+  }
+
+  async addCommentToIssue(repo: string, issueNumber: number, body: string): Promise<void> {
+    return this.gh.addIssueComment(repo, issueNumber, body);
+  }
+
+  extractLinkedIssueKey(mrBody: string | null): string | null {
+    const match = (mrBody || "").match(/(?:closes|fixes|resolves)\s+#(\d+)/i);
+    return match ? match[1] : null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GitLab + Jira VCS adapter
+// ---------------------------------------------------------------------------
+class GitlabJiraVcsClient implements VcsClient {
+  constructor(private projectId: string) {}
+
+  async listOpenMergeRequests(_project: string): Promise<MergeRequest[]> {
+    const mrs = await gitlabClient.getMergeRequests(this.projectId, "opened");
+    return (mrs || []).map((mr: any) => ({
+      number: mr.iid,
+      title: mr.title,
+      body: mr.description || null,
+      author: mr.author?.username || "",
+      diff: "",
+    }));
+  }
+
+  async getDiff(_project: string, mrNumber: number): Promise<string> {
+    const changes = await gitlabClient.getMergeRequestChanges(this.projectId, mrNumber);
+    return (changes.changes || [])
+      .map((c: any) => {
+        const header = `diff --git a/${c.old_path} b/${c.new_path}\n`;
+        const mode = c.new_file ? "new file" : c.deleted_file ? "deleted file" : "";
+        const modeLine = mode ? `${mode} mode 100644\n` : "";
+        return header + modeLine + (c.diff || "");
+      })
+      .join("\n");
+  }
+
+  async addComment(_project: string, mrNumber: number, body: string): Promise<void> {
+    return gitlabClient.addMergeRequestComment(this.projectId, mrNumber, body);
+  }
+
+  async listComments(_project: string, mrNumber: number): Promise<Array<{ body: string }>> {
+    const notes = await gitlabClient.listMergeRequestNotes(this.projectId, mrNumber, "desc");
+    return (notes || []).map((n: any) => ({ body: n.body }));
+  }
+
+  async merge(_project: string, mrNumber: number, title: string, message: string): Promise<void> {
+    await gitlabClient.acceptMergeRequest(this.projectId, mrNumber, {
+      squashCommitMessage: `${title}\n\n${message}`,
+      shouldRemoveSourceBranch: true,
+    });
+  }
+
+  async addLabelToIssue(_project: string, _issueNumber: number, _label: string): Promise<void> {
+    // GitLab issues not supported for re-labeling in reviewer context;
+    // Jira is used for issue tracking instead
+  }
+
+  async addCommentToIssue(_project: string, _issueNumber: number, _body: string): Promise<void> {
+    // GitLab issues not used; Jira is the issue tracker
+  }
+
+  extractLinkedIssueKey(mrBody: string | null): string | null {
+    // Match Jira keys like IR-63, PROJ-123
+    const jiraMatch = (mrBody || "").match(/(?:closes|fixes|resolves)\s+([A-Z]+-\d+)/i);
+    if (jiraMatch) return jiraMatch[1];
+    // Also match bare Jira keys in the MR description
+    const bareMatch = (mrBody || "").match(/\b([A-Z]+-\d+)\b/);
+    return bareMatch ? bareMatch[1] : null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Jira helpers for re-linking review failures
+// ---------------------------------------------------------------------------
+async function addCommentToJiraIssue(key: string, body: string): Promise<void> {
+  if (!jiraClient.isConfigured()) {
+    console.log(`[WARN] Jira not configured — cannot post comment on ${key}`);
+    return;
+  }
+  try {
+    await jiraClient.addComment(key, body);
+    console.log(`[JIRA] Posted rework prompt on ${key}`);
+  } catch (err) {
+    console.error(`[ERROR] Failed to post Jira comment on ${key}:`, err instanceof Error ? err.message : err);
+  }
+}
+
+async function addLabelToJiraIssue(key: string, label: string): Promise<void> {
+  if (!jiraClient.isConfigured()) {
+    console.log(`[WARN] Jira not configured — cannot add label ${label} to ${key}`);
+    return;
+  }
+  try {
+    await jiraClient.addLabels(key, [label]);
+    console.log(`[JIRA] Added label "${label}" to ${key}`);
+  } catch (err) {
+    console.log(`[WARN] Could not add "${label}" label to Jira issue ${key}:`, err instanceof Error ? err.message : err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Review logic
+// ---------------------------------------------------------------------------
 async function runAiReview(
   remoteUrl: string,
   remoteKey: string,
@@ -222,7 +423,7 @@ async function runAiReview(
   }
 }
 
-const reviewedPRs = new Set<string>(); // "repo/prNumber"
+const reviewedMRs = new Set<string>(); // "project/mrNumber"
 
 function isServiceUnavailable(result: ReviewResult): boolean {
   return result.serviceUnavailable === true ||
@@ -230,75 +431,103 @@ function isServiceUnavailable(result: ReviewResult): boolean {
 }
 
 async function postPostponed(
-  gh: ReturnType<typeof makeGithubClient>,
-  repo: string,
-  pr: { number: number; title: string },
+  vcs: VcsClient,
+  project: string,
+  mr: { number: number; title: string },
   result: ReviewResult,
 ): Promise<void> {
-  await gh.addIssueComment(
-    repo,
-    pr.number,
+  await vcs.addComment(
+    project,
+    mr.number,
     `## ⚠️ Review Postponed — Service Unavailable\n\n${result.summary}\n\nThe review service could not be reached. No rework prompt will be posted. Review will be retried on the next cycle.`,
   );
-  console.log(`[POSTPONED] PR #${pr.number} review postponed due to service unavailability`);
+  console.log(`[POSTPONED] MR !${mr.number} review postponed due to service unavailability`);
 }
 
-async function pollPRs(
+async function pollMergeRequests(
   config: ReviewerConfig,
-  gh: ReturnType<typeof makeGithubClient>,
 ): Promise<void> {
-  for (const repo of config.reviewRepos) {
-    const prs = await gh.listOpenPRs(repo);
+  const targets = parseRepoTargets(config.reviewRepos, config.source, config.gitlabProject);
 
-    for (const pr of prs) {
-      if (!pr.user?.login.includes("ai") && !pr.title.startsWith("[AI]")) continue;
+  // Also add the gitlab project if source is gitlab and no explicit gitlab targets exist
+  if (config.source === "gitlab" && config.gitlabProject && !targets.some((t) => t.source === "gitlab")) {
+    targets.push({ name: config.gitlabProject, source: "gitlab", gitlabProject: config.gitlabProject });
+  }
 
-      const prKey = `${repo}/${pr.number}`;
-      if (reviewedPRs.has(prKey)) {
+  if (targets.length === 0) {
+    console.log("[POLL] No repos/projects to monitor");
+    return;
+  }
+
+  for (const target of targets) {
+    console.log(`[POLL] Checking ${target.source}:${target.name} for open MRs/PRs`);
+    const vcs = getVcsClient(target, config);
+    let mrs: MergeRequest[];
+    try {
+      mrs = await vcs.listOpenMergeRequests(target.name);
+    } catch (err) {
+      console.error(`[ERROR] Failed to fetch MRs/PRs from ${target.source}:${target.name}:`, err instanceof Error ? err.message : err);
+      continue;
+    }
+    console.log(`[POLL] ${target.source}:${target.name} returned ${mrs.length} open MRs/PRs`);
+
+    for (const mr of mrs) {
+      if (!mr.author.includes("ai") && !mr.title.startsWith("[AI]")) continue;
+
+      const mrKey = `${target.source}:${target.name}/${mr.number}`;
+      if (reviewedMRs.has(mrKey)) {
         continue;
       }
 
-      console.log(`[REVIEW] Found AI PR #${pr.number} in ${repo}: ${pr.title}`);
+      console.log(`[REVIEW] Found AI MR !${mr.number} in ${target.source}:${target.name}: ${mr.title}`);
 
-      const reviewCycleCount = await getReviewCycleCount(gh, repo, pr.number);
+      const reviewCycleCount = await getReviewCycleCount(vcs, target.name, mr.number);
       if (reviewCycleCount >= config.maxReviewCycles) {
-        console.log(`[BLOCKED] PR #${pr.number} exceeded max review cycles (${config.maxReviewCycles})`);
-        reviewedPRs.add(prKey);
+        console.log(`[BLOCKED] MR !${mr.number} exceeded max review cycles (${config.maxReviewCycles})`);
+        reviewedMRs.add(mrKey);
         continue;
       }
 
-      const result = await runMultiAgentReview(config, repo, pr.number);
-      reviewedPRs.add(prKey);
+      const result = await runMultiAgentReview(config, target, mr.number);
+      reviewedMRs.add(mrKey);
 
       if (result.clean) {
-        await mergeWithSummary(gh, repo, pr, result);
+        await mergeWithSummary(vcs, target.name, mr, result);
       } else if (isServiceUnavailable(result)) {
-        await postPostponed(gh, repo, pr, result);
+        await postPostponed(vcs, target.name, mr, result);
         // Remove from reviewed so next cycle retries
-        reviewedPRs.delete(prKey);
+        reviewedMRs.delete(mrKey);
       } else {
-        await postReworkPrompt(gh, repo, pr, result);
+        await postReworkPrompt(vcs, target.name, mr, result);
       }
     }
   }
 }
 
+function getVcsClient(target: RepoTarget, config: ReviewerConfig): VcsClient {
+  if (target.source === "gitlab") {
+    return new GitlabJiraVcsClient(target.gitlabProject || config.gitlabProject);
+  }
+  return new GithubVcsClient(makeGithubClient(config.githubToken, config.owner));
+}
+
 async function runMultiAgentReview(
   config: ReviewerConfig,
-  repo: string,
-  prNumber: number,
+  target: RepoTarget,
+  mrNumber: number,
 ): Promise<ReviewResult> {
   const remoteUrl = process.env.AIWORKASSISTANT_URL?.replace(/\/$/, "");
   const remoteKey = process.env.AIWORKASSISTANT_API_KEY;
 
+  // For remote review, delegate to the server
   if (remoteUrl && remoteKey) {
-    return runAiReview(remoteUrl, remoteKey, config.owner, repo, prNumber);
+    const owner = target.source === "gitlab" ? (target.gitlabProject || config.gitlabProject) : config.owner;
+    return runAiReview(remoteUrl, remoteKey, owner, target.name, mrNumber);
   }
 
-  const diff = await (async () => {
-    const gh = makeGithubClient(config.githubToken, config.owner);
-    return gh.getPRDiff(repo, prNumber);
-  })();
+  // Local review: fetch diff and run agents
+  const vcs = getVcsClient(target, config);
+  const diff = await vcs.getDiff(target.name, mrNumber);
 
   const sec = runAgentReview(diff, "security", config.securityAgentCmd);
   const qa = runAgentReview(diff, "qa", config.qaAgentCmd);
@@ -366,41 +595,51 @@ function buildSummary(findings: ReviewFinding[]): string {
 }
 
 async function mergeWithSummary(
-  gh: ReturnType<typeof makeGithubClient>,
-  repo: string,
-  pr: { number: number; title: string },
+  vcs: VcsClient,
+  project: string,
+  mr: { number: number; title: string },
   result: ReviewResult,
 ): Promise<void> {
   const agentLine = formatAgentStatus(result.agentStatus);
-  await gh.addIssueComment(
-    repo,
-    pr.number,
+  await vcs.addComment(
+    project,
+    mr.number,
     `## ✅ Review Passed — Merging\n\n${result.summary}\n\n${agentLine}\n\nMerging now.`,
   );
-  await gh.mergePR(repo, pr.number, `Merge [AI] ${pr.title}`, result.summary);
-  console.log(`[MERGE] PR #${pr.number} merged in ${repo}`);
+  await vcs.merge(project, mr.number, `Merge [AI] ${mr.title}`, result.summary);
+  console.log(`[MERGE] MR !${mr.number} merged in ${project}`);
 }
 
 async function postReworkPrompt(
-  gh: ReturnType<typeof makeGithubClient>,
-  repo: string,
-  pr: { number: number; title: string; body: string | null },
+  vcs: VcsClient,
+  project: string,
+  mr: { number: number; title: string; body: string | null },
   result: ReviewResult,
 ): Promise<void> {
-  await gh.addIssueComment(repo, pr.number, formatReviewFindings(result));
+  await vcs.addComment(project, mr.number, formatReviewFindings(result));
 
-  const issueMatch = (pr.body || "").match(/(?:closes|fixes|resolves)\s+#(\d+)/i);
-  if (!issueMatch) {
-    console.log(`[WARN] PR #${pr.number} has no linked issue — cannot post rework prompt`);
+  const issueKey = vcs.extractLinkedIssueKey(mr.body);
+  if (!issueKey) {
+    console.log(`[WARN] MR !${mr.number} has no linked issue — cannot post rework prompt`);
     return;
   }
-  const issueNumber = parseInt(issueMatch[1], 10);
-  await gh.addIssueComment(repo, issueNumber, buildReworkPrompt(result));
-  // Re-label the issue so aicoder picks it up for rework
-  await gh.addLabel(repo, issueNumber, "ready-for-agent").catch(() => {
-    console.log(`[WARN] Could not add ready-for-agent label to issue #${issueNumber}`);
-  });
-  console.log(`[REWORK] Posted rework prompt on issue #${issueNumber} for PR #${pr.number}`);
+
+  // Determine if this is a Jira key (e.g. IR-63) or a numeric issue (e.g. #42)
+  const isJiraKey = /^[A-Z]+-\d+$/.test(issueKey);
+
+  if (isJiraKey) {
+    await addCommentToJiraIssue(issueKey, buildReworkPrompt(result));
+    await addLabelToJiraIssue(issueKey, "ready-for-agent");
+    console.log(`[REWORK] Posted rework prompt on Jira ${issueKey} for MR !${mr.number}`);
+  } else {
+    // Numeric GitHub issue
+    const issueNumber = parseInt(issueKey, 10);
+    await vcs.addCommentToIssue(project, issueNumber, buildReworkPrompt(result));
+    await vcs.addLabelToIssue(project, issueNumber, "ready-for-agent").catch(() => {
+      console.log(`[WARN] Could not add ready-for-agent label to issue #${issueNumber}`);
+    });
+    console.log(`[REWORK] Posted rework prompt on issue #${issueNumber} for MR !${mr.number}`);
+  }
 }
 
 function formatReviewFindings(result: ReviewResult): string {
@@ -423,12 +662,12 @@ function buildReworkPrompt(result: ReviewResult): string {
 }
 
 async function getReviewCycleCount(
-  gh: ReturnType<typeof makeGithubClient>,
-  repo: string,
-  prNumber: number,
+  vcs: VcsClient,
+  project: string,
+  mrNumber: number,
 ): Promise<number> {
-  const comments = await gh.listIssueComments(repo, prNumber);
-  return comments.filter((c: any) =>
+  const comments = await vcs.listComments(project, mrNumber);
+  return comments.filter((c) =>
     (c.body as string)?.includes("Review Failed — Rework Required"),
   ).length;
 }
@@ -437,19 +676,29 @@ async function main(): Promise<void> {
   console.log("[START] AIWorkAssistant review agent started");
   const config = await loadConfig();
 
-  if (config.reviewRepos.length === 0) {
-    console.warn("[WARN] No REVIEW_REPOS configured — nothing to watch");
+  const source = config.source;
+  const targets = parseRepoTargets(config.reviewRepos, config.source, config.gitlabProject);
+  console.log(`[CONFIG] Source: ${source}, targets: ${targets.map((t) => `${t.source}:${t.name}`).join(", ") || "none"}`);
+
+  if (config.reviewRepos.length === 0 && source === "github") {
+    console.warn("[WARN] No REVIEW_REPOS configured — nothing to watch on GitHub");
   }
-  if (!config.githubToken) {
-    console.error("[ERROR] No GitHub token — set GITHUB_TOKEN or AIWORKASSISTANT_URL+AIWORKASSISTANT_API_KEY");
+  if (source === "gitlab" && !config.gitlabProject && !targets.some((t) => t.source === "gitlab")) {
+    console.error("[ERROR] No GITLAB_DEFAULT_PROJECT configured — set it in .env or pass --gitlab-project");
+    process.exit(1);
+  }
+  if (targets.some((t) => t.source === "github") && !config.githubToken) {
+    console.error("[ERROR] No GitHub token — set GITHUB_TOKEN for GitHub repos");
+    process.exit(1);
+  }
+  if (targets.some((t) => t.source === "gitlab") && !gitlabClient.isConfigured()) {
+    console.error("[ERROR] GitLab not configured — set GITLAB_TOKEN and GITLAB_BASE_URL in .env");
     process.exit(1);
   }
 
-  const gh = makeGithubClient(config.githubToken, config.owner);
-
   while (true) {
     try {
-      await pollPRs(config, gh);
+      await pollMergeRequests(config);
     } catch (err) {
       console.error("[ERROR]", err);
     }

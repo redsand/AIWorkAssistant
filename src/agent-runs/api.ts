@@ -22,6 +22,24 @@ export async function agentRunsRoutes(fastify: FastifyInstance) {
     return agentRunDatabase.getStats();
   });
 
+  fastify.get("/agent-runs/aicoder", async () => {
+    const runs = agentRunDatabase.listRuns({ userId: "aicoder", limit: 5 });
+    if (!runs.runs.length) {
+      return { runs: [], current: null };
+    }
+    const current = runs.runs.find((r) => r.status === "running");
+    const latest = runs.runs[0];
+    const latestWithSteps = current
+      ? agentRunDatabase.getRunWithSteps(current.id)
+      : latest
+        ? agentRunDatabase.getRunWithSteps(latest.id)
+        : null;
+    return {
+      runs: runs.runs,
+      current: latestWithSteps,
+    };
+  });
+
   fastify.get<{ Params: { id: string } }>(
     "/agent-runs/:id",
     async (request) => {

@@ -21,7 +21,24 @@ export class JitbitPoller {
       return 0;
     }
 
-    const tickets = await jitbitService.findHighPriorityOpenTickets(25);
+    // Only escalate tickets that haven't been picked up yet.
+    // "In Progress" / "Open" means someone is already handling it.
+    const ESCALATABLE_STATUSES = new Set(["new", "pending"]);
+
+    const allTickets = await jitbitService.findHighPriorityOpenTickets(25);
+    const filtered = allTickets.length - allTickets.filter((t) => {
+      const s = String(t.Status ?? t.status ?? "").toLowerCase();
+      return !s || new Set(["new", "pending"]).has(s);
+    }).length;
+    if (filtered > 0) {
+      console.log(`[Jitbit Poller] Filtered out ${filtered} ticket(s) not in New/Pending status`);
+    }
+    const tickets = allTickets.filter((t) => {
+      const status = String(t.Status ?? t.status ?? "").toLowerCase();
+      // If status is empty/unknown, include it (may not have been set yet)
+      if (!status) return true;
+      return ESCALATABLE_STATUSES.has(status);
+    });
 
     let newNotifications = 0;
 
@@ -30,7 +47,11 @@ export class JitbitPoller {
       if (!ticketId) continue;
 
       const alreadyNotified = await notificationStore.hasBeenNotified("jitbit", ticketId);
-      if (alreadyNotified) continue;
+      if (alreadyNotified) {
+        // Already notified — only re-push if cooldown has elapsed
+        const shouldPush = await notificationStore.shouldSendPush("jitbit", ticketId);
+        if (!shouldPush) continue;
+      }
 
       const priority = ticket.Priority ?? 0;
       const priorityName = String(ticket.PriorityName || "").toLowerCase();
@@ -53,14 +74,18 @@ export class JitbitPoller {
         await sendPushNotification(sub, message);
       }
 
-      await notificationStore.markNotified({
-        id: `jitbit:${ticketId}`,
-        source: "jitbit",
-        externalId: ticketId,
-        riskLevel: isCritical ? "critical" : "high",
-        notifiedAt: new Date().toISOString(),
-        escalationLevel: 1,
-      });
+      if (alreadyNotified) {
+        await notificationStore.markPushed("jitbit", ticketId);
+      } else {
+        await notificationStore.markNotified({
+          id: `jitbit:${ticketId}`,
+          source: "jitbit",
+          externalId: ticketId,
+          riskLevel: isCritical ? "critical" : "high",
+          notifiedAt: new Date().toISOString(),
+          escalationLevel: 1,
+        });
+      }
 
       newNotifications++;
     }

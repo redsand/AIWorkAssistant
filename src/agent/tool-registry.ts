@@ -4940,6 +4940,20 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "low",
   },
   {
+    name: "hawk_ir.get_fields",
+    description:
+      "Get available field names for a HAWK IR log index. Use this to discover searchable field names before constructing search queries. Field names can be used in search queries like 'audit_login: false' or 'ip_src: 10.0.0.1'.",
+    params: {
+      idx: {
+        type: "string",
+        description: "Index name (from get_available_indexes)",
+        required: true,
+      },
+    },
+    actionType: "hawk_ir.get_fields",
+    riskLevel: "low",
+  },
+  {
     name: "hawk_ir.get_assets",
     description:
       "Get HAWK IR assets (endpoints) with optional filters (search, pagination, sort).",
@@ -5838,6 +5852,7 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_escalated_cases")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.search_logs")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_available_indexes")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_fields")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_assets")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_asset_summary")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_identities")!,

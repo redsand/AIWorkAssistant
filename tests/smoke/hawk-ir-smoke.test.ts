@@ -96,6 +96,52 @@ describe.skipIf(!process.env.HAWK_IR_ENABLED || process.env.HAWK_IR_ENABLED !== 
           console.log(`  ⚠️ Search error (auth OK): ${(err as Error).message}`);
         }
       }, TIMEOUT);
+
+      it("searches audit_login: false for the past hour (should always have results)", async () => {
+        const indexes = await hawkIrClient.getAvailableIndexes();
+        if (indexes.length === 0) {
+          console.log("  ⚠️ No indexes available — skipping audit_login search");
+          return;
+        }
+
+        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+        const now = new Date().toISOString();
+
+        const results = await hawkIrService.searchLogs({
+          q: "audit_login: false",
+          idx: indexes[0],
+          from: oneHourAgo,
+          to: now,
+          size: 5,
+        });
+
+        expect(Array.isArray(results)).toBe(true);
+        console.log(`  ✅ audit_login: false search returned ${results.length} result(s) in the past hour`);
+        if (results.length > 0) {
+          const sample = results[0] as Record<string, unknown>;
+          const keys = Object.keys(sample).slice(0, 5);
+          console.log(`  ✅ Sample result fields: ${keys.join(", ")}`);
+        }
+      }, TIMEOUT);
+
+      it("retrieves field names for an index", async () => {
+        const indexes = await hawkIrClient.getAvailableIndexes();
+        if (indexes.length === 0) {
+          console.log("  ⚠️ No indexes available — skipping getFields");
+          return;
+        }
+
+        const fields = await hawkIrClient.getFields(indexes[0]);
+        expect(Array.isArray(fields)).toBe(true);
+        expect(fields.length).toBeGreaterThan(0);
+        console.log(`  ✅ Index "${indexes[0]}" has ${fields.length} fields`);
+        // Show a sample of field names useful for query translation
+        const sampleFields = fields.slice(0, 10);
+        console.log(`  ✅ Sample fields: ${sampleFields.join(", ")}`);
+        if (fields.includes("audit_login")) {
+          console.log(`  ✅ "audit_login" field found — can be used for login queries`);
+        }
+      }, TIMEOUT);
     });
 
     // ── Assets ────────────────────────────────────────────────────────

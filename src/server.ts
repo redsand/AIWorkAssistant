@@ -28,6 +28,7 @@ import { memoryRoutes } from "./routes/memory";
 import { codeReviewRoutes } from "./routes/code-review";
 import { pushSubscriptionRoutes } from "./routes/push-subscriptions";
 import { pushAcknowledgeRoutes } from "./routes/push-acknowledge";
+import { acknowledgeRoutes } from "./routes/acknowledge";
 import { initPushDispatcher } from "./push/dispatcher";
 import { startPollingEngine, stopPollingEngine } from "./push/polling-engine";
 import { toolsRoutes } from "./routes/tools";
@@ -103,6 +104,7 @@ export async function buildServer() {
   await server.register(codeReviewRoutes, { prefix: "/api/code-review" });
   await server.register(pushSubscriptionRoutes, { prefix: "/api" });
   await server.register(pushAcknowledgeRoutes, { prefix: "/api" });
+  await server.register(acknowledgeRoutes);
   await server.register(toolsRoutes, { prefix: "/api" });
   await server.register(ticketBridgeRoutes, { prefix: "/api/ticket-bridge" });
   await server.register(reviewerConfigRoutes, { prefix: "/api/reviewer" });

@@ -5309,6 +5309,18 @@ async function handleHawkIrGetAvailableIndexes(
   return { success: true, data };
 }
 
+async function handleHawkIrGetFields(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+  const idx = params.idx as string;
+  if (!idx) return { success: false, error: "idx (index name) is required" };
+  const data = await hawkIrService.getFields(idx);
+  return { success: true, data };
+}
+
 async function handleHawkIrGetAssets(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -5877,6 +5889,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "hawk_ir.unquarantine_host": handleHawkIrUnquarantineHost,
   "hawk_ir.search_logs": handleHawkIrSearchLogs,
   "hawk_ir.get_available_indexes": handleHawkIrGetAvailableIndexes,
+  "hawk_ir.get_fields": handleHawkIrGetFields,
   "hawk_ir.get_assets": handleHawkIrGetAssets,
   "hawk_ir.get_asset_summary": handleHawkIrGetAssetSummary,
   "hawk_ir.get_identities": handleHawkIrGetIdentities,

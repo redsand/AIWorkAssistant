@@ -1,4 +1,5 @@
 import { FastifyInstance } from "fastify";
+import { env } from "../config/env";
 
 interface PushSubscriptionData {
   endpoint: string;
@@ -20,6 +21,11 @@ const subscriptions = new Map<
 >();
 
 export async function pushSubscriptionRoutes(server: FastifyInstance) {
+  // Expose VAPID public key so the frontend can subscribe to push notifications
+  server.get("/push-vapid-key", async () => {
+    return { vapidPublicKey: env.VAPID_PUBLIC_KEY };
+  });
+
   server.post<{
     Body: { subscription: PushSubscriptionData; userId?: string };
   }>("/push-subscriptions", async (request, reply) => {

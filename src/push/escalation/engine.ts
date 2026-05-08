@@ -1,5 +1,6 @@
 import { notificationStore } from "../notification-store";
 import { env } from "../../config/env";
+import { sendEscalationEmail, isEmailConfigured } from "./email";
 
 export interface EscalationConfig {
   level2AfterMinutes: number;
@@ -16,11 +17,22 @@ function buildDefaultConfig(): EscalationConfig {
     level2AfterMinutes: env.PUSH_ESCALATION_L2_MINUTES,
     level3AfterMinutes: env.PUSH_ESCALATION_L3_MINUTES,
     level2Channels: ["email"],
-    onCallEmail: env.HAWK_IR_ENABLED ? "oncall@ai-work-assistant.example" : "",
+    onCallEmail: env.ESCALATION_EMAIL_TO || (env.HAWK_IR_ENABLED ? "oncall@ai-work-assistant.example" : ""),
     onCallPhone: "",
-    backupEmail: "backup@ai-work-assistant.example",
+    backupEmail: env.ESCALATION_EMAIL_TO_L3 || env.ESCALATION_EMAIL_TO || "backup@ai-work-assistant.example",
     backupPhone: "",
   };
+}
+
+function getBaseUrl(): string {
+  return (env.TUNNEL_URL || env.AIWORKASSISTANT_URL || "http://localhost:3050").replace(/\/+$/, "");
+}
+
+function buildDeepLink(source: string, externalId: string): string {
+  const base = getBaseUrl();
+  return source === "hawk-ir"
+    ? `${base}/hawk-ir/cases/${externalId}`
+    : `${base}/support/tickets/${externalId}`;
 }
 
 export class EscalationEngine {
@@ -39,24 +51,37 @@ export class EscalationEngine {
     for (const item of level2Items) {
       if (item.escalationLevel >= 2) continue;
 
-      const deepLink =
-        item.source === "hawk-ir"
-          ? `https://ai-work-assistant.app/hawk-ir/cases/${item.externalId}`
-          : `https://ai-work-assistant.app/support/tickets/${item.externalId}`;
+      try {
+        const deepLink = buildDeepLink(item.source, item.externalId);
 
-      const message =
-        item.source === "hawk-ir"
-          ? `HAWK IR ${item.externalId} — Risk: ${item.riskLevel}. Acknowledge: ${deepLink}`
-          : `Jitbit Ticket ${item.externalId} — Risk: ${item.riskLevel}. Acknowledge: ${deepLink}`;
+        const subject =
+          item.source === "hawk-ir"
+            ? `[Escalation L2] HAWK IR Case ${item.externalId} (${item.riskLevel})`
+            : `[Escalation L2] Jitbit Ticket ${item.externalId} (${item.riskLevel})`;
 
-      console.warn(`[Escalation L2] ${message}`);
+        const message =
+          item.source === "hawk-ir"
+            ? `HAWK IR ${item.externalId} — Risk: ${item.riskLevel}. Acknowledge: ${deepLink}`
+            : `Jitbit Ticket ${item.externalId} — Risk: ${item.riskLevel}. Acknowledge: ${deepLink}`;
 
-      if (this.config.level2Channels.includes("email") && this.config.onCallEmail) {
-        // TODO: Integrate with email service (SendGrid, etc.)
-        console.log(`[Escalation L2] Would email: ${this.config.onCallEmail}`);
+        console.warn(`[Escalation L2] ${message}`);
+
+        if (this.config.level2Channels.includes("email") && this.config.onCallEmail) {
+          if (isEmailConfigured()) {
+            await sendEscalationEmail(
+              this.config.onCallEmail,
+              subject,
+              `${message}\n\nAcknowledge: ${deepLink}`,
+            );
+          } else {
+            console.log(`[Escalation L2] Would email: ${this.config.onCallEmail}`);
+          }
+        }
+
+        await notificationStore.markEscalated(item.source, item.externalId, 2);
+      } catch (err) {
+        console.error(`[Escalation L2] Failed to process ${item.source}:${item.externalId}:`, err instanceof Error ? err.message : err);
       }
-
-      await notificationStore.markEscalated(item.source, item.externalId, 2);
     }
 
     const level3Items = await notificationStore.getUnacknowledgedPastThreshold(
@@ -66,16 +91,29 @@ export class EscalationEngine {
     for (const item of level3Items) {
       if (item.escalationLevel >= 3) continue;
 
-      const message = `UNACKNOWLEDGED ESCALATION: ${item.source} ${item.externalId} (${item.riskLevel}) — Primary responder has not responded. Please take over.`;
+      try {
+        const deepLink = buildDeepLink(item.source, item.externalId);
+        const subject = `[Escalation L3] UNACKNOWLEDGED: ${item.source} ${item.externalId} (${item.riskLevel})`;
+        const message = `UNACKNOWLEDGED ESCALATION: ${item.source} ${item.externalId} (${item.riskLevel}) — Primary responder has not responded. Please take over.\n\nAcknowledge: ${deepLink}`;
 
-      console.error(`[Escalation L3] ${message}`);
+        console.error(`[Escalation L3] ${message}`);
 
-      if (this.config.backupEmail) {
-        // TODO: Integrate with email service
-        console.log(`[Escalation L3] Would email: ${this.config.backupEmail}`);
+        if (this.config.backupEmail) {
+          if (isEmailConfigured()) {
+            await sendEscalationEmail(
+              this.config.backupEmail,
+              subject,
+              message,
+            );
+          } else {
+            console.log(`[Escalation L3] Would email: ${this.config.backupEmail}`);
+          }
+        }
+
+        await notificationStore.markEscalated(item.source, item.externalId, 3);
+      } catch (err) {
+        console.error(`[Escalation L3] Failed to process ${item.source}:${item.externalId}:`, err instanceof Error ? err.message : err);
       }
-
-      await notificationStore.markEscalated(item.source, item.externalId, 3);
     }
   }
 

@@ -25,7 +25,9 @@ export class HawkIRPoller {
 
     const cases = await hawkIrService.getRiskyOpenCases({
       minRiskLevel: this.config.minRiskLevel as any,
+      statuses: ["New"],
     });
+    console.log(`[HAWK IR Poller] Found ${cases.length} case(s) in New status (escalation-eligible)`);
 
     let newNotifications = 0;
 
@@ -34,7 +36,11 @@ export class HawkIRPoller {
       if (!caseId) continue;
 
       const alreadyNotified = await notificationStore.hasBeenNotified("hawk-ir", caseId);
-      if (alreadyNotified) continue;
+      if (alreadyNotified) {
+        // Already notified — only re-push if cooldown has elapsed
+        const shouldPush = await notificationStore.shouldSendPush("hawk-ir", caseId);
+        if (!shouldPush) continue;
+      }
 
       const riskLevel = String(
         (c as any).riskLevel || (c as any)["risk_level"] || "high"
@@ -58,14 +64,18 @@ export class HawkIRPoller {
         await sendPushNotification(sub, message);
       }
 
-      await notificationStore.markNotified({
-        id: `hawk-ir:${caseId}`,
-        source: "hawk-ir",
-        externalId: caseId,
-        riskLevel,
-        notifiedAt: new Date().toISOString(),
-        escalationLevel: 1,
-      });
+      if (alreadyNotified) {
+        await notificationStore.markPushed("hawk-ir", caseId);
+      } else {
+        await notificationStore.markNotified({
+          id: `hawk-ir:${caseId}`,
+          source: "hawk-ir",
+          externalId: caseId,
+          riskLevel,
+          notifiedAt: new Date().toISOString(),
+          escalationLevel: 1,
+        });
+      }
 
       newNotifications++;
     }

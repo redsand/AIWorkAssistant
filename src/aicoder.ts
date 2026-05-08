@@ -7,8 +7,11 @@ import axios from "axios";
 import { OllamaLauncher } from "./integrations/ollama-launcher";
 import { RunLogger } from "./integrations/ollama-launcher/run-logger";
 import { prioritizeItems, type PriorityMode } from "./integrations/ollama-launcher/priority-sorter";
+import { createStreamFormatter } from "./integrations/ollama-launcher/stream-formatter";
 import { type TicketSourceType, type LookupMode, SourceResolver } from "./integrations/source-resolver";
 import { jiraClient } from "./integrations/jira/jira-client";
+import { agentRunDatabase } from "./agent-runs/database";
+import type { AgentRunStepCreate } from "./agent-runs/types";
 import type { ProviderType } from "./integrations/ollama-launcher";
 
 function parseArgv(): Record<string, string> {
@@ -1048,10 +1051,12 @@ async function runAgentViaLauncher(prompt: string): Promise<RunResult> {
       activeChild = child;
       let finDetected = false;
       let outputBuf = "";
+      const formatter = createStreamFormatter(AGENT);
 
       child.stdout?.on("data", (chunk: Buffer) => {
         const text = chunk.toString();
-        process.stdout.write(text);
+        const formatted = formatter.push(text);
+        if (formatted) process.stdout.write(formatted);
         outputBuf += text;
 
         if (!finDetected && outputBuf.includes(FIN_TOKEN)) {
@@ -1062,6 +1067,8 @@ async function runAgentViaLauncher(prompt: string): Promise<RunResult> {
       });
 
       child.on("close", (code) => {
+        const remaining = formatter.flush();
+        if (remaining) process.stdout.write(remaining);
         activeChild = null;
         resolve({ finDetected, exitCode: code });
       });
@@ -1093,6 +1100,7 @@ async function runAgentDirect(prompt: string): Promise<RunResult> {
 
     let finDetected = false;
     let outputBuf = "";
+    const formatter = createStreamFormatter(AGENT);
 
     // Pipe prompt via stdin to avoid command-line length limits
     child.stdin?.write(prompt);
@@ -1100,7 +1108,8 @@ async function runAgentDirect(prompt: string): Promise<RunResult> {
 
     child.stdout?.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
-      process.stdout.write(text);
+      const formatted = formatter.push(text);
+      if (formatted) process.stdout.write(formatted);
       outputBuf += text;
 
       if (!finDetected && outputBuf.includes(FIN_TOKEN)) {
@@ -1111,6 +1120,8 @@ async function runAgentDirect(prompt: string): Promise<RunResult> {
     });
 
     child.on("close", (code) => {
+      const remaining = formatter.flush();
+      if (remaining) process.stdout.write(remaining);
       activeChild = null;
       resolve({ finDetected, exitCode: code });
     });
@@ -1142,16 +1153,102 @@ function buildAgentArgs(agent: string): string[] {
   }
 }
 
-const processedIssues = new Set<number>();
+const processedIssues = new Set<string>();
+
+// Persist processed issues across restarts
+const PROCESSED_FILE = path.join(WORKSPACE || process.cwd(), ".aicoder", "processed-issues.json");
+
+function loadProcessedIssues(): void {
+  try {
+    if (fs.existsSync(PROCESSED_FILE)) {
+      const data = JSON.parse(fs.readFileSync(PROCESSED_FILE, "utf-8"));
+      if (Array.isArray(data)) {
+        data.forEach((id: string) => processedIssues.add(id));
+        if (processedIssues.size > 0) {
+          runLogger.logConfig(`Resumed with ${processedIssues.size} previously processed issue(s)`);
+        }
+      }
+    }
+  } catch {
+    // File doesn't exist or is corrupt — start fresh
+  }
+}
+
+function saveProcessedIssue(issueKey: string): void {
+  processedIssues.add(issueKey);
+  try {
+    const dir = path.dirname(PROCESSED_FILE);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(PROCESSED_FILE, JSON.stringify([...processedIssues], null, 2), "utf-8");
+  } catch (err) {
+    // Persistence failure is non-fatal
+    runLogger.logWork(`Could not persist processed issue: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+// Agent-runs tracking: record aicoder steps to the database for API visibility
+let currentRunStepOrder = 0;
+
+function trackStep(runId: string, stepType: AgentRunStepCreate["stepType"], content: string, extra?: Partial<Pick<AgentRunStepCreate, "toolName" | "success" | "errorMessage" | "durationMs">>): void {
+  try {
+    currentRunStepOrder++;
+    agentRunDatabase.addStep({
+      runId,
+      stepType,
+      toolName: extra?.toolName ?? null,
+      content,
+      sanitizedParams: null,
+      success: extra?.success ?? true,
+      errorMessage: extra?.errorMessage ?? null,
+      durationMs: extra?.durationMs ?? null,
+      stepOrder: currentRunStepOrder,
+    });
+    agentRunDatabase.touchRun(runId);
+  } catch {
+    // Non-fatal: tracking should never crash the aicoder
+  }
+}
 
 async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prNumber: number } | null> {
-  if (processedIssues.has(item.number)) {
-    runLogger.logSkip(`Issue #${item.number} already processed this session`);
+  const issueKey = item.id || String(item.number);
+  if (processedIssues.has(issueKey)) {
+    runLogger.logSkip(`Issue ${issueKey} already processed`);
     return null;
   }
 
   runLogger.startRun(item.number, item.title);
-  runLogger.logWork(`Starting issue #${item.number}: ${item.title}`);
+  runLogger.logWork(`Starting issue ${issueKey}: ${item.title}`);
+
+  // Create agent-runs record for API visibility
+  currentRunStepOrder = 0;
+  const run = agentRunDatabase.startRun({
+    userId: "aicoder",
+    mode: `issue:${issueKey}`,
+  });
+  trackStep(run.id, "note", `Starting work on ${issueKey}: ${item.title}`);
+
+  const startTime = Date.now();
+
+  // Transition Jira issues to "In Progress" so escalation doesn't pick them up
+  const isJiraIssue = /^[A-Z]+-\d+$/.test(item.id);
+  if (isJiraIssue && jiraClient.isConfigured()) {
+    try {
+      const transitions = await jiraClient.getTransitions(item.id);
+      const inProgress = transitions.find((t: any) =>
+        t.name === "In Progress" || t.name === "in progress" || t.name === "Start Progress"
+      );
+      if (inProgress) {
+        await jiraClient.transitionIssue(item.id, inProgress.id, "AiRemoteCoder started work on this issue.");
+        runLogger.logWork(`Transitioned ${item.id} → In Progress`);
+        trackStep(run.id, "note", `Transitioned ${item.id} to In Progress`);
+      } else {
+        runLogger.logWork(`No "In Progress" transition available for ${item.id} (available: ${transitions.map((t: any) => t.name).join(", ")})`);
+      }
+    } catch (err) {
+      runLogger.logWork(`Could not transition ${item.id} to In Progress: ${err instanceof Error ? err.message : err}`);
+      trackStep(run.id, "note", `Jira transition failed: ${err instanceof Error ? err.message : err}`, { success: false });
+    }
+  }
 
   // Resolve dependencies
   const ghToken = process.env.GITHUB_TOKEN;
@@ -1176,7 +1273,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
         }
         runLogger.logError(`Unresolved dependencies for #${item.number} — skipping`);
         runLogger.endRun(1);
-        processedIssues.add(item.number);
+        saveProcessedIssue(issueKey);
         return null;
       }
       fromBranch = resolved.source === "open_pr" ? resolved.branch : undefined;
@@ -1195,75 +1292,103 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   if (!checkoutBranch(branchName, fromBranch)) {
     runLogger.logError(`Could not create branch ${branchName} — skipping`);
     runLogger.endRun(1);
+    trackStep(run.id, "tool_call", `Branch checkout failed: ${branchName}`, { toolName: "git_checkout", success: false });
+    agentRunDatabase.failRun(run.id, `Could not create branch ${branchName}`);
     return null;
   }
+  trackStep(run.id, "tool_call", `Checked out branch: ${branchName}${fromBranch ? ` (from ${fromBranch})` : ""}`, { toolName: "git_checkout" });
 
   // TDD: Run baseline tests first; if they fail, try to fix before starting work
   if (!(await fixBaselineTests(cfg, item))) {
     runLogger.logError("Baseline tests could not be fixed — aborting");
     runLogger.endRun(1);
-    processedIssues.add(item.number);
+    saveProcessedIssue(issueKey);
+    trackStep(run.id, "tool_call", "Baseline tests failed", { toolName: "test_baseline", success: false });
+    agentRunDatabase.failRun(run.id, "Baseline tests could not be fixed");
     return null;
   }
 
+  const agentStartTime = Date.now();
+  trackStep(run.id, "note", `Running ${AGENT} agent...`);
   const { finDetected, exitCode } = await runAgent(generated.prompt);
+  const agentDuration = Date.now() - agentStartTime;
+  trackStep(run.id, "model_response", `Agent finished (FIN=${finDetected}, exit=${exitCode}, ${agentDuration}ms)`, { toolName: AGENT, durationMs: agentDuration, success: finDetected || exitCode === 0 });
 
   if (!finDetected && exitCode !== 0) {
     runLogger.log(`WARN`, `Agent exited with code ${exitCode} and no FIN signal — skipping push`);
     runLogger.endRun(exitCode);
-    processedIssues.add(item.number);
+    saveProcessedIssue(issueKey);
+    agentRunDatabase.failRun(run.id, `Agent exited with code ${exitCode}, no FIN signal`);
     return null;
   }
 
   if (!stageAndCommit(`[AI] ${item.title}`)) {
     runLogger.logError("Stage/commit failed — skipping push");
     runLogger.endRun(1);
-    processedIssues.add(item.number);
+    saveProcessedIssue(issueKey);
+    trackStep(run.id, "tool_call", "Stage & commit failed", { toolName: "git_commit", success: false });
+    agentRunDatabase.failRun(run.id, "Stage/commit failed");
     return null;
   }
+  trackStep(run.id, "tool_call", "Staged and committed changes", { toolName: "git_commit" });
 
   // TDD: Run unit tests first (fast fail)
   const unitResult = runTestSuite("unit");
   if (!unitResult.passed) {
     runLogger.logError(`Unit tests ${unitResult.kind} — skipping integration tests and push`);
     runLogger.endRun(1);
-    processedIssues.add(item.number);
+    saveProcessedIssue(issueKey);
+    trackStep(run.id, "tool_call", `Unit tests ${unitResult.kind}`, { toolName: "test_unit", success: false, errorMessage: unitResult.kind });
+    agentRunDatabase.failRun(run.id, `Unit tests ${unitResult.kind}`);
     return null;
   }
+  trackStep(run.id, "tool_call", "Unit tests passed", { toolName: "test_unit" });
 
   // TDD: Run integration tests (only if unit tests passed)
   const integrationResult = runTestSuite("integration");
   if (!integrationResult.passed) {
     runLogger.logError(`Integration tests ${integrationResult.kind} — skipping push`);
     runLogger.endRun(1);
-    processedIssues.add(item.number);
+    saveProcessedIssue(issueKey);
+    trackStep(run.id, "tool_call", `Integration tests ${integrationResult.kind}`, { toolName: "test_integration", success: false, errorMessage: integrationResult.kind });
+    agentRunDatabase.failRun(run.id, `Integration tests ${integrationResult.kind}`);
     return null;
   }
+  trackStep(run.id, "tool_call", "Integration tests passed", { toolName: "test_integration" });
 
   // TDD: Check coverage thresholds
   const coverageResult = checkCoverage();
   if (!coverageResult.passed) {
     runLogger.logError(`Coverage check ${coverageResult.kind} — skipping push`);
     runLogger.endRun(1);
-    processedIssues.add(item.number);
+    saveProcessedIssue(issueKey);
+    trackStep(run.id, "tool_call", `Coverage check ${coverageResult.kind}`, { toolName: "coverage", success: false });
+    agentRunDatabase.failRun(run.id, `Coverage check ${coverageResult.kind}`);
     return null;
   }
 
   if (!pushBranch(branchName)) {
     runLogger.logError(`Push failed — PR not created`);
     runLogger.endRun(1);
-    processedIssues.add(item.number);
+    saveProcessedIssue(issueKey);
+    trackStep(run.id, "tool_call", "Push failed", { toolName: "git_push", success: false });
+    agentRunDatabase.failRun(run.id, "Push failed");
     return null;
   }
+  trackStep(run.id, "tool_call", `Pushed branch: ${branchName}`, { toolName: "git_push" });
 
   const pr = await createPR(cfg, item, branchName);
   if (pr) {
     runLogger.logPR(`Opened PR #${pr.prNumber}: ${pr.url}`);
+    trackStep(run.id, "tool_call", `Created PR #${pr.prNumber}: ${pr.url}`, { toolName: "create_pr" });
     await notifyComplete(cfg, item, pr.prNumber, branchName, exitCode);
   }
 
+  const totalDuration = Date.now() - startTime;
+  agentRunDatabase.completeRun(run.id, { model: AGENT, toolLoopCount: currentRunStepOrder, totalTokens: 0 });
+  trackStep(run.id, "note", `Completed in ${(totalDuration / 1000).toFixed(1)}s${pr ? ` — PR #${pr.prNumber}` : ""}`);
   runLogger.endRun(exitCode);
-  processedIssues.add(item.number);
+  saveProcessedIssue(issueKey);
   return pr ? { prNumber: pr.prNumber } : null;
 }
 
@@ -1566,6 +1691,18 @@ function cleanup() {
 
 process.on("SIGINT", () => { cleanup(); process.exit(130); });
 process.on("SIGTERM", () => { cleanup(); process.exit(143); });
+
+loadProcessedIssues();
+
+// Mark any stale aicoder runs (from a previous crash) as failed
+try {
+  const stale = agentRunDatabase.markStaleRunsAsFailed(30);
+  if (stale > 0) {
+    runLogger.logConfig(`Marked ${stale} stale agent run(s) as failed`);
+  }
+} catch {
+  // Non-fatal
+}
 
 if (FOCUSED_MODE) {
   focusedLoop(loadServerConfig());

@@ -109,11 +109,15 @@ export class HawkIrService {
   /**
    * Returns open high-risk unescalated cases — the primary CTO Command Center signal.
    * These are security incidents that are serious but haven't generated a Jitbit ticket.
+   * @param statuses - If provided, only include cases whose progressStatus matches one of these values.
+   *                   Useful for escalation pipelines that should only notify on unhandled items (e.g. ["New"]).
+   *                   When omitted, includes all non-closed/resolved statuses (New, Open, In Progress).
    */
   async getRiskyOpenCases(params: {
     minRiskLevel?: CaseRiskLevel;
     limit?: number;
     offset?: number;
+    statuses?: string[];
   } = {}): Promise<HawkCase[]> {
     const minRiskLevel = params.minRiskLevel ?? "high";
     const limit = params.limit ?? 25;
@@ -128,11 +132,19 @@ export class HawkIrService {
       stopDate: range.to,
     });
 
+    const allowedStatuses = params.statuses
+      ? params.statuses.map((s) => s.toLowerCase())
+      : null;
+
     return cases
       .filter((c) => {
         const risk = String(c.riskLevel ?? c["risk_level"] ?? "low").toLowerCase();
         const status = String(c.progressStatus ?? c["progress_status"] ?? "").toLowerCase();
-        return (riskPriority[risk] ?? 0) >= minPriority && !isEscalated(c) && status !== "closed" && status !== "resolved";
+        const meetsRisk = (riskPriority[risk] ?? 0) >= minPriority;
+        const notEscalated = !isEscalated(c);
+        const notClosed = status !== "closed" && status !== "resolved";
+        const statusAllowed = allowedStatuses ? allowedStatuses.includes(status) : true;
+        return meetsRisk && notEscalated && notClosed && statusAllowed;
       })
       .sort((a, b) => {
         const ra = String(a.riskLevel ?? a["risk_level"] ?? "low").toLowerCase();
@@ -345,6 +357,10 @@ export class HawkIrService {
 
   async getAvailableIndexes(): Promise<string[]> {
     return this.client.getAvailableIndexes();
+  }
+
+  async getFields(idx: string): Promise<string[]> {
+    return this.client.getFields(idx);
   }
 
   async getSavedSearches(): Promise<HawkSavedSearch[]> {

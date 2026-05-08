@@ -407,6 +407,11 @@ export class HawkIrClient {
     return Array.isArray(result) ? result : [];
   }
 
+  async getFields(idx: string): Promise<string[]> {
+    const result = await this.httpGet<string[]>("/api/explore/fields", { idx });
+    return Array.isArray(result) ? result : [];
+  }
+
   async getSavedSearches(): Promise<HawkSavedSearch[]> {
     const result = await this.httpGet<HawkSavedSearch[]>("/api/explore/save");
     return Array.isArray(result) ? result : [];

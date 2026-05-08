@@ -1,6 +1,18 @@
 // Handles service worker registration, push subscription, and the "Enable Pager Alerts" UI
 
-const VAPID_PUBLIC_KEY = window.__VAPID_PUBLIC_KEY__ || "";
+let vapidPublicKey = "";
+
+async function fetchVapidKey() {
+  try {
+    const res = await fetch("/api/push-vapid-key");
+    if (res.ok) {
+      const data = await res.json();
+      vapidPublicKey = data.vapidPublicKey || "";
+    }
+  } catch {
+    console.warn("[Push] Could not fetch VAPID key — push notifications unavailable");
+  }
+}
 
 async function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) {
@@ -25,6 +37,11 @@ function urlBase64ToUint8Array(base64String) {
 }
 
 async function enablePagerAlerts() {
+  if (!vapidPublicKey) {
+    alert("Push notifications are not configured. Ask your admin to set VAPID_PUBLIC_KEY in .env");
+    return;
+  }
+
   const registration = await navigator.serviceWorker.ready;
 
   const permission = await Notification.requestPermission();
@@ -34,7 +51,7 @@ async function enablePagerAlerts() {
 
   const subscription = await registration.pushManager.subscribe({
     userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+    applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
   });
 
   const response = await fetch("/api/push-subscriptions", {
@@ -67,5 +84,6 @@ async function disablePagerAlerts() {
 window.enablePagerAlerts = enablePagerAlerts;
 window.disablePagerAlerts = disablePagerAlerts;
 
-// Auto-register service worker on page load
+// Auto-register service worker and fetch VAPID key on page load
 registerServiceWorker();
+fetchVapidKey();

@@ -12,6 +12,7 @@ export interface JiraIssue {
   fields: {
     summary: string;
     description?: any;
+    labels?: string[];
     status: {
       name: string;
       id: string;
@@ -176,6 +177,8 @@ export class JiraClient {
         maxResults,
         fields: [
           "summary",
+          "description",
+          "labels",
           "status",
           "assignee",
           "priority",
