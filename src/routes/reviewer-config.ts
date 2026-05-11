@@ -9,7 +9,6 @@ export interface ReviewerConfig {
   owner: string;
   reviewRepos: string[];
   pollIntervalMs: number;
-  maxReviewCycles: number;
   securityAgentCmd: string;
   qaAgentCmd: string;
   qualityAgentCmd: string;
@@ -72,7 +71,6 @@ export async function reviewerConfigRoutes(fastify: FastifyInstance) {
       owner: env.GITHUB_DEFAULT_OWNER || "redsand",
       reviewRepos: env.REVIEW_REPOS.split(",").filter(Boolean),
       pollIntervalMs: env.REVIEW_POLL_INTERVAL_MS,
-      maxReviewCycles: env.REVIEW_MAX_CYCLES,
       securityAgentCmd: env.SECURITY_AGENT_CMD,
       qaAgentCmd: env.QA_AGENT_CMD,
       qualityAgentCmd: env.QUALITY_AGENT_CMD,
@@ -85,28 +83,40 @@ export async function reviewerConfigRoutes(fastify: FastifyInstance) {
       owner?: string;
       repo?: string;
       prNumber?: number;
+      source?: "github" | "gitlab";
+      gitlabProject?: string;
     };
 
     if (!body.prNumber || typeof body.prNumber !== "number") {
       return { success: false, error: "prNumber (number) is required" };
     }
 
-    const owner = body.owner || env.GITHUB_DEFAULT_OWNER;
-    const repo = body.repo || env.GITHUB_DEFAULT_REPO;
-
-    if (!owner || !repo) {
-      return {
-        success: false,
-        error: "owner and repo are required (or set GITHUB_DEFAULT_OWNER/REPO)",
-      };
-    }
+    const source = body.source || "github";
 
     try {
-      const review = await reviewAssistant.reviewGitHubPullRequest({
-        owner,
-        repo,
-        prNumber: body.prNumber,
-      });
+      let review;
+
+      if (source === "gitlab") {
+        const projectId = body.gitlabProject || body.owner || env.GITLAB_DEFAULT_PROJECT;
+        if (!projectId) {
+          return { success: false, error: "gitlabProject is required for GitLab reviews (or set GITLAB_DEFAULT_PROJECT)" };
+        }
+        review = await reviewAssistant.reviewGitLabMergeRequest({
+          projectId,
+          mrIid: body.prNumber,
+        });
+      } else {
+        const owner = body.owner || env.GITHUB_DEFAULT_OWNER;
+        const repo = body.repo || env.GITHUB_DEFAULT_REPO;
+        if (!owner || !repo) {
+          return { success: false, error: "owner and repo are required (or set GITHUB_DEFAULT_OWNER/REPO)" };
+        }
+        review = await reviewAssistant.reviewGitHubPullRequest({
+          owner,
+          repo,
+          prNumber: body.prNumber,
+        });
+      }
 
       const findings = codeReviewToFindings(review);
       const hasCriticalOrHigh = findings.some(

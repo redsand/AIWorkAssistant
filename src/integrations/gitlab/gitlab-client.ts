@@ -303,21 +303,29 @@ export class GitlabClient {
 
     try {
       console.log(`[GitLab] Fetching MRs for project ${resolvedId}`);
-      const response = await this.client.get(
-        `/api/v4/projects/${resolvedId}/merge_requests`,
-        {
-          params: {
-            state: state || "opened",
-            per_page: 100,
-            order_by: "created_at",
-            sort: "desc",
+      const allMrs: any[] = [];
+      let page = 1;
+      let hasMore = true;
+      while (hasMore) {
+        const response = await this.client.get(
+          `/api/v4/projects/${resolvedId}/merge_requests`,
+          {
+            params: {
+              state: state || "opened",
+              per_page: 100,
+              page,
+              order_by: "created_at",
+              sort: "desc",
+            },
           },
-        },
-      );
-
-      const mrs = response.data || [];
-      console.log(`[GitLab] Found ${mrs.length} MRs`);
-      return mrs;
+        );
+        const batch = response.data || [];
+        allMrs.push(...batch);
+        hasMore = batch.length === 100;
+        page++;
+      }
+      console.log(`[GitLab] Found ${allMrs.length} MRs`);
+      return allMrs;
     } catch (error) {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
@@ -467,6 +475,74 @@ export class GitlabClient {
       }
       throw new Error(
         `Failed to merge MR: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
+  async rebaseMergeRequest(
+    projectId: number | string | undefined,
+    mrIid: number,
+  ): Promise<{ rebaseInProgress: boolean }> {
+    if (!this.isConfigured()) {
+      throw new Error("GitLab client not configured");
+    }
+
+    const resolvedId = this.resolveProjectId(projectId);
+
+    try {
+      console.log(`[GitLab] Rebasing MR !${mrIid}`);
+      const response = await this.client.put(
+        `/api/v4/projects/${resolvedId}/merge_requests/${mrIid}/rebase`,
+      );
+      console.log(`[GitLab] MR !${mrIid} rebase initiated`);
+      return response.data;
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        const data = error.response?.data as any;
+        if (status === 405) {
+          throw new Error(
+            `Cannot rebase MR !${mrIid}: ${data?.message || "rebase not allowed"}`,
+          );
+        } else if (status === 409) {
+          throw new Error(
+            `MR !${mrIid} rebase conflict: ${data?.message || "conflict during rebase"}`,
+          );
+        }
+      }
+      throw new Error(
+        `Failed to rebase MR: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
+  async getMergeRequestStatus(
+    projectId: number | string | undefined,
+    mrIid: number,
+  ): Promise<{
+    mergeStatus: string;
+    conflicts?: boolean;
+    pipelineStatus?: string;
+  }> {
+    if (!this.isConfigured()) {
+      throw new Error("GitLab client not configured");
+    }
+
+    const resolvedId = this.resolveProjectId(projectId);
+
+    try {
+      const response = await this.client.get(
+        `/api/v4/projects/${resolvedId}/merge_requests/${mrIid}`,
+      );
+      const mr = response.data;
+      return {
+        mergeStatus: mr.merge_status || "unknown",
+        conflicts: mr.merge_status === "cannot_be_merged",
+        pipelineStatus: mr.head_pipeline?.status,
+      };
+    } catch (error) {
+      throw new Error(
+        `Failed to get MR status: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
     }
   }
@@ -929,16 +1005,26 @@ export class GitlabClient {
       console.log(
         `[GitLab] Fetching notes for MR !${mrIid} in project ${resolvedId}`,
       );
-      const response = await this.client.get(
-        `/api/v4/projects/${resolvedId}/merge_requests/${mrIid}/notes`,
-        {
-          params: {
-            sort: sort || "desc",
-            per_page: 50,
+      const allNotes: any[] = [];
+      let page = 1;
+      let hasMore = true;
+      while (hasMore) {
+        const response = await this.client.get(
+          `/api/v4/projects/${resolvedId}/merge_requests/${mrIid}/notes`,
+          {
+            params: {
+              sort: sort || "desc",
+              per_page: 100,
+              page,
+            },
           },
-        },
-      );
-      const notes = (response.data || []).filter((n: any) => !n.system);
+        );
+        const batch = response.data || [];
+        allNotes.push(...batch);
+        hasMore = batch.length === 100;
+        page++;
+      }
+      const notes = allNotes.filter((n: any) => !n.system);
       console.log(`[GitLab] Found ${notes.length} notes for MR !${mrIid}`);
       return notes.map((n: any) => ({
         id: n.id,

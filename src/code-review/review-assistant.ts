@@ -1,6 +1,7 @@
 import { aiClient } from "../agent/opencode-client";
 import { githubClient } from "../integrations/github/github-client";
 import { gitlabClient } from "../integrations/gitlab/gitlab-client";
+import { jiraClient } from "../integrations/jira/jira-client";
 import { workItemDatabase } from "../work-items/database";
 import type { WorkItem } from "../work-items/types";
 import type {
@@ -51,6 +52,8 @@ const REVIEW_SYSTEM_PROMPT = `You are a senior staff engineer performing a thoro
 - rollbackConsiderations (string[]): what is needed to roll back safely. At least one item.
 - suggestedReviewComment (string): a markdown review comment Tim can post verbatim. Start with a brief summary, then bullet key points.
 
+Consider the original issue/ticket requirements alongside the code changes. If previous review comments exist, assess whether earlier feedback was addressed. The review should be holistic — does the code actually solve the stated problem? Are there gaps between what the issue asked for and what the code delivers?
+
 Be specific and actionable. Respond with ONLY the JSON object, no markdown fences.`;
 
 const RELEASE_SYSTEM_PROMPT = `You are a senior staff engineer preparing a release readiness assessment. Given a PR/MR changeset, produce a JSON object with these exact fields:
@@ -90,7 +93,7 @@ class ReviewAssistant {
 
   summarizeDiff(changeSet: ChangeSet): string {
     const MAX_PATCH_LINES = 40;
-    const MAX_TOTAL_CHARS = 6000;
+    const MAX_TOTAL_CHARS = 8000;
 
     const lines: string[] = [
       `Title: ${changeSet.title}`,
@@ -103,6 +106,18 @@ class ReviewAssistant {
 
     if (changeSet.description?.trim()) {
       lines.push("Description:", changeSet.description.trim().slice(0, 500), "");
+    }
+
+    if (changeSet.issueDescription?.trim()) {
+      lines.push("Original Issue:", changeSet.issueDescription.trim().slice(0, 800), "");
+    }
+
+    if (changeSet.existingComments.length > 0) {
+      lines.push("Previous review comments:");
+      for (const c of changeSet.existingComments.slice(0, 10)) {
+        lines.push(`  - ${c.slice(0, 200)}`);
+      }
+      lines.push("");
     }
 
     lines.push("Changed files:");
@@ -264,6 +279,8 @@ class ReviewAssistant {
       ? "pending"
       : "unknown";
 
+    const issueDescription = await this.fetchLinkedIssueDescription(pr.body || "", pr.head?.ref || "", "github", input.owner, input.repo);
+
     const changeSet: ChangeSet = {
       platform: "github",
       title: pr.title || "",
@@ -277,6 +294,7 @@ class ReviewAssistant {
       linesRemoved,
       ciStatus,
       existingComments: (commentsRaw || []).map((c: any) => c.body).filter(Boolean).slice(0, 10),
+      issueDescription,
       hasMigration: files.some((f) => MIGRATION_PATTERNS.some((p) => p.test(f.filename))),
       hasTests: files.some((f) => TEST_PATTERNS.some((p) => p.test(f.filename))),
       hasConfigChange: files.some((f) => CONFIG_PATTERNS.some((p) => p.test(f.filename))),
@@ -316,6 +334,8 @@ class ReviewAssistant {
         ? "pending"
         : "unknown";
 
+    const issueDescription = await this.fetchLinkedIssueDescription(mr.description || "", mr.source_branch || "", "gitlab");
+
     const changeSet: ChangeSet = {
       platform: "gitlab",
       title: mr.title || "",
@@ -329,6 +349,7 @@ class ReviewAssistant {
       linesRemoved,
       ciStatus,
       existingComments: (notesRaw || []).filter((n: any) => !n.system).map((n: any) => n.body).filter(Boolean).slice(0, 10),
+      issueDescription,
       hasMigration: files.some((f) => MIGRATION_PATTERNS.some((p) => p.test(f.filename))),
       hasTests: files.some((f) => TEST_PATTERNS.some((p) => p.test(f.filename))),
       hasConfigChange: files.some((f) => CONFIG_PATTERNS.some((p) => p.test(f.filename))),
@@ -431,6 +452,49 @@ class ReviewAssistant {
       hasTests: files.some((f) => TEST_PATTERNS.some((p) => p.test(f.filename))),
       hasConfigChange: files.some((f) => CONFIG_PATTERNS.some((p) => p.test(f.filename))),
     };
+  }
+
+  private async fetchLinkedIssueDescription(
+    mrBody: string,
+    branchName: string,
+    platform: "github" | "gitlab",
+    owner?: string,
+    repo?: string,
+  ): Promise<string | undefined> {
+    try {
+      if (platform === "gitlab") {
+        // Try Jira key from description or branch
+        const jiraKey = this.extractJiraKey(mrBody) || this.extractJiraKeyFromBranch(branchName);
+        if (jiraKey && jiraClient.isConfigured()) {
+          const issue = await jiraClient.getIssue(jiraKey);
+          const fields = issue.fields as any;
+          return fields?.description ? `[${jiraKey}] ${fields.summary}: ${fields.description}`.slice(0, 800) : undefined;
+        }
+      } else {
+        // Try GitHub issue from PR body
+        const issueNum = (mrBody.match(/(?:closes|fixes|resolves)\s+#(\d+)/i) || [])[1]
+          || (branchName.match(/issue-(\d+)/i) || [])[1];
+        if (issueNum && owner && repo) {
+          const issue = await githubClient.getIssue(parseInt(issueNum, 10), owner, repo).catch(() => null);
+          if (issue) {
+            return `[#${issueNum}] ${issue.title}: ${issue.body || ""}`.slice(0, 800);
+          }
+        }
+      }
+    } catch {
+      // Non-fatal: issue fetch is best-effort context enrichment
+    }
+    return undefined;
+  }
+
+  private extractJiraKey(text: string): string | null {
+    const match = text.match(/\b([A-Z]+-\d+)\b/);
+    return match ? match[1] : null;
+  }
+
+  private extractJiraKeyFromBranch(branch: string): string | null {
+    const match = branch.match(/issue-([a-z]+-\d+)/i);
+    return match ? match[1].toUpperCase() : null;
   }
 
   private async buildReview(changeSet: ChangeSet): Promise<CodeReview> {

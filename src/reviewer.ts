@@ -5,6 +5,9 @@ import axios from "axios";
 import { gitlabClient } from "./integrations/gitlab/gitlab-client";
 import { jiraClient } from "./integrations/jira/jira-client";
 
+// Review result markers (must match aicoder.ts markers)
+const REVIEW_MERGE_CONFLICT_MARKER = "Merge Failed — Conflict Requires Rebase";
+
 function parseArgv(): Record<string, string> {
   const out: Record<string, string> = {};
   const argv = process.argv.slice(2);
@@ -33,7 +36,6 @@ Local config (.env):
   REVIEW_REPOS              Comma-separated repo names to watch
   REVIEW_SOURCE             Source platform: github | gitlab (default: github)
   REVIEW_POLL_INTERVAL_MS   Poll interval (default: 30000)
-  REVIEW_MAX_CYCLES         Max review cycles per PR/MR (default: 5)
   SECURITY_AGENT_CMD        External security review command
   QA_AGENT_CMD              External QA review command
   QUALITY_AGENT_CMD         External code quality command
@@ -73,7 +75,6 @@ interface ReviewerConfig {
   owner: string;
   reviewRepos: string[];
   pollIntervalMs: number;
-  maxReviewCycles: number;
   securityAgentCmd: string;
   qaAgentCmd: string;
   qualityAgentCmd: string;
@@ -146,7 +147,6 @@ async function loadConfig(): Promise<ReviewerConfig> {
     owner: ARGV.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand",
     reviewRepos: (ARGV.repo || process.env.REVIEW_REPOS || "").split(",").filter(Boolean),
     pollIntervalMs: parseInt(ARGV["poll-ms"] || process.env.REVIEW_POLL_INTERVAL_MS || "30000", 10),
-    maxReviewCycles: parseInt(process.env.REVIEW_MAX_CYCLES || "5", 10),
     securityAgentCmd: process.env.SECURITY_AGENT_CMD || "review-agent --category security",
     qaAgentCmd: process.env.QA_AGENT_CMD || "review-agent --category qa",
     qualityAgentCmd: process.env.QUALITY_AGENT_CMD || "review-agent --category quality",
@@ -217,6 +217,7 @@ interface MergeRequest {
   body: string | null;
   author: string;
   diff: string;
+  sourceBranch?: string;
 }
 
 interface VcsClient {
@@ -228,6 +229,7 @@ interface VcsClient {
   addLabelToIssue(project: string, issueNumber: number, label: string): Promise<void>;
   addCommentToIssue(project: string, issueNumber: number, body: string): Promise<void>;
   extractLinkedIssueKey(mrBody: string | null): string | null;
+  extractIssueKeyFromBranch(branchName: string | undefined): string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +246,7 @@ class GithubVcsClient implements VcsClient {
       body: pr.body || null,
       author: pr.user?.login || "",
       diff: "",
+      sourceBranch: pr.head?.ref,
     }));
   }
 
@@ -275,6 +278,13 @@ class GithubVcsClient implements VcsClient {
     const match = (mrBody || "").match(/(?:closes|fixes|resolves)\s+#(\d+)/i);
     return match ? match[1] : null;
   }
+
+  extractIssueKeyFromBranch(branchName: string | undefined): string | null {
+    if (!branchName) return null;
+    // Match GitHub-style branch: ai/issue-51-...
+    const numMatch = branchName.match(/issue-(\d+)/i);
+    return numMatch ? numMatch[1] : null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +301,7 @@ class GitlabJiraVcsClient implements VcsClient {
       body: mr.description || null,
       author: mr.author?.username || "",
       diff: "",
+      sourceBranch: mr.source_branch,
     }));
   }
 
@@ -316,6 +327,28 @@ class GitlabJiraVcsClient implements VcsClient {
   }
 
   async merge(_project: string, mrNumber: number, title: string, message: string): Promise<void> {
+    // Check for conflicts before attempting merge
+    const status = await gitlabClient.getMergeRequestStatus(this.projectId, mrNumber);
+
+    if (status.conflicts || status.mergeStatus === "cannot_be_merged") {
+      // Attempt rebase to resolve conflicts
+      try {
+        await gitlabClient.rebaseMergeRequest(this.projectId, mrNumber);
+        // Wait for rebase to complete (poll up to 60s)
+        for (let i = 0; i < 30; i++) {
+          await new Promise((r) => setTimeout(r, 2000));
+          const current = await gitlabClient.getMergeRequestStatus(this.projectId, mrNumber);
+          if (current.mergeStatus === "can_be_merged") break;
+          if (current.mergeStatus === "cannot_be_merged") {
+            throw new Error("Rebase completed but conflicts still exist");
+          }
+        }
+      } catch (rebaseErr) {
+        const rebaseMsg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
+        throw new Error(`Cannot merge MR !${mrNumber}: conflicts detected and rebase failed — ${rebaseMsg}`);
+      }
+    }
+
     await gitlabClient.acceptMergeRequest(this.projectId, mrNumber, {
       squashCommitMessage: `${title}\n\n${message}`,
       shouldRemoveSourceBranch: true,
@@ -332,12 +365,26 @@ class GitlabJiraVcsClient implements VcsClient {
   }
 
   extractLinkedIssueKey(mrBody: string | null): string | null {
-    // Match Jira keys like IR-63, PROJ-123
-    const jiraMatch = (mrBody || "").match(/(?:closes|fixes|resolves)\s+([A-Z]+-\d+)/i);
+    const body = mrBody || "";
+    // Match Jira keys after closes/fixes/resolves (e.g. "Closes IR-82")
+    const jiraMatch = body.match(/(?:closes|fixes|resolves)\s+([A-Z]+-\d+)/i);
     if (jiraMatch) return jiraMatch[1];
-    // Also match bare Jira keys in the MR description
-    const bareMatch = (mrBody || "").match(/\b([A-Z]+-\d+)\b/);
+    // Match "Issue: IR-82" line added by aicoder
+    const issueLine = body.match(/^Issue:\s*([A-Z]+-\d+)/m);
+    if (issueLine) return issueLine[1];
+    // Also match bare Jira keys anywhere in the description
+    const bareMatch = body.match(/\b([A-Z]+-\d+)\b/);
     return bareMatch ? bareMatch[1] : null;
+  }
+
+  extractIssueKeyFromBranch(branchName: string | undefined): string | null {
+    if (!branchName) return null;
+    // Match Jira-style branch: ai/issue-ir-82-... or ai/issue-IR-82-...
+    const jiraBranch = branchName.match(/issue-([a-z]+-\d+)/i);
+    if (jiraBranch) return jiraBranch[1].toUpperCase();
+    // Match numeric branch: ai/issue-51-...
+    const numBranch = branchName.match(/issue-(\d+)/i);
+    return numBranch ? numBranch[1] : null;
   }
 }
 
@@ -376,12 +423,23 @@ async function addLabelToJiraIssue(key: string, label: string): Promise<void> {
 async function runAiReview(
   remoteUrl: string,
   remoteKey: string,
-  owner: string,
-  repo: string,
+  target: RepoTarget,
+  config: ReviewerConfig,
   prNumber: number,
 ): Promise<ReviewResult> {
   console.log(`[REVIEW] Delegating PR #${prNumber} review to AIWorkAssistant`);
   try {
+    const owner = target.source === "gitlab" ? (target.gitlabProject || config.gitlabProject) : config.owner;
+    const requestBody: Record<string, unknown> = {
+      owner,
+      repo: target.name,
+      prNumber,
+      source: target.source,
+    };
+    if (target.source === "gitlab" && target.gitlabProject) {
+      requestBody.gitlabProject = target.gitlabProject;
+    }
+
     const response = await axios.post<{
       success: boolean;
       clean?: boolean;
@@ -390,7 +448,7 @@ async function runAiReview(
       error?: string;
     }>(
       `${remoteUrl}/api/reviewer/review`,
-      { owner, repo, prNumber },
+      requestBody,
       { headers: { Authorization: `Bearer ${remoteKey}` } },
     );
 
@@ -481,18 +539,15 @@ async function pollMergeRequests(
 
       console.log(`[REVIEW] Found AI MR !${mr.number} in ${target.source}:${target.name}: ${mr.title}`);
 
-      const reviewCycleCount = await getReviewCycleCount(vcs, target.name, mr.number);
-      if (reviewCycleCount >= config.maxReviewCycles) {
-        console.log(`[BLOCKED] MR !${mr.number} exceeded max review cycles (${config.maxReviewCycles})`);
-        reviewedMRs.add(mrKey);
-        continue;
-      }
-
       const result = await runMultiAgentReview(config, target, mr.number);
       reviewedMRs.add(mrKey);
 
       if (result.clean) {
-        await mergeWithSummary(vcs, target.name, mr, result);
+        const mergeStatus = await mergeWithSummary(vcs, target.name, mr, result);
+        if (mergeStatus === "conflict") {
+          // Remove from reviewed so the reviewer re-evaluates after aicoder rebases
+          reviewedMRs.delete(mrKey);
+        }
       } else if (isServiceUnavailable(result)) {
         await postPostponed(vcs, target.name, mr, result);
         // Remove from reviewed so next cycle retries
@@ -521,8 +576,7 @@ async function runMultiAgentReview(
 
   // For remote review, delegate to the server
   if (remoteUrl && remoteKey) {
-    const owner = target.source === "gitlab" ? (target.gitlabProject || config.gitlabProject) : config.owner;
-    return runAiReview(remoteUrl, remoteKey, owner, target.name, mrNumber);
+    return runAiReview(remoteUrl, remoteKey, target, config, mrNumber);
   }
 
   // Local review: fetch diff and run agents
@@ -599,28 +653,55 @@ async function mergeWithSummary(
   project: string,
   mr: { number: number; title: string },
   result: ReviewResult,
-): Promise<void> {
+): Promise<"merged" | "conflict" | "failed"> {
   const agentLine = formatAgentStatus(result.agentStatus);
-  await vcs.addComment(
-    project,
-    mr.number,
-    `## ✅ Review Passed — Merging\n\n${result.summary}\n\n${agentLine}\n\nMerging now.`,
-  );
-  await vcs.merge(project, mr.number, `Merge [AI] ${mr.title}`, result.summary);
-  console.log(`[MERGE] MR !${mr.number} merged in ${project}`);
+  try {
+    await vcs.addComment(
+      project,
+      mr.number,
+      `## ✅ Review Passed — Merging\n\n${result.summary}\n\n${agentLine}\n\nMerging now.`,
+    );
+    await vcs.merge(project, mr.number, `Merge [AI] ${mr.title}`, result.summary);
+    console.log(`[MERGE] MR !${mr.number} merged in ${project}`);
+    return "merged";
+  } catch (mergeErr) {
+    const errMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+    const isConflict = /conflict|cannot_be_merged|rebase failed/i.test(errMsg);
+    console.error(`[MERGE] Failed to merge MR !${mr.number}: ${errMsg}`);
+
+    if (isConflict) {
+      await vcs.addComment(
+        project,
+        mr.number,
+        `## ⚠️ Review Passed — ${REVIEW_MERGE_CONFLICT_MARKER}\n\n${result.summary}\n\n${agentLine}\n\nMerge could not be completed due to conflicts with the base branch: ${errMsg}\n\nThe autonomous agent will attempt to rebase and resolve conflicts.`,
+      ).catch(() => {});
+      return "conflict";
+    } else {
+      await vcs.addComment(
+        project,
+        mr.number,
+        `## ⚠️ Review Passed — Merge Failed\n\n${result.summary}\n\n${agentLine}\n\nMerge could not be completed automatically: ${errMsg}\n\nManual merge required.`,
+      ).catch(() => {});
+      return "failed";
+    }
+  }
 }
 
 async function postReworkPrompt(
   vcs: VcsClient,
   project: string,
-  mr: { number: number; title: string; body: string | null },
+  mr: { number: number; title: string; body: string | null; sourceBranch?: string },
   result: ReviewResult,
 ): Promise<void> {
   await vcs.addComment(project, mr.number, formatReviewFindings(result));
 
-  const issueKey = vcs.extractLinkedIssueKey(mr.body);
+  let issueKey = vcs.extractLinkedIssueKey(mr.body);
   if (!issueKey) {
-    console.log(`[WARN] MR !${mr.number} has no linked issue — cannot post rework prompt`);
+    // Fallback: extract from branch name (e.g. ai/issue-ir-82-slug)
+    issueKey = vcs.extractIssueKeyFromBranch(mr.sourceBranch);
+  }
+  if (!issueKey) {
+    console.log(`[WARN] MR !${mr.number} has no linked issue in description or branch name — cannot post rework prompt`);
     return;
   }
 
@@ -659,17 +740,6 @@ function buildReworkPrompt(result: ReviewResult): string {
     );
 
   return `## Coding Prompt\n\n### Rework from PR Review\n\nThe following issues must be fixed before merge:\n\n${tasks.join("\n")}\n\n### Reasoning\nThese findings were identified by the security, QA, and code quality review agents. All critical and high severity issues must be resolved. Re-run the full implementation addressing each finding.`;
-}
-
-async function getReviewCycleCount(
-  vcs: VcsClient,
-  project: string,
-  mrNumber: number,
-): Promise<number> {
-  const comments = await vcs.listComments(project, mrNumber);
-  return comments.filter((c) =>
-    (c.body as string)?.includes("Review Failed — Rework Required"),
-  ).length;
 }
 
 async function main(): Promise<void> {

@@ -29,6 +29,7 @@ export interface ChangeSet {
   linesRemoved: number;
   ciStatus: "success" | "failed" | "pending" | "unknown";
   existingComments: string[];
+  issueDescription?: string;
   hasMigration: boolean;
   hasTests: boolean;
   hasConfigChange: boolean;

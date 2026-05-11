@@ -252,7 +252,6 @@ const envSchema = z.object({
   // Reviewer agent (src/reviewer.ts)
   REVIEW_REPOS: z.string().default(""),
   REVIEW_POLL_INTERVAL_MS: z.coerce.number().default(30000),
-  REVIEW_MAX_CYCLES: z.coerce.number().default(5),
   REVIEW_SOURCE: z.enum(["github", "gitlab"]).default("github"),
   SECURITY_AGENT_CMD: z.string().default("review-agent --category security"),
   QA_AGENT_CMD: z.string().default("review-agent --category qa"),
