@@ -49,3 +49,9 @@ temp/
 
 # AiRemoteCoder state
 .aicoder/
+*.log.bak
+.build-tmp/
+.pip-tmp/
+.pytest_tmp/
+packaging-test-*/
+*.egg-info/
