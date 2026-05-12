@@ -287,8 +287,8 @@ describe("E2E: Calendar CRUD + ICS Export", () => {
         title: "E2E Health Break",
         startTime,
         duration: 30,
-        healthType: "fitness",
-        description: "Morning workout",
+        type: "fitness",
+        autoSchedule: true,
       },
     });
 
