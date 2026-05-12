@@ -1,6 +1,8 @@
 #!/usr/bin/env tsx
 import "dotenv/config";
 import { execSync } from "child_process";
+import fs from "fs";
+import path from "path";
 import axios from "axios";
 import { gitlabClient } from "./integrations/gitlab/gitlab-client";
 import { jiraClient } from "./integrations/jira/jira-client";
@@ -528,8 +530,54 @@ async function runAiReview(
   }
 }
 
-const reviewedMRs = new Set<string>(); // "project/mrNumber"
+const reviewedMRs = new Set<string>(); // "source:project/mrNumber"
 const reviewedMRShas = new Map<string, string>(); // mrKey → last_commit_sha
+
+// ── Persistent reviewer state ────────────────────────────────────────────────
+const REVIEWER_STATE_FILE = path.join(process.cwd(), ".aicoder", "reviewer-state.json");
+
+interface ReviewerState {
+  reviewedMRs: string[];
+  reviewedMRShas: Record<string, string>;
+  updatedAt: string;
+}
+
+function loadReviewerState(): void {
+  try {
+    if (fs.existsSync(REVIEWER_STATE_FILE)) {
+      const data: ReviewerState = JSON.parse(fs.readFileSync(REVIEWER_STATE_FILE, "utf-8"));
+      if (data.reviewedMRs) {
+        data.reviewedMRs.forEach((key: string) => reviewedMRs.add(key));
+      }
+      if (data.reviewedMRShas) {
+        Object.entries(data.reviewedMRShas).forEach(([key, sha]: [string, string]) => {
+          reviewedMRShas.set(key, sha);
+        });
+      }
+      const total = reviewedMRs.size;
+      if (total > 0) {
+        log.config(`Resumed with ${total} previously reviewed MR(s)`);
+      }
+    }
+  } catch (err) {
+    log.warn(`Could not load reviewer state: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+function saveReviewerState(): void {
+  try {
+    const dir = path.dirname(REVIEWER_STATE_FILE);
+    fs.mkdirSync(dir, { recursive: true });
+    const state: ReviewerState = {
+      reviewedMRs: [...reviewedMRs],
+      reviewedMRShas: Object.fromEntries(reviewedMRShas),
+      updatedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(REVIEWER_STATE_FILE, JSON.stringify(state, null, 2), "utf-8");
+  } catch (err) {
+    log.warn(`Could not persist reviewer state: ${err instanceof Error ? err.message : err}`);
+  }
+}
 
 function isServiceUnavailable(result: ReviewResult): boolean {
   return result.serviceUnavailable === true ||
@@ -616,6 +664,7 @@ async function pollMergeRequests(
       }
 
       reviewedMRs.add(mrKey);
+      saveReviewerState();
 
       if (result.clean) {
         log.clean(`MR !${mr.number} passed review — merging`);
@@ -623,6 +672,7 @@ async function pollMergeRequests(
         if (mergeStatus === "conflict") {
           // Remove from reviewed so the reviewer re-evaluates after aicoder rebases
           reviewedMRs.delete(mrKey);
+          saveReviewerState();
         }
       } else if (isServiceUnavailable(result)) {
         log.warn(`MR !${mr.number} review service unavailable — postponing`);
@@ -630,6 +680,21 @@ async function pollMergeRequests(
         // Remove SHA so we don't skip on retry — the review didn't actually complete
         reviewedMRShas.delete(mrKey);
         reviewedMRs.delete(mrKey);
+        saveReviewerState();
+      } else if (result.findings.every((f) => f.severity === "medium" || f.severity === "low")) {
+        // Only medium/low findings — approve with comments and create a tracking issue
+        log.clean(`MR !${mr.number} passed review with comments — no critical/high findings, merging`);
+        const mergeResult = await mergeWithSummary(vcs, target.name, mr, {
+          ...result,
+          clean: true,
+          summary: `${result.summary} (approved with suggestions — no blocking findings)`,
+        });
+        if (mergeResult === "conflict") {
+          reviewedMRs.delete(mrKey);
+          saveReviewerState();
+        }
+        // Post suggestions as a comment and create a tracking issue
+        await postSuggestionsWithTracking(target, vcs, target.name, mr, result);
       } else {
         log.rework(`MR !${mr.number} needs rework — ${result.findings.length} findings (${result.summary})`);
         for (const f of result.findings) {
@@ -826,8 +891,78 @@ function buildReworkPrompt(result: ReviewResult): string {
   return `## Coding Prompt\n\n### Rework from PR Review\n\nThe following issues must be fixed before merge:\n\n${tasks.join("\n")}\n\n### Reasoning\nThese findings were identified by the security, QA, and code quality review agents. All critical and high severity issues must be resolved. Re-run the full implementation addressing each finding.`;
 }
 
+async function postSuggestionsWithTracking(
+  target: RepoTarget,
+  vcs: VcsClient,
+  project: string,
+  mr: { number: number; title: string; body: string | null; sourceBranch?: string },
+  result: ReviewResult,
+): Promise<void> {
+  // Post suggestions as a comment on the MR
+  const suggestionLines = result.findings.map(
+    (f) =>
+      `- **[${f.severity.toUpperCase()}]** [${f.category}] ${f.file}${f.line ? `:${f.line}` : ""}: ${f.message}\n  → Suggestion: ${f.suggestion}`,
+  );
+  const commentBody = `## ✅ Review Passed with Suggestions\n\n${result.summary}\n\nNo blocking (critical/high) findings were identified. The suggestions below are non-blocking improvements:\n\n${suggestionLines.join("\n")}\n\nA tracking item has been created for these suggestions.`;
+  await vcs.addComment(project, mr.number, commentBody);
+
+  // Determine the origin issue key from the MR body or branch
+  let issueKey = vcs.extractLinkedIssueKey(mr.body);
+  if (!issueKey) {
+    issueKey = vcs.extractIssueKeyFromBranch(mr.sourceBranch);
+  }
+
+  const isJiraKey = issueKey ? /^[A-Z]+-\d+$/.test(issueKey) : false;
+  const suggestionComment = buildSuggestionComment(result);
+
+  if (isJiraKey && jiraClient.isConfigured()) {
+    // Origin is Jira — post suggestions on the Jira ticket
+    await addCommentToJiraIssue(issueKey!, suggestionComment);
+    log.jira(`Posted suggestions on Jira ${issueKey} for MR !${mr.number}`);
+  } else if (target.source === "gitlab") {
+    // Origin is GitLab — create a GitLab issue for tracking
+    const gitlabProject = target.gitlabProject || project;
+    try {
+      const issue = await gitlabClient.createIssue(gitlabProject, {
+        title: `[Review Suggestions] MR !${mr.number}: ${mr.title}`,
+        description: buildSuggestionIssueBody(mr, result),
+        labels: "review-suggestions",
+      });
+      log.gitlab(`Created GitLab tracking issue #${issue.iid} for MR !${mr.number} suggestions`);
+    } catch (err) {
+      log.warn(`Could not create GitLab tracking issue: ${err instanceof Error ? err.message : err}`);
+    }
+  } else if (issueKey && /^\d+$/.test(issueKey)) {
+    // Origin is a GitHub issue — post suggestions as a comment on the linked issue
+    await vcs.addCommentToIssue(project, parseInt(issueKey, 10), suggestionComment);
+    log.rework(`Posted suggestions on GitHub issue #${issueKey} for MR !${mr.number}`);
+  } else {
+    log.warn(`MR !${mr.number} has no linked issue — cannot create tracking item for suggestions`);
+  }
+}
+
+function buildSuggestionComment(result: ReviewResult): string {
+  const items = result.findings.map(
+    (f) =>
+      `- [${f.severity.toUpperCase()}/${f.category}] ${f.file}${f.line ? `:${f.line}` : ""}: ${f.message}\n  Suggestion: ${f.suggestion}`,
+  );
+  return `## Non-blocking Review Suggestions\n\nThe following suggestions were noted during review but are not blocking:\n\n${items.join("\n")}\n\nThese can be addressed in a future iteration.`;
+}
+
+function buildSuggestionIssueBody(
+  mr: { number: number; title: string },
+  result: ReviewResult,
+): string {
+  const items = result.findings.map(
+    (f) =>
+      `- [${f.severity.toUpperCase()}/${f.category}] ${f.file}${f.line ? `:${f.line}` : ""}: ${f.message}\n  Suggestion: ${f.suggestion}`,
+  );
+  return `## Non-blocking Review Suggestions for MR !${mr.number}\n\nOrigin: ${mr.title}\n\n${items.join("\n")}\n\nThese suggestions were identified during code review but are not blocking.`;
+}
+
 async function main(): Promise<void> {
   log.start("AIWorkAssistant review agent started");
+  loadReviewerState();
   const config = await loadConfig();
 
   const source = config.source;

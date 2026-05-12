@@ -40,15 +40,17 @@ Options:
   --max-cycles <n>     Stop after n work cycles (0 = unlimited)
   --issue <number>     Work on a specific issue by number (skips polling, runs once)
   --publish <branch>   Create PR/MR from an existing branch and exit
+  --watch <key>        Watch an existing PR/MR for review feedback and rework (issue key or number)
   --skip-baseline     Skip baseline test check before agent starts (only test after)
   --skip-agent        Skip agent execution — commit/test/push existing changes only
   --skip-tests        Skip all tests and coverage checks — just commit and push
   --resume-run        Resume from saved run state (if available)
   --discard-run       Discard saved run state and start fresh
+  -f, --force         Force re-processing of an already-processed issue
   --debug             Write raw LLM stream events to .aicoder/logs/ for inspection
   --base <branch>      Base branch to start from (default: main). Use this to chain PRs.
   --poll                Use legacy fire-and-forget poll mode (default: focused mode)
-  --max-rework <n>      Max rework cycles per issue in focused mode (default: 5)
+  --max-rework <n>      Max rework cycles per issue in focused mode (default: 10)
   --review-poll-ms <ms> Review result poll interval in focused mode (default: 30000)
   --wait-for-deps       Wait for unresolved dependencies instead of skipping
   --help                Show this help
@@ -75,6 +77,13 @@ Remote config (fetches everything else from AIWorkAssistant):
     } else if (argv[i] === "--resume-run") {
       out["resume-run"] = "true";
     } else if (argv[i] === "--discard-run") {
+      out["discard-run"] = "true";
+    } else if (argv[i] === "--force" || argv[i] === "-f") {
+      out["force"] = "true";
+    } else if (argv[i] === "--watch" && argv[i + 1] && !argv[i + 1].startsWith("--")) {
+      out["watch"] = argv[i + 1];
+      i++;
+      out["force"] = "true";
       out["discard-run"] = "true";
     }
   }
@@ -119,6 +128,9 @@ const ARGV = parseArgv();
  */
 
 const FIN_TOKEN = process.env.FIN_SIGNAL || "FIN";
+const FIN_ESCAPED = FIN_TOKEN.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const FIN_REGEX = new RegExp(`(?:^|\\s)${FIN_ESCAPED}(?:$|\\s)`);
+const FIN_LINE_REGEX = new RegExp(`^${FIN_ESCAPED}$`, "m");
 const POLL_MS = parseInt(ARGV["poll-ms"] || process.env.AICODER_POLL_MS || "60000", 10);
 const MAX_CYCLES = parseInt(ARGV["max-cycles"] || process.env.AICODER_MAX_CYCLES || "0", 10);
 const WORKSPACE = ARGV.workspace || process.env.AICODER_WORKSPACE || process.cwd();
@@ -134,13 +146,15 @@ const SKIP_AGENT = "skip-agent" in ARGV || process.env.AICODER_SKIP_AGENT === "t
 const SKIP_TESTS = "skip-tests" in ARGV || process.env.AICODER_SKIP_TESTS === "true";
 const RESUME_RUN = "resume-run" in ARGV;
 const DISCARD_RUN = "discard-run" in ARGV;
+const FORCE_REPROCESS = "force" in ARGV;
+const WATCH_ISSUE = ARGV.watch || null;
 const MODEL = ARGV.model || process.env.AICODER_MODEL || "";
 const OLLAMA_URL = process.env.OLLAMA_API_URL || "http://localhost:11434";
 const TARGET_ISSUE_KEY = ARGV.issue || null;
 const PUBLISH_BRANCH = ARGV.publish || null;
 const BASE_BRANCH_CANDIDATES = [ARGV.base || process.env.AICODER_BASE_BRANCH, "main", "master"].filter(Boolean) as string[];
 const FOCUSED_MODE = !("poll" in ARGV || process.env.AICODER_POLL_MODE === "true");
-const MAX_REWORK = parseInt(ARGV["max-rework"] || process.env.AICODER_MAX_REWORK || "5", 10);
+const MAX_REWORK = parseInt(ARGV["max-rework"] || process.env.AICODER_MAX_REWORK || "10", 10);
 const REVIEW_POLL_MS = parseInt(ARGV["review-poll-ms"] || process.env.AICODER_REVIEW_POLL_MS || "30000", 10);
 const WAIT_FOR_DEPS = "wait-for-deps" in ARGV || process.env.AICODER_WAIT_FOR_DEPS === "true";
 
@@ -586,6 +600,29 @@ async function findExistingGitLabMR(
   }
 }
 
+/** Find an existing open GitHub PR for the given source branch. */
+async function findExistingGitHubPR(
+  ghToken: string | undefined,
+  owner: string,
+  repo: string,
+  branchName: string,
+): Promise<{ number: number; html_url: string } | null> {
+  if (!ghToken || !owner || !repo) return null;
+  try {
+    const resp = await axios.get(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
+      params: { state: "open", head: `${owner}:${branchName}`, per_page: 5 },
+      headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" },
+    });
+    const prs = resp.data;
+    if (prs.length > 0) {
+      return { number: prs[0].number, html_url: prs[0].html_url };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function createPR(
   cfg: ServerConfig,
   item: WorkItem,
@@ -644,12 +681,15 @@ async function createPR(
   }
 
   // Default: GitHub PR
+  const ghToken = process.env.GITHUB_TOKEN;
+  const owner = item.owner || cfg.owner || "redsand";
+  const repo = item.repo || cfg.repo || "";
   try {
     const resp = await axios.post<{ success: boolean; prNumber: number; url: string }>(
       `${cfg.apiUrl}/api/autonomous-loop/pr`,
       {
-        owner: item.owner || cfg.owner,
-        repo: item.repo || cfg.repo,
+        owner,
+        repo,
         title: `[AI] ${item.title}`,
         head: branchName,
         base: "main",
@@ -657,11 +697,37 @@ async function createPR(
       },
       { headers: authHeaders(cfg) },
     );
-    return resp.data.success
-      ? { prNumber: resp.data.prNumber, url: resp.data.url }
-      : null;
-  } catch (err) {
-    runLogger.logError(`PR creation failed: ${(err as Error).message}`);
+    if (resp.data.success) {
+      return { prNumber: resp.data.prNumber, url: resp.data.url };
+    }
+
+    // PR creation returned non-success — check if PR already exists
+    const errMsg = (resp.data as any).error ?? (resp.data as any).message ?? "";
+    if (errMsg.includes("already exists") || errMsg.includes("already open") || errMsg.includes("422") || errMsg.includes("Validation Failed")) {
+      runLogger.logGit(`PR already exists for branch ${branchName} — looking up existing PR`);
+      const existing = await findExistingGitHubPR(ghToken, owner, repo, branchName);
+      if (existing) {
+        runLogger.logGit(`Found existing PR #${existing.number}: ${existing.html_url}`);
+        return { prNumber: existing.number, url: existing.html_url };
+      }
+    }
+
+    runLogger.logError(`GitHub PR creation failed: ${errMsg || "unknown error"}`);
+    return null;
+  } catch (err: any) {
+    const errMsg = (err as Error).message;
+    const status = err?.response?.status;
+    // 422 almost always means PR already exists for this branch
+    // Handle "already exists" from the axios error response
+    if (status === 422 || errMsg.includes("already exists") || errMsg.includes("already open") || errMsg.includes("Validation Failed")) {
+      runLogger.logGit(`PR already exists for branch ${branchName} — looking up existing PR`);
+      const existing = await findExistingGitHubPR(ghToken, owner, repo, branchName);
+      if (existing) {
+        runLogger.logGit(`Found existing PR #${existing.number}: ${existing.html_url}`);
+        return { prNumber: existing.number, url: existing.html_url };
+      }
+    }
+    runLogger.logError(`PR creation failed: ${errMsg}`);
     return null;
   }
 }
@@ -1641,6 +1707,7 @@ function runTestSuite(suiteKind: TestSuiteKind = "all"): TestSuiteResult {
   runLogger.logGit(`Running ${suiteKind} tests`, command.join(" "));
   const result = spawnSync(command[0], command.slice(1), {
     cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8", timeout,
+    shell: process.platform === "win32",
   });
 
   const stdout = (result.stdout || "").trim();
@@ -1693,6 +1760,7 @@ function checkCoverage(): { passed: boolean; kind: TestSuiteOutcome } {
   runLogger.logGit("Checking coverage thresholds", cfg.coverageCommand.join(" "));
   const result = spawnSync(cfg.coverageCommand[0], cfg.coverageCommand.slice(1), {
     cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8", timeout: 300_000,
+    shell: process.platform === "win32",
   });
 
   const stdout = (result.stdout || "").trim();
@@ -1900,6 +1968,86 @@ async function fixBaselineTests(_cfg: ServerConfig, item: WorkItem): Promise<boo
   }
 
   runLogger.logError(`Baseline tests still failing after ${maxAttempts} fix attempts — aborting`);
+  return false;
+}
+
+/**
+ * Fix failing tests after a rework cycle. Runs the agent with a fix prompt,
+ * commits, and re-tests — up to MAX_REWORK_FIX_ATTEMPTS times.
+ */
+const MAX_REWORK_FIX_ATTEMPTS = 2;
+
+async function fixReworkTests(item: WorkItem, reworkCount: number): Promise<boolean> {
+  if (SKIP_TESTS) {
+    runLogger.logConfig("Skipping all tests after rework (--skip-tests)");
+    return true;
+  }
+
+  // First, just run the tests to see if they pass
+  const unitResult = runTestSuite("unit");
+  if (unitResult.kind === "spawn_error") {
+    runLogger.logError(`Unit tests could not start: ${unitResult.error}`);
+    return false;
+  }
+
+  if (unitResult.passed) {
+    const integrationResult = runTestSuite("integration");
+    if (integrationResult.kind === "spawn_error") {
+      runLogger.logConfig("Integration tests could not start — skipping");
+      return true;
+    }
+    if (!integrationResult.passed) {
+      // Fall through to fix loop
+    } else {
+      const coverageResult = checkCoverage();
+      if (!coverageResult.passed && coverageResult.kind !== "spawn_error") {
+        // Coverage failed but tests passed — don't block on this
+        runLogger.logConfig("Coverage below threshold after rework — proceeding");
+      }
+      return true;
+    }
+  }
+
+  // Tests failed — attempt to fix with agent
+  runLogger.logError("Rework tests FAILED — attempting to fix");
+
+  let attempts = 0;
+  let lastOutput = !unitResult.passed ? unitResult.output : runTestSuite("integration").output;
+  const maxAttempts = Math.min(MAX_REWORK_FIX_ATTEMPTS, MAX_REWORK - reworkCount);
+
+  while (attempts < maxAttempts) {
+    attempts++;
+    runLogger.logWork(`Test fix attempt ${attempts}/${maxAttempts} after rework`);
+
+    const fixPrompt = buildBaselineFixPrompt(lastOutput, item);
+    const { finDetected, exitCode } = await runAgent(fixPrompt);
+
+    if (!finDetected && exitCode !== 0) {
+      runLogger.logError(`Test fix agent exited with code ${exitCode ?? "unknown"} — stopping`);
+      return false;
+    }
+
+    if (!stageAndCommit(`[AI] rework #${reworkCount} test fix attempt ${attempts}`)) {
+      runLogger.logError("Test fix stage/commit failed — stopping");
+      return false;
+    }
+
+    const retestResult = runTestSuite("all");
+    if (retestResult.passed) {
+      runLogger.logConfig(`Rework tests fixed after attempt ${attempts}`);
+      return true;
+    }
+
+    if (retestResult.kind === "spawn_error") {
+      runLogger.logError(`Tests could not start: ${retestResult.error}`);
+      return false;
+    }
+
+    runLogger.logError(`Tests still failing after fix attempt ${attempts}`);
+    lastOutput = retestResult.output;
+  }
+
+  runLogger.logError(`Tests still failing after ${maxAttempts} fix attempts — stopping`);
   return false;
 }
 
@@ -2267,9 +2415,11 @@ async function runAgentViaLauncher(prompt: string, resumeSessionId?: string): Pr
         if (formatted) process.stdout.write(formatted);
         outputBuf += text;
 
-        if (!finDetected && outputBuf.includes(FIN_TOKEN)) {
+        if (!finDetected && (FIN_LINE_REGEX.test(outputBuf) || FIN_REGEX.test(outputBuf))) {
           finDetected = true;
-          runLogger.logAgent("FIN signal detected — stopping agent");
+          const matchStart = Math.max(0, outputBuf.lastIndexOf(FIN_TOKEN) - 40);
+          const matchEnd = Math.min(outputBuf.length, outputBuf.lastIndexOf(FIN_TOKEN) + FIN_TOKEN.length + 40);
+          runLogger.logAgent(`FIN signal detected near: ...${outputBuf.slice(matchStart, matchEnd)}...`);
           child.kill("SIGTERM");
         }
       });
@@ -2328,9 +2478,11 @@ async function runAgentDirect(prompt: string, resumeSessionId?: string): Promise
       if (formatted) process.stdout.write(formatted);
       outputBuf += text;
 
-      if (!finDetected && outputBuf.includes(FIN_TOKEN)) {
+      if (!finDetected && (FIN_LINE_REGEX.test(outputBuf) || FIN_REGEX.test(outputBuf))) {
         finDetected = true;
-        runLogger.logAgent("FIN signal detected — stopping agent");
+        const matchStart = Math.max(0, outputBuf.lastIndexOf(FIN_TOKEN) - 40);
+        const matchEnd = Math.min(outputBuf.length, outputBuf.lastIndexOf(FIN_TOKEN) + FIN_TOKEN.length + 40);
+        runLogger.logAgent(`FIN signal detected near: ...${outputBuf.slice(matchStart, matchEnd)}...`);
         child.kill("SIGTERM");
       }
     });
@@ -2473,9 +2625,13 @@ function trackStep(runId: string, stepType: AgentRunStepCreate["stepType"], cont
 
 async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prNumber: number } | null> {
   const issueKey = item.id || String(item.number);
-  if (processedIssues.has(issueKey)) {
-    runLogger.logSkip(`Issue ${issueKey} already processed`);
+  if (processedIssues.has(issueKey) && !FORCE_REPROCESS) {
+    runLogger.logSkip(`Issue ${issueKey} already processed (use --force to re-process)`);
     return null;
+  }
+  if (FORCE_REPROCESS && processedIssues.has(issueKey)) {
+    runLogger.logConfig(`Force re-processing issue ${issueKey} (--force)`);
+    processedIssues.delete(issueKey);
   }
 
   runLogger.startRun(item.number, item.title);
@@ -2629,6 +2785,12 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     runLogger.endRun(null);
     return null;
   }
+
+  // Show a summary of the prompt so the user can verify what the agent is working on
+  const promptPreview = generated.prompt.length > 500
+    ? generated.prompt.slice(0, 500) + `\n... (${generated.prompt.length} chars total)`
+    : generated.prompt;
+  runLogger.logWork(`Agent prompt:\n${promptPreview}`);
 
   const branchName = item.suggestedBranch;
   if (!await checkoutBranch(branchName, fromBranch)) {
@@ -2821,6 +2983,9 @@ async function resumeFromCheckpoint(state: RunState): Promise<void> {
 
   runLogger.logWork(`Resuming from checkpoint '${state.checkpoint}' for issue ${state.issueKey}`);
 
+  // Remove from processed issues so processWorkItem won't skip it
+  processedIssues.delete(state.issueKey);
+
   // Ensure workspace is clean and on the correct branch
   ensureCleanWorkspace();
 
@@ -2997,9 +3162,8 @@ async function continueFromReviewLoop(cfg: ServerConfig, item: WorkItem, state: 
     return;
   }
 
-  // Delegate to the focused process work item inner function which handles review polling
-  // Reconstruct a fake result to pass to focusedProcessWorkItemInner
-  await focusedProcessWorkItemInner(cfg, item, ghToken, owner, repo);
+  // Enter the review loop directly — no need to re-create the PR
+  await runReviewLoop(cfg, item, ghToken, owner, repo, state.prNumber);
 }
 
 async function continueFromReworkAgentComplete(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
@@ -3109,6 +3273,85 @@ async function focusedLoop(cfg: ServerConfig): Promise<void> {
  * go to Jira, numeric keys go to GitHub, and the resolver's memory/cache
  * is consulted for anything ambiguous.
  */
+// ---------------------------------------------------------------------------
+// Watch an existing PR/MR for review feedback and rework (no agent run)
+// ---------------------------------------------------------------------------
+async function watchIssue(cfg: ServerConfig, issueKey: string): Promise<void> {
+  const item = await fetchIssueByKey(cfg, issueKey);
+  if (!item) {
+    runLogger.logError(`Could not find issue ${issueKey}`);
+    return;
+  }
+
+  runLogger.logWork(`Watching issue ${item.id}: ${item.title}`);
+
+  // Ensure we're on the right branch
+  const branchName = item.suggestedBranch;
+  const currentBranch = gitRunWithOutput(["rev-parse", "--abbrev-ref", "HEAD"], WORKSPACE);
+  if (currentBranch.ok && currentBranch.stdout.trim() !== branchName) {
+    runLogger.logGit(`Switching to branch: ${branchName}`);
+    if (!gitRun(["checkout", branchName], WORKSPACE)) {
+      runLogger.logError(`Cannot checkout branch ${branchName} — does it exist?`);
+      return;
+    }
+  }
+
+  // Find the existing PR/MR
+  const platform = detectRemotePlatform(WORKSPACE);
+  const ghToken = process.env.GITHUB_TOKEN;
+  const owner = cfg.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand";
+  const repo = cfg.repo || process.env.AICODER_REPO || "";
+  let prNumber: number | null = null;
+
+  if (platform === "gitlab") {
+    const projectId = getGitLabProjectFromRemote(WORKSPACE) || item.repo || cfg.repo || process.env.GITLAB_DEFAULT_PROJECT || "";
+    if (!projectId) {
+      runLogger.logError("No GitLab project ID — cannot find MR");
+      return;
+    }
+    const existingMR = await findExistingGitLabMR(projectId, branchName);
+    if (existingMR) {
+      prNumber = existingMR.iid;
+      runLogger.logConfig(`Found existing MR !${prNumber} for branch ${branchName}`);
+    } else {
+      runLogger.logError(`No MR found for branch ${branchName} — use --publish to create one`);
+      return;
+    }
+  } else {
+    if (!ghToken || !owner || !repo) {
+      runLogger.logError("GitHub credentials required — set GITHUB_TOKEN");
+      return;
+    }
+    // Search for an open PR from this branch
+    try {
+      const resp = await axios.get(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
+        params: { state: "open", head: `${owner}:${branchName}` },
+        headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" },
+      });
+      const prs = resp.data;
+      if (prs.length > 0) {
+        prNumber = prs[0].number;
+        runLogger.logConfig(`Found existing PR #${prNumber} for branch ${branchName}`);
+      } else {
+        runLogger.logError(`No PR found for branch ${branchName} — use --publish to create one`);
+        return;
+      }
+    } catch (err) {
+      runLogger.logError(`Failed to search for PR: ${err instanceof Error ? err.message : err}`);
+      return;
+    }
+  }
+
+  if (!prNumber) {
+    runLogger.logError("Could not find existing PR/MR");
+    return;
+  }
+
+  // Clear any stale run state and enter the review loop
+  clearRunState();
+  await runReviewLoop(cfg, item, ghToken, owner, repo, prNumber);
+}
+
 async function fetchIssueByKey(cfg: ServerConfig, key: string): Promise<WorkItem | null> {
   const resolver = new SourceResolver(WORKSPACE, LOOKUP, cfg.apiUrl, cfg.apiKey);
 
@@ -3222,6 +3465,19 @@ async function focusedProcessWorkItemInner(
   }
 
   runLogger.logConfig(`Waiting for review of ${label} #${prNumber} (polling every ${REVIEW_POLL_MS / 1000}s)`);
+  await runReviewLoop(cfg, item, ghToken, owner, repo, prNumber);
+}
+
+async function runReviewLoop(
+  cfg: ServerConfig,
+  item: WorkItem,
+  ghToken: string | undefined,
+  owner: string,
+  repo: string,
+  prNumber: number,
+): Promise<void> {
+  const platform = detectRemotePlatform(WORKSPACE);
+  const label = platform === "gitlab" ? "MR" : "PR";
 
   // Load run state for review loop (may have reworkCount/sinceTimestamp from a resumed run)
   const reviewState = loadRunState();
@@ -3354,6 +3610,12 @@ async function focusedProcessWorkItemInner(
         return;
       }
 
+      // Show a summary of the rework prompt so the user can verify we're working on the right feedback
+      const promptPreview = reworkPrompt.length > 500
+        ? reworkPrompt.slice(0, 500) + `\n... (${reworkPrompt.length} chars total)`
+        : reworkPrompt;
+      runLogger.logWork(`Rework prompt for cycle ${reworkCount}:\n${promptPreview}`);
+
       // Checkout the existing branch and re-run agent with rework prompt
       if (!forceCheckout(item.suggestedBranch, WORKSPACE)) {
         runLogger.logError(`Could not checkout branch ${item.suggestedBranch} for rework`);
@@ -3377,20 +3639,10 @@ async function focusedProcessWorkItemInner(
       // Checkpoint: rework committed
       saveRunState({ ...currentState, checkpoint: "rework_committed", reworkCount });
 
-      // TDD: Tiered test gate after rework
-      const reworkUnitResult = runTestSuite("unit");
-      if (!reworkUnitResult.passed) {
-        runLogger.logError(`Rework unit tests ${reworkUnitResult.kind} — stopping`);
-        return;
-      }
-      const reworkIntegrationResult = runTestSuite("integration");
-      if (!reworkIntegrationResult.passed) {
-        runLogger.logError(`Rework integration tests ${reworkIntegrationResult.kind} — stopping`);
-        return;
-      }
-      const reworkCoverageResult = checkCoverage();
-      if (!reworkCoverageResult.passed) {
-        runLogger.logError(`Rework coverage check ${reworkCoverageResult.kind} — stopping`);
+      // TDD: Tiered test gate after rework — fix failing tests if possible
+      const reworkTestPassed = await fixReworkTests(item, reworkCount);
+      if (!reworkTestPassed) {
+        runLogger.logError("Rework tests could not be fixed — stopping");
         return;
       }
 
@@ -3564,8 +3816,15 @@ if (existingRunState && !DISCARD_RUN) {
   }
 }
 
-// --publish: Create PR/MR from an existing branch and exit
-if (PUBLISH_BRANCH) {
+// --watch: Enter the review loop for an existing PR/MR without running the agent
+if (WATCH_ISSUE) {
+  watchIssue(loadServerConfig(), WATCH_ISSUE)
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error("Watch failed:", err);
+      process.exit(1);
+    });
+} else if (PUBLISH_BRANCH) {
   publishBranch(loadServerConfig(), PUBLISH_BRANCH)
     .then(() => process.exit(0))
     .catch((err) => {
