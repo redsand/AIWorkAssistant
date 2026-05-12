@@ -3729,9 +3729,14 @@ async function handleAgentListRuns(
     const limit = limitRaw != null && Number.isFinite(limitRaw) ? Math.min(Math.max(Math.round(limitRaw), 1), 100) : undefined;
     const offset = offsetRaw != null && Number.isFinite(offsetRaw) ? Math.max(Math.round(offsetRaw), 0) : undefined;
 
+    const ALLOWED_STATUSES = ["running", "completed", "failed"] as const;
+    const status = typeof params.status === "string" && ALLOWED_STATUSES.includes(params.status as typeof ALLOWED_STATUSES[number])
+      ? params.status
+      : undefined;
+
     // Always restrict to the requesting user's own runs (IDOR fix: no userId override)
     const result = agentRunDatabase.listRuns({
-      status: params.status as string | undefined,
+      status,
       userId,
       limit,
       offset,
@@ -3756,9 +3761,10 @@ async function handleAgentGetRun(
     const run = agentRunDatabase.getRunWithSteps(runId);
     if (!run) return { success: false, error: `Run ${runId} not found` };
 
-    // Only allow viewing your own runs
+    // Only allow viewing your own runs — return generic "not found" to avoid
+    // leaking existence of runs belonging to other users (IDOR protection)
     if (run.userId !== userId) {
-      return { success: false, error: "Not authorized to view this run" };
+      return { success: false, error: `Run ${runId} not found` };
     }
 
     return { success: true, data: run };
