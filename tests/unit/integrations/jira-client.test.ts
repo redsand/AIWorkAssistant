@@ -40,7 +40,24 @@ describe("Jira Client", () => {
         return;
       }
 
-      const user = await jiraClient.getCurrentUser();
+      let user;
+      try {
+        user = await jiraClient.getCurrentUser();
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message.includes("status code 5") ||
+            error.message.includes("ECONNREFUSED") ||
+            error.message.includes("ETIMEDOUT"))
+        ) {
+          console.warn(
+            "Skipping user test - Jira service unavailable:",
+            error.message,
+          );
+          return;
+        }
+        throw error;
+      }
 
       expect(user).toBeDefined();
       expect(user.displayName).toBeTruthy();
@@ -54,7 +71,24 @@ describe("Jira Client", () => {
         return;
       }
 
-      const projects = await jiraClient.getProjects();
+      let projects;
+      try {
+        projects = await jiraClient.getProjects();
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message.includes("status code 5") ||
+            error.message.includes("ECONNREFUSED") ||
+            error.message.includes("ETIMEDOUT"))
+        ) {
+          console.warn(
+            "Skipping projects test - Jira service unavailable:",
+            error.message,
+          );
+          return;
+        }
+        throw error;
+      }
 
       expect(Array.isArray(projects)).toBe(true);
       console.log(`Found ${projects.length} projects`);
@@ -73,7 +107,24 @@ describe("Jira Client", () => {
         return;
       }
 
-      const issues = await jiraClient.getAssignedIssues();
+      let issues;
+      try {
+        issues = await jiraClient.getAssignedIssues();
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message.includes("status code 5") ||
+            error.message.includes("ECONNREFUSED") ||
+            error.message.includes("ETIMEDOUT"))
+        ) {
+          console.warn(
+            "Skipping assigned issues test - Jira service unavailable:",
+            error.message,
+          );
+          return;
+        }
+        throw error;
+      }
 
       expect(Array.isArray(issues)).toBe(true);
       console.log(`Found ${issues.length} assigned issues`);
@@ -92,8 +143,25 @@ describe("Jira Client", () => {
         return;
       }
 
-      const jql = "updated >= -24h ORDER BY updated DESC";
-      const issues = await jiraClient.searchIssues(jql, 10);
+      let issues;
+      try {
+        const jql = "updated >= -24h ORDER BY updated DESC";
+        issues = await jiraClient.searchIssues(jql, 10);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message.includes("status code 5") ||
+            error.message.includes("ECONNREFUSED") ||
+            error.message.includes("ETIMEDOUT"))
+        ) {
+          console.warn(
+            "Skipping search test - Jira service unavailable:",
+            error.message,
+          );
+          return;
+        }
+        throw error;
+      }
 
       expect(Array.isArray(issues)).toBe(true);
       console.log(`Found ${issues.length} issues updated in last 24h`);
@@ -115,6 +183,18 @@ describe("Jira Client", () => {
         await jiraClient.getIssue("NONEXIST-123");
         expect.fail("Should have thrown an error");
       } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message.includes("status code 5") ||
+            error.message.includes("ECONNREFUSED") ||
+            error.message.includes("ETIMEDOUT"))
+        ) {
+          console.warn(
+            "Skipping non-existent issue test - Jira service unavailable:",
+            error.message,
+          );
+          return;
+        }
         expect(error).toBeDefined();
         expect(error instanceof Error).toBe(true);
         console.log("Expected error:", (error as Error).message);
@@ -131,6 +211,18 @@ describe("Jira Client", () => {
         await jiraClient.searchIssues("invalid jql query here");
         expect.fail("Should have thrown an error");
       } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message.includes("status code 5") ||
+            error.message.includes("ECONNREFUSED") ||
+            error.message.includes("ETIMEDOUT"))
+        ) {
+          console.warn(
+            "Skipping JQL error test - Jira service unavailable:",
+            error.message,
+          );
+          return;
+        }
         expect(error).toBeDefined();
         expect(error instanceof Error).toBe(true);
         console.log("Expected error:", (error as Error).message);
@@ -145,8 +237,24 @@ describe("Jira Client", () => {
         return;
       }
 
-      // First, try to find an issue to comment on
-      const issues = await jiraClient.getAssignedIssues();
+      let issues;
+      try {
+        issues = await jiraClient.getAssignedIssues();
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message.includes("status code 5") ||
+            error.message.includes("ECONNREFUSED") ||
+            error.message.includes("ETIMEDOUT"))
+        ) {
+          console.warn(
+            "Skipping comment test - Jira service unavailable:",
+            error.message,
+          );
+          return;
+        }
+        throw error;
+      }
 
       if (issues.length === 0) {
         console.warn("No assigned issues to test commenting");
