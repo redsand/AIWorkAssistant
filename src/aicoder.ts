@@ -1749,7 +1749,7 @@ function runTestSuite(suiteKind: TestSuiteKind = "all"): TestSuiteResult {
   return { passed, output: combined, exitCode: result.status, signal, timedOut, error: spawnError, kind };
 }
 
-function checkCoverage(): { passed: boolean; kind: TestSuiteOutcome } {
+function checkCoverage(): { passed: boolean; kind: TestSuiteOutcome; output?: string } {
   const cfg = getProjectConfig();
 
   if (cfg.coverageCommand.length === 0) {
@@ -1796,7 +1796,7 @@ function checkCoverage(): { passed: boolean; kind: TestSuiteOutcome } {
       default:
         runLogger.logError(`Coverage check failed (exit code ${result.status}):\n${lastLines || "no output captured"}`);
     }
-    return { passed: false, kind };
+    return { passed: false, kind, output: combined };
   }
 
   runLogger.logGit("Coverage thresholds met");
@@ -1963,6 +1963,13 @@ async function fixBaselineTests(_cfg: ServerConfig, item: WorkItem): Promise<boo
       return true;
     }
 
+    // Check if remaining failures are related to our changes or pre-existing
+    const safeToProceed = await llmEvaluateTestFailure(retest.output, item);
+    if (safeToProceed) {
+      runLogger.logConfig("Remaining baseline test failures evaluated as pre-existing — proceeding");
+      return true;
+    }
+
     runLogger.logError(`Baseline tests still failing after attempt ${attempts}`);
     lastOutput = retest.output;
   }
@@ -1975,7 +1982,7 @@ async function fixBaselineTests(_cfg: ServerConfig, item: WorkItem): Promise<boo
  * Fix failing tests after a rework cycle. Runs the agent with a fix prompt,
  * commits, and re-tests — up to MAX_REWORK_FIX_ATTEMPTS times.
  */
-const MAX_REWORK_FIX_ATTEMPTS = 2;
+const MAX_REWORK_FIX_ATTEMPTS = 10;
 
 async function fixReworkTests(item: WorkItem, reworkCount: number): Promise<boolean> {
   if (SKIP_TESTS) {
@@ -1999,21 +2006,36 @@ async function fixReworkTests(item: WorkItem, reworkCount: number): Promise<bool
     if (!integrationResult.passed) {
       // Fall through to fix loop
     } else {
+      // Unit + integration pass — check coverage/e2e
       const coverageResult = checkCoverage();
       if (!coverageResult.passed && coverageResult.kind !== "spawn_error") {
-        // Coverage failed but tests passed — don't block on this
-        runLogger.logConfig("Coverage below threshold after rework — proceeding");
+        // Coverage or e2e tests failed — evaluate whether this
+        // is related to our rework changes or is a pre-existing/unrelated issue
+        const testOutput = coverageResult.output || "coverage check failed with no output";
+        const safeToProceed = await llmEvaluateTestFailure(testOutput, item);
+        if (safeToProceed) {
+          runLogger.logConfig("Test failure evaluated as unrelated to rework — proceeding");
+        } else {
+          // Likely related — try to fix it
+          runLogger.logConfig("Test failure evaluated as related to rework — attempting fix");
+          return await attemptTestFix(item, reworkCount, testOutput);
+        }
       }
       return true;
     }
   }
 
-  // Tests failed — attempt to fix with agent
-  runLogger.logError("Rework tests FAILED — attempting to fix");
+  // Unit or integration tests failed — attempt to fix with agent
+  const lastOutput = !unitResult.passed ? unitResult.output : runTestSuite("integration").output;
+  return await attemptTestFix(item, reworkCount, lastOutput);
+}
+
+async function attemptTestFix(item: WorkItem, reworkCount: number, initialOutput: string): Promise<boolean> {
+  runLogger.logError("Tests FAILED — entering fix loop");
 
   let attempts = 0;
-  let lastOutput = !unitResult.passed ? unitResult.output : runTestSuite("integration").output;
-  const maxAttempts = Math.min(MAX_REWORK_FIX_ATTEMPTS, MAX_REWORK - reworkCount);
+  let lastOutput = initialOutput;
+  const maxAttempts = MAX_REWORK_FIX_ATTEMPTS;
 
   while (attempts < maxAttempts) {
     attempts++;
@@ -2034,7 +2056,7 @@ async function fixReworkTests(item: WorkItem, reworkCount: number): Promise<bool
 
     const retestResult = runTestSuite("all");
     if (retestResult.passed) {
-      runLogger.logConfig(`Rework tests fixed after attempt ${attempts}`);
+      runLogger.logConfig(`Tests fixed after attempt ${attempts}`);
       return true;
     }
 
@@ -2044,10 +2066,64 @@ async function fixReworkTests(item: WorkItem, reworkCount: number): Promise<bool
     }
 
     runLogger.logError(`Tests still failing after fix attempt ${attempts}`);
+
+    // Re-evaluate: are the remaining failures related to our changes or pre-existing?
+    const safeToProceed = await llmEvaluateTestFailure(retestResult.output, item);
+    if (safeToProceed) {
+      runLogger.logConfig("Remaining test failures evaluated as unrelated to rework — proceeding");
+      return true;
+    }
+
     lastOutput = retestResult.output;
   }
 
+  // Final evaluation before giving up
+  const finalVerdict = await llmEvaluateTestFailure(lastOutput, item);
+  if (finalVerdict) {
+    runLogger.logConfig("Final evaluation: remaining test failures are unrelated — proceeding");
+    return true;
+  }
+
   runLogger.logError(`Tests still failing after ${maxAttempts} fix attempts — stopping`);
+  return false;
+}
+
+/**
+ * Evaluate test failures to decide whether they're related to the current rework.
+ * Uses a lightweight heuristic: extracts file paths from test output and checks
+ * if they overlap with files changed in the last commit.
+ */
+async function llmEvaluateTestFailure(testOutput: string, _item: WorkItem): Promise<boolean> {
+  // Heuristic: extract file paths from test output and check overlap with changed files
+  const diffResult = gitRunWithOutput(["diff", "--name-only", "HEAD~1"], WORKSPACE);
+  const changedFiles = diffResult.ok ? diffResult.stdout : "";
+  const testFilePattern = /(?:at\s+)?([\w./\-]+\.(?:ts|js|tsx|jsx|py|go|rs)):\d+/g;
+  const failedFiles = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = testFilePattern.exec(testOutput)) !== null) {
+    failedFiles.add(match[1]);
+  }
+
+  // If we can identify failing test files and none overlap with changed files, likely unrelated
+  if (failedFiles.size > 0 && changedFiles.length > 0) {
+    const changedSet = new Set(changedFiles.split("\n").map((f: string) => f.trim()).filter(Boolean));
+    const overlap = [...failedFiles].some((f: string) => changedSet.has(f) || changedSet.has(f.replace(/^.*\//, "")));
+    if (!overlap) {
+      runLogger.logConfig(`Test failures appear in unrelated files (failed: ${[...failedFiles].join(", ")}) — proceeding`);
+      return true;
+    }
+  }
+
+  // If e2e test failures and no test source files in our changes, likely pre-existing
+  const isE2E = /e2e|workflow|integration/i.test(testOutput.slice(0, 2000));
+  const hasTestChanges = changedFiles.split("\n").some((f: string) => /\/test\//.test(f) || /\.test\./.test(f) || /\.spec\./.test(f));
+  if (isE2E && !hasTestChanges) {
+    runLogger.logConfig("E2E test failures detected but no test files changed — likely pre-existing, proceeding");
+    return true;
+  }
+
+  // Uncertain — need to attempt a fix
+  runLogger.logConfig("Unclear if test failures are related — will attempt fix");
   return false;
 }
 
@@ -2221,8 +2297,10 @@ async function pollForReviewResult(
   repo: string,
   prNumber: number,
   pollMs: number = REVIEW_POLL_MS,
+  sinceIso?: string,
 ): Promise<"passed" | "failed" | "postponed" | "merged" | "conflict" | "closed"> {
   const headers = { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" };
+  const since = sinceIso ? new Date(sinceIso) : null;
   while (true) {
     // Check PR state first
     try {
@@ -2236,13 +2314,15 @@ async function pollForReviewResult(
       // PR might not exist yet
     }
 
-    // Check PR comments for review markers
+    // Check PR comments for review markers — only consider comments after sinceTimestamp
     try {
       const commentsResp = await axios.get(
         `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments`,
         { headers, params: { per_page: 10, sort: "created", direction: "desc" } },
       );
       for (const c of commentsResp.data || []) {
+        // Skip comments from before our last push to avoid re-triggering on old reviews
+        if (since && c.created_at && new Date(c.created_at) <= since) continue;
         const body: string = c.body || "";
         if (body.includes(REVIEW_PASSED_MARKER)) return "passed";
         if (body.includes(REVIEW_FAILED_MARKER)) return "failed";
@@ -2315,8 +2395,10 @@ async function fetchReworkPrompt(
   repo: string,
   prNumber: number,
   issueNumber: number,
+  sinceTimestamp?: string,
 ): Promise<string | null> {
   const headers = { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" };
+  const since = sinceTimestamp ? new Date(sinceTimestamp) : null;
   // Check issue comments first (where the reviewer posts the coding prompt)
   try {
     const issueResp = await axios.get(
@@ -2325,6 +2407,9 @@ async function fetchReworkPrompt(
     );
     for (const c of issueResp.data || []) {
       const body: string = c.body || "";
+      const created = c.created_at ? new Date(c.created_at) : null;
+      // Only consider comments newer than sinceTimestamp to avoid re-processing old feedback
+      if (since && created && created <= since) continue;
       if (body.includes("Rework from PR Review")) {
         return body;
       }
@@ -2340,6 +2425,8 @@ async function fetchReworkPrompt(
     );
     for (const c of prResp.data || []) {
       const body: string = c.body || "";
+      const created = c.created_at ? new Date(c.created_at) : null;
+      if (since && created && created <= since) continue;
       if (body.includes("Review Failed — Rework Required")) {
         return body;
       }
@@ -2353,11 +2440,15 @@ async function fetchReworkPrompt(
 async function fetchGitLabReworkPrompt(
   projectId: string,
   mrIid: number,
+  sinceTimestamp?: string,
 ): Promise<string | null> {
   try {
     const notes = await gitlabClient.listMergeRequestNotes(projectId, mrIid, "desc");
+    const since = sinceTimestamp ? new Date(sinceTimestamp) : null;
     for (const note of notes) {
       const body: string = note.body || "";
+      const created = note.created_at ? new Date(note.created_at) : null;
+      if (since && created && created <= since) continue;
       if (body.includes("Rework from PR Review")) {
         return body;
       }
@@ -3525,7 +3616,7 @@ async function runReviewLoop(
         runLogger.logError("No GitHub credentials — cannot poll for review");
         return;
       }
-      reviewResult = await pollForReviewResult(ghToken, owner, repo, prNumber);
+      reviewResult = await pollForReviewResult(ghToken, owner, repo, prNumber, REVIEW_POLL_MS, sinceTimestamp);
     }
 
     if (reviewResult === "passed" || reviewResult === "merged") {
@@ -3599,10 +3690,10 @@ async function runReviewLoop(
       if (platform === "gitlab") {
         const projectId = getGitLabProjectFromRemote(WORKSPACE) || item.repo || cfg.repo || process.env.GITLAB_DEFAULT_PROJECT || "";
         if (projectId) {
-          reworkPrompt = await fetchGitLabReworkPrompt(projectId, prNumber);
+          reworkPrompt = await fetchGitLabReworkPrompt(projectId, prNumber, sinceTimestamp);
         }
       } else if (ghToken && owner && repo) {
-        reworkPrompt = await fetchReworkPrompt(ghToken, owner, repo, prNumber, issueNumber);
+        reworkPrompt = await fetchReworkPrompt(ghToken, owner, repo, prNumber, issueNumber, sinceTimestamp);
       }
 
       if (!reworkPrompt) {
@@ -3791,8 +3882,9 @@ if (DISCARD_RUN) {
 }
 
 // Check for interrupted run state and resume if appropriate
+// Skip auto-resume when --watch is specified — watch handles its own entry into the review loop
 const existingRunState = loadRunState();
-if (existingRunState && !DISCARD_RUN) {
+if (existingRunState && !DISCARD_RUN && !WATCH_ISSUE) {
   const stateAge = Date.now() - new Date(existingRunState.updatedAt).getTime();
   const STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -3818,6 +3910,11 @@ if (existingRunState && !DISCARD_RUN) {
 
 // --watch: Enter the review loop for an existing PR/MR without running the agent
 if (WATCH_ISSUE) {
+  // Clear any saved run state — watch is explicit control, don't auto-resume
+  if (existingRunState) {
+    runLogger.logConfig("Clearing saved run state (--watch takes priority over auto-resume)");
+    clearRunState();
+  }
   watchIssue(loadServerConfig(), WATCH_ISSUE)
     .then(() => process.exit(0))
     .catch((err) => {

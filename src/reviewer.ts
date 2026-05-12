@@ -564,6 +564,53 @@ function loadReviewerState(): void {
   }
 }
 
+/**
+ * On startup, verify saved SHAs against the remote and remove stale entries.
+ * If an MR has been force-pushed (SHA changed) since we last reviewed it,
+ * remove it from reviewedMRs so it gets re-reviewed.
+ */
+async function verifyReviewerState(config: ReviewerConfig): Promise<void> {
+  if (reviewedMRShas.size === 0) return;
+
+  const targets = parseRepoTargets(config.reviewRepos, config.source, config.gitlabProject);
+  const hasExplicitSourcePrefixes = config.reviewRepos.every((r) => r.trim().startsWith("github:") || r.trim().startsWith("gitlab:"));
+  if (!hasExplicitSourcePrefixes && config.source === "gitlab" && config.gitlabProject && !targets.some((t) => t.source === "gitlab")) {
+    targets.push({ name: config.gitlabProject, source: "gitlab", gitlabProject: config.gitlabProject });
+  }
+
+  const keysToReReview: string[] = [];
+
+  for (const [mrKey, savedSha] of reviewedMRShas) {
+    // Parse mrKey: "source:project/number"
+    const match = mrKey.match(/^(\w+):(.+)\/(\d+)$/);
+    if (!match) {
+      keysToReReview.push(mrKey);
+      continue;
+    }
+    const [, source, project, mrNumberStr] = match;
+    const mrNumber = parseInt(mrNumberStr, 10);
+
+    const target = targets.find((t) => t.source === source && t.name === project);
+    if (!target) continue; // Can't verify — skip
+
+    const vcs = getVcsClient(target, config);
+    const currentSha = await vcs.getLatestCommitSha(target.name, mrNumber).catch(() => undefined);
+    if (currentSha && currentSha !== savedSha) {
+      log.review(`MR !${mrNumber} SHA changed (${savedSha.slice(0, 8)} → ${currentSha.slice(0, 8)}) — scheduling re-review`);
+      keysToReReview.push(mrKey);
+    }
+  }
+
+  for (const key of keysToReReview) {
+    reviewedMRs.delete(key);
+    reviewedMRShas.delete(key);
+  }
+
+  if (keysToReReview.length > 0) {
+    saveReviewerState();
+  }
+}
+
 function saveReviewerState(): void {
   try {
     const dir = path.dirname(REVIEWER_STATE_FILE);
@@ -964,6 +1011,9 @@ async function main(): Promise<void> {
   log.start("AIWorkAssistant review agent started");
   loadReviewerState();
   const config = await loadConfig();
+
+  // Verify saved SHAs against remote — re-review any MRs that have new commits
+  await verifyReviewerState(config);
 
   const source = config.source;
   const targets = parseRepoTargets(config.reviewRepos, config.source, config.gitlabProject);
