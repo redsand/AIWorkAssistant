@@ -555,8 +555,12 @@ async function pollMergeRequests(
 ): Promise<void> {
   const targets = parseRepoTargets(config.reviewRepos, config.source, config.gitlabProject);
 
-  // Also add the gitlab project if source is gitlab and no explicit gitlab targets exist
-  if (config.source === "gitlab" && config.gitlabProject && !targets.some((t) => t.source === "gitlab")) {
+  // Add the default gitlab project if source is gitlab and no explicit gitlab targets exist,
+  // BUT only if the user didn't specify all repos with explicit source prefixes.
+  // When all repos have "github:" or "gitlab:" prefixes, the user chose exactly which
+  // platforms to review — don't add unrequested gitlab projects.
+  const hasExplicitSourcePrefixes = config.reviewRepos.every((r) => r.trim().startsWith("github:") || r.trim().startsWith("gitlab:"));
+  if (!hasExplicitSourcePrefixes && config.source === "gitlab" && config.gitlabProject && !targets.some((t) => t.source === "gitlab")) {
     targets.push({ name: config.gitlabProject, source: "gitlab", gitlabProject: config.gitlabProject });
   }
 

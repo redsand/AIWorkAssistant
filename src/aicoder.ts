@@ -2795,6 +2795,264 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   return pr ? { prNumber: pr.prNumber } : null;
 }
 
+// ─── Session resumption ──────────────────────────────────────────────────────
+// Resumes an interrupted aicoder run from the last saved checkpoint.
+// Each checkpoint maps to a pipeline stage; resume picks up from that point.
+
+async function resumeFromCheckpoint(state: RunState): Promise<void> {
+  const item: WorkItem = {
+    id: state.issueKey,
+    number: state.issueNumber,
+    title: state.title,
+    url: state.url,
+    owner: state.owner,
+    repo: state.repo,
+    suggestedBranch: state.suggestedBranch,
+    labels: state.labels,
+  };
+
+  const cfg: ServerConfig = {
+    owner: state.owner,
+    repo: state.repo,
+    source: state.source,
+    apiUrl: state.apiUrl,
+    apiKey: state.apiKey,
+  };
+
+  runLogger.logWork(`Resuming from checkpoint '${state.checkpoint}' for issue ${state.issueKey}`);
+
+  // Ensure workspace is clean and on the correct branch
+  ensureCleanWorkspace();
+
+  switch (state.checkpoint) {
+    case "issue_transitioned":
+      // Re-run from branch checkout — issue is already transitioned
+      await continueFromBranchCheckout(cfg, item, state);
+      break;
+    case "branch_checked_out":
+      await continueFromBranchCheckout(cfg, item, state);
+      break;
+    case "baseline_tests_pass":
+      await continueFromBaselineTestsPass(cfg, item, state);
+      break;
+    case "agent_complete":
+      await continueFromAgentComplete(cfg, item, state);
+      break;
+    case "changes_committed":
+      await continueFromChangesCommitted(cfg, item, state);
+      break;
+    case "tests_passed":
+      await continueFromTestsPassed(cfg, item, state);
+      break;
+    case "branch_pushed":
+      await continueFromBranchPushed(cfg, item, state);
+      break;
+    case "pr_created":
+    case "review_polling":
+    case "rework_pushed":
+      await continueFromReviewLoop(cfg, item, state);
+      break;
+    case "rework_agent_complete":
+      await continueFromReworkAgentComplete(cfg, item, state);
+      break;
+    case "rework_committed":
+      await continueFromReworkCommitted(cfg, item, state);
+      break;
+    case "rework_tests_passed":
+      await continueFromReworkTestsPassed(cfg, item, state);
+      break;
+    default:
+      runLogger.logError(`Unknown checkpoint: ${state.checkpoint} — starting fresh`);
+      clearRunState();
+  }
+}
+
+// Re-run from branch checkout: run baseline tests, agent, test gate, push, PR
+async function continueFromBranchCheckout(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
+  if (!forceCheckout(item.suggestedBranch, WORKSPACE)) {
+    runLogger.logError(`Cannot checkout branch ${item.suggestedBranch} for resume`);
+    clearRunState();
+    return;
+  }
+
+  // Baseline tests
+  if (!SKIP_BASELINE && !(await fixBaselineTests(cfg, item))) {
+    runLogger.logError("Baseline tests could not be fixed on resume — aborting");
+    clearRunState();
+    return;
+  }
+  saveRunState({ ...state, checkpoint: "baseline_tests_pass" });
+  await continueFromBaselineTestsPass(cfg, item, state);
+}
+
+async function continueFromBaselineTestsPass(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
+  // Run agent (with --resume if we have a session ID)
+  const generated = await generatePrompt(cfg, item);
+  if (generated.skipped) {
+    runLogger.logError(`Cannot generate prompt on resume: ${generated.skipReason}`);
+    clearRunState();
+    return;
+  }
+
+  const resumeId = state.sessionId && AGENT === "claude" ? state.sessionId : undefined;
+  const agentResult = await runAgent(generated.prompt, resumeId);
+
+  if (!agentResult.finDetected && agentResult.exitCode !== 0) {
+    // Resume failed — try fresh if we were resuming
+    if (resumeId) {
+      runLogger.logWork("Resume session failed — restarting agent from scratch");
+      const freshResult = await runAgent(generated.prompt);
+      if (!freshResult.finDetected && freshResult.exitCode !== 0) {
+        runLogger.logError(`Agent exited with code ${freshResult.exitCode} on retry — aborting`);
+        clearRunState();
+        return;
+      }
+      saveRunState({ ...state, checkpoint: "agent_complete", sessionId: freshResult.sessionId, agentRanTests: freshResult.ranTests });
+    } else {
+      runLogger.logError(`Agent exited with code ${agentResult.exitCode} — aborting`);
+      clearRunState();
+      return;
+    }
+  } else {
+    saveRunState({ ...state, checkpoint: "agent_complete", sessionId: agentResult.sessionId, agentRanTests: agentResult.ranTests });
+  }
+
+  await continueFromAgentComplete(cfg, item, loadRunState()!);
+}
+
+async function continueFromAgentComplete(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
+  forceCheckout(item.suggestedBranch, WORKSPACE);
+  if (!stageAndCommit(`[AI] ${item.title}`)) {
+    runLogger.logError("Stage/commit failed on resume — aborting");
+    clearRunState();
+    return;
+  }
+  saveRunState({ ...state, checkpoint: "changes_committed" });
+  await continueFromChangesCommitted(cfg, item, loadRunState()!);
+}
+
+async function continueFromChangesCommitted(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
+  // Run test gate
+  const agentRanTests = state.agentRanTests ?? false;
+  if (SKIP_TESTS) {
+    runLogger.logConfig("Skipping all tests and coverage checks (--skip-tests)");
+  } else if (agentRanTests) {
+    runLogger.logConfig("Agent already ran tests — skipping manual test gate");
+  } else {
+    const unitResult = runTestSuite("unit");
+    if (!unitResult.passed) {
+      runLogger.logError(`Unit tests ${unitResult.kind} on resume — aborting`);
+      clearRunState();
+      return;
+    }
+    const integrationResult = runTestSuite("integration");
+    if (!integrationResult.passed) {
+      runLogger.logError(`Integration tests ${integrationResult.kind} on resume — aborting`);
+      clearRunState();
+      return;
+    }
+    const coverageResult = checkCoverage();
+    if (!coverageResult.passed && coverageResult.kind !== "spawn_error") {
+      runLogger.logError(`Coverage check ${coverageResult.kind} on resume — aborting`);
+      clearRunState();
+      return;
+    }
+  }
+  saveRunState({ ...state, checkpoint: "tests_passed" });
+  await continueFromTestsPassed(cfg, item, loadRunState()!);
+}
+
+async function continueFromTestsPassed(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
+  if (!pushBranch(item.suggestedBranch)) {
+    runLogger.logError("Push failed on resume — aborting");
+    clearRunState();
+    return;
+  }
+  saveRunState({ ...state, checkpoint: "branch_pushed" });
+  await continueFromBranchPushed(cfg, item, loadRunState()!);
+}
+
+async function continueFromBranchPushed(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
+  const pr = await createPR(cfg, item, item.suggestedBranch);
+  if (pr) {
+    const platform = detectRemotePlatform(WORKSPACE);
+    const label = platform === "gitlab" ? "MR" : "PR";
+    runLogger.logPR(`Opened ${label} #${pr.prNumber}: ${pr.url}`);
+    saveRunState({ ...state, checkpoint: "pr_created", prNumber: pr.prNumber });
+    await continueFromReviewLoop(cfg, item, loadRunState()!);
+  } else {
+    runLogger.logError("PR/MR creation failed on resume — aborting");
+    clearRunState();
+  }
+}
+
+async function continueFromReviewLoop(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
+  const ghToken = process.env.GITHUB_TOKEN;
+  const owner = cfg.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand";
+  const repo = cfg.repo || process.env.AICODER_REPO || "";
+
+  if (!state.prNumber) {
+    runLogger.logError("Run state has no prNumber — cannot resume review loop");
+    clearRunState();
+    return;
+  }
+
+  // Delegate to the focused process work item inner function which handles review polling
+  // Reconstruct a fake result to pass to focusedProcessWorkItemInner
+  await focusedProcessWorkItemInner(cfg, item, ghToken, owner, repo);
+}
+
+async function continueFromReworkAgentComplete(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
+  forceCheckout(item.suggestedBranch, WORKSPACE);
+  if (!stageAndCommit(`[AI] rework: ${item.title}`)) {
+    runLogger.logError("Rework stage/commit failed on resume — aborting");
+    clearRunState();
+    return;
+  }
+  saveRunState({ ...state, checkpoint: "rework_committed" });
+  // Continue with test gate and push
+  await continueFromReworkCommitted(cfg, item, loadRunState()!);
+}
+
+async function continueFromReworkCommitted(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
+  if (SKIP_TESTS) {
+    runLogger.logConfig("Skipping tests on resume (--skip-tests)");
+  } else {
+    const unitResult = runTestSuite("unit");
+    if (!unitResult.passed) {
+      runLogger.logError(`Rework unit tests ${unitResult.kind} on resume — aborting`);
+      clearRunState();
+      return;
+    }
+    const integrationResult = runTestSuite("integration");
+    if (!integrationResult.passed) {
+      runLogger.logError(`Rework integration tests ${integrationResult.kind} on resume — aborting`);
+      clearRunState();
+      return;
+    }
+    const coverageResult = checkCoverage();
+    if (!coverageResult.passed && coverageResult.kind !== "spawn_error") {
+      runLogger.logError(`Rework coverage check ${coverageResult.kind} on resume — aborting`);
+      clearRunState();
+      return;
+    }
+  }
+  saveRunState({ ...state, checkpoint: "rework_tests_passed" });
+  await continueFromReworkTestsPassed(cfg, item, loadRunState()!);
+}
+
+async function continueFromReworkTestsPassed(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
+  if (!pushBranch(item.suggestedBranch, true)) {
+    runLogger.logError("Rework push failed on resume — aborting");
+    clearRunState();
+    return;
+  }
+  const sinceTimestamp = new Date().toISOString();
+  const reworkCount = (state.reworkCount ?? 0);
+  saveRunState({ ...state, checkpoint: "rework_pushed", sinceTimestamp, reworkCount });
+  await continueFromReviewLoop(cfg, item, loadRunState()!);
+}
+
 async function focusedLoop(cfg: ServerConfig): Promise<void> {
   runLogger.logConfig(`AiRemoteCoder started in focused mode (agent: ${AGENT}, workspace: ${WORKSPACE}${USE_OLLAMA ? ", ollama: on" : ""}${DEBUG ? ", debug: on" : ""}, base: ${getBaseBranch()})`);
   const ghToken = process.env.GITHUB_TOKEN;
@@ -3272,6 +3530,38 @@ try {
   }
 } catch {
   // Non-fatal
+}
+
+// --discard-run: clear any saved run state and start fresh
+if (DISCARD_RUN) {
+  clearRunState();
+  runLogger.logConfig("Discarded saved run state (--discard-run)");
+}
+
+// Check for interrupted run state and resume if appropriate
+const existingRunState = loadRunState();
+if (existingRunState && !DISCARD_RUN) {
+  const stateAge = Date.now() - new Date(existingRunState.updatedAt).getTime();
+  const STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+  if (stateAge > STALE_MS && !RESUME_RUN) {
+    runLogger.logConfig(`Found stale run state (older than 24h) for issue ${existingRunState.issueKey} — clearing`);
+    clearRunState();
+  } else {
+    runLogger.logConfig(`Found interrupted run for issue ${existingRunState.issueKey} at checkpoint '${existingRunState.checkpoint}'`);
+    runLogger.logConfig("Resuming from saved state...");
+    resumeFromCheckpoint(existingRunState)
+      .then(() => {
+        clearRunState();
+        process.exit(0);
+      })
+      .catch((err) => {
+        console.error("Resume failed:", err);
+        clearRunState();
+        process.exit(1);
+      });
+    // Don't fall through to normal mode — resume handles everything
+  }
 }
 
 // --publish: Create PR/MR from an existing branch and exit
