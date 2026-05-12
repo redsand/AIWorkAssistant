@@ -37,7 +37,6 @@ import { reviewerConfigRoutes } from "./routes/reviewer-config";
 import { autonomousLoopRoutes } from "./routes/autonomous-loop";
 import { projectAssessmentRoutes } from "./routes/project-assessment";
 import { digestRoutes } from "./routes/digests";
-import { projectAssessmentRoutes } from "./routes/project-assessment";
 import {
   authMiddleware,
   isAuthConfigured,
@@ -112,7 +111,6 @@ export async function buildServer() {
   await server.register(autonomousLoopRoutes, { prefix: "/api/autonomous-loop" });
   await server.register(projectAssessmentRoutes, { prefix: "/api/project-assessment" });
   await server.register(digestRoutes, { prefix: "/api/digests" });
-  await server.register(projectAssessmentRoutes, { prefix: "/api/project-assessment" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 

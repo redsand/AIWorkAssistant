@@ -130,6 +130,7 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
         startTime: string;
         duration: number;
         description?: string;
+        autoSchedule?: boolean;
       };
 
       const event = await fileCalendarService.createFocusBlock({
@@ -137,6 +138,7 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
         startTime: new Date(body.startTime),
         duration: body.duration,
         description: body.description,
+        autoSchedule: body.autoSchedule,
       });
 
       return {
@@ -163,6 +165,7 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
         startTime: string;
         duration: number;
         type: "fitness" | "meal" | "mental_health";
+        autoSchedule?: boolean;
       };
 
       const event = await fileCalendarService.createHealthBlock({
@@ -170,6 +173,7 @@ export async function fileCalendarRoutes(fastify: FastifyInstance) {
         startTime: new Date(body.startTime),
         duration: body.duration,
         type: body.type,
+        autoSchedule: body.autoSchedule,
       });
 
       return {

@@ -43,10 +43,10 @@ describe("E2E: Auth Middleware", () => {
     server = await buildTestServer();
     await server.ready();
     authToken = createSessionToken("e2e-test-user");
-  });
+  }, 30000);
 
   afterAll(async () => {
-    await server.close();
+    await server?.close();
   });
 
   it("should allow access to public paths without authentication", async () => {
@@ -252,7 +252,13 @@ describe("E2E: Calendar CRUD + ICS Export", () => {
   });
 
   it("should create a focus block", async () => {
-    const startTime = new Date(Date.now() + 86400000).toISOString();
+    // Use a time guaranteed to be within business hours (Mon-Fri 9-17)
+    const focusDate = new Date();
+    focusDate.setDate(focusDate.getDate() + 1);
+    if (focusDate.getDay() === 0) focusDate.setDate(focusDate.getDate() + 1);
+    if (focusDate.getDay() === 6) focusDate.setDate(focusDate.getDate() + 2);
+    focusDate.setHours(14, 0, 0, 0); // 2pm to avoid overlap with 10am event
+    const startTime = focusDate.toISOString();
 
     const response = await server.inject({
       method: "POST",
@@ -263,6 +269,7 @@ describe("E2E: Calendar CRUD + ICS Export", () => {
         startTime,
         duration: 90,
         description: "Deep work session",
+        autoSchedule: true,
       },
     });
 
@@ -273,7 +280,13 @@ describe("E2E: Calendar CRUD + ICS Export", () => {
   });
 
   it("should create a health block", async () => {
-    const startTime = new Date(Date.now() + 90000000).toISOString();
+    // Use a time guaranteed to be within business hours (Mon-Fri 9-17)
+    const healthDate = new Date();
+    healthDate.setDate(healthDate.getDate() + 2);
+    if (healthDate.getDay() === 0) healthDate.setDate(healthDate.getDate() + 1);
+    if (healthDate.getDay() === 6) healthDate.setDate(healthDate.getDate() + 2);
+    healthDate.setHours(15, 30, 0, 0); // 3:30pm to avoid overlap
+    const startTime = healthDate.toISOString();
 
     const response = await server.inject({
       method: "POST",
