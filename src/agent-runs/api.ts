@@ -67,11 +67,17 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
     });
   });
 
-  fastify.get("/agent-runs/stats", async () => {
+  fastify.get("/agent-runs/stats", async (request, reply) => {
+    if (!request.userId) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
     return db.getStats();
   });
 
-  fastify.get("/agent-runs/aicoder", async () => {
+  fastify.get("/agent-runs/aicoder", async (request, reply) => {
+    if (!request.userId) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
     const runs = db.listRuns({ userId: "aicoder", limit: 5 });
     if (!runs.runs.length) {
       return { runs: [], current: null };
@@ -111,9 +117,10 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
         return reply.code(401).send({ error: "Authentication required" });
       }
 
-      // Only allow viewing your own runs (aicoder runs are publicly viewable as metadata-only)
+      // Only allow viewing your own runs (aicoder runs are viewable as metadata-only)
+      // Return generic 404 for unauthorized access to avoid leaking run existence (IDOR protection)
       if (result.userId !== userId && result.userId !== "aicoder") {
-        return reply.code(403).send({ error: "Not authorized to view this run" });
+        return reply.code(404).send({ error: "Run not found" });
       }
 
       // Strip sensitive step content for aicoder runs (which anyone can see)
@@ -141,8 +148,9 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
       }
 
       // Only allow viewing your own run steps (aicoder steps are metadata-only)
+      // Return generic 404 for unauthorized access to avoid leaking run existence (IDOR protection)
       if (run.userId !== userId && run.userId !== "aicoder") {
-        return reply.code(403).send({ error: "Not authorized to view this run's steps" });
+        return reply.code(404).send({ error: "Run not found" });
       }
 
       const steps = db.getRunSteps(request.params.id);

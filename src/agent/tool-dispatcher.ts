@@ -51,6 +51,7 @@ import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
 import { reviewAssistant } from "../code-review/review-assistant";
 import { ticketBridge } from "../integrations/ticket-bridge/ticket-bridge";
 import { agentRunDatabase } from "../agent-runs/database";
+import type { AgentRun } from "../agent-runs/types";
 import {
   getFileSummary,
   readFileSection,
@@ -3755,8 +3756,8 @@ async function handleAgentGetRun(
   userId: string,
 ): Promise<ToolCallResult> {
   try {
-    const runId = params.runId as string;
-    if (!runId) return { success: false, error: "runId is required" };
+    const runId = params.runId;
+    if (typeof runId !== "string" || !runId) return { success: false, error: "runId is required" };
 
     const run = agentRunDatabase.getRunWithSteps(runId);
     if (!run) return { success: false, error: `Run ${runId} not found` };
@@ -3807,25 +3808,14 @@ async function handleAgentGetAicoderStatus(
     }
 
     // Return run metadata only — exclude step content for security
-    // Full step data is available via agent.get_run for the run's owner
+    // Using Omit to ensure new sensitive fields added to AgentRun are not
+    // automatically exposed in this response without explicit review
+    const { promptTokens: _promptTokens, completionTokens: _completionTokens, totalTokens: _totalTokens, ...safeRunFields } = targetRun;
     return {
       success: true,
       data: {
         runs: runs.runs,
-        current: {
-          id: targetRun.id,
-          sessionId: targetRun.sessionId,
-          userId: targetRun.userId,
-          mode: targetRun.mode,
-          model: targetRun.model,
-          status: targetRun.status,
-          errorMessage: targetRun.errorMessage,
-          toolLoopCount: targetRun.toolLoopCount,
-          startedAt: targetRun.startedAt,
-          lastActivityAt: targetRun.lastActivityAt,
-          completedAt: targetRun.completedAt,
-          cancelledAt: targetRun.cancelledAt,
-        },
+        current: safeRunFields as Omit<AgentRun, "promptTokens" | "completionTokens" | "totalTokens">,
         requestingUser: userId,
       },
     };

@@ -406,6 +406,26 @@ describe("Agent Runs Handler Tests", () => {
       expect(result.error).toContain("runId is required");
     });
 
+    it("rejects non-string runId (type validation)", async () => {
+      const result = await dispatchToolCall(
+        "agent.get_run",
+        { runId: 12345 },
+        "alice",
+      );
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("runId is required");
+    });
+
+    it("rejects object runId (type validation)", async () => {
+      const result = await dispatchToolCall(
+        "agent.get_run",
+        { runId: { id: "malicious" } },
+        "alice",
+      );
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("runId is required");
+    });
+
     it("returns structured error on database failure", async () => {
       mockGetRunWithSteps.mockImplementation(() => {
         throw new Error("Database corrupted");

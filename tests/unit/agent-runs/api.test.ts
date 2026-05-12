@@ -171,12 +171,25 @@ describe("Agent Runs API Routes", () => {
   });
 
   describe("GET /api/agent-runs/stats", () => {
-    it("returns aggregate statistics", async () => {
+    it("returns 401 when unauthenticated", async () => {
       db.startRun({ userId: "user1", mode: "chat" });
 
       const response = await app.inject({
         method: "GET",
         url: "/api/agent-runs/stats",
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(response.json().error).toBe("Authentication required");
+    });
+
+    it("returns aggregate statistics when authenticated", async () => {
+      db.startRun({ userId: "user1", mode: "chat" });
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/agent-runs/stats",
+        headers: { "x-user-id": "user1" },
       });
 
       expect(response.statusCode).toBe(200);
@@ -187,10 +200,23 @@ describe("Agent Runs API Routes", () => {
   });
 
   describe("GET /api/agent-runs/aicoder", () => {
+    it("returns 401 when unauthenticated", async () => {
+      db.startRun({ userId: "aicoder", mode: "agent" });
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/agent-runs/aicoder",
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(response.json().error).toBe("Authentication required");
+    });
+
     it("returns empty when no aicoder runs exist", async () => {
       const response = await app.inject({
         method: "GET",
         url: "/api/agent-runs/aicoder",
+        headers: { "x-user-id": "user1" },
       });
 
       expect(response.statusCode).toBe(200);
@@ -199,7 +225,7 @@ describe("Agent Runs API Routes", () => {
       expect(body.current).toBeNull();
     });
 
-    it("returns aicoder runs with stripped step content", async () => {
+    it("returns aicoder runs with stripped step content when authenticated", async () => {
       const run = db.startRun({ userId: "aicoder", mode: "agent" });
       db.addStep({
         runId: run.id,
@@ -219,6 +245,7 @@ describe("Agent Runs API Routes", () => {
       const response = await app.inject({
         method: "GET",
         url: "/api/agent-runs/aicoder",
+        headers: { "x-user-id": "user1" },
       });
 
       expect(response.statusCode).toBe(200);
@@ -247,7 +274,7 @@ describe("Agent Runs API Routes", () => {
       expect(response.statusCode).toBe(401);
     });
 
-    it("returns 403 when accessing another user's run", async () => {
+    it("returns 404 when accessing another user's run (IDOR protection)", async () => {
       const run = db.startRun({ userId: "alice", mode: "chat" });
 
       const response = await app.inject({
@@ -256,8 +283,8 @@ describe("Agent Runs API Routes", () => {
         headers: { "x-user-id": "bob" },
       });
 
-      expect(response.statusCode).toBe(403);
-      expect(response.json().error).toContain("Not authorized");
+      expect(response.statusCode).toBe(404);
+      expect(response.json().error).toBe("Run not found");
     });
 
     it("returns own run with full steps when authenticated as owner", async () => {
@@ -338,7 +365,7 @@ describe("Agent Runs API Routes", () => {
       expect(response.statusCode).toBe(401);
     });
 
-    it("returns 403 when accessing another user's run steps", async () => {
+    it("returns 404 when accessing another user's run steps (IDOR protection)", async () => {
       const run = db.startRun({ userId: "alice", mode: "chat" });
 
       const response = await app.inject({
@@ -347,7 +374,8 @@ describe("Agent Runs API Routes", () => {
         headers: { "x-user-id": "bob" },
       });
 
-      expect(response.statusCode).toBe(403);
+      expect(response.statusCode).toBe(404);
+      expect(response.json().error).toBe("Run not found");
     });
 
     it("returns own steps with full content when authenticated as owner", async () => {
