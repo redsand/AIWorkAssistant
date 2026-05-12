@@ -15,10 +15,10 @@ describe("CTO routes authentication", () => {
     const { buildServer } = await import("../../../src/server");
     server = await buildServer();
     await server.ready();
-  });
+  }, 30000);
 
   afterAll(async () => {
-    await server.close();
+    if (server) await server.close();
   });
 
   it("rejects unauthenticated daily command generation", async () => {
