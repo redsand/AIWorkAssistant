@@ -3807,15 +3807,9 @@ async function handleAgentGetRunStats(
   }
 }
 
-// Sensitive run fields that must be excluded from aicoder status responses
-const AICODER_SENSITIVE_FIELDS = ["promptTokens", "completionTokens", "totalTokens"] as const;
-
-function stripSensitiveFields<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
-  const result: Record<string, unknown> = { ...obj };
-  for (const field of AICODER_SENSITIVE_FIELDS) {
-    delete result[field];
-  }
-  return result;
+function stripSensitiveFields(obj: AgentRun): Omit<AgentRun, "promptTokens" | "completionTokens" | "totalTokens"> {
+  const { promptTokens, completionTokens, totalTokens, ...rest } = obj;
+  return rest;
 }
 
 async function handleAgentGetAicoderStatus(
