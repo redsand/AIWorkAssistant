@@ -50,6 +50,7 @@ import { lspManager } from "../integrations/lsp/index.js";
 import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
 import { reviewAssistant } from "../code-review/review-assistant";
 import { ticketBridge } from "../integrations/ticket-bridge/ticket-bridge";
+import { agentRunDatabase } from "../agent-runs/database";
 import {
   getFileSummary,
   readFileSection,
@@ -3718,6 +3719,48 @@ async function handleAgentSpawn(
   }
 }
 
+async function handleAgentListRuns(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const result = agentRunDatabase.listRuns({
+    status: params.status as string | undefined,
+    userId: params.userId as string | undefined,
+    limit: params.limit ? Number(params.limit) : undefined,
+    offset: params.offset ? Number(params.offset) : undefined,
+  });
+  return { success: true, data: result };
+}
+
+async function handleAgentGetRun(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const runId = params.runId as string;
+  if (!runId) return { success: false, error: "runId is required" };
+  const run = agentRunDatabase.getRunWithSteps(runId);
+  if (!run) return { success: false, error: `Run ${runId} not found` };
+  return { success: true, data: run };
+}
+
+async function handleAgentGetRunStats(): Promise<ToolCallResult> {
+  const stats = agentRunDatabase.getStats();
+  return { success: true, data: stats };
+}
+
+async function handleAgentGetAicoderStatus(): Promise<ToolCallResult> {
+  const runs = agentRunDatabase.listRuns({ userId: "aicoder", limit: 5 });
+  if (!runs.runs.length) {
+    return { success: true, data: { runs: [], current: null } };
+  }
+  const current = runs.runs.find((r) => r.status === "running");
+  const latest = runs.runs[0];
+  const latestWithSteps = current
+    ? agentRunDatabase.getRunWithSteps(current.id)
+    : latest
+      ? agentRunDatabase.getRunWithSteps(latest.id)
+      : null;
+  return { success: true, data: { runs: runs.runs, current: latestWithSteps } };
+}
+
 async function handleTodoDeleteList(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -5982,6 +6025,10 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "knowledge.delete": handleKnowledgeDelete,
   "knowledge.stats": handleKnowledgeStats,
   "agent.spawn": handleAgentSpawn,
+  "agent.list_runs": handleAgentListRuns,
+  "agent.get_run": handleAgentGetRun,
+  "agent.get_run_stats": handleAgentGetRunStats,
+  "agent.get_aicoder_status": handleAgentGetAicoderStatus,
 
   "memory.find_entities": handleMemoryFindEntities,
   "memory.get_entity_context": handleMemoryGetEntityContext,
@@ -6028,6 +6075,10 @@ const SYSTEM_TOOLS = new Set([
   "system.reject_action",
   "system.list_approvals",
   "system.check_health",
+  "agent.list_runs",
+  "agent.get_run",
+  "agent.get_run_stats",
+  "agent.get_aicoder_status",
   "engineering.workflow_brief",
   "engineering.architecture_proposal",
   "engineering.scaffolding_plan",

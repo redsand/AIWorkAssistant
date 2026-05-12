@@ -5615,6 +5615,72 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
 ];
 
 /**
+ * Agent run tools — query and inspect agent run history
+ */
+const AGENT_RUN_TOOLS: Tool[] = [
+  {
+    name: "agent.list_runs",
+    description:
+      "List recent agent runs with optional filters. Returns run IDs, status, mode, timestamps, and tool loop counts.",
+    params: {
+      status: {
+        type: "string",
+        description:
+          "Filter by status: running, completed, failed",
+        required: false,
+      },
+      userId: {
+        type: "string",
+        description: "Filter by user ID (e.g. 'aicoder')",
+        required: false,
+      },
+      limit: {
+        type: "number",
+        description: "Max results to return (default 25)",
+        required: false,
+      },
+      offset: {
+        type: "number",
+        description: "Pagination offset (default 0)",
+        required: false,
+      },
+    },
+    actionType: "agent.runs.read",
+    riskLevel: "low",
+  },
+  {
+    name: "agent.get_run",
+    description:
+      "Get details of a specific agent run by ID, including all steps (tool calls, model responses, etc.)",
+    params: {
+      runId: {
+        type: "string",
+        description: "Agent run ID",
+        required: true,
+      },
+    },
+    actionType: "agent.runs.read",
+    riskLevel: "low",
+  },
+  {
+    name: "agent.get_run_stats",
+    description:
+      "Get aggregate statistics for agent runs: total, completed, failed, running counts, average tool loops, and recent activity",
+    params: {},
+    actionType: "agent.runs.read",
+    riskLevel: "low",
+  },
+  {
+    name: "agent.get_aicoder_status",
+    description:
+      "Get the latest aicoder agent run status — current running run or most recent completed run with steps",
+    params: {},
+    actionType: "agent.runs.read",
+    riskLevel: "low",
+  },
+];
+
+/**
  * Tools available in Engineering Strategy Mode
  */
 const ENGINEERING_TOOLS: Tool[] = [
@@ -5995,12 +6061,14 @@ export function getTools(mode: string): Tool[] {
   switch (mode) {
     case AGENT_MODES.PRODUCTIVITY:
       return [
+        ...AGENT_RUN_TOOLS,
         ...APPROVAL_TOOLS,
         ...CORE_PRODUCTIVITY_TOOLS,
         DISCOVER_TOOL_META,
       ];
     case AGENT_MODES.ENGINEERING:
       return [
+        ...AGENT_RUN_TOOLS,
         ...ENGINEERING_TOOLS,
         ...APPROVAL_TOOLS,
         ...CORE_PRODUCTIVITY_TOOLS,
@@ -6113,9 +6181,9 @@ IMPORTANT: You MUST use these tools to take actions. Do NOT say "I don't have ac
 export function getAllToolsForMode(mode: string): Tool[] {
   switch (mode) {
     case AGENT_MODES.PRODUCTIVITY:
-      return PRODUCTIVITY_TOOLS;
+      return [...AGENT_RUN_TOOLS, ...PRODUCTIVITY_TOOLS];
     case AGENT_MODES.ENGINEERING:
-      return [...ENGINEERING_TOOLS, ...PRODUCTIVITY_TOOLS];
+      return [...AGENT_RUN_TOOLS, ...ENGINEERING_TOOLS, ...PRODUCTIVITY_TOOLS];
     default:
       return [];
   }
