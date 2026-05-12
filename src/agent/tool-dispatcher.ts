@@ -3837,26 +3837,9 @@ async function handleAgentGetAicoderStatus(
     }
 
     // Return run metadata only — exclude step content AND sensitive fields for security.
-    // stripSensitiveFields ensures new sensitive fields added to AgentRun are not
-    // automatically exposed without explicit review (unlike object spread which would forward everything).
-    const runWithSteps = agentRunDatabase.getRunWithSteps(targetRun.id);
-    const safeCurrent = runWithSteps
-      ? {
-          ...stripSensitiveFields(runWithSteps),
-          // Steps are explicitly stripped to only safe fields — no content, params, or responses
-          steps: runWithSteps.steps.map((step) => ({
-            id: step.id,
-            runId: step.runId,
-            stepType: step.stepType,
-            toolName: step.toolName,
-            success: step.success,
-            errorMessage: step.errorMessage,
-            durationMs: step.durationMs,
-            stepOrder: step.stepOrder,
-            createdAt: step.createdAt,
-          })),
-        }
-      : null;
+    // Use data already available from listRuns rather than fetching step details.
+    // Use agent.get_run for step-level details.
+    const safeCurrent = stripSensitiveFields(targetRun);
 
     return {
       success: true,
