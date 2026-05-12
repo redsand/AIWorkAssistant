@@ -3726,15 +3726,13 @@ async function handleAgentListRuns(
   try {
     const limitRaw = params.limit ? Number(params.limit) : undefined;
     const offsetRaw = params.offset ? Number(params.offset) : undefined;
-    const limit = limitRaw != null && Number.isFinite(limitRaw) ? limitRaw : undefined;
-    const offset = offsetRaw != null && Number.isFinite(offsetRaw) ? offsetRaw : undefined;
+    const limit = limitRaw != null && Number.isFinite(limitRaw) ? Math.min(Math.max(Math.round(limitRaw), 1), 100) : undefined;
+    const offset = offsetRaw != null && Number.isFinite(offsetRaw) ? Math.max(Math.round(offsetRaw), 0) : undefined;
 
-    // Restrict to requesting user's own runs unless explicitly requesting own runs
-    const effectiveUserId = (params.userId as string) || userId;
-
+    // Always restrict to the requesting user's own runs (IDOR fix: no userId override)
     const result = agentRunDatabase.listRuns({
       status: params.status as string | undefined,
-      userId: effectiveUserId,
+      userId,
       limit,
       offset,
     });
@@ -3784,8 +3782,12 @@ async function handleAgentGetRunStats(): Promise<ToolCallResult> {
   }
 }
 
-async function handleAgentGetAicoderStatus(): Promise<ToolCallResult> {
+async function handleAgentGetAicoderStatus(
+  _params: Record<string, unknown>,
+  userId: string,
+): Promise<ToolCallResult> {
   try {
+    // Only return summary data for aicoder runs (no step content to avoid exposing prompts/responses)
     const runs = agentRunDatabase.listRuns({ userId: "aicoder", limit: 5 });
     if (!runs.runs.length) {
       return { success: true, data: { runs: [], current: null } };
@@ -3793,15 +3795,32 @@ async function handleAgentGetAicoderStatus(): Promise<ToolCallResult> {
     const current = runs.runs.find((r) => r.status === "running");
     const latest = runs.runs[0];
     const targetRun = current || latest;
-    const runWithSteps = targetRun
-      ? agentRunDatabase.getRunWithSteps(targetRun.id)
-      : null;
 
+    if (!targetRun) {
+      return { success: true, data: { runs: runs.runs, current: null } };
+    }
+
+    // Return run metadata only — exclude step content for security
+    // Full step data is available via agent.get_run for the run's owner
     return {
       success: true,
       data: {
         runs: runs.runs,
-        current: runWithSteps ?? null,
+        current: {
+          id: targetRun.id,
+          sessionId: targetRun.sessionId,
+          userId: targetRun.userId,
+          mode: targetRun.mode,
+          model: targetRun.model,
+          status: targetRun.status,
+          errorMessage: targetRun.errorMessage,
+          toolLoopCount: targetRun.toolLoopCount,
+          startedAt: targetRun.startedAt,
+          lastActivityAt: targetRun.lastActivityAt,
+          completedAt: targetRun.completedAt,
+          cancelledAt: targetRun.cancelledAt,
+        },
+        requestingUser: userId,
       },
     };
   } catch (error) {
