@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const { mockListRuns, mockGetRunWithSteps, mockGetStats } = vi.hoisted(() => ({
   mockListRuns: vi.fn(),
   mockGetRunWithSteps: vi.fn(),
-  mockGetStats: vi.fn(),
+  mockGetStats: vi.fn(), // kept for backward compat; handler no longer uses getStats
 }));
 
 // Mock all external dependencies before importing dispatcher
@@ -442,15 +442,14 @@ describe("Agent Runs Handler Tests", () => {
   });
 
   describe("agent.get_run_stats", () => {
-    it("returns stats from database", async () => {
-      mockGetStats.mockReturnValue({
-        totalRuns: 10,
-        completedRuns: 8,
-        failedRuns: 1,
-        runningRuns: 1,
-        avgToolLoopCount: 3.5,
-        runsLast24h: 5,
-        totalStepsLast24h: 20,
+    it("returns user-scoped stats from listRuns", async () => {
+      mockListRuns.mockReturnValue({
+        runs: [
+          { userId: "alice", status: "completed", toolLoopCount: 2 },
+          { userId: "alice", status: "completed", toolLoopCount: 4 },
+          { userId: "alice", status: "failed", toolLoopCount: 1 },
+        ],
+        total: 3,
       });
 
       const result = await dispatchToolCall(
@@ -460,10 +459,16 @@ describe("Agent Runs Handler Tests", () => {
       );
       expect(result.success).toBe(true);
       expect(result.data).toBeDefined();
+      expect(result.data.totalRuns).toBe(3);
+      expect(result.data.completedRuns).toBe(2);
+      expect(result.data.failedRuns).toBe(1);
+      expect(result.data.avgToolLoopCount).toBe(3);
+      // Verify listRuns was called with the requesting user's ID (not global)
+      expect(mockListRuns).toHaveBeenCalledWith(expect.objectContaining({ userId: "alice" }));
     });
 
     it("returns structured error on database failure", async () => {
-      mockGetStats.mockImplementation(() => {
+      mockListRuns.mockImplementation(() => {
         throw new Error("Database locked");
       });
 

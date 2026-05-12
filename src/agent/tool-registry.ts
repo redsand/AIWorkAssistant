@@ -5660,7 +5660,7 @@ const AGENT_RUN_TOOLS: Tool[] = [
   {
     name: "agent.get_run_stats",
     description:
-      "Get aggregate statistics for agent runs: total, completed, failed, running counts, average tool loops, and recent activity",
+      "Get aggregate statistics for your own agent runs: total, completed, failed, running counts, average tool loops",
     params: {},
     actionType: "agent.runs.read",
     riskLevel: "low",

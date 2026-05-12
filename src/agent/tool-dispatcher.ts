@@ -3777,16 +3777,45 @@ async function handleAgentGetRun(
   }
 }
 
-async function handleAgentGetRunStats(): Promise<ToolCallResult> {
+async function handleAgentGetRunStats(
+  _params: Record<string, unknown>,
+  userId: string,
+): Promise<ToolCallResult> {
   try {
-    const stats = agentRunDatabase.getStats();
-    return { success: true, data: stats };
+    // Return user-scoped stats, not global aggregates.
+    // Global stats leak information about other users' activity volumes.
+    const userRuns = agentRunDatabase.listRuns({ userId, limit: 1000 });
+    const runsList = userRuns.runs;
+    const completed = runsList.filter((r) => r.status === "completed");
+    const totalToolLoops = completed.reduce((sum, r) => sum + r.toolLoopCount, 0);
+
+    return {
+      success: true,
+      data: {
+        totalRuns: userRuns.total,
+        completedRuns: completed.length,
+        failedRuns: runsList.filter((r) => r.status === "failed").length,
+        runningRuns: runsList.filter((r) => r.status === "running").length,
+        avgToolLoopCount: completed.length > 0 ? totalToolLoops / completed.length : 0,
+      },
+    };
   } catch (error) {
     return {
       success: false,
       error: `Failed to get agent run stats: ${error instanceof Error ? error.message : "Unknown error"}`,
     };
   }
+}
+
+// Sensitive run fields that must be excluded from aicoder status responses
+const AICODER_SENSITIVE_FIELDS = ["promptTokens", "completionTokens", "totalTokens"] as const;
+
+function stripSensitiveFields<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...obj };
+  for (const field of AICODER_SENSITIVE_FIELDS) {
+    delete result[field];
+  }
+  return result;
 }
 
 async function handleAgentGetAicoderStatus(
@@ -3804,18 +3833,36 @@ async function handleAgentGetAicoderStatus(
     const targetRun = current || latest;
 
     if (!targetRun) {
-      return { success: true, data: { runs: runs.runs, current: null } };
+      return { success: true, data: { runs: runs.runs.map(stripSensitiveFields), current: null } };
     }
 
-    // Return run metadata only — exclude step content for security
-    // Using Omit to ensure new sensitive fields added to AgentRun are not
-    // automatically exposed in this response without explicit review
-    const { promptTokens: _promptTokens, completionTokens: _completionTokens, totalTokens: _totalTokens, ...safeRunFields } = targetRun;
+    // Return run metadata only — exclude step content AND sensitive fields for security.
+    // stripSensitiveFields ensures new sensitive fields added to AgentRun are not
+    // automatically exposed without explicit review (unlike object spread which would forward everything).
+    const runWithSteps = agentRunDatabase.getRunWithSteps(targetRun.id);
+    const safeCurrent = runWithSteps
+      ? {
+          ...stripSensitiveFields(runWithSteps),
+          // Steps are explicitly stripped to only safe fields — no content, params, or responses
+          steps: runWithSteps.steps.map((step) => ({
+            id: step.id,
+            runId: step.runId,
+            stepType: step.stepType,
+            toolName: step.toolName,
+            success: step.success,
+            errorMessage: step.errorMessage,
+            durationMs: step.durationMs,
+            stepOrder: step.stepOrder,
+            createdAt: step.createdAt,
+          })),
+        }
+      : null;
+
     return {
       success: true,
       data: {
-        runs: runs.runs,
-        current: safeRunFields as Omit<AgentRun, "promptTokens" | "completionTokens" | "totalTokens">,
+        runs: runs.runs.map(stripSensitiveFields),
+        current: safeCurrent,
         requestingUser: userId,
       },
     };
