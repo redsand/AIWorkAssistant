@@ -3721,44 +3721,95 @@ async function handleAgentSpawn(
 
 async function handleAgentListRuns(
   params: Record<string, unknown>,
+  userId: string,
 ): Promise<ToolCallResult> {
-  const result = agentRunDatabase.listRuns({
-    status: params.status as string | undefined,
-    userId: params.userId as string | undefined,
-    limit: params.limit ? Number(params.limit) : undefined,
-    offset: params.offset ? Number(params.offset) : undefined,
-  });
-  return { success: true, data: result };
+  try {
+    const limitRaw = params.limit ? Number(params.limit) : undefined;
+    const offsetRaw = params.offset ? Number(params.offset) : undefined;
+    const limit = limitRaw != null && Number.isFinite(limitRaw) ? limitRaw : undefined;
+    const offset = offsetRaw != null && Number.isFinite(offsetRaw) ? offsetRaw : undefined;
+
+    // Restrict to requesting user's own runs unless explicitly requesting own runs
+    const effectiveUserId = (params.userId as string) || userId;
+
+    const result = agentRunDatabase.listRuns({
+      status: params.status as string | undefined,
+      userId: effectiveUserId,
+      limit,
+      offset,
+    });
+    return { success: true, data: result };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Failed to list agent runs: ${error instanceof Error ? error.message : "Unknown error"}`,
+    };
+  }
 }
 
 async function handleAgentGetRun(
   params: Record<string, unknown>,
+  userId: string,
 ): Promise<ToolCallResult> {
-  const runId = params.runId as string;
-  if (!runId) return { success: false, error: "runId is required" };
-  const run = agentRunDatabase.getRunWithSteps(runId);
-  if (!run) return { success: false, error: `Run ${runId} not found` };
-  return { success: true, data: run };
+  try {
+    const runId = params.runId as string;
+    if (!runId) return { success: false, error: "runId is required" };
+
+    const run = agentRunDatabase.getRunWithSteps(runId);
+    if (!run) return { success: false, error: `Run ${runId} not found` };
+
+    // Only allow viewing your own runs
+    if (run.userId !== userId) {
+      return { success: false, error: "Not authorized to view this run" };
+    }
+
+    return { success: true, data: run };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Failed to get agent run: ${error instanceof Error ? error.message : "Unknown error"}`,
+    };
+  }
 }
 
 async function handleAgentGetRunStats(): Promise<ToolCallResult> {
-  const stats = agentRunDatabase.getStats();
-  return { success: true, data: stats };
+  try {
+    const stats = agentRunDatabase.getStats();
+    return { success: true, data: stats };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Failed to get agent run stats: ${error instanceof Error ? error.message : "Unknown error"}`,
+    };
+  }
 }
 
 async function handleAgentGetAicoderStatus(): Promise<ToolCallResult> {
-  const runs = agentRunDatabase.listRuns({ userId: "aicoder", limit: 5 });
-  if (!runs.runs.length) {
-    return { success: true, data: { runs: [], current: null } };
-  }
-  const current = runs.runs.find((r) => r.status === "running");
-  const latest = runs.runs[0];
-  const latestWithSteps = current
-    ? agentRunDatabase.getRunWithSteps(current.id)
-    : latest
-      ? agentRunDatabase.getRunWithSteps(latest.id)
+  try {
+    const runs = agentRunDatabase.listRuns({ userId: "aicoder", limit: 5 });
+    if (!runs.runs.length) {
+      return { success: true, data: { runs: [], current: null } };
+    }
+    const current = runs.runs.find((r) => r.status === "running");
+    const latest = runs.runs[0];
+    const targetRun = current || latest;
+    const runWithSteps = targetRun
+      ? agentRunDatabase.getRunWithSteps(targetRun.id)
       : null;
-  return { success: true, data: { runs: runs.runs, current: latestWithSteps } };
+
+    return {
+      success: true,
+      data: {
+        runs: runs.runs,
+        current: runWithSteps ?? null,
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Failed to get aicoder status: ${error instanceof Error ? error.message : "Unknown error"}`,
+    };
+  }
 }
 
 async function handleTodoDeleteList(
