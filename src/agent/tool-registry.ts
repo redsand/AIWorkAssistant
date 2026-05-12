@@ -5621,7 +5621,7 @@ const AGENT_RUN_TOOLS: Tool[] = [
   {
     name: "agent.list_runs",
     description:
-      "List recent agent runs with optional filters. Returns run IDs, status, mode, timestamps, and tool loop counts.",
+      "List your own recent agent runs with optional filters. Returns run IDs, status, mode, timestamps, and tool loop counts. Only returns runs belonging to the requesting user.",
     params: {
       status: {
         type: "string",
@@ -5629,14 +5629,9 @@ const AGENT_RUN_TOOLS: Tool[] = [
           "Filter by status: running, completed, failed",
         required: false,
       },
-      userId: {
-        type: "string",
-        description: "Filter by user ID (e.g. 'aicoder')",
-        required: false,
-      },
       limit: {
         type: "number",
-        description: "Max results to return (default 25)",
+        description: "Max results to return (default 25, max 100)",
         required: false,
       },
       offset: {

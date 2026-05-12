@@ -49,12 +49,12 @@ describe("Agent Runs Tool Registry", () => {
     expect(tool).toBeDefined();
   });
 
-  it("agent.list_runs has optional filter params", () => {
+  it("agent.list_runs has optional filter params (no userId — restricted to own runs)", () => {
     const tool = getToolByName("agent.list_runs", "productivity")!;
     expect(tool.params.status).toBeDefined();
     expect(tool.params.status!.required).toBe(false);
-    expect(tool.params.userId).toBeDefined();
-    expect(tool.params.userId!.required).toBe(false);
+    // userId param removed for security: runs are always scoped to the requesting user
+    expect(tool.params.userId).toBeUndefined();
     expect(tool.params.limit).toBeDefined();
     expect(tool.params.limit!.required).toBe(false);
     expect(tool.params.offset).toBeDefined();
@@ -188,5 +188,57 @@ describe("Agent Runs Tool Handlers", () => {
 
   it("getRunWithSteps returns null for nonexistent run", () => {
     expect(db.getRunWithSteps("nonexistent")).toBeNull();
+  });
+
+  it("listRuns sorts by startedAt descending (most recent first)", () => {
+    const run1 = db.startRun({ userId: "user1", mode: "chat" });
+    // Add a small delay to ensure different timestamps
+    const dbAny = db as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } };
+    const oldDate = new Date(Date.now() - 60000).toISOString();
+    dbAny.db.prepare("UPDATE agent_runs SET started_at = ? WHERE id = ?").run(oldDate, run1.id);
+
+    db.startRun({ userId: "user1", mode: "chat" });
+
+    const result = db.listRuns({ userId: "user1" });
+    expect(result.runs).toHaveLength(2);
+    // Most recent first
+    expect(new Date(result.runs[0].startedAt).getTime()).toBeGreaterThan(
+      new Date(result.runs[1].startedAt).getTime()
+    );
+  });
+
+  it("listRuns with userId filter prevents cross-user access", () => {
+    db.startRun({ userId: "alice", mode: "chat" });
+    db.startRun({ userId: "bob", mode: "agent" });
+    db.startRun({ userId: "alice", mode: "engineering" });
+
+    // Alice can only see her own runs
+    const aliceRuns = db.listRuns({ userId: "alice" });
+    expect(aliceRuns.runs).toHaveLength(2);
+    expect(aliceRuns.runs.every((r) => r.userId === "alice")).toBe(true);
+
+    // Bob can only see his own runs
+    const bobRuns = db.listRuns({ userId: "bob" });
+    expect(bobRuns.runs).toHaveLength(1);
+    expect(bobRuns.runs[0].userId).toBe("bob");
+  });
+
+  it("getRunWithSteps returns step data with content", () => {
+    const run = db.startRun({ userId: "user1", mode: "chat" });
+    db.addStep({
+      runId: run.id,
+      stepType: "tool_result",
+      toolName: "read_file",
+      content: { output: "sensitive data here" },
+      sanitizedParams: { path: "/secret/file" },
+      success: true,
+      stepOrder: 0,
+    });
+
+    const result = db.getRunWithSteps(run.id);
+    expect(result).not.toBeNull();
+    expect(result!.steps).toHaveLength(1);
+    expect(result!.steps[0].content).toEqual({ output: "sensitive data here" });
+    expect(result!.steps[0].sanitizedParams).toEqual({ path: "/secret/file" });
   });
 });
