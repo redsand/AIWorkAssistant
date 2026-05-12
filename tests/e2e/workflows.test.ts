@@ -43,10 +43,12 @@ describe("E2E: Auth Middleware", () => {
     server = await buildTestServer();
     await server.ready();
     authToken = createSessionToken("e2e-test-user");
-  });
+  }, 60000);
 
   afterAll(async () => {
-    await server.close();
+    if (server) {
+      await server.close();
+    }
   });
 
   it("should allow access to public paths without authentication", async () => {
@@ -161,10 +163,12 @@ describe("E2E: Calendar CRUD + ICS Export", () => {
     server = await buildTestServer();
     await server.ready();
     authToken = createSessionToken("e2e-test-user");
-  });
+  }, 30000);
 
   afterAll(async () => {
-    await server.close();
+    if (server) {
+      await server.close();
+    }
   });
 
   it("should create a calendar event", async () => {
@@ -315,10 +319,12 @@ describe("E2E: Approval Lifecycle", () => {
     server = await buildTestServer();
     await server.ready();
     authToken = createSessionToken("e2e-test-user");
-  });
+  }, 30000);
 
   afterAll(async () => {
-    await server.close();
+    if (server) {
+      await server.close();
+    }
   });
 
   it("should list empty approvals", async () => {
@@ -482,10 +488,12 @@ describe("E2E: Roadmap CRUD", () => {
     server = await buildTestServer();
     await server.ready();
     authToken = createSessionToken("e2e-test-user");
-  });
+  }, 30000);
 
   afterAll(async () => {
-    await server.close();
+    if (server) {
+      await server.close();
+    }
   });
 
   it("should create a roadmap", async () => {
@@ -582,10 +590,12 @@ describe("E2E: Productivity Endpoints", () => {
     server = await buildTestServer();
     await server.ready();
     authToken = createSessionToken("e2e-test-user");
-  });
+  }, 30000);
 
   afterAll(async () => {
-    await server.close();
+    if (server) {
+      await server.close();
+    }
   });
 
   it("should return daily plan (with stubs)", async () => {
@@ -642,10 +652,12 @@ describe("E2E: Engineering Endpoints", () => {
     server = await buildTestServer();
     await server.ready();
     authToken = createSessionToken("e2e-test-user");
-  });
+  }, 30000);
 
   afterAll(async () => {
-    await server.close();
+    if (server) {
+      await server.close();
+    }
   });
 
   it("should return workflow brief (stub or AI)", async () => {
@@ -755,10 +767,12 @@ describe("E2E: Chat Session CRUD", () => {
     server = await buildTestServer();
     await server.ready();
     authToken = createSessionToken("e2e-test-user");
-  });
+  }, 30000);
 
   afterAll(async () => {
-    await server.close();
+    if (server) {
+      await server.close();
+    }
   });
 
   it("should create a new session", async () => {

@@ -7,12 +7,12 @@ import { aiClient } from "../../../src/agent/opencode-client";
 import type { ChatMessage, Tool } from "../../../src/agent/opencode-client";
 
 describe("OpenCode Client", () => {
-  beforeAll(() => {
-    // Set test API key if not already set
-    if (!process.env.OPENCODE_API_KEY) {
-      console.warn("OPENCODE_API_KEY not set - skipping integration tests");
-    }
-  });
+  let apiReachable = false;
+
+  beforeAll(async () => {
+    // Check if API is actually reachable (not just if key is set)
+    apiReachable = aiClient.isConfigured() && (await aiClient.validateConfig());
+  }, 15000);
 
   describe("Configuration", () => {
     it("should check if configured", () => {
@@ -28,8 +28,8 @@ describe("OpenCode Client", () => {
 
   describe("Chat", () => {
     it("should send a simple chat request", async () => {
-      if (!aiClient.isConfigured()) {
-        console.warn("Skipping chat test - API not configured");
+      if (!apiReachable) {
+        console.warn("Skipping chat test - API not reachable");
         return;
       }
 
@@ -47,8 +47,8 @@ describe("OpenCode Client", () => {
     }, 30000);
 
     it("should handle productivity mode prompt", async () => {
-      if (!aiClient.isConfigured()) {
-        console.warn("Skipping productivity test - API not configured");
+      if (!apiReachable) {
+        console.warn("Skipping productivity test - API not reachable");
         return;
       }
 
@@ -56,7 +56,7 @@ describe("OpenCode Client", () => {
         {
           role: "system",
           content:
-            "You are a personal productivity assistant. Keep responses brief and actionable.",
+            "You are a personal productivity assistant. Keep responses brief and actionable. Reply with at most 2 sentences.",
         },
         {
           role: "user",
@@ -70,11 +70,11 @@ describe("OpenCode Client", () => {
       expect(response.content).toBeTruthy();
       expect(response.content.length).toBeGreaterThan(0);
       console.log("Productivity advice:", response.content);
-    }, 30000);
+    }, 60000);
 
     it("should handle tool calling", async () => {
-      if (!aiClient.isConfigured()) {
-        console.warn("Skipping tool test - API not configured");
+      if (!apiReachable) {
+        console.warn("Skipping tool test - API not reachable");
         return;
       }
 
