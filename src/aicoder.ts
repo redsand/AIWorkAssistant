@@ -3010,12 +3010,26 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   saveRunState({ ...currentState, checkpoint: "tests_passed" });
 
   if (!pushBranch(branchName)) {
-    runLogger.logError(`Push failed — PR not created`);
-    runLogger.endRun(1);
-    // Don't save to processedIssues — allow retry on next aicoder cycle
-    trackStep(run.id, "tool_call", "Push failed", { toolName: "git_push", success: false });
-    agentRunDatabase.failRun(run.id, "Push failed");
-    return null;
+    // Non-force push may fail if remote has commits from a previous rework
+    // Attempt rebase on top of remote and retry
+    runLogger.logGit(`Push rejected — rebasing on remote and retrying`);
+    if (gitRun(["pull", "--rebase", "origin", branchName], WORKSPACE)) {
+      if (pushBranch(branchName)) {
+        trackStep(run.id, "tool_call", `Pushed branch after rebase: ${branchName}`, { toolName: "git_push" });
+      } else {
+        runLogger.logError(`Push failed after rebase — PR not created`);
+        runLogger.endRun(1);
+        trackStep(run.id, "tool_call", "Push failed after rebase", { toolName: "git_push", success: false });
+        agentRunDatabase.failRun(run.id, "Push failed after rebase");
+        return null;
+      }
+    } else {
+      runLogger.logError(`Rebase failed — PR not created`);
+      runLogger.endRun(1);
+      trackStep(run.id, "tool_call", "Rebase failed", { toolName: "git_rebase", success: false });
+      agentRunDatabase.failRun(run.id, "Rebase failed");
+      return null;
+    }
   }
   trackStep(run.id, "tool_call", `Pushed branch: ${branchName}`, { toolName: "git_push" });
 
@@ -3220,9 +3234,12 @@ async function continueFromChangesCommitted(cfg: ServerConfig, item: WorkItem, s
 
 async function continueFromTestsPassed(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
   if (!pushBranch(item.suggestedBranch)) {
-    runLogger.logError("Push failed on resume — aborting");
-    clearRunState();
-    return;
+    runLogger.logGit(`Push rejected — rebasing on remote and retrying`);
+    if (!gitRun(["pull", "--rebase", "origin", item.suggestedBranch], WORKSPACE) || !pushBranch(item.suggestedBranch)) {
+      runLogger.logError("Push failed after rebase on resume — aborting");
+      clearRunState();
+      return;
+    }
   }
   saveRunState({ ...state, checkpoint: "branch_pushed" });
   await continueFromBranchPushed(cfg, item, loadRunState()!);
