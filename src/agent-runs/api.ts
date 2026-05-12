@@ -1,19 +1,33 @@
 import { FastifyInstance } from "fastify";
 import { agentRunDatabase, AgentRunDatabase } from "./database";
+import type { AgentRunStep } from "./types";
 
-/** Strip sensitive step content (prompts, responses, params) for public/monitoring endpoints */
-function stripStepContent(steps: Array<{ id: string; runId: string; stepType: string; toolName: string | null; success: boolean | null; errorMessage: string | null; durationMs: number | null; stepOrder: number; createdAt: string }>) {
-  return steps.map(({ id, runId, stepType, toolName, success, errorMessage, durationMs, stepOrder, createdAt }) => ({
-    id,
-    runId,
-    stepType,
-    toolName,
-    success,
-    errorMessage,
-    durationMs,
-    stepOrder,
-    createdAt,
+/** Fields safe to expose in stripped step responses (no prompts, responses, or params) */
+type SafeStepFields = Pick<
+  AgentRunStep,
+  "id" | "runId" | "stepType" | "toolName" | "success" | "errorMessage" | "durationMs" | "stepOrder" | "createdAt"
+>;
+
+/** Strip sensitive step content (prompts, responses, params) for non-owner responses */
+function stripStepContent(steps: AgentRunStep[]): SafeStepFields[] {
+  return steps.map((step) => ({
+    id: step.id,
+    runId: step.runId,
+    stepType: step.stepType,
+    toolName: step.toolName,
+    success: step.success,
+    errorMessage: step.errorMessage,
+    durationMs: step.durationMs,
+    stepOrder: step.stepOrder,
+    createdAt: step.createdAt,
   }));
+}
+
+function safeParseInt(value: string | undefined, min: number, max: number, fallback: number): number {
+  if (value === undefined) return fallback;
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(Math.round(parsed), min), max);
 }
 
 export interface AgentRunsRouteOptions {
@@ -23,7 +37,7 @@ export interface AgentRunsRouteOptions {
 export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentRunsRouteOptions) {
   const db = options?.database || agentRunDatabase;
 
-  fastify.get("/agent-runs", async (request) => {
+  fastify.get("/agent-runs", async (request, reply) => {
     const query = request.query as {
       status?: string;
       userId?: string;
@@ -31,22 +45,25 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
       offset?: string;
     };
 
-    // IDOR prevention: restrict userId filtering
-    // - Authenticated users can only see their own runs (or aicoder system runs)
-    // - Unauthenticated requests see all runs (backwards compatibility for monitoring)
+    // IDOR prevention: always scope runs to the requesting user
+    // - Authenticated users see their own runs only (plus aicoder system runs)
+    // - Unauthenticated requests are denied — no access to any user's runs
     const requestUserId = request.userId;
-    const filterUserId = requestUserId
-      ? (query.userId === "aicoder" ? "aicoder" : requestUserId)
-      : (query.userId === "aicoder" ? "aicoder" : undefined);
+    if (!requestUserId) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
 
-    const limit = query.limit ? Math.min(Math.max(parseInt(query.limit, 10), 1), 100) : undefined;
-    const offset = query.offset ? Math.max(parseInt(query.offset, 10), 0) : undefined;
+    const filterUserId =
+      query.userId === "aicoder" ? "aicoder" : requestUserId;
+
+    const limit = safeParseInt(query.limit, 1, 100, 50);
+    const offset = safeParseInt(query.offset, 0, Number.MAX_SAFE_INTEGER, 0);
 
     return db.listRuns({
       status: query.status,
       userId: filterUserId,
-      limit: limit ?? undefined,
-      offset: offset ?? undefined,
+      limit,
+      offset,
     });
   });
 
@@ -88,12 +105,23 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
         return reply.code(404).send({ error: "Run not found" });
       }
 
-      // Only allow viewing your own runs (unless viewing aicoder system runs)
       const userId = request.userId;
-      if (userId && result.userId !== userId && result.userId !== "aicoder") {
+      // Require authentication to view runs
+      if (!userId) {
+        return reply.code(401).send({ error: "Authentication required" });
+      }
+
+      // Only allow viewing your own runs (aicoder runs are publicly viewable as metadata-only)
+      if (result.userId !== userId && result.userId !== "aicoder") {
         return reply.code(403).send({ error: "Not authorized to view this run" });
       }
 
+      // Strip sensitive step content for aicoder runs (which anyone can see)
+      if (result.userId === "aicoder") {
+        return { ...result, steps: stripStepContent(result.steps) };
+      }
+
+      // Owner sees full content including steps
       return result;
     },
   );
@@ -106,13 +134,25 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
         return reply.code(404).send({ error: "Run not found" });
       }
 
-      // Only allow viewing your own run steps (unless viewing aicoder system runs)
       const userId = request.userId;
-      if (userId && run.userId !== userId && run.userId !== "aicoder") {
+      // Require authentication to view run steps
+      if (!userId) {
+        return reply.code(401).send({ error: "Authentication required" });
+      }
+
+      // Only allow viewing your own run steps (aicoder steps are metadata-only)
+      if (run.userId !== userId && run.userId !== "aicoder") {
         return reply.code(403).send({ error: "Not authorized to view this run's steps" });
       }
 
-      return db.getRunSteps(request.params.id);
+      const steps = db.getRunSteps(request.params.id);
+
+      // Strip sensitive content for aicoder runs
+      if (run.userId === "aicoder") {
+        return stripStepContent(steps);
+      }
+
+      return steps;
     },
   );
 }
