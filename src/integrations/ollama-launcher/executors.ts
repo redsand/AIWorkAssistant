@@ -59,6 +59,9 @@ export class ClaudeExecutor implements ProviderExecutor {
       "bypassPermissions",
       "--dangerously-skip-permissions",
     ];
+    if (options.resumeSessionId) {
+      args.push("--resume", options.resumeSessionId);
+    }
     if (options.ollamaUrl) {
       args.push("--model", "opus");
     } else {

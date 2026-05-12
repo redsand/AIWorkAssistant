@@ -35,6 +35,7 @@ export interface GitlabMergeRequest {
     email: string;
     username: string;
   };
+  sha?: string;
   web_url: string;
 }
 
@@ -1266,6 +1267,45 @@ export class GitlabClient {
       }
       throw new Error(
         `Failed to create issue: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
+  async editIssue(
+    projectId: number | string | undefined,
+    issueIid: number,
+    params: {
+      labels?: string;
+      description?: string;
+      title?: string;
+      stateEvent?: "close" | "reopen";
+    },
+  ): Promise<any> {
+    if (!this.isConfigured()) {
+      throw new Error("GitLab client not configured");
+    }
+
+    const resolvedId = this.resolveProjectId(projectId);
+
+    try {
+      console.log(
+        `[GitLab] Updating issue #${issueIid} in project ${resolvedId}`,
+      );
+      const body: Record<string, unknown> = {};
+      if (params.labels) body.labels = params.labels;
+      if (params.description) body.description = params.description;
+      if (params.title) body.title = params.title;
+      if (params.stateEvent) body.state_event = params.stateEvent;
+
+      const response = await this.client.put(
+        `/api/v4/projects/${resolvedId}/issues/${issueIid}`,
+        body,
+      );
+      console.log(`[GitLab] Issue #${issueIid} updated`);
+      return response.data;
+    } catch (error) {
+      throw new Error(
+        `Failed to update issue #${issueIid}: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
     }
   }

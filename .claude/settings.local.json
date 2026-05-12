@@ -7,7 +7,16 @@
       "Bash(Select-String --line-buffered \".\")",
       "Bash(Get-Content *)",
       "PowerShell(Get-Content *)",
-      "Bash(AICODER_AGENT=claude npx tsx *)"
+      "Bash(AICODER_AGENT=claude npx tsx *)",
+      "Bash(npx tsc *)",
+      "Bash(npx vitest *)",
+      "Bash(Select-Object -First 10)",
+      "Read(//mnt/c/Users/TimShelton/source/repos/hawk-soard/.aicoder/**)",
+      "Read(//mnt/c/Users/TimShelton/source/repos/**)",
+      "Bash(node -e ' *)",
+      "Bash(python -c \"import sys,json; data=json.loads\\(sys.stdin.read\\(\\).strip\\(\\).split\\('\\\\n',1\\)[1]\\); print\\(json.dumps\\(data, indent=2\\)[:3000]\\)\")",
+      "Bash(python *)",
+      "Bash(del \"C:\\\\Users\\\\TimShelton\\\\source\\\\repos\\\\hawk-soard\\\\.aicoder\\\\logs\\\\stream-debug.log\")"
     ]
   }
 }

@@ -7,6 +7,7 @@ export interface LaunchOptions {
   cwd?: string;
   ollamaUrl?: string;
   codexApprovalMode?: "suggest" | "auto-edit" | "full-auto";
+  resumeSessionId?: string;
 }
 
 export interface LaunchResult {

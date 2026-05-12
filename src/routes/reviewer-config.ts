@@ -29,12 +29,50 @@ function findingFromText(
   severity: ReviewFinding["severity"],
   category: ReviewFinding["category"],
 ): ReviewFinding {
-  const fileMatch = text.match(/\b([\w./\-]+\.\w{1,10})(?::(\d+))?/);
+  // Try multiple patterns to extract file reference from finding text
+  // Pattern 1: "filename.ext:line — description" (explicit file:line format)
+  const explicitMatch = text.match(/^([\w./\-]+\.\w{1,10})\s*:\s*(\d+)\s*[—\-–]/);
+  if (explicitMatch) {
+    return {
+      severity,
+      category,
+      file: explicitMatch[1],
+      line: parseInt(explicitMatch[2], 10),
+      message: text,
+      suggestion: "See the full review comment on the PR.",
+    };
+  }
+  // Pattern 2: "filename.ext — description" (file without line)
+  const fileOnlyMatch = text.match(/^([\w./\-]+\.\w{1,10})\s*[—\-–]/);
+  if (fileOnlyMatch) {
+    return {
+      severity,
+      category,
+      file: fileOnlyMatch[1],
+      line: undefined,
+      message: text,
+      suggestion: "See the full review comment on the PR.",
+    };
+  }
+  // Pattern 3: "in filename.ext" or "in path/filename.ext"
+  const inMatch = text.match(/\bin\s+([\w./\-]+\.\w{1,10})/);
+  if (inMatch) {
+    return {
+      severity,
+      category,
+      file: inMatch[1],
+      line: undefined,
+      message: text,
+      suggestion: "See the full review comment on the PR.",
+    };
+  }
+  // Pattern 4: fallback — any filename.ext anywhere in text
+  const looseMatch = text.match(/\b([\w./\-]+\.\w{1,10})(?::(\d+))?/);
   return {
     severity,
     category,
-    file: fileMatch?.[1] ?? "unknown",
-    line: fileMatch?.[2] ? parseInt(fileMatch[2], 10) : undefined,
+    file: looseMatch?.[1] ?? "unknown",
+    line: looseMatch?.[2] ? parseInt(looseMatch[2], 10) : undefined,
     message: text,
     suggestion: "See the full review comment on the PR.",
   };

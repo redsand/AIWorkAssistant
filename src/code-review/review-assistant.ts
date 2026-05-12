@@ -54,6 +54,13 @@ const REVIEW_SYSTEM_PROMPT = `You are a senior staff engineer performing a thoro
 
 Consider the original issue/ticket requirements alongside the code changes. If previous review comments exist, assess whether earlier feedback was addressed. The review should be holistic — does the code actually solve the stated problem? Are there gaps between what the issue asked for and what the code delivers?
 
+CRITICAL RULES:
+1. ONLY flag issues you can verify from the code shown in the diff. Do NOT claim code is missing unless you have verified it is not present in ANY file shown.
+2. Each finding MUST include the specific file name and line reference. Use format: "filename.ext:line_number — description". Never use "unknown" as a filename.
+3. If a diff is truncated, do NOT assume the truncated portion is missing or broken. Truncated code exists — you just can't see all of it.
+4. For new/added files (status: "added"), the entire file content is the diff — you can see the full implementation. Do not claim an added file is empty or missing content you can see in the diff.
+5. When checking if requirements from the issue are met, verify against the ACTUAL code shown, not assumptions about what might be missing.
+
 Be specific and actionable. Respond with ONLY the JSON object, no markdown fences.`;
 
 const RELEASE_SYSTEM_PROMPT = `You are a senior staff engineer preparing a release readiness assessment. Given a PR/MR changeset, produce a JSON object with these exact fields:
@@ -92,8 +99,9 @@ class ReviewAssistant {
   }
 
   summarizeDiff(changeSet: ChangeSet): string {
-    const MAX_PATCH_LINES = 40;
-    const MAX_TOTAL_CHARS = 8000;
+    const MAX_PATCH_LINES = 200;
+    const MAX_TOTAL_CHARS = 32000;
+    const NEW_FILE_MAX_LINES = 500;
 
     const lines: string[] = [
       `Title: ${changeSet.title}`,
@@ -105,17 +113,17 @@ class ReviewAssistant {
     ];
 
     if (changeSet.description?.trim()) {
-      lines.push("Description:", changeSet.description.trim().slice(0, 500), "");
+      lines.push("Description:", changeSet.description.trim().slice(0, 1000), "");
     }
 
     if (changeSet.issueDescription?.trim()) {
-      lines.push("Original Issue:", changeSet.issueDescription.trim().slice(0, 800), "");
+      lines.push("Original Issue:", changeSet.issueDescription.trim().slice(0, 1500), "");
     }
 
     if (changeSet.existingComments.length > 0) {
       lines.push("Previous review comments:");
-      for (const c of changeSet.existingComments.slice(0, 10)) {
-        lines.push(`  - ${c.slice(0, 200)}`);
+      for (const c of changeSet.existingComments.slice(0, 20)) {
+        lines.push(`  - ${c.slice(0, 500)}`);
       }
       lines.push("");
     }
@@ -124,10 +132,14 @@ class ReviewAssistant {
     for (const file of changeSet.files) {
       lines.push(`  ${file.status} ${file.filename} (+${file.additions} -${file.deletions})`);
       if (file.patch) {
-        const patchLines = file.patch.split("\n").slice(0, MAX_PATCH_LINES);
-        lines.push(...patchLines.map((l) => "    " + l));
-        if (file.patch.split("\n").length > MAX_PATCH_LINES) {
-          lines.push("    ...(truncated)");
+        const isNew = file.status === "added";
+        const limit = isNew ? NEW_FILE_MAX_LINES : MAX_PATCH_LINES;
+        const patchLines = file.patch.split("\n");
+        const totalLines = patchLines.length;
+        const shownLines = patchLines.slice(0, limit);
+        lines.push(...shownLines.map((l) => "    " + l));
+        if (totalLines > limit) {
+          lines.push(`    ...(truncated: ${totalLines} total lines, showing ${limit})`);
         }
       }
       lines.push("");

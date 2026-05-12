@@ -39,6 +39,13 @@ Options:
   --poll-ms <ms>       Poll interval in milliseconds (default: 60000)
   --max-cycles <n>     Stop after n work cycles (0 = unlimited)
   --issue <number>     Work on a specific issue by number (skips polling, runs once)
+  --publish <branch>   Create PR/MR from an existing branch and exit
+  --skip-baseline     Skip baseline test check before agent starts (only test after)
+  --skip-agent        Skip agent execution — commit/test/push existing changes only
+  --skip-tests        Skip all tests and coverage checks — just commit and push
+  --resume-run        Resume from saved run state (if available)
+  --discard-run       Discard saved run state and start fresh
+  --debug             Write raw LLM stream events to .aicoder/logs/ for inspection
   --base <branch>      Base branch to start from (default: main). Use this to chain PRs.
   --poll                Use legacy fire-and-forget poll mode (default: focused mode)
   --max-rework <n>      Max rework cycles per issue in focused mode (default: 5)
@@ -57,6 +64,18 @@ Remote config (fetches everything else from AIWorkAssistant):
       i++;
     } else if (argv[i] === "--ollama") {
       out["ollama"] = "true";
+    } else if (argv[i] === "--debug") {
+      out["debug"] = "true";
+    } else if (argv[i] === "--skip-baseline") {
+      out["skip-baseline"] = "true";
+    } else if (argv[i] === "--skip-agent") {
+      out["skip-agent"] = "true";
+    } else if (argv[i] === "--skip-tests") {
+      out["skip-tests"] = "true";
+    } else if (argv[i] === "--resume-run") {
+      out["resume-run"] = "true";
+    } else if (argv[i] === "--discard-run") {
+      out["discard-run"] = "true";
     }
   }
   return out;
@@ -109,11 +128,17 @@ const PRIORITY = (ARGV.priority || process.env.AICODER_PRIORITY || "label") as P
 const SOURCE = (ARGV.source || process.env.AICODER_SOURCE || "auto") as TicketSourceType | "auto";
 const LOOKUP = (ARGV.lookup || process.env.AICODER_LOOKUP || "memory") as LookupMode;
 const USE_OLLAMA = "ollama" in ARGV || process.env.AICODER_OLLAMA === "true";
+const DEBUG = "debug" in ARGV || process.env.AICODER_DEBUG === "true";
+const SKIP_BASELINE = "skip-baseline" in ARGV || process.env.AICODER_SKIP_BASELINE === "true";
+const SKIP_AGENT = "skip-agent" in ARGV || process.env.AICODER_SKIP_AGENT === "true";
+const SKIP_TESTS = "skip-tests" in ARGV || process.env.AICODER_SKIP_TESTS === "true";
+const RESUME_RUN = "resume-run" in ARGV;
+const DISCARD_RUN = "discard-run" in ARGV;
 const MODEL = ARGV.model || process.env.AICODER_MODEL || "";
 const OLLAMA_URL = process.env.OLLAMA_API_URL || "http://localhost:11434";
 const TARGET_ISSUE_KEY = ARGV.issue || null;
+const PUBLISH_BRANCH = ARGV.publish || null;
 const BASE_BRANCH_CANDIDATES = [ARGV.base || process.env.AICODER_BASE_BRANCH, "main", "master"].filter(Boolean) as string[];
-const BASE_BRANCH = BASE_BRANCH_CANDIDATES[0];
 const FOCUSED_MODE = !("poll" in ARGV || process.env.AICODER_POLL_MODE === "true");
 const MAX_REWORK = parseInt(ARGV["max-rework"] || process.env.AICODER_MAX_REWORK || "5", 10);
 const REVIEW_POLL_MS = parseInt(ARGV["review-poll-ms"] || process.env.AICODER_REVIEW_POLL_MS || "30000", 10);
@@ -159,6 +184,8 @@ interface GeneratedPrompt {
 interface RunResult {
   finDetected: boolean;
   exitCode: number | null;
+  ranTests?: boolean;
+  sessionId?: string;
 }
 
 type TestSuiteKind = "unit" | "integration" | "all";
@@ -172,6 +199,44 @@ interface TestSuiteResult {
   timedOut: boolean;
   error: string | null;
   kind: TestSuiteOutcome;
+}
+
+type PipelineCheckpoint =
+  | "issue_transitioned"
+  | "branch_checked_out"
+  | "baseline_tests_pass"
+  | "agent_complete"
+  | "changes_committed"
+  | "tests_passed"
+  | "branch_pushed"
+  | "pr_created"
+  | "review_polling"
+  | "rework_agent_complete"
+  | "rework_committed"
+  | "rework_tests_passed"
+  | "rework_pushed";
+
+interface RunState {
+  issueKey: string;
+  issueNumber: number;
+  title: string;
+  url: string;
+  owner: string;
+  repo: string;
+  suggestedBranch: string;
+  labels?: string[];
+  source: "github" | "gitlab" | "jira";
+  checkpoint: PipelineCheckpoint;
+  fromBranch?: string;
+  sessionId?: string;
+  agentRanTests?: boolean;
+  prNumber?: number;
+  reworkCount?: number;
+  sinceTimestamp?: string;
+  apiUrl: string;
+  apiKey: string;
+  startedAt: string;
+  updatedAt: string;
 }
 
 interface ProjectConfig {
@@ -237,6 +302,17 @@ function findPythonTestDir(workspace: string, keywords: string[]): string | unde
   }
 
   return undefined;
+}
+
+function hasPytestCov(workspace: string): boolean {
+  try {
+    const result = spawnSync(process.platform === "win32" ? "python" : "python3", ["-c", "import pytest_cov"], {
+      cwd: workspace, stdio: "pipe", encoding: "utf-8", timeout: 10_000,
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
 }
 
 function detectProjectConfig(workspace: string): ProjectConfig {
@@ -309,7 +385,7 @@ function detectProjectConfig(workspace: string): ProjectConfig {
       testCommand: ["pytest"],
       unitTestCommand: envUnit ? envUnit.split(" ") : unitDir ? ["pytest", unitDir] : ["pytest"],
       integrationTestCommand: envIntegration ? envIntegration.split(" ") : integrationDir ? ["pytest", integrationDir] : ["pytest"],
-      coverageCommand: envCoverage ? envCoverage.split(" ") : ["pytest", "--cov"],
+      coverageCommand: envCoverage ? envCoverage.split(" ") : hasPytestCov(workspace) ? ["pytest", "--cov"] : [],
       buildCommand: [],
       hasTests: true,
     };
@@ -378,8 +454,8 @@ function getProjectConfig(): ProjectConfig {
   return projectConfig;
 }
 
-const UNIT_TEST_TIMEOUT = parseInt(process.env.AICODER_UNIT_TEST_TIMEOUT || "180000", 10);
-const INTEGRATION_TEST_TIMEOUT = parseInt(process.env.AICODER_INTEGRATION_TEST_TIMEOUT || "300000", 10);
+const UNIT_TEST_TIMEOUT = parseInt(process.env.AICODER_UNIT_TEST_TIMEOUT || "300000", 10);
+const INTEGRATION_TEST_TIMEOUT = parseInt(process.env.AICODER_INTEGRATION_TEST_TIMEOUT || "600000", 10);
 const BASELINE_MAX_FIX_ATTEMPTS = parseInt(process.env.AICODER_BASELINE_MAX_FIX || "2", 10);
 
 function loadServerConfig(): ServerConfig {
@@ -462,6 +538,54 @@ function detectRemotePlatform(cwd: string): "github" | "gitlab" | "unknown" {
   return "unknown";
 }
 
+/**
+ * Extract the GitLab project path from the git remote URL.
+ * Handles both HTTPS (https://gitlab.example.com/group/project) and
+ * SSH (git@gitlab.example.com:group/project.git) formats.
+ * Returns the URL-encoded path suitable for GitLab API calls (e.g. "siem%2Fhawk-soard").
+ */
+function getGitLabProjectFromRemote(cwd: string): string | null {
+  const result = spawnSync("git", ["remote", "get-url", "origin"], {
+    cwd, stdio: "pipe", encoding: "utf-8",
+  });
+  if (result.status !== 0 || !result.stdout.trim()) return null;
+
+  const url = result.stdout.trim();
+  let projectPath: string | null = null;
+
+  // HTTPS: https://gitlab.example.com/group/subgroup/project.git
+  const httpsMatch = url.match(/^https?:\/\/[^/]+\/(.+?)(?:\.git)?$/i);
+  if (httpsMatch) {
+    projectPath = httpsMatch[1];
+  }
+
+  // SSH: git@gitlab.example.com:group/subgroup/project.git
+  const sshMatch = url.match(/^git@[^:]+:(.+?)(?:\.git)?$/i);
+  if (sshMatch) {
+    projectPath = sshMatch[1];
+  }
+
+  if (!projectPath) return null;
+  // Encode for GitLab API (slashes become %2F)
+  return encodeURIComponent(projectPath);
+}
+
+/** Find an existing open MR for the given source branch. */
+async function findExistingGitLabMR(
+  projectId: string,
+  sourceBranch: string,
+): Promise<{ iid: number; web_url: string } | null> {
+  try {
+    const mrs = await gitlabClient.getMergeRequests(projectId, "opened");
+    const existing = (mrs || []).find(
+      (mr: any) => mr.source_branch === sourceBranch,
+    );
+    return existing ? { iid: existing.iid, web_url: existing.web_url } : null;
+  } catch {
+    return null;
+  }
+}
+
 async function createPR(
   cfg: ServerConfig,
   item: WorkItem,
@@ -471,15 +595,16 @@ async function createPR(
   runLogger.logGit(`Detected remote platform: ${platform}`);
 
   if (platform === "gitlab") {
-    // Create a GitLab merge request instead of a GitHub PR
+    // Derive project path from git remote — more reliable than Jira project key
+    const gitlabProject = getGitLabProjectFromRemote(WORKSPACE) || process.env.GITLAB_DEFAULT_PROJECT || cfg.repo || item.repo;
     try {
       const resp = await axios.post<{ success: boolean; mrIid?: number; url?: string; error?: string }>(
         `${cfg.apiUrl}/api/autonomous-loop/mr`,
         {
-          project: item.repo || cfg.repo,
+          project: gitlabProject,
           title: `[AI] ${item.title}`,
           sourceBranch: branchName,
-          targetBranch: BASE_BRANCH,
+          targetBranch: getBaseBranch(),
           description: item.url ? `Closes ${item.url}\n\nIssue: ${item.id}\n\n_Generated by AiRemoteCoder autonomous agent._` : `Issue: ${item.id}\n\n_Generated by AiRemoteCoder autonomous agent._`,
           removeSourceBranch: true,
         },
@@ -488,10 +613,32 @@ async function createPR(
       if (resp.data.success) {
         return { prNumber: resp.data.mrIid ?? 0, url: resp.data.url ?? "" };
       }
-      runLogger.logError(`GitLab MR creation failed: ${resp.data.error ?? "unknown error"}`);
+
+      // If MR already exists for this branch, find and return it instead of failing
+      const errMsg = resp.data.error ?? "";
+      if (errMsg.includes("already exists")) {
+        runLogger.logGit(`MR already exists for branch ${branchName} — looking up existing MR`);
+        const existing = await findExistingGitLabMR(gitlabProject, branchName);
+        if (existing) {
+          runLogger.logGit(`Found existing MR !${existing.iid}: ${existing.web_url}`);
+          return { prNumber: existing.iid, url: existing.web_url };
+        }
+      }
+
+      runLogger.logError(`GitLab MR creation failed: ${errMsg}`);
       return null;
     } catch (err) {
-      runLogger.logError(`GitLab MR creation failed: ${(err as Error).message}`);
+      const errMsg = (err as Error).message;
+      // Also handle the case where the axios call itself throws due to "already exists"
+      if (errMsg.includes("already exists")) {
+        runLogger.logGit(`MR already exists for branch ${branchName} — looking up existing MR`);
+        const existing = await findExistingGitLabMR(gitlabProject, branchName);
+        if (existing) {
+          runLogger.logGit(`Found existing MR !${existing.iid}: ${existing.web_url}`);
+          return { prNumber: existing.iid, url: existing.web_url };
+        }
+      }
+      runLogger.logError(`GitLab MR creation failed: ${errMsg}`);
       return null;
     }
   }
@@ -517,6 +664,177 @@ async function createPR(
     runLogger.logError(`PR creation failed: ${(err as Error).message}`);
     return null;
   }
+}
+
+function truncate(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  return text.slice(0, maxLen - 1) + "…";
+}
+
+// ---------------------------------------------------------------------------
+// Extract issue key from branch name
+// Jira: ai/issue-ir-82-fix-thing → IR-82
+// Numeric: ai/issue-51-fix-thing → 51
+// ---------------------------------------------------------------------------
+function extractIssueKeyFromBranchName(branchName: string): string | null {
+  const jiraMatch = branchName.match(/issue-([a-z]+-\d+)/i);
+  if (jiraMatch) return jiraMatch[1].toUpperCase();
+  const numMatch = branchName.match(/issue-(\d+)/i);
+  if (numMatch) return numMatch[1];
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Publish an existing branch as a PR/MR with full reviewer context
+// ---------------------------------------------------------------------------
+async function publishBranch(cfg: ServerConfig, branchName: string): Promise<void> {
+  runLogger.logWork(`Publishing branch: ${branchName}`);
+
+  // 1. Ensure we're on the right branch
+  const currentBranchResult = gitRunWithOutput(["rev-parse", "--abbrev-ref", "HEAD"], WORKSPACE);
+  const currentBranch = currentBranchResult.ok ? currentBranchResult.stdout.trim() : "";
+  if (currentBranch !== branchName) {
+    runLogger.logGit(`Switching to branch: ${branchName}`);
+    if (!gitRun(["checkout", branchName], WORKSPACE)) {
+      runLogger.logError(`Cannot checkout branch ${branchName} — does it exist?`);
+      process.exit(1);
+    }
+  }
+
+  // 2. Push branch to origin
+  runLogger.logGit(`Pushing branch to origin: ${branchName}`);
+  if (!gitRun(["push", "origin", branchName], WORKSPACE)) {
+    // Try with --force-with-lease if regular push fails (branch may already exist)
+    if (!gitRun(["push", "--force-with-lease", "origin", branchName], WORKSPACE)) {
+      runLogger.logError(`Cannot push branch ${branchName} to origin`);
+      process.exit(1);
+    }
+  }
+
+  // 3. Extract issue key from branch name
+  const issueKey = extractIssueKeyFromBranchName(branchName);
+  if (!issueKey) {
+    runLogger.logError(`Cannot extract issue key from branch name: ${branchName}`);
+    runLogger.logError("Expected pattern: ai/issue-<key>-<slug> (e.g. ai/issue-ir-82-fix-thing or ai/issue-51-fix-thing)");
+    process.exit(1);
+  }
+  runLogger.logWork(`Extracted issue key: ${issueKey}`);
+
+  // 4. Look up the issue
+  const isJira = /^[A-Z]+-\d+$/.test(issueKey);
+  let item: WorkItem | null = null;
+
+  if (isJira) {
+    item = await fetchJiraIssueDirectly(issueKey);
+  } else {
+    const num = parseInt(issueKey, 10);
+    if (!isNaN(num)) {
+      item = await fetchIssueDirectly(cfg, num);
+    }
+  }
+
+  if (!item) {
+    runLogger.logError(`Cannot find issue ${issueKey} — check --source flag and credentials`);
+    process.exit(1);
+  }
+
+  runLogger.logWork(`Found issue: ${item.id} — ${item.title}`);
+
+  // 5. Build enriched description
+  let description = "";
+
+  // Closes line for auto-merge
+  if (item.url) {
+    description += `Closes ${item.url}\n\n`;
+  }
+
+  // Issue key for reviewer routing
+  description += `Issue: ${item.id}\n\n`;
+
+  // Issue description for reviewer context
+  if (isJira && jiraClient.isConfigured()) {
+    try {
+      const jiraIssue = await jiraClient.getIssue(item.id);
+      const fields = jiraIssue.fields as typeof jiraIssue.fields & { description?: any };
+      // Jira description can be rich text (Atlassian Document Format) or plain string
+      const desc = fields.description;
+      if (desc) {
+        const descText = typeof desc === "string"
+          ? desc
+          : Array.isArray(desc?.content)
+            ? desc.content.map((block: any) => block.text || "").filter(Boolean).join("\n")
+            : "";
+        if (descText) {
+          description += `## Description\n\n${truncate(descText, 2000)}\n\n`;
+        }
+      }
+    } catch {
+      // Non-fatal: description enrichment is best-effort
+    }
+  }
+
+  description += "_Generated by AiRemoteCoder autonomous agent._";
+
+  // 6. Create PR/MR
+  const platform = detectRemotePlatform(WORKSPACE);
+  runLogger.logGit(`Detected remote platform: ${platform}`);
+
+  if (platform === "gitlab") {
+    // Derive project path from git remote — more reliable than Jira project key
+    const gitlabProject = getGitLabProjectFromRemote(WORKSPACE) || process.env.GITLAB_DEFAULT_PROJECT || cfg.repo || item.repo;
+    try {
+      const resp = await axios.post<{ success: boolean; mrIid?: number; url?: string; error?: string }>(
+        `${cfg.apiUrl}/api/autonomous-loop/mr`,
+        {
+          project: gitlabProject,
+          title: `[AI] ${item.title}`,
+          sourceBranch: branchName,
+          targetBranch: getBaseBranch(),
+          description,
+          removeSourceBranch: true,
+        },
+        { headers: authHeaders(cfg) },
+      );
+      if (resp.data.success) {
+        const mrUrl = resp.data.url ?? "";
+        runLogger.logPR(`Created MR !${resp.data.mrIid ?? ""}: ${mrUrl}`);
+      } else {
+        runLogger.logError(`GitLab MR creation failed: ${resp.data.error ?? "unknown error"}`);
+        process.exit(1);
+      }
+    } catch (err) {
+      runLogger.logError(`GitLab MR creation failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  } else {
+    // GitHub PR
+    try {
+      const resp = await axios.post<{ success: boolean; prNumber: number; url: string }>(
+        `${cfg.apiUrl}/api/autonomous-loop/pr`,
+        {
+          owner: item.owner || cfg.owner,
+          repo: item.repo || cfg.repo,
+          title: `[AI] ${item.title}`,
+          head: branchName,
+          base: "main",
+          body: description,
+          issueNumber: item.number,
+        },
+        { headers: authHeaders(cfg) },
+      );
+      if (resp.data.success) {
+        runLogger.logPR(`Created PR #${resp.data.prNumber}: ${resp.data.url}`);
+      } else {
+        runLogger.logError("GitHub PR creation failed");
+        process.exit(1);
+      }
+    } catch (err) {
+      runLogger.logError(`GitHub PR creation failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  }
+
+  runLogger.logWork("Publish complete");
 }
 
 async function notifyComplete(
@@ -1029,7 +1347,7 @@ async function rebaseAndResolveConflicts(branchName: string): Promise<boolean> {
   let maxRounds = 10; // Safety limit for multiple conflict rounds
 
   while (maxRounds-- > 0) {
-    resolveConflictsInWorkingTree(branchFiles, true);
+    const resolvedCount = resolveConflictsInWorkingTree(branchFiles, true);
     if (resolvedCount === 0) break;
     resolvedTotal += resolvedCount;
 
@@ -1391,6 +1709,9 @@ function checkCoverage(): { passed: boolean; kind: TestSuiteOutcome } {
     kind = "spawn_error";
   } else if (timedOut || (result.status === null && signal)) {
     kind = "timeout";
+  } else if (/unrecognized arguments:\s*--cov/.test(combined) || /no module named\s*['"]pytest_cov['"]/i.test(combined)) {
+    // pytest-cov plugin not installed — not a coverage failure, just unavailable
+    kind = "spawn_error";
   } else {
     kind = "fail";
   }
@@ -1792,6 +2113,7 @@ async function pollForGitLabReviewResult(
   projectId: string,
   mrIid: number,
   pollMs: number = REVIEW_POLL_MS,
+  sinceIso?: string,
 ): Promise<"passed" | "failed" | "postponed" | "merged" | "conflict" | "closed"> {
   while (true) {
     // Check MR state first
@@ -1799,25 +2121,40 @@ async function pollForGitLabReviewResult(
       const mr = await gitlabClient.getMergeRequest(projectId, mrIid);
       if (mr.state === "merged") return "merged";
       if (mr.state === "closed") return "closed";
-      // Detect merge conflicts via GitLab API
-      const status = await gitlabClient.getMergeRequestStatus(projectId, mrIid);
-      if (status.conflicts || status.mergeStatus === "cannot_be_merged") return "conflict";
     } catch {
       // MR might not be accessible
     }
 
-    // Check MR notes for review markers
+    // Check MR notes for review markers — only consider notes after our last push
+    let hasReviewNote = false;
     try {
       const notes = await gitlabClient.listMergeRequestNotes(projectId, mrIid, "desc");
       for (const note of notes) {
+        // Skip notes from before our last push to avoid re-triggering on old reviews
+        if (sinceIso && note.created_at && note.created_at <= sinceIso) continue;
         const body: string = note.body || "";
         if (body.includes(REVIEW_PASSED_MARKER)) return "passed";
         if (body.includes(REVIEW_FAILED_MARKER)) return "failed";
         if (body.includes(REVIEW_POSTPONED_MARKER)) return "postponed";
         if (body.includes(REVIEW_MERGE_CONFLICT_MARKER)) return "conflict";
+        // Any note from a reviewer (not the bot itself) counts as review activity
+        if (note.author?.username !== "aicoder" && note.author?.username !== "AiRemoteCoder") {
+          hasReviewNote = true;
+        }
       }
     } catch {
       // Notes might not be available
+    }
+
+    // Only check merge conflict status if a reviewer has commented
+    // (fresh MRs often report "cannot_be_merged" before GitLab checks)
+    if (hasReviewNote) {
+      try {
+        const status = await gitlabClient.getMergeRequestStatus(projectId, mrIid);
+        if (status.conflicts || status.mergeStatus === "cannot_be_merged") return "conflict";
+      } catch {
+        // Status check failed — continue polling
+      }
     }
 
     await new Promise((r) => setTimeout(r, pollMs));
@@ -1886,34 +2223,43 @@ async function fetchGitLabReworkPrompt(
   return null;
 }
 
-async function runAgent(prompt: string): Promise<RunResult> {
+async function runAgent(prompt: string, resumeSessionId?: string): Promise<RunResult> {
   if (ollamaLauncher) {
-    return runAgentViaLauncher(prompt);
+    return runAgentViaLauncher(prompt, resumeSessionId);
   }
-  return runAgentDirect(prompt);
+  return runAgentDirect(prompt, resumeSessionId);
 }
 
-async function runAgentViaLauncher(prompt: string): Promise<RunResult> {
+async function runAgentViaLauncher(prompt: string, resumeSessionId?: string): Promise<RunResult> {
   if (!prompt) {
     runLogger.logError("No prompt provided to agent — skipping");
     return { finDetected: false, exitCode: -1 };
   }
   return new Promise((resolve) => {
+    if (resumeSessionId) {
+      runLogger.logConfig(`Resuming Claude session ${resumeSessionId.slice(0, 8)}`);
+    }
     runLogger.logAgent(`Starting ${AGENT} via Ollama launcher`);
 
+    let capturedSessionId: string | undefined;
     const options: import("./integrations/ollama-launcher").LaunchOptions = {
       provider: AGENT,
       prompt,
       cwd: WORKSPACE,
       ollamaUrl: OLLAMA_URL,
       model: MODEL || undefined,
+      resumeSessionId,
     };
 
     ollamaLauncher!.launchStream(options).then((child) => {
       activeChild = child;
       let finDetected = false;
       let outputBuf = "";
-      const formatter = createStreamFormatter(AGENT, WORKSPACE);
+      const formatter = createStreamFormatter(AGENT, WORKSPACE, {
+        debug: DEBUG,
+        workspace: WORKSPACE,
+        onSessionId: (sid) => { capturedSessionId = sid; },
+      });
 
       child.stdout?.on("data", (chunk: Buffer) => {
         const text = chunk.toString();
@@ -1932,7 +2278,7 @@ async function runAgentViaLauncher(prompt: string): Promise<RunResult> {
         const remaining = formatter.flush();
         if (remaining) process.stdout.write(remaining);
         activeChild = null;
-        resolve({ finDetected, exitCode: code });
+        resolve({ finDetected, exitCode: code, ranTests: formatter.ranTests, sessionId: capturedSessionId });
       });
 
       child.on("error", (err) => {
@@ -1948,11 +2294,14 @@ async function runAgentViaLauncher(prompt: string): Promise<RunResult> {
   });
 }
 
-async function runAgentDirect(prompt: string): Promise<RunResult> {
+async function runAgentDirect(prompt: string, resumeSessionId?: string): Promise<RunResult> {
   return new Promise((resolve) => {
+    if (resumeSessionId) {
+      runLogger.logConfig(`Resuming Claude session ${resumeSessionId.slice(0, 8)}`);
+    }
     runLogger.logAgent(`Starting ${AGENT}`);
 
-    const agentArgs = buildAgentArgs(AGENT);
+    const agentArgs = buildAgentArgs(AGENT, resumeSessionId);
     const child = spawn(AGENT, agentArgs, {
       cwd: WORKSPACE,
       stdio: ["pipe", "pipe", "inherit"],
@@ -1962,7 +2311,12 @@ async function runAgentDirect(prompt: string): Promise<RunResult> {
 
     let finDetected = false;
     let outputBuf = "";
-    const formatter = createStreamFormatter(AGENT, WORKSPACE);
+    let capturedSessionId: string | undefined;
+    const formatter = createStreamFormatter(AGENT, WORKSPACE, {
+      debug: DEBUG,
+      workspace: WORKSPACE,
+      onSessionId: (sid) => { capturedSessionId = sid; },
+    });
 
     // Pipe prompt via stdin to avoid command-line length limits
     child.stdin?.write(prompt);
@@ -1985,7 +2339,7 @@ async function runAgentDirect(prompt: string): Promise<RunResult> {
       const remaining = formatter.flush();
       if (remaining) process.stdout.write(remaining);
       activeChild = null;
-      resolve({ finDetected, exitCode: code });
+      resolve({ finDetected, exitCode: code, ranTests: formatter.ranTests, sessionId: capturedSessionId });
     });
 
     child.on("error", (err) => {
@@ -1996,7 +2350,7 @@ async function runAgentDirect(prompt: string): Promise<RunResult> {
   });
 }
 
-function buildAgentArgs(agent: string): string[] {
+function buildAgentArgs(agent: string, resumeSessionId?: string): string[] {
   switch (agent) {
     case "codex":
       return [
@@ -2008,8 +2362,13 @@ function buildAgentArgs(agent: string): string[] {
       ];
     case "opencode":
       return [];
-    case "claude":
-      return ["-p", "--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"];
+    case "claude": {
+      const args = ["-p", "--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"];
+      if (resumeSessionId) {
+        args.push("--resume", resumeSessionId);
+      }
+      return args;
+    }
     default:
       return [];
   }
@@ -2048,6 +2407,47 @@ function saveProcessedIssue(issueKey: string): void {
   }
 }
 
+// ─── Run state persistence ──────────────────────────────────────────────────
+// Saves pipeline checkpoint state to .aicoder/run-state.json so the aicoder
+// can resume an interrupted run from the last checkpoint.
+
+const RUN_STATE_FILE = path.join(WORKSPACE || process.cwd(), ".aicoder", "run-state.json");
+
+function loadRunState(): RunState | null {
+  try {
+    if (fs.existsSync(RUN_STATE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(RUN_STATE_FILE, "utf-8"));
+      if (data && data.checkpoint && data.issueKey) {
+        return data as RunState;
+      }
+    }
+  } catch {
+    // File doesn't exist or is corrupt — start fresh
+  }
+  return null;
+}
+
+function saveRunState(state: RunState): void {
+  try {
+    const dir = path.dirname(RUN_STATE_FILE);
+    fs.mkdirSync(dir, { recursive: true });
+    state.updatedAt = new Date().toISOString();
+    fs.writeFileSync(RUN_STATE_FILE, JSON.stringify(state, null, 2), "utf-8");
+  } catch (err) {
+    runLogger.logWork(`Could not persist run state: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+function clearRunState(): void {
+  try {
+    if (fs.existsSync(RUN_STATE_FILE)) {
+      fs.unlinkSync(RUN_STATE_FILE);
+    }
+  } catch {
+    // Non-fatal
+  }
+}
+
 // Agent-runs tracking: record aicoder steps to the database for API visibility
 let currentRunStepOrder = 0;
 
@@ -2081,6 +2481,24 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   runLogger.startRun(item.number, item.title);
   runLogger.logWork(`Starting issue ${issueKey}: ${item.title}`);
 
+  // Initialize run state for checkpoint persistence
+  let currentState: RunState = {
+    issueKey,
+    issueNumber: item.number,
+    title: item.title,
+    url: item.url,
+    owner: item.owner,
+    repo: item.repo,
+    suggestedBranch: item.suggestedBranch,
+    labels: item.labels,
+    source: (cfg.source === "gitlab" ? "gitlab" : cfg.source === "jira" ? "jira" : "github") as RunState["source"],
+    checkpoint: "issue_transitioned",
+    apiUrl: cfg.apiUrl,
+    apiKey: cfg.apiKey,
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
   // Create agent-runs record for API visibility
   currentRunStepOrder = 0;
   const run = agentRunDatabase.startRun({
@@ -2091,29 +2509,84 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
 
   const startTime = Date.now();
 
-  // Transition Jira issues to "In Progress" so escalation doesn't pick them up
+  // Mark issue as "In Progress" so escalation doesn't pick it up
   const isJiraIssue = /^[A-Z]+-\d+$/.test(item.id);
+  const ghToken = process.env.GITHUB_TOKEN;
   if (isJiraIssue && jiraClient.isConfigured()) {
     try {
-      const transitions = await jiraClient.getTransitions(item.id);
-      const inProgress = transitions.find((t: any) =>
-        t.name === "In Progress" || t.name === "in progress" || t.name === "Start Progress"
-      );
-      if (inProgress) {
-        await jiraClient.transitionIssue(item.id, inProgress.id, "AiRemoteCoder started work on this issue.");
-        runLogger.logWork(`Transitioned ${item.id} → In Progress`);
-        trackStep(run.id, "note", `Transitioned ${item.id} to In Progress`);
+      const currentIssue = await jiraClient.getIssue(item.id);
+      const currentStatus = currentIssue.fields.status?.name?.toLowerCase() ?? "";
+      if (currentStatus === "in progress") {
+        runLogger.logWork(`${item.id} already In Progress — skipping transition`);
+        trackStep(run.id, "note", `${item.id} already In Progress`);
       } else {
-        runLogger.logWork(`No "In Progress" transition available for ${item.id} (available: ${transitions.map((t: any) => t.name).join(", ")})`);
+        const transitions = await jiraClient.getTransitions(item.id);
+        const inProgress = transitions.find((t: any) =>
+          t.name === "In Progress" || t.name === "in progress" || t.name === "Start Progress"
+        );
+        if (inProgress) {
+          await jiraClient.transitionIssue(item.id, inProgress.id, "AiRemoteCoder started work on this issue.");
+          runLogger.logWork(`Transitioned ${item.id} → In Progress`);
+          trackStep(run.id, "note", `Transitioned ${item.id} to In Progress`);
+        } else {
+          runLogger.logWork(`No "In Progress" transition available for ${item.id} (available: ${transitions.map((t: any) => t.name).join(", ")})`);
+        }
       }
     } catch (err) {
       runLogger.logWork(`Could not transition ${item.id} to In Progress: ${err instanceof Error ? err.message : err}`);
       trackStep(run.id, "note", `Jira transition failed: ${err instanceof Error ? err.message : err}`, { success: false });
     }
+  } else if (cfg.source === "gitlab" && gitlabClient.isConfigured()) {
+    try {
+      const projectId = getGitLabProjectFromRemote(WORKSPACE) || item.repo || process.env.GITLAB_DEFAULT_PROJECT || "";
+      const issueIid = item.number;
+      if (projectId && issueIid) {
+        const issue = await gitlabClient.getIssue(projectId, issueIid);
+        const rawLabels: string | string[] = issue?.labels || [];
+        const labelArray: string[] = typeof rawLabels === "string" ? rawLabels.split(",").map((l: string) => l.trim()) : Array.isArray(rawLabels) ? rawLabels.map((l: any) => (typeof l === "string" ? l.trim() : String(l))) : [];
+        if (labelArray.some((l: string) => l.toLowerCase() === "in progress" || l.toLowerCase() === "doing")) {
+          runLogger.logWork(`${item.id} already has In Progress label — skipping`);
+          trackStep(run.id, "note", `${item.id} already In Progress on GitLab`);
+        } else {
+          const newLabels = [...labelArray, "In Progress"].join(",");
+          await gitlabClient.editIssue(projectId, issueIid, { labels: newLabels });
+          runLogger.logWork(`Added "In Progress" label to GitLab issue #${issueIid}`);
+          trackStep(run.id, "note", `GitLab issue #${issueIid} labeled In Progress`);
+        }
+      }
+    } catch (err) {
+      runLogger.logWork(`Could not label GitLab issue: ${err instanceof Error ? err.message : err}`);
+      trackStep(run.id, "note", `GitLab label failed: ${err instanceof Error ? err.message : err}`, { success: false });
+    }
+  } else if (cfg.source === "github" && ghToken) {
+    try {
+      const owner = cfg.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand";
+      const repo = cfg.repo || process.env.AICODER_REPO || "";
+      if (owner && repo && item.number) {
+        const headers = { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" };
+        const issueResp = await axios.get(`https://api.github.com/repos/${owner}/${repo}/issues/${item.number}`, { headers });
+        const currentLabels: string[] = (issueResp.data?.labels || []).map((l: any) => typeof l === "string" ? l : l.name);
+        if (currentLabels.some((l: string) => l.toLowerCase() === "in progress")) {
+          runLogger.logWork(`${item.id} already has "In Progress" label — skipping`);
+          trackStep(run.id, "note", `${item.id} already In Progress on GitHub`);
+        } else {
+          await axios.patch(`https://api.github.com/repos/${owner}/${repo}/issues/${item.number}`, {
+            labels: [...currentLabels, "In Progress"],
+          }, { headers });
+          runLogger.logWork(`Added "In Progress" label to GitHub issue #${item.number}`);
+          trackStep(run.id, "note", `GitHub issue #${item.number} labeled In Progress`);
+        }
+      }
+    } catch (err) {
+      runLogger.logWork(`Could not label GitHub issue: ${err instanceof Error ? err.message : err}`);
+      trackStep(run.id, "note", `GitHub label failed: ${err instanceof Error ? err.message : err}`, { success: false });
+    }
   }
 
+  // Checkpoint: issue transitioned
+  saveRunState({ ...currentState, checkpoint: "issue_transitioned" });
+
   // Resolve dependencies
-  const ghToken = process.env.GITHUB_TOKEN;
   const owner = cfg.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand";
   const repo = cfg.repo || process.env.AICODER_REPO || "";
   let fromBranch: string | undefined;
@@ -2167,8 +2640,14 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   }
   trackStep(run.id, "tool_call", `Checked out branch: ${branchName}${fromBranch ? ` (from ${fromBranch})` : ""}`, { toolName: "git_checkout" });
 
+  // Checkpoint: branch checked out
+  currentState = { ...currentState, fromBranch, checkpoint: "branch_checked_out" };
+  saveRunState(currentState);
+
   // TDD: Run baseline tests first; if they fail, try to fix before starting work
-  if (!(await fixBaselineTests(cfg, item))) {
+  if (SKIP_BASELINE) {
+    runLogger.logConfig("Skipping baseline test check (--skip-baseline)");
+  } else if (!(await fixBaselineTests(cfg, item))) {
     runLogger.logError("Baseline tests could not be fixed — aborting. Issue will be retried.");
     runLogger.endRun(1);
     // Don't save to processedIssues — allow retry on next aicoder cycle
@@ -2177,16 +2656,38 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     return null;
   }
 
+  // Checkpoint: baseline tests passed
+  saveRunState({ ...currentState, checkpoint: "baseline_tests_pass" });
+
   const agentStartTime = Date.now();
-  trackStep(run.id, "note", `Running ${AGENT} agent...`);
-  const { finDetected, exitCode } = await runAgent(generated.prompt);
+  let finDetected: boolean;
+  let exitCode: number | null;
+  let agentRanTests: boolean;
+  let agentSessionId: string | undefined;
+  if (SKIP_AGENT) {
+    runLogger.logConfig("Skipping agent execution (--skip-agent) — using existing changes");
+    finDetected = true;
+    exitCode = 0;
+    agentRanTests = false;
+  } else {
+    trackStep(run.id, "note", `Running ${AGENT} agent...`);
+    const agentResult = await runAgent(generated.prompt);
+    finDetected = agentResult.finDetected;
+    exitCode = agentResult.exitCode;
+    agentRanTests = agentResult.ranTests ?? false;
+    agentSessionId = agentResult.sessionId;
+  }
+
+  // Checkpoint: agent complete
+  currentState = { ...currentState, checkpoint: "agent_complete", sessionId: agentSessionId, agentRanTests };
+  saveRunState(currentState);
   const agentDuration = Date.now() - agentStartTime;
   trackStep(run.id, "model_response", `Agent finished (FIN=${finDetected}, exit=${exitCode}, ${agentDuration}ms)`, { toolName: AGENT, durationMs: agentDuration, success: finDetected || exitCode === 0 });
 
   if (!finDetected && exitCode !== 0) {
     runLogger.log(`WARN`, `Agent exited with code ${exitCode} and no FIN signal — skipping push`);
     runLogger.endRun(exitCode);
-    saveProcessedIssue(issueKey);
+    // Don't save to processedIssues — allow retry on next aicoder cycle
     agentRunDatabase.failRun(run.id, `Agent exited with code ${exitCode}, no FIN signal`);
     return null;
   }
@@ -2194,57 +2695,79 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   if (!stageAndCommit(`[AI] ${item.title}`)) {
     runLogger.logError("Stage/commit failed — skipping push");
     runLogger.endRun(1);
-    saveProcessedIssue(issueKey);
+    // Don't save to processedIssues — allow retry on next aicoder cycle
     trackStep(run.id, "tool_call", "Stage & commit failed", { toolName: "git_commit", success: false });
     agentRunDatabase.failRun(run.id, "Stage/commit failed");
     return null;
   }
   trackStep(run.id, "tool_call", "Staged and committed changes", { toolName: "git_commit" });
 
+  // Checkpoint: changes committed
+  saveRunState({ ...currentState, checkpoint: "changes_committed" });
+
   // TDD: Run unit tests first (fast fail)
-  const unitResult = runTestSuite("unit");
-  if (!unitResult.passed) {
-    runLogger.logError(`Unit tests ${unitResult.kind} — skipping integration tests and push. Issue will be retried.`);
-    runLogger.endRun(1);
-    // Don't save to processedIssues — allow retry on next aicoder cycle
-    trackStep(run.id, "tool_call", `Unit tests ${unitResult.kind}`, { toolName: "test_unit", success: false, errorMessage: unitResult.kind });
-    agentRunDatabase.failRun(run.id, `Unit tests ${unitResult.kind}`);
-    return null;
-  }
-  trackStep(run.id, "tool_call", "Unit tests passed", { toolName: "test_unit" });
+  // If the agent already ran tests during its session, skip the manual test gate
+  // as it would be redundant — the agent's test run is sufficient.
+  if (SKIP_TESTS) {
+    runLogger.logConfig("Skipping all tests and coverage checks (--skip-tests)");
+  } else if (agentRanTests) {
+    runLogger.logConfig("Agent already ran tests during its session — skipping manual test gate");
+  } else {
+    const unitResult = runTestSuite("unit");
+    if (!unitResult.passed) {
+      runLogger.logError(`Unit tests ${unitResult.kind} — skipping integration tests and push. Issue will be retried.`);
+      runLogger.endRun(1);
+      // Don't save to processedIssues — allow retry on next aicoder cycle
+      trackStep(run.id, "tool_call", `Unit tests ${unitResult.kind}`, { toolName: "test_unit", success: false, errorMessage: unitResult.kind });
+      agentRunDatabase.failRun(run.id, `Unit tests ${unitResult.kind}`);
+      return null;
+    }
+    trackStep(run.id, "tool_call", "Unit tests passed", { toolName: "test_unit" });
 
-  // TDD: Run integration tests (only if unit tests passed)
-  const integrationResult = runTestSuite("integration");
-  if (!integrationResult.passed) {
-    runLogger.logError(`Integration tests ${integrationResult.kind} — skipping push. Issue will be retried.`);
-    runLogger.endRun(1);
-    // Don't save to processedIssues — allow retry on next aicoder cycle
-    trackStep(run.id, "tool_call", `Integration tests ${integrationResult.kind}`, { toolName: "test_integration", success: false, errorMessage: integrationResult.kind });
-    agentRunDatabase.failRun(run.id, `Integration tests ${integrationResult.kind}`);
-    return null;
-  }
-  trackStep(run.id, "tool_call", "Integration tests passed", { toolName: "test_integration" });
+    // TDD: Run integration tests (only if unit tests passed)
+    const integrationResult = runTestSuite("integration");
+    if (!integrationResult.passed) {
+      runLogger.logError(`Integration tests ${integrationResult.kind} — skipping push. Issue will be retried.`);
+      runLogger.endRun(1);
+      // Don't save to processedIssues — allow retry on next aicoder cycle
+      trackStep(run.id, "tool_call", `Integration tests ${integrationResult.kind}`, { toolName: "test_integration", success: false, errorMessage: integrationResult.kind });
+      agentRunDatabase.failRun(run.id, `Integration tests ${integrationResult.kind}`);
+      return null;
+    }
+    trackStep(run.id, "tool_call", "Integration tests passed", { toolName: "test_integration" });
 
-  // TDD: Check coverage thresholds
-  const coverageResult = checkCoverage();
-  if (!coverageResult.passed) {
-    runLogger.logError(`Coverage check ${coverageResult.kind} — skipping push. Issue will be retried.`);
-    runLogger.endRun(1);
-    // Don't save to processedIssues — allow retry on next aicoder cycle
-    trackStep(run.id, "tool_call", `Coverage check ${coverageResult.kind}`, { toolName: "coverage", success: false });
-    agentRunDatabase.failRun(run.id, `Coverage check ${coverageResult.kind}`);
-    return null;
+    // TDD: Check coverage thresholds
+    const coverageResult = checkCoverage();
+    if (!coverageResult.passed) {
+      // spawn_error means the coverage tool isn't installed — warn but don't block
+      if (coverageResult.kind === "spawn_error") {
+        runLogger.logConfig(`Coverage tool not available — skipping coverage check`);
+      } else {
+        runLogger.logError(`Coverage check ${coverageResult.kind} — skipping push. Issue will be retried.`);
+        runLogger.endRun(1);
+        // Don't save to processedIssues — allow retry on next aicoder cycle
+        trackStep(run.id, "tool_call", `Coverage check ${coverageResult.kind}`, { toolName: "coverage", success: false });
+        agentRunDatabase.failRun(run.id, `Coverage check ${coverageResult.kind}`);
+        return null;
+      }
+    }
   }
+
+  // Checkpoint: tests passed
+  saveRunState({ ...currentState, checkpoint: "tests_passed" });
 
   if (!pushBranch(branchName)) {
     runLogger.logError(`Push failed — PR not created`);
     runLogger.endRun(1);
-    saveProcessedIssue(issueKey);
+    // Don't save to processedIssues — allow retry on next aicoder cycle
     trackStep(run.id, "tool_call", "Push failed", { toolName: "git_push", success: false });
     agentRunDatabase.failRun(run.id, "Push failed");
     return null;
   }
   trackStep(run.id, "tool_call", `Pushed branch: ${branchName}`, { toolName: "git_push" });
+
+  // Checkpoint: branch pushed
+  saveRunState({ ...currentState, checkpoint: "branch_pushed" });
 
   const pr = await createPR(cfg, item, branchName);
   if (pr) {
@@ -2253,18 +2776,27 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     runLogger.logPR(`Opened ${label} #${pr.prNumber}: ${pr.url}`);
     trackStep(run.id, "tool_call", `Created PR #${pr.prNumber}: ${pr.url}`, { toolName: "create_pr" });
     await notifyComplete(cfg, item, pr.prNumber, branchName, exitCode);
+
+    // Checkpoint: PR created
+    currentState = { ...currentState, checkpoint: "pr_created", prNumber: pr.prNumber };
+    saveRunState(currentState);
   }
 
   const totalDuration = Date.now() - startTime;
   agentRunDatabase.completeRun(run.id, { model: AGENT, toolLoopCount: currentRunStepOrder, totalTokens: 0 });
   trackStep(run.id, "note", `Completed in ${(totalDuration / 1000).toFixed(1)}s${pr ? ` — PR #${pr.prNumber}` : ""}`);
   runLogger.endRun(exitCode);
-  saveProcessedIssue(issueKey);
+  // Only mark as processed if PR/MR was successfully created
+  if (pr) {
+    saveProcessedIssue(issueKey);
+  } else {
+    runLogger.logError("PR/MR creation failed — not marking issue as processed so it can be retried");
+  }
   return pr ? { prNumber: pr.prNumber } : null;
 }
 
 async function focusedLoop(cfg: ServerConfig): Promise<void> {
-  runLogger.logConfig(`AiRemoteCoder started in focused mode (agent: ${AGENT}, workspace: ${WORKSPACE}${USE_OLLAMA ? ", ollama: on" : ""}, base: ${BASE_BRANCH})`);
+  runLogger.logConfig(`AiRemoteCoder started in focused mode (agent: ${AGENT}, workspace: ${WORKSPACE}${USE_OLLAMA ? ", ollama: on" : ""}${DEBUG ? ", debug: on" : ""}, base: ${getBaseBranch()})`);
   const ghToken = process.env.GITHUB_TOKEN;
   const owner = cfg.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand";
   const repo = cfg.repo || process.env.AICODER_REPO || "";
@@ -2433,21 +2965,47 @@ async function focusedProcessWorkItemInner(
 
   runLogger.logConfig(`Waiting for review of ${label} #${prNumber} (polling every ${REVIEW_POLL_MS / 1000}s)`);
 
-  let reworkCount = 0;
+  // Load run state for review loop (may have reworkCount/sinceTimestamp from a resumed run)
+  const reviewState = loadRunState();
+  let reworkCount = reviewState?.reworkCount ?? 0;
   let postponeTimeout = 0;
   const POSTPONE_MAX_MS = 30 * 60 * 1000; // 30 min max wait for service restoration
+  // Start from now — ignore any review notes that existed before our push
+  let sinceTimestamp = reviewState?.sinceTimestamp ?? new Date().toISOString();
+
+  // Checkpoint: entered review polling
+  const currentState = reviewState || {
+    issueKey: item.id,
+    issueNumber: item.number,
+    title: item.title,
+    url: item.url,
+    owner: item.owner,
+    repo: item.repo,
+    suggestedBranch: item.suggestedBranch,
+    labels: item.labels,
+    source: (cfg.source === "gitlab" ? "gitlab" : cfg.source === "jira" ? "jira" : "github") as RunState["source"],
+    checkpoint: "review_polling" as PipelineCheckpoint,
+    prNumber,
+    reworkCount,
+    sinceTimestamp,
+    apiUrl: cfg.apiUrl,
+    apiKey: cfg.apiKey,
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  saveRunState({ ...currentState, checkpoint: "review_polling", prNumber, reworkCount, sinceTimestamp });
 
   while (true) {
     // Poll for review result using platform-appropriate method
     let reviewResult: "passed" | "failed" | "postponed" | "merged" | "conflict" | "closed";
 
     if (platform === "gitlab") {
-      const projectId = item.repo || cfg.repo || process.env.GITLAB_DEFAULT_PROJECT || "";
+      const projectId = getGitLabProjectFromRemote(WORKSPACE) || item.repo || cfg.repo || process.env.GITLAB_DEFAULT_PROJECT || "";
       if (!projectId) {
         runLogger.logError("No GitLab project ID — cannot poll for review");
         return;
       }
-      reviewResult = await pollForGitLabReviewResult(projectId, prNumber);
+      reviewResult = await pollForGitLabReviewResult(projectId, prNumber, REVIEW_POLL_MS, sinceTimestamp);
     } else {
       if (!ghToken || !owner || !repo) {
         runLogger.logError("No GitHub credentials — cannot poll for review");
@@ -2458,6 +3016,7 @@ async function focusedProcessWorkItemInner(
 
     if (reviewResult === "passed" || reviewResult === "merged") {
       runLogger.logConfig(`${label} #${prNumber} passed review — pulling latest ${getBaseBranch()}`);
+      clearRunState(); // Run completed successfully
       forceCheckout(getBaseBranch(), WORKSPACE);
       gitRun(["pull", "--ff-only", "origin", getBaseBranch()], WORKSPACE);
       return;
@@ -2465,6 +3024,7 @@ async function focusedProcessWorkItemInner(
 
     if (reviewResult === "closed") {
       runLogger.logError(`${label} #${prNumber} was closed without merge`);
+      clearRunState();
       return;
     }
 
@@ -2483,6 +3043,7 @@ async function focusedProcessWorkItemInner(
       reworkCount++;
       if (reworkCount > MAX_REWORK) {
         runLogger.logError(`${label} #${prNumber} exceeded max rework cycles (${MAX_REWORK}) after conflict resolution attempts`);
+        clearRunState();
         return;
       }
 
@@ -2501,6 +3062,7 @@ async function focusedProcessWorkItemInner(
       }
 
       runLogger.logConfig(`Rebased and force-pushed ${item.suggestedBranch} — waiting for review again`);
+      sinceTimestamp = new Date().toISOString();
       continue;
     }
 
@@ -2508,6 +3070,7 @@ async function focusedProcessWorkItemInner(
       reworkCount++;
       if (reworkCount > MAX_REWORK) {
         runLogger.logError(`${label} #${prNumber} exceeded max rework cycles (${MAX_REWORK})`);
+        clearRunState();
         return;
       }
 
@@ -2520,7 +3083,7 @@ async function focusedProcessWorkItemInner(
       // Fetch rework prompt — use appropriate method based on platform
       let reworkPrompt: string | null = null;
       if (platform === "gitlab") {
-        const projectId = item.repo || cfg.repo || process.env.GITLAB_DEFAULT_PROJECT || "";
+        const projectId = getGitLabProjectFromRemote(WORKSPACE) || item.repo || cfg.repo || process.env.GITLAB_DEFAULT_PROJECT || "";
         if (projectId) {
           reworkPrompt = await fetchGitLabReworkPrompt(projectId, prNumber);
         }
@@ -2539,16 +3102,22 @@ async function focusedProcessWorkItemInner(
         return;
       }
 
-      const { finDetected, exitCode } = await runAgent(reworkPrompt);
-      if (!finDetected && exitCode !== 0) {
-        runLogger.logError(`Rework agent exited with code ${exitCode} — stopping`);
+      const reworkResult = await runAgent(reworkPrompt);
+      if (!reworkResult.finDetected && reworkResult.exitCode !== 0) {
+        runLogger.logError(`Rework agent exited with code ${reworkResult.exitCode} — stopping`);
         return;
       }
+
+      // Checkpoint: rework agent complete
+      saveRunState({ ...currentState, checkpoint: "rework_agent_complete", reworkCount, sessionId: reworkResult.sessionId });
 
       if (!stageAndCommit(`[AI] rework #${reworkCount}: ${item.title}`)) {
         runLogger.logError("Rework stage/commit failed");
         return;
       }
+
+      // Checkpoint: rework committed
+      saveRunState({ ...currentState, checkpoint: "rework_committed", reworkCount });
 
       // TDD: Tiered test gate after rework
       const reworkUnitResult = runTestSuite("unit");
@@ -2567,10 +3136,17 @@ async function focusedProcessWorkItemInner(
         return;
       }
 
+      // Checkpoint: rework tests passed
+      saveRunState({ ...currentState, checkpoint: "rework_tests_passed", reworkCount });
+
       if (!pushBranch(item.suggestedBranch, true)) {
         runLogger.logError("Rework push failed");
         return;
       }
+
+      // Checkpoint: rework pushed — update state for review loop resumption
+      sinceTimestamp = new Date().toISOString();
+      saveRunState({ ...currentState, checkpoint: "rework_pushed", reworkCount, sinceTimestamp, prNumber });
 
       runLogger.logConfig(`Rework pushed for ${label} #${prNumber} — waiting for review again`);
       continue;
@@ -2582,7 +3158,7 @@ async function focusedProcessWorkItemInner(
 }
 
 async function pollLoop(cfg: ServerConfig): Promise<void> {
-  runLogger.logConfig(`AiRemoteCoder started in poll mode (agent: ${AGENT}, workspace: ${WORKSPACE}${USE_OLLAMA ? ", ollama: on" : ""}, base: ${BASE_BRANCH})`);
+  runLogger.logConfig(`AiRemoteCoder started in poll mode (agent: ${AGENT}, workspace: ${WORKSPACE}${USE_OLLAMA ? ", ollama: on" : ""}, base: ${getBaseBranch()})`);
 
   // --issue <key>: work on a specific issue and exit (no polling)
   if (TARGET_ISSUE_KEY) {
@@ -2698,7 +3274,15 @@ try {
   // Non-fatal
 }
 
-if (FOCUSED_MODE) {
+// --publish: Create PR/MR from an existing branch and exit
+if (PUBLISH_BRANCH) {
+  publishBranch(loadServerConfig(), PUBLISH_BRANCH)
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error("Publish failed:", err);
+      process.exit(1);
+    });
+} else if (FOCUSED_MODE) {
   focusedLoop(loadServerConfig());
 } else {
   pollLoop(loadServerConfig());

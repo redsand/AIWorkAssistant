@@ -49,7 +49,7 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
           items = await fetchGitLabWork(label, limit);
           break;
         case "jira":
-          items = await fetchJiraWork(label, limit);
+          items = await fetchJiraWork(label, limit, query.repo);
           break;
         case "jitbit":
           items = await fetchJitbitWork(label, limit);
@@ -316,12 +316,22 @@ async function fetchGitLabWork(
 async function fetchJiraWork(
   label: string,
   limit: number,
+  repoFilter?: string,
 ): Promise<NormalizedWorkItem[]> {
   if (!env.JIRA_BASE_URL) {
     throw new Error("JIRA_BASE_URL is required for Jira source");
   }
 
-  const jql = `labels = "${label}" AND statusCategory in ("To Do", "In Progress") ORDER BY priority ASC`;
+  // Build JQL query with optional repo label filter.
+  // The repo name (e.g. "hawk-soard") is stored as a Jira label on the ticket.
+  // Strip any prefix like "gitlab:" from the repo filter.
+  let jql: string;
+  if (repoFilter) {
+    const repoLabel = repoFilter.replace(/^(gitlab:|github:)/i, "");
+    jql = `labels = "${label}" AND labels = "${repoLabel}" AND statusCategory in ("To Do", "In Progress") ORDER BY priority ASC`;
+  } else {
+    jql = `labels = "${label}" AND statusCategory in ("To Do", "In Progress") ORDER BY priority ASC`;
+  }
   const issues = await jiraClient.searchIssues(jql, limit);
 
   return issues

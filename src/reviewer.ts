@@ -5,6 +5,38 @@ import axios from "axios";
 import { gitlabClient } from "./integrations/gitlab/gitlab-client";
 import { jiraClient } from "./integrations/jira/jira-client";
 
+// ── ANSI color helpers ──────────────────────────────────────────────────────
+const useColor = process.stdout.isTTY && process.env.NO_COLOR !== "1";
+const C = {
+  reset: useColor ? "\x1b[0m" : "",
+  bold: useColor ? "\x1b[1m" : "",
+  dim: useColor ? "\x1b[2m" : "",
+  red: useColor ? "\x1b[31m" : "",
+  green: useColor ? "\x1b[32m" : "",
+  yellow: useColor ? "\x1b[33m" : "",
+  blue: useColor ? "\x1b[34m" : "",
+  cyan: useColor ? "\x1b[36m" : "",
+  gray: useColor ? "\x1b[90m" : "",
+};
+
+const log = {
+  start: (msg: string) => console.log(`${C.cyan}${C.bold}[START]${C.reset} ${msg}`),
+  config: (msg: string) => console.log(`${C.blue}[CONFIG]${C.reset} ${msg}`),
+  poll: (msg: string) => console.log(`${C.cyan}[POLL]${C.reset} ${msg}`),
+  review: (msg: string) => console.log(`${C.yellow}${C.bold}[REVIEW]${C.reset} ${msg}`),
+  sha: (msg: string) => console.log(`${C.gray}[SHA]${C.reset} ${msg}`),
+  finding: (msg: string) => console.log(`${C.red}  ✗ ${msg}${C.reset}`),
+  clean: (msg: string) => console.log(`${C.green}  ✓ ${msg}${C.reset}`),
+  merge: (msg: string) => console.log(`${C.green}${C.bold}[MERGE]${C.reset} ${msg}`),
+  rework: (msg: string) => console.log(`${C.yellow}${C.bold}[REWORK]${C.reset} ${msg}`),
+  skip: (msg: string) => console.log(`${C.dim}[SKIP]${C.reset} ${msg}`),
+  error: (msg: string) => console.error(`${C.red}${C.bold}[ERROR]${C.reset} ${msg}`),
+  warn: (msg: string) => console.log(`${C.yellow}[WARN]${C.reset} ${msg}`),
+  jira: (msg: string) => console.log(`${C.blue}[JIRA]${C.reset} ${msg}`),
+  gitlab: (msg: string) => console.log(`${C.cyan}[GitLab]${C.reset} ${msg}`),
+  step: (msg: string) => console.log(`${C.dim}  → ${msg}${C.reset}`),
+};
+
 // Review result markers (must match aicoder.ts markers)
 const REVIEW_MERGE_CONFLICT_MARKER = "Merge Failed — Conflict Requires Rebase";
 
@@ -125,7 +157,7 @@ async function loadConfig(): Promise<ReviewerConfig> {
   const remoteKey = process.env.AIWORKASSISTANT_API_KEY;
 
   if (remoteKey) {
-    console.log(`[CONFIG] Fetching reviewer config from ${remoteUrl}`);
+    log.config(`Fetching reviewer config from ${remoteUrl}`);
     const response = await axios.get<ReviewerConfig>(
       `${remoteUrl}/api/reviewer/config`,
       { headers: { Authorization: `Bearer ${remoteKey}` } },
@@ -136,11 +168,11 @@ async function loadConfig(): Promise<ReviewerConfig> {
     if (ARGV["poll-ms"]) cfg.pollIntervalMs = parseInt(ARGV["poll-ms"], 10);
     cfg.source = (ARGV.source || process.env.REVIEW_SOURCE || cfg.source || "github") as SourceType;
     cfg.gitlabProject = ARGV["gitlab-project"] || process.env.GITLAB_DEFAULT_PROJECT || cfg.gitlabProject || "";
-    console.log(`[CONFIG] Remote config loaded (source: ${cfg.source}, repos: ${cfg.reviewRepos.join(", ") || "none"})`);
+    log.config(`Remote config loaded (source: ${cfg.source}, repos: ${cfg.reviewRepos.join(", ") || "none"})`);
     return cfg;
   }
 
-  console.log("[CONFIG] No AIWORKASSISTANT_API_KEY — using local .env config only");
+  log.config("No AIWORKASSISTANT_API_KEY — using local .env config only");
   return {
     source: (ARGV.source || process.env.REVIEW_SOURCE || "github") as SourceType,
     githubToken: process.env.GITHUB_TOKEN || "",
@@ -173,7 +205,7 @@ function makeGithubClient(token: string, owner: string) {
       const res = await client.get(`/repos/${owner}/${repo}/pulls`, {
         params: { state: "open", per_page: 50, sort: "updated", direction: "desc" },
       });
-      console.log(`[GitHub] Found ${res.data.length} open PRs in ${owner}/${repo}`);
+      log.step(`Found ${res.data.length} open PRs in ${owner}/${repo}`);
       return res.data;
     },
 
@@ -205,6 +237,11 @@ function makeGithubClient(token: string, owner: string) {
         commit_message: commitMessage,
       });
     },
+
+    async getPRHeadSha(repo: string, prNumber: number): Promise<string | undefined> {
+      const res = await client.get(`/repos/${owner}/${repo}/pulls/${prNumber}`);
+      return res.data?.head?.sha;
+    },
   };
 }
 
@@ -230,6 +267,7 @@ interface VcsClient {
   addCommentToIssue(project: string, issueNumber: number, body: string): Promise<void>;
   extractLinkedIssueKey(mrBody: string | null): string | null;
   extractIssueKeyFromBranch(branchName: string | undefined): string | null;
+  getLatestCommitSha(project: string, mrNumber: number): Promise<string | undefined>;
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +322,10 @@ class GithubVcsClient implements VcsClient {
     // Match GitHub-style branch: ai/issue-51-...
     const numMatch = branchName.match(/issue-(\d+)/i);
     return numMatch ? numMatch[1] : null;
+  }
+
+  async getLatestCommitSha(repo: string, prNumber: number): Promise<string | undefined> {
+    return this.gh.getPRHeadSha(repo, prNumber);
   }
 }
 
@@ -386,6 +428,11 @@ class GitlabJiraVcsClient implements VcsClient {
     const numBranch = branchName.match(/issue-(\d+)/i);
     return numBranch ? numBranch[1] : null;
   }
+
+  async getLatestCommitSha(_project: string, mrNumber: number): Promise<string | undefined> {
+    const mr = await gitlabClient.getMergeRequest(this.projectId, mrNumber);
+    return mr.sha;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -393,27 +440,27 @@ class GitlabJiraVcsClient implements VcsClient {
 // ---------------------------------------------------------------------------
 async function addCommentToJiraIssue(key: string, body: string): Promise<void> {
   if (!jiraClient.isConfigured()) {
-    console.log(`[WARN] Jira not configured — cannot post comment on ${key}`);
+    log.warn(`Jira not configured — cannot post comment on ${key}`);
     return;
   }
   try {
     await jiraClient.addComment(key, body);
-    console.log(`[JIRA] Posted rework prompt on ${key}`);
+    log.jira(`Posted rework prompt on ${key}`);
   } catch (err) {
-    console.error(`[ERROR] Failed to post Jira comment on ${key}:`, err instanceof Error ? err.message : err);
+    log.error(`Failed to post Jira comment on ${key}: ${err instanceof Error ? err.message : err}`);
   }
 }
 
 async function addLabelToJiraIssue(key: string, label: string): Promise<void> {
   if (!jiraClient.isConfigured()) {
-    console.log(`[WARN] Jira not configured — cannot add label ${label} to ${key}`);
+    log.warn(`Jira not configured — cannot add label ${label} to ${key}`);
     return;
   }
   try {
     await jiraClient.addLabels(key, [label]);
-    console.log(`[JIRA] Added label "${label}" to ${key}`);
+    log.jira(`Added label "${label}" to ${key}`);
   } catch (err) {
-    console.log(`[WARN] Could not add "${label}" label to Jira issue ${key}:`, err instanceof Error ? err.message : err);
+    log.warn(`Could not add "${label}" label to Jira issue ${key}: ${err instanceof Error ? err.message : err}`);
   }
 }
 
@@ -427,7 +474,7 @@ async function runAiReview(
   config: ReviewerConfig,
   prNumber: number,
 ): Promise<ReviewResult> {
-  console.log(`[REVIEW] Delegating PR #${prNumber} review to AIWorkAssistant`);
+  log.review(`Delegating PR #${prNumber} review to AIWorkAssistant`);
   try {
     const owner = target.source === "gitlab" ? (target.gitlabProject || config.gitlabProject) : config.owner;
     const requestBody: Record<string, unknown> = {
@@ -465,7 +512,7 @@ async function runAiReview(
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("[ERROR] AI review failed:", message);
+    log.error(`AI review failed: ${message}`);
     return {
       clean: false,
       serviceUnavailable: true,
@@ -482,6 +529,7 @@ async function runAiReview(
 }
 
 const reviewedMRs = new Set<string>(); // "project/mrNumber"
+const reviewedMRShas = new Map<string, string>(); // mrKey → last_commit_sha
 
 function isServiceUnavailable(result: ReviewResult): boolean {
   return result.serviceUnavailable === true ||
@@ -499,7 +547,7 @@ async function postPostponed(
     mr.number,
     `## ⚠️ Review Postponed — Service Unavailable\n\n${result.summary}\n\nThe review service could not be reached. No rework prompt will be posted. Review will be retried on the next cycle.`,
   );
-  console.log(`[POSTPONED] MR !${mr.number} review postponed due to service unavailability`);
+  log.rework(`MR !${mr.number} review postponed due to service unavailability`);
 }
 
 async function pollMergeRequests(
@@ -513,47 +561,79 @@ async function pollMergeRequests(
   }
 
   if (targets.length === 0) {
-    console.log("[POLL] No repos/projects to monitor");
+    log.poll("No repos/projects to monitor");
     return;
   }
 
   for (const target of targets) {
-    console.log(`[POLL] Checking ${target.source}:${target.name} for open MRs/PRs`);
+    log.poll(`Checking ${target.source}:${target.name} for open MRs/PRs`);
     const vcs = getVcsClient(target, config);
     let mrs: MergeRequest[];
     try {
       mrs = await vcs.listOpenMergeRequests(target.name);
     } catch (err) {
-      console.error(`[ERROR] Failed to fetch MRs/PRs from ${target.source}:${target.name}:`, err instanceof Error ? err.message : err);
+      log.error(`Failed to fetch MRs/PRs from ${target.source}:${target.name}: ${err instanceof Error ? err.message : err}`);
       continue;
     }
-    console.log(`[POLL] ${target.source}:${target.name} returned ${mrs.length} open MRs/PRs`);
+    log.poll(`${target.source}:${target.name} returned ${mrs.length} open MRs/PRs`);
 
     for (const mr of mrs) {
       if (!mr.author.includes("ai") && !mr.title.startsWith("[AI]")) continue;
 
       const mrKey = `${target.source}:${target.name}/${mr.number}`;
       if (reviewedMRs.has(mrKey)) {
-        continue;
+        // Already reviewed — check if MR has been updated since (new push from aicoder rework)
+        const lastSha = reviewedMRShas.get(mrKey);
+        if (lastSha) {
+          const currentSha = await vcs.getLatestCommitSha(target.name, mr.number).catch(() => undefined);
+          if (currentSha && currentSha !== lastSha) {
+            log.review(`MR !${mr.number} has new commits (SHA: ${lastSha.slice(0,8)} → ${currentSha.slice(0,8)}) — re-reviewing`);
+            reviewedMRs.delete(mrKey);
+          } else {
+            log.skip(`MR !${mr.number} already reviewed (SHA unchanged) — waiting for rework`);
+            continue;
+          }
+        } else {
+          log.skip(`MR !${mr.number} already reviewed — waiting for rework`);
+          continue;
+        }
       }
 
-      console.log(`[REVIEW] Found AI MR !${mr.number} in ${target.source}:${target.name}: ${mr.title}`);
+      log.review(`Found AI MR !${mr.number} in ${target.source}:${target.name}: ${mr.title}`);
+      log.step("Fetching diff and running review...");
 
       const result = await runMultiAgentReview(config, target, mr.number);
+
+      // Record the current commit SHA so we can detect when aicoder pushes rework
+      const currentSha = await vcs.getLatestCommitSha(target.name, mr.number).catch(() => undefined);
+      if (currentSha) {
+        reviewedMRShas.set(mrKey, currentSha);
+        log.sha(`MR !${mr.number} SHA: ${currentSha.slice(0, 8)}`);
+      }
+
       reviewedMRs.add(mrKey);
 
       if (result.clean) {
+        log.clean(`MR !${mr.number} passed review — merging`);
         const mergeStatus = await mergeWithSummary(vcs, target.name, mr, result);
         if (mergeStatus === "conflict") {
           // Remove from reviewed so the reviewer re-evaluates after aicoder rebases
           reviewedMRs.delete(mrKey);
         }
       } else if (isServiceUnavailable(result)) {
+        log.warn(`MR !${mr.number} review service unavailable — postponing`);
         await postPostponed(vcs, target.name, mr, result);
-        // Remove from reviewed so next cycle retries
+        // Remove SHA so we don't skip on retry — the review didn't actually complete
+        reviewedMRShas.delete(mrKey);
         reviewedMRs.delete(mrKey);
       } else {
+        log.rework(`MR !${mr.number} needs rework — ${result.findings.length} findings (${result.summary})`);
+        for (const f of result.findings) {
+          log.finding(`[${f.severity}] ${f.category} ${f.file}${f.line ? `:${f.line}` : ""}: ${f.message.slice(0, 100)}`);
+        }
         await postReworkPrompt(vcs, target.name, mr, result);
+        // Keep in reviewedMRs and reviewedMRShas so we don't re-review
+        // until aicoder pushes new commits (SHA changes)
       }
     }
   }
@@ -620,7 +700,7 @@ function runAgentReview(
     return { findings: JSON.parse(output) as ReviewFinding[], status: "passed" };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[ERROR] ${category} agent failed:`, message);
+    log.error(`${category} agent failed: ${message}`);
     return {
       status: "failed",
       findings: [{
@@ -662,12 +742,12 @@ async function mergeWithSummary(
       `## ✅ Review Passed — Merging\n\n${result.summary}\n\n${agentLine}\n\nMerging now.`,
     );
     await vcs.merge(project, mr.number, `Merge [AI] ${mr.title}`, result.summary);
-    console.log(`[MERGE] MR !${mr.number} merged in ${project}`);
+    log.merge(`MR !${mr.number} merged in ${project}`);
     return "merged";
   } catch (mergeErr) {
     const errMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
     const isConflict = /conflict|cannot_be_merged|rebase failed/i.test(errMsg);
-    console.error(`[MERGE] Failed to merge MR !${mr.number}: ${errMsg}`);
+    log.merge(`Failed to merge MR !${mr.number}: ${errMsg}`);
 
     if (isConflict) {
       await vcs.addComment(
@@ -701,7 +781,7 @@ async function postReworkPrompt(
     issueKey = vcs.extractIssueKeyFromBranch(mr.sourceBranch);
   }
   if (!issueKey) {
-    console.log(`[WARN] MR !${mr.number} has no linked issue in description or branch name — cannot post rework prompt`);
+    log.warn(`MR !${mr.number} has no linked issue in description or branch name — cannot post rework prompt`);
     return;
   }
 
@@ -711,15 +791,15 @@ async function postReworkPrompt(
   if (isJiraKey) {
     await addCommentToJiraIssue(issueKey, buildReworkPrompt(result));
     await addLabelToJiraIssue(issueKey, "ready-for-agent");
-    console.log(`[REWORK] Posted rework prompt on Jira ${issueKey} for MR !${mr.number}`);
+    log.rework(`Posted rework prompt on Jira ${issueKey} for MR !${mr.number}`);
   } else {
     // Numeric GitHub issue
     const issueNumber = parseInt(issueKey, 10);
     await vcs.addCommentToIssue(project, issueNumber, buildReworkPrompt(result));
     await vcs.addLabelToIssue(project, issueNumber, "ready-for-agent").catch(() => {
-      console.log(`[WARN] Could not add ready-for-agent label to issue #${issueNumber}`);
+      log.warn(`Could not add ready-for-agent label to issue #${issueNumber}`);
     });
-    console.log(`[REWORK] Posted rework prompt on issue #${issueNumber} for MR !${mr.number}`);
+    log.rework(`Posted rework prompt on issue #${issueNumber} for MR !${mr.number}`);
   }
 }
 
@@ -743,26 +823,26 @@ function buildReworkPrompt(result: ReviewResult): string {
 }
 
 async function main(): Promise<void> {
-  console.log("[START] AIWorkAssistant review agent started");
+  log.start("AIWorkAssistant review agent started");
   const config = await loadConfig();
 
   const source = config.source;
   const targets = parseRepoTargets(config.reviewRepos, config.source, config.gitlabProject);
-  console.log(`[CONFIG] Source: ${source}, targets: ${targets.map((t) => `${t.source}:${t.name}`).join(", ") || "none"}`);
+  log.config(`Source: ${source}, targets: ${targets.map((t) => `${t.source}:${t.name}`).join(", ") || "none"}`);
 
   if (config.reviewRepos.length === 0 && source === "github") {
-    console.warn("[WARN] No REVIEW_REPOS configured — nothing to watch on GitHub");
+    log.warn("No REVIEW_REPOS configured — nothing to watch on GitHub");
   }
   if (source === "gitlab" && !config.gitlabProject && !targets.some((t) => t.source === "gitlab")) {
-    console.error("[ERROR] No GITLAB_DEFAULT_PROJECT configured — set it in .env or pass --gitlab-project");
+    log.error("No GITLAB_DEFAULT_PROJECT configured — set it in .env or pass --gitlab-project");
     process.exit(1);
   }
   if (targets.some((t) => t.source === "github") && !config.githubToken) {
-    console.error("[ERROR] No GitHub token — set GITHUB_TOKEN for GitHub repos");
+    log.error("No GitHub token — set GITHUB_TOKEN for GitHub repos");
     process.exit(1);
   }
   if (targets.some((t) => t.source === "gitlab") && !gitlabClient.isConfigured()) {
-    console.error("[ERROR] GitLab not configured — set GITLAB_TOKEN and GITLAB_BASE_URL in .env");
+    log.error("GitLab not configured — set GITLAB_TOKEN and GITLAB_BASE_URL in .env");
     process.exit(1);
   }
 
