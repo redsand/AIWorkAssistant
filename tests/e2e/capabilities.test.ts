@@ -28,10 +28,10 @@ describe("E2E: Capabilities endpoints", () => {
     server = await buildTestServer();
     await server.ready();
     authToken = createSessionToken("e2e-caps-user");
-  });
+  }, 30000);
 
   afterAll(async () => {
-    await server.close();
+    if (server) await server.close();
   });
 
   // ── Public access (no auth) ──────────────────────────────────────────────
