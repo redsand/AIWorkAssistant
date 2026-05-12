@@ -152,6 +152,72 @@ describe("Agent Runs API Routes", () => {
       expect(body.runs.length).toBe(1);
     });
 
+    it("ignores invalid status filter values", async () => {
+      db.startRun({ userId: "user1", mode: "chat" });
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/agent-runs?status=invalid_status",
+        headers: { "x-user-id": "user1" },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      // Invalid status is ignored, returns all runs for user
+      expect(body.runs.length).toBe(1);
+    });
+
+    it("strips sensitive fields when viewing aicoder runs via userId filter", async () => {
+      const run = db.startRun({ userId: "aicoder", mode: "agent" });
+      db.completeRun(run.id, {
+        model: "claude-3",
+        promptTokens: 100,
+        completionTokens: 200,
+        totalTokens: 300,
+        toolLoopCount: 1,
+      });
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/agent-runs?userId=aicoder",
+        headers: { "x-user-id": "user1" },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.runs.length).toBe(1);
+      // Sensitive fields must be stripped when viewing aicoder runs
+      expect(body.runs[0]).not.toHaveProperty("promptTokens");
+      expect(body.runs[0]).not.toHaveProperty("completionTokens");
+      expect(body.runs[0]).not.toHaveProperty("totalTokens");
+      expect(body.runs[0]).not.toHaveProperty("sessionId");
+    });
+
+    it("does not strip sensitive fields for own runs", async () => {
+      const run = db.startRun({ userId: "user1", mode: "chat" });
+      db.completeRun(run.id, {
+        model: "claude-3",
+        promptTokens: 50,
+        completionTokens: 100,
+        totalTokens: 150,
+        toolLoopCount: 1,
+      });
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/agent-runs",
+        headers: { "x-user-id": "user1" },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.runs.length).toBe(1);
+      // Owner should see their own sensitive fields
+      expect(body.runs[0]).toHaveProperty("promptTokens");
+      expect(body.runs[0]).toHaveProperty("completionTokens");
+      expect(body.runs[0]).toHaveProperty("totalTokens");
+    });
+
     it("scopes non-aicoder userId filter to requesting user", async () => {
       db.startRun({ userId: "alice", mode: "chat" });
       db.startRun({ userId: "bob", mode: "chat" });
@@ -258,6 +324,31 @@ describe("Agent Runs API Routes", () => {
           expect(step).not.toHaveProperty("content");
           expect(step).not.toHaveProperty("sanitizedParams");
         }
+      }
+    });
+
+    it("strips sessionId from aicoder run metadata", async () => {
+      const run = db.startRun({ userId: "aicoder", sessionId: "secret-session-123", mode: "agent" });
+      db.completeRun(run.id, {
+        model: "claude-3",
+        promptTokens: 100,
+        completionTokens: 200,
+        totalTokens: 300,
+        toolLoopCount: 1,
+      });
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/agent-runs/aicoder",
+        headers: { "x-user-id": "user1" },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      // sessionId should be stripped from aicoder runs
+      expect(body.runs[0]).not.toHaveProperty("sessionId");
+      if (body.current) {
+        expect(body.current).not.toHaveProperty("sessionId");
       }
     });
   });

@@ -3807,8 +3807,8 @@ async function handleAgentGetRunStats(
   }
 }
 
-function stripSensitiveFields(obj: AgentRun): Omit<AgentRun, "promptTokens" | "completionTokens" | "totalTokens"> {
-  const { promptTokens, completionTokens, totalTokens, ...rest } = obj;
+function stripSensitiveFields(obj: AgentRun): Omit<AgentRun, "sessionId" | "promptTokens" | "completionTokens" | "totalTokens"> {
+  const { sessionId, promptTokens, completionTokens, totalTokens, ...rest } = obj;
   return rest;
 }
 

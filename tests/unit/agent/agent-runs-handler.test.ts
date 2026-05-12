@@ -525,6 +525,19 @@ describe("Agent Runs Handler Tests", () => {
       // Current should have metadata but not steps
       expect(data.current).toBeDefined();
       expect(data.current).not.toHaveProperty("steps");
+      // Sensitive fields should be stripped from current run
+      expect(data.current).not.toHaveProperty("promptTokens");
+      expect(data.current).not.toHaveProperty("completionTokens");
+      expect(data.current).not.toHaveProperty("totalTokens");
+      expect(data.current).not.toHaveProperty("sessionId");
+      // Runs array should also have sensitive fields stripped
+      const runs = data.runs as Record<string, unknown>[];
+      for (const run of runs) {
+        expect(run).not.toHaveProperty("promptTokens");
+        expect(run).not.toHaveProperty("completionTokens");
+        expect(run).not.toHaveProperty("totalTokens");
+        expect(run).not.toHaveProperty("sessionId");
+      }
       // Requesting user should be included
       expect(data.requestingUser).toBe("alice");
     });

@@ -188,6 +188,33 @@ describe("E2E: Agent Runs API endpoints", () => {
       }
     });
 
+    it("strips sensitive fields from aicoder runs in list endpoint", async () => {
+      const aicoderRun = db.startRun({ userId: "aicoder", sessionId: "secret-session", mode: "code" });
+      db.completeRun(aicoderRun.id, {
+        model: "claude-3",
+        promptTokens: 100,
+        completionTokens: 200,
+        totalTokens: 300,
+        toolLoopCount: 1,
+      });
+      testRunIds.push(aicoderRun.id);
+
+      const res = await server.inject({
+        method: "GET",
+        url: "/api/agent-runs?userId=aicoder",
+        headers: { authorization: `Bearer ${aliceToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      // Sensitive fields must be stripped from aicoder runs
+      for (const r of body.runs) {
+        expect(r).not.toHaveProperty("promptTokens");
+        expect(r).not.toHaveProperty("completionTokens");
+        expect(r).not.toHaveProperty("totalTokens");
+        expect(r).not.toHaveProperty("sessionId");
+      }
+    });
+
     it("applies limit and offset parameters", async () => {
       // Create 3 runs for alice
       for (let i = 0; i < 3; i++) {
@@ -278,6 +305,7 @@ describe("E2E: Agent Runs API endpoints", () => {
         expect(run).not.toHaveProperty("promptTokens");
         expect(run).not.toHaveProperty("completionTokens");
         expect(run).not.toHaveProperty("totalTokens");
+        expect(run).not.toHaveProperty("sessionId");
       }
 
       // Current should also have stripped fields
@@ -285,6 +313,7 @@ describe("E2E: Agent Runs API endpoints", () => {
         expect(body.current).not.toHaveProperty("promptTokens");
         expect(body.current).not.toHaveProperty("completionTokens");
         expect(body.current).not.toHaveProperty("totalTokens");
+        expect(body.current).not.toHaveProperty("sessionId");
       }
     });
 
@@ -370,6 +399,7 @@ describe("E2E: Agent Runs API endpoints", () => {
       expect(body).not.toHaveProperty("promptTokens");
       expect(body).not.toHaveProperty("completionTokens");
       expect(body).not.toHaveProperty("totalTokens");
+      expect(body).not.toHaveProperty("sessionId");
       // Steps should have content stripped
       if (body.steps && body.steps.length > 0) {
         for (const step of body.steps) {

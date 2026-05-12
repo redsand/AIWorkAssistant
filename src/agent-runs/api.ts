@@ -10,6 +10,7 @@ type SafeStepFields = Pick<
 
 /** Sensitive run fields that must be excluded from non-owner responses */
 const SENSITIVE_RUN_FIELDS = new Set([
+  "sessionId",
   "promptTokens",
   "completionTokens",
   "totalTokens",
@@ -54,6 +55,8 @@ function safeParseInt(value: string | undefined, min: number, max: number, fallb
   return Math.min(Math.max(Math.round(parsed), min), max);
 }
 
+const VALID_STATUSES = new Set(["running", "completed", "failed"] as const);
+
 export interface AgentRunsRouteOptions {
   database?: AgentRunDatabase;
 }
@@ -80,15 +83,26 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
     const filterUserId =
       query.userId === "aicoder" ? "aicoder" : requestUserId;
 
+    // Validate status filter against allowed values
+    const status = query.status && VALID_STATUSES.has(query.status as typeof VALID_STATUSES extends Set<infer T> ? T : never)
+      ? query.status
+      : undefined;
+
     const limit = safeParseInt(query.limit, 1, 100, 50);
     const offset = safeParseInt(query.offset, 0, Number.MAX_SAFE_INTEGER, 0);
 
-    return db.listRuns({
-      status: query.status,
+    const result = db.listRuns({
+      status,
       userId: filterUserId,
       limit,
       offset,
     });
+
+    // Strip sensitive fields when viewing aicoder runs (non-owner context)
+    if (filterUserId === "aicoder") {
+      return { ...result, runs: result.runs.map(stripSensitiveRunFields) };
+    }
+    return result;
   });
 
   fastify.get("/agent-runs/stats", async (request, reply) => {
@@ -135,7 +149,7 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
     const targetRun = current || latest;
 
     if (!targetRun) {
-      return { runs: runs.runs, current: null };
+      return { runs: runs.runs.map(stripSensitiveRunFields), current: null };
     }
 
     // Return run metadata only — exclude step content AND sensitive fields for security
