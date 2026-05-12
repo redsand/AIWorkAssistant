@@ -64,18 +64,22 @@ Agent Runs provide SQLite-backed tracing of AI agent executions. Every run recor
 
 All endpoints are under `/api/agent-runs`. These are **read-only** — runs and steps are created internally by the application, not via HTTP.
 
+**Authentication is required** for all endpoints. Requests without valid credentials receive a `401 Authentication required` response.
+
 #### List Runs
 
 ```
-GET /api/agent-runs?status=failed&userId=tim&limit=20&offset=0
+GET /api/agent-runs?status=failed&limit=20&offset=0
 ```
 
 | Parameter | Description |
 |-----------|-------------|
 | `status` | Filter by status: `running`, `completed`, `failed` |
-| `userId` | Filter by user |
-| `limit` | Results per page |
-| `offset` | Pagination offset |
+| `userId` | Only `aicoder` is accepted; otherwise runs are scoped to the authenticated user |
+| `limit` | Results per page (1–100, default 50) |
+| `offset` | Pagination offset (default 0) |
+
+Returns only the authenticated user's own runs by default. Pass `userId=aicoder` to view aicoder system runs (with sensitive fields stripped).
 
 #### Get Run with Steps
 
@@ -83,7 +87,7 @@ GET /api/agent-runs?status=failed&userId=tim&limit=20&offset=0
 GET /api/agent-runs/:id
 ```
 
-Returns the run plus all its steps in a single response.
+Returns the run plus all its steps. Only the owning user can view full content; aicoder runs have step content and sensitive fields stripped.
 
 #### Get Steps Only
 
@@ -91,7 +95,15 @@ Returns the run plus all its steps in a single response.
 GET /api/agent-runs/:id/steps
 ```
 
-Returns just the steps for a given run.
+Returns just the steps for a given run. Same ownership restrictions apply.
+
+#### Aicoder Status
+
+```
+GET /api/agent-runs/aicoder
+```
+
+Returns recent aicoder runs with sensitive fields stripped, plus the current/latest aicoder run as `current`. Requires authentication.
 
 #### Aggregate Statistics
 
@@ -99,7 +111,7 @@ Returns just the steps for a given run.
 GET /api/agent-runs/stats
 ```
 
-Returns: `totalRuns`, `completedRuns`, `failedRuns`, `runningRuns`, `avgToolLoopCount`, `runsLast24h`, `totalStepsLast24h`.
+Returns **user-scoped** statistics: `totalRuns`, `completedRuns`, `failedRuns`, `runningRuns`, `avgToolLoopCount`. Does not expose other users' data.
 
 ### Web UI
 

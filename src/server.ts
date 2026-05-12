@@ -249,6 +249,7 @@ async function start() {
 ║     POST   /engineering/jira-tickets/create                 ║
 ║     GET    /api/agent-runs                                  ║
 ║     GET    /api/agent-runs/stats                            ║
+║     GET    /api/agent-runs/aicoder                          ║
 ║     GET    /api/agent-runs/:id                              ║
 ║     GET    /api/agent-runs/:id/steps                        ║
 ║     GET    /api/work-items                                   ║

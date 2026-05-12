@@ -246,13 +246,14 @@ POST   /api/work-items/:id/complete  # Mark done
 POST   /api/work-items/:id/archive   # Archive
 ```
 
-### Agent Runs
+### Agent Runs (auth required)
 
 ```
-GET    /api/agent-runs                # List (filter: status, userId, limit, offset)
-GET    /api/agent-runs/stats          # Aggregate statistics
-GET    /api/agent-runs/:id            # Get run with steps
-GET    /api/agent-runs/:id/steps      # Get steps for a run
+GET    /api/agent-runs                # List own runs (filter: status, limit, offset; userId=aicoder for system runs)
+GET    /api/agent-runs/stats          # User-scoped statistics
+GET    /api/agent-runs/aicoder        # Aicoder system run status
+GET    /api/agent-runs/:id            # Get run with steps (owner only; aicoder runs stripped)
+GET    /api/agent-runs/:id/steps      # Get steps for a run (owner only; aicoder steps stripped)
 ```
 
 ### HAWK IR
