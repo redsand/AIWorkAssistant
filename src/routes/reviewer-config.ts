@@ -2,6 +2,7 @@ import { FastifyInstance } from "fastify";
 import { env } from "../config/env";
 import { reviewAssistant } from "../code-review/review-assistant";
 import type { CodeReview } from "../code-review/types";
+import type { ReviewStreamEvent } from "../code-review/review-assistant";
 
 export interface ReviewerConfig {
   source: string;
@@ -171,6 +172,87 @@ export async function reviewerConfigRoutes(fastify: FastifyInstance) {
       };
     } catch (err) {
       return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // SSE streaming review endpoint — same logic as /review but streams progress
+  fastify.post("/review/stream", async (request, reply): Promise<void> => {
+    const body = request.body as {
+      owner?: string;
+      repo?: string;
+      prNumber?: number;
+      source?: "github" | "gitlab";
+      gitlabProject?: string;
+    };
+
+    if (!body.prNumber || typeof body.prNumber !== "number") {
+      reply.raw.writeHead(400, { "Content-Type": "application/json" });
+      reply.raw.end(JSON.stringify({ success: false, error: "prNumber (number) is required" }));
+      return;
+    }
+
+    const source = body.source || "github";
+
+    // Set up SSE headers
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+
+    const sendEvent = (event: ReviewStreamEvent) => {
+      reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+
+    try {
+      let review: CodeReview;
+
+      if (source === "gitlab") {
+        const projectId = body.gitlabProject || body.owner || env.GITLAB_DEFAULT_PROJECT;
+        if (!projectId) {
+          sendEvent({ type: "progress", message: "Error: gitlabProject is required for GitLab reviews" });
+          reply.raw.end();
+          return;
+        }
+        review = await reviewAssistant.reviewWithStreaming(
+          { projectId, mrIid: body.prNumber },
+          sendEvent,
+        );
+      } else {
+        const owner = body.owner || env.GITHUB_DEFAULT_OWNER;
+        const repo = body.repo || env.GITHUB_DEFAULT_REPO;
+        if (!owner || !repo) {
+          sendEvent({ type: "progress", message: "Error: owner and repo are required" });
+          reply.raw.end();
+          return;
+        }
+        review = await reviewAssistant.reviewWithStreaming(
+          { owner, repo, prNumber: body.prNumber },
+          sendEvent,
+        );
+      }
+
+      const findings = codeReviewToFindings(review);
+      const hasCriticalOrHigh = findings.some(
+        (f) => f.severity === "critical" || f.severity === "high",
+      );
+
+      sendEvent({
+        type: "result",
+        data: {
+          success: true,
+          clean: !hasCriticalOrHigh,
+          findings,
+          riskLevel: review.riskLevel,
+          recommendation: review.recommendation,
+          summary: review.suggestedReviewComment,
+        },
+      } as any);
+
+      reply.raw.end();
+    } catch (err) {
+      sendEvent({ type: "progress", message: `Review failed: ${(err as Error).message}` });
+      reply.raw.end();
     }
   });
 }

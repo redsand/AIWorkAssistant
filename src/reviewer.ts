@@ -6,6 +6,8 @@ import path from "path";
 import axios from "axios";
 import { gitlabClient } from "./integrations/gitlab/gitlab-client";
 import { jiraClient } from "./integrations/jira/jira-client";
+import { reviewAssistant } from "./code-review/review-assistant";
+import type { ReviewStreamEvent } from "./code-review/review-assistant";
 
 // ── ANSI color helpers ──────────────────────────────────────────────────────
 const useColor = process.stdout.isTTY && process.env.NO_COLOR !== "1";
@@ -762,6 +764,36 @@ function getVcsClient(target: RepoTarget, config: ReviewerConfig): VcsClient {
   return new GithubVcsClient(makeGithubClient(config.githubToken, config.owner));
 }
 
+// ── Convert CodeReview findings to ReviewFinding format ────────────────────────
+function codeReviewToFindings(review: { mustFix?: string[]; securityConcerns?: string[]; migrationRisks?: string[]; shouldFix?: string[]; testGaps?: string[]; observabilityConcerns?: string[] }): ReviewFinding[] {
+  const findings: ReviewFinding[] = [];
+
+  const add = (
+    items: string[],
+    severity: ReviewFinding["severity"],
+    category: ReviewFinding["category"],
+  ) => {
+    for (const text of items) {
+      findings.push({
+        severity,
+        category,
+        file: "unknown",
+        message: text,
+        suggestion: "See the full review comment on the PR.",
+      });
+    }
+  };
+
+  add(review.mustFix || [], "critical", "quality");
+  add(review.securityConcerns || [], "high", "security");
+  add(review.migrationRisks || [], "high", "quality");
+  add(review.shouldFix || [], "medium", "quality");
+  add(review.testGaps || [], "medium", "qa");
+  add(review.observabilityConcerns || [], "low", "quality");
+
+  return findings;
+}
+
 async function runMultiAgentReview(
   config: ReviewerConfig,
   target: RepoTarget,
@@ -770,36 +802,170 @@ async function runMultiAgentReview(
   const remoteUrl = process.env.AIWORKASSISTANT_URL?.replace(/\/$/, "");
   const remoteKey = process.env.AIWORKASSISTANT_API_KEY;
 
-  // For remote review, delegate to the server
+  // For remote review, delegate to the server with streaming
   if (remoteUrl && remoteKey) {
-    return runAiReview(remoteUrl, remoteKey, target, config, mrNumber);
+    return runAiReviewStreaming(remoteUrl, remoteKey, target, config, mrNumber);
   }
 
-  // Local review: fetch diff and run agents
+  // Local review: fetch diff and run AI review with streaming
+  return runLocalStreamingReview(config, target, mrNumber);
+}
+
+/**
+ * Local streaming review — uses reviewAssistant directly with real-time console output.
+ */
+async function runLocalStreamingReview(
+  config: ReviewerConfig,
+  target: RepoTarget,
+  mrNumber: number,
+): Promise<ReviewResult> {
   const vcs = getVcsClient(target, config);
   const diff = await vcs.getDiff(target.name, mrNumber);
 
-  const sec = runAgentReview(diff, "security", config.securityAgentCmd);
-  const qa = runAgentReview(diff, "qa", config.qaAgentCmd);
-  const qual = runAgentReview(diff, "quality", config.qualityAgentCmd);
+  log.review(`Fetching diff for ${target.source}:${target.name} MR !${mrNumber} (${diff.length} chars)`);
+  log.step("Running AI code review with streaming output...");
 
-  const findings: ReviewFinding[] = [...sec.findings, ...qa.findings, ...qual.findings];
-  const agentStatus: Record<string, "passed" | "failed"> = {
-    security: sec.status,
-    qa: qa.status,
-    quality: qual.status,
+  try {
+    const review = await reviewAssistant.reviewWithStreaming(
+      target.source === "gitlab"
+        ? { projectId: target.gitlabProject || config.gitlabProject, mrIid: mrNumber }
+        : { owner: config.owner, repo: target.name, prNumber: mrNumber },
+      (event: ReviewStreamEvent) => {
+        if (event.type === "progress") {
+          log.step(`[review] ${event.message}`);
+        } else if (event.type === "stream") {
+          // Show a brief snippet of the streaming AI output
+          const snippet = (event.chunk || "").replace(/\n/g, " ").slice(0, 120);
+          process.stdout.write(`${C.dim}[review stream] ${snippet}${C.reset}\n`);
+        }
+      },
+    );
+
+    const findings = codeReviewToFindings(review);
+    const hasCriticalOrHigh = findings.some(
+      (f) => f.severity === "critical" || f.severity === "high",
+    );
+
+    log.step(`Review complete: ${findings.length} findings, risk=${review.riskLevel}, rec=${review.recommendation}`);
+
+    return {
+      clean: !hasCriticalOrHigh,
+      findings,
+      summary: review.suggestedReviewComment || buildSummary(findings),
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error(`Streaming review failed, falling back to heuristic: ${message}`);
+    // Fall back to local agent review
+    const sec = runAgentReview(diff, "security", config.securityAgentCmd);
+    const qa = runAgentReview(diff, "qa", config.qaAgentCmd);
+    const qual = runAgentReview(diff, "quality", config.qualityAgentCmd);
+    const findings: ReviewFinding[] = [...sec.findings, ...qa.findings, ...qual.findings];
+    const hasCriticalOrHigh = findings.some((f) => f.severity === "critical" || f.severity === "high");
+    return {
+      clean: !hasCriticalOrHigh,
+      findings,
+      summary: buildSummary(findings),
+      agentStatus: { security: sec.status, qa: qa.status, quality: qual.status },
+    };
+  }
+}
+
+/**
+ * Remote streaming review — calls the server's SSE endpoint with real-time progress.
+ */
+async function runAiReviewStreaming(
+  remoteUrl: string,
+  remoteKey: string,
+  target: RepoTarget,
+  config: ReviewerConfig,
+  prNumber: number,
+): Promise<ReviewResult> {
+  log.review(`Delegating PR #${prNumber} review to AIWorkAssistant (streaming)`);
+  const owner = target.source === "gitlab" ? (target.gitlabProject || config.gitlabProject) : config.owner;
+  const requestBody: Record<string, unknown> = {
+    owner,
+    repo: target.name,
+    prNumber,
+    source: target.source,
   };
+  if (target.source === "gitlab" && target.gitlabProject) {
+    requestBody.gitlabProject = target.gitlabProject;
+  }
 
-  const hasCriticalOrHigh = findings.some(
-    (f) => f.severity === "critical" || f.severity === "high",
-  );
+  // Try the streaming endpoint first
+  try {
+    const response = await fetch(`${remoteUrl}/api/reviewer/review/stream`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${remoteKey}`,
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+      },
+      body: JSON.stringify(requestBody),
+    });
 
-  return {
-    clean: !hasCriticalOrHigh,
-    findings,
-    summary: buildSummary(findings),
-    agentStatus,
-  };
+    if (!response.ok || !response.body) {
+      // Streaming not available — fall back to regular endpoint
+      log.step("Streaming endpoint not available — using standard review");
+      return runAiReview(remoteUrl, remoteKey, target, config, prNumber);
+    }
+
+    log.step("Streaming review response...");
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finalResult: ReviewResult | null = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Process SSE events
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+        if (!data) continue;
+
+        try {
+          const event = JSON.parse(data);
+          if (event.type === "progress") {
+            log.step(`[review] ${event.message}`);
+          } else if (event.type === "stream") {
+            const snippet = (event.chunk || "").replace(/\n/g, " ").slice(0, 120);
+            process.stdout.write(`${C.dim}[review stream] ${snippet}${C.reset}\n`);
+          } else if (event.type === "result") {
+            finalResult = {
+              clean: event.data?.clean ?? false,
+              findings: event.data?.findings ?? [],
+              summary: event.data?.summary ?? buildSummary(event.data?.findings ?? []),
+              agentStatus: event.data?.agentStatus,
+            };
+          }
+        } catch {
+          // Not JSON — skip
+        }
+      }
+    }
+
+    if (finalResult) {
+      return finalResult;
+    }
+
+    // No result from stream — fall back
+    log.warn("Streaming review ended without result — falling back to standard review");
+    return runAiReview(remoteUrl, remoteKey, target, config, prNumber);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn(`Streaming review failed: ${message} — falling back to standard review`);
+    return runAiReview(remoteUrl, remoteKey, target, config, prNumber);
+  }
 }
 
 function runAgentReview(

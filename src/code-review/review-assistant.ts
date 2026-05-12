@@ -3,6 +3,13 @@ import { githubClient } from "../integrations/github/github-client";
 import { gitlabClient } from "../integrations/gitlab/gitlab-client";
 import { jiraClient } from "../integrations/jira/jira-client";
 import { workItemDatabase } from "../work-items/database";
+
+// ── Streaming event type for review progress ─────────────────────────────────
+export interface ReviewStreamEvent {
+  type: "progress" | "stream";
+  message?: string;
+  chunk?: string;
+}
 import type { WorkItem } from "../work-items/types";
 import type {
   ChangeSet,
@@ -315,6 +322,113 @@ class ReviewAssistant {
     return this.buildReview(changeSet);
   }
 
+  /**
+   * Streaming review — same as reviewGitHubPullRequest/reviewGitLabMergeRequest
+   * but uses buildReviewStreaming for real-time progress output.
+   */
+  async reviewWithStreaming(
+    input: GitHubPRReviewInput | GitLabMRReviewInput,
+    onProgress?: (event: ReviewStreamEvent) => void,
+  ): Promise<CodeReview> {
+    if ("projectId" in input) {
+      const mr = await gitlabClient.getMergeRequest(input.projectId, input.mrIid);
+      const changes = await gitlabClient.getMergeRequestChanges(input.projectId, input.mrIid);
+      const pipelines = await gitlabClient.listPipelines(input.projectId, undefined).catch(() => []);
+      const notesRaw = await gitlabClient.listMergeRequestNotes(input.projectId, input.mrIid).catch(() => []);
+
+      const files: ChangedFile[] = (changes.changes || []).map((c: any) => ({
+        filename: c.new_path || c.old_path,
+        status: c.new_file ? "added" : c.deleted_file ? "removed" : c.renamed_file ? "renamed" : "modified",
+        additions: (c.diff?.match(/^\+[^+]/gm) || []).length,
+        deletions: (c.diff?.match(/^-[^-]/gm) || []).length,
+        patch: c.diff,
+      }));
+
+      const linesAdded = files.reduce((s, f) => s + f.additions, 0);
+      const linesRemoved = files.reduce((s, f) => s + f.deletions, 0);
+
+      const latestPipeline = (pipelines || []).find((p: any) => p.ref === mr.source_branch);
+      const ciStatus: ChangeSet["ciStatus"] =
+        latestPipeline?.status === "success" ? "success"
+        : latestPipeline?.status === "failed" ? "failed"
+        : latestPipeline ? "pending"
+        : "unknown";
+
+      const issueDescription = await this.fetchLinkedIssueDescription(mr.description || "", mr.source_branch || "", "gitlab");
+
+      const changeSet: ChangeSet = {
+        platform: "gitlab",
+        title: mr.title || "",
+        description: mr.description || "",
+        author: mr.author?.username || mr.author?.name || "unknown",
+        sourceBranch: mr.source_branch || "",
+        targetBranch: mr.target_branch || "",
+        url: mr.web_url || "",
+        files,
+        linesAdded,
+        linesRemoved,
+        ciStatus,
+        existingComments: (notesRaw || []).filter((n: any) => !n.system).map((n: any) => n.body).filter(Boolean).slice(0, 10),
+        issueDescription,
+        hasMigration: files.some((f) => MIGRATION_PATTERNS.some((p) => p.test(f.filename))),
+        hasTests: files.some((f) => TEST_PATTERNS.some((p) => p.test(f.filename))),
+        hasConfigChange: files.some((f) => CONFIG_PATTERNS.some((p) => p.test(f.filename))),
+      };
+
+      return this.buildReviewStreaming(changeSet, onProgress);
+    } else {
+      const [pr, filesRaw, checksRaw, commentsRaw] = await Promise.all([
+        githubClient.getPullRequest(input.prNumber, input.owner, input.repo),
+        githubClient.getPullRequestFiles(input.prNumber, input.owner, input.repo),
+        githubClient.listPullRequestChecks(input.prNumber, input.owner, input.repo).catch(() => []),
+        githubClient.listPullRequestComments(input.prNumber, input.owner, input.repo).catch(() => []),
+      ]);
+
+      const files: ChangedFile[] = (filesRaw || []).map((f: any) => ({
+        filename: f.filename,
+        status: f.status,
+        additions: f.additions ?? 0,
+        deletions: f.deletions ?? 0,
+        patch: f.patch,
+      }));
+
+      const linesAdded = files.reduce((s, f) => s + f.additions, 0);
+      const linesRemoved = files.reduce((s, f) => s + f.deletions, 0);
+
+      const checkStatuses: string[] = (checksRaw || []).map((c: any) => c.conclusion || c.status);
+      const ciStatus = checkStatuses.some((s) => s === "failure" || s === "failed")
+        ? "failed"
+        : checkStatuses.every((s) => s === "success")
+        ? "success"
+        : checkStatuses.length > 0
+        ? "pending"
+        : "unknown";
+
+      const issueDescription = await this.fetchLinkedIssueDescription(pr.body || "", pr.head?.ref || "", "github", input.owner, input.repo);
+
+      const changeSet: ChangeSet = {
+        platform: "github",
+        title: pr.title || "",
+        description: pr.body || "",
+        author: pr.user?.login || pr.user?.name || "unknown",
+        sourceBranch: pr.head?.ref || "",
+        targetBranch: pr.base?.ref || "",
+        url: pr.html_url || "",
+        files,
+        linesAdded,
+        linesRemoved,
+        ciStatus,
+        existingComments: (commentsRaw || []).map((c: any) => c.body).filter(Boolean).slice(0, 10),
+        issueDescription,
+        hasMigration: files.some((f) => MIGRATION_PATTERNS.some((p) => p.test(f.filename))),
+        hasTests: files.some((f) => TEST_PATTERNS.some((p) => p.test(f.filename))),
+        hasConfigChange: files.some((f) => CONFIG_PATTERNS.some((p) => p.test(f.filename))),
+      };
+
+      return this.buildReviewStreaming(changeSet, onProgress);
+    }
+  }
+
   async reviewGitLabMergeRequest(input: GitLabMRReviewInput): Promise<CodeReview> {
     const [mr, changes, pipelines, notesRaw] = await Promise.all([
       gitlabClient.getMergeRequest(input.projectId, input.mrIid),
@@ -566,6 +680,100 @@ class ReviewAssistant {
     if (!review.suggestedReviewComment) {
       review.suggestedReviewComment = this.compactFallbackComment(review);
     }
+
+    return review;
+  }
+
+  /**
+   * Streaming version of buildReview — yields progress events as the AI review
+   * proceeds, then returns the final CodeReview result.
+   */
+  async buildReviewStreaming(
+    changeSet: ChangeSet,
+    onProgress?: (event: ReviewStreamEvent) => void,
+  ): Promise<CodeReview> {
+    const riskLevel = this.assessRisk(changeSet);
+    const diffSummary = this.summarizeDiff(changeSet);
+
+    onProgress?.({ type: "progress", message: `Assessing risk: ${riskLevel} — ${changeSet.files.length} files changed` });
+
+    let parsed: Partial<CodeReview> = {};
+    let aiSucceeded = false;
+
+    if (aiClient.isConfigured()) {
+      try {
+        onProgress?.({ type: "progress", message: "Running AI code review..." });
+
+        let fullContent = "";
+        let lastStreamTime = Date.now();
+
+        for await (const chunk of aiClient.chatStream({
+          messages: [
+            { role: "system", content: REVIEW_SYSTEM_PROMPT },
+            { role: "user", content: diffSummary },
+          ],
+          temperature: 0.3,
+        })) {
+          fullContent += chunk;
+
+          // Throttle stream events to avoid flooding — emit every 500ms or 200 chars
+          const now = Date.now();
+          if (now - lastStreamTime > 500 || fullContent.length % 200 < chunk.length) {
+            const preview = fullContent.length > 150
+              ? fullContent.slice(-150)
+              : fullContent;
+            onProgress?.({ type: "stream", chunk: preview });
+            lastStreamTime = now;
+          }
+        }
+
+        onProgress?.({ type: "progress", message: "AI review complete — parsing results..." });
+
+        const content = fullContent.trim();
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          parsed = JSON.parse(jsonMatch[0]);
+          aiSucceeded = true;
+        }
+      } catch (err) {
+        console.error("[CodeReview] AI streaming failed, using fallback:", (err as Error).message);
+      }
+    }
+
+    if (!aiSucceeded) {
+      onProgress?.({ type: "progress", message: "AI review unavailable — using heuristic fallback" });
+      parsed = this.fallbackReview(changeSet, riskLevel);
+    }
+
+    const review: CodeReview = {
+      prUrl: changeSet.url,
+      title: changeSet.title,
+      author: changeSet.author,
+      platform: changeSet.platform,
+      riskLevel: (parsed.riskLevel as ReviewRiskLevel) || riskLevel,
+      recommendation: (parsed.recommendation as ReviewRecommendation) || this.fallbackRecommendation(riskLevel),
+      whatChanged: parsed.whatChanged || changeSet.title,
+      mustFix: parsed.mustFix || [],
+      shouldFix: parsed.shouldFix || [],
+      testGaps: parsed.testGaps || (!changeSet.hasTests ? ["No test files detected in this PR"] : []),
+      securityConcerns: parsed.securityConcerns || [],
+      observabilityConcerns: parsed.observabilityConcerns || [],
+      migrationRisks: parsed.migrationRisks || (changeSet.hasMigration ? ["This PR contains migration files — review rollback strategy"] : []),
+      rollbackConsiderations: parsed.rollbackConsiderations || ["Review migration scripts before merge", "Ensure database backups are current"],
+      suggestedReviewComment: parsed.suggestedReviewComment || "",
+      filesChanged: changeSet.files.length,
+      linesAdded: changeSet.linesAdded,
+      linesRemoved: changeSet.linesRemoved,
+      ciStatus: changeSet.ciStatus,
+      generatedAt: new Date().toISOString(),
+    };
+
+    if (!review.suggestedReviewComment) {
+      review.suggestedReviewComment = this.compactFallbackComment(review);
+    }
+
+    const findingCount = review.mustFix.length + review.shouldFix.length + review.securityConcerns.length;
+    onProgress?.({ type: "progress", message: `Review complete: ${findingCount} findings, risk=${review.riskLevel}, rec=${review.recommendation}` });
 
     return review;
   }
