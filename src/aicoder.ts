@@ -4057,8 +4057,13 @@ async function runReviewLoop(
       }
       lastReworkPrompt = reworkPrompt;
 
-      // Convergence: record findings from this round and check if loop should stop
-      const roundFindings = extractFindingsFromPrompt(reworkPrompt);
+      // Convergence: record findings from this round and check if loop should stop.
+      // Prefer structured findings persisted by the reviewer; fall back to regex extraction.
+      const persistedGateFindings = loadReviewGateState().lastFindings;
+      const regexFindings = extractFindingsFromPrompt(reworkPrompt);
+      const roundFindings = persistedGateFindings.length > 0
+        ? persistedGateFindings.map((f) => ({ file: f.file, severity: f.severity, category: f.category }))
+        : regexFindings;
       convergenceState = recordRoundFindings(convergenceState, roundFindings, true);
       saveConvergenceState(convergenceState);
 
