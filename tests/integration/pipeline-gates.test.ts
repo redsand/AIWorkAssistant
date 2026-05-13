@@ -334,14 +334,19 @@ describe("convergence state — persistence across restarts", () => {
   const originalCwd = process.cwd;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "convergence-test-"));
-    // Point the state file to our temp dir by overriding cwd
-    process.cwd = () => tempDir;
+    // Always clean the real workspace state file first to prevent cross-test pollution.
+    // (STATE_FILE in convergence-state.ts is a module-level constant pointing to
+    // process.cwd() at load time, so the process.cwd() override below has no effect
+    // on the actual file path — we must clean the real file directly.)
+    clearConvergenceState();
     _resetCache();
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "convergence-test-"));
+    process.cwd = () => tempDir;
   });
 
   afterEach(() => {
     process.cwd = originalCwd;
+    clearConvergenceState(); // delete real workspace STATE_FILE
     _resetCache();
     if (tempDir && fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -592,13 +597,15 @@ describe("Pipeline integration — end-to-end gate flow", () => {
     const originalCwd = process.cwd;
 
     beforeEach(() => {
+      clearConvergenceState();
+      _resetCache();
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-convergence-"));
       process.cwd = () => tempDir;
-      _resetCache();
     });
 
     afterEach(() => {
       process.cwd = originalCwd;
+      clearConvergenceState();
       _resetCache();
       if (tempDir && fs.existsSync(tempDir)) {
         fs.rmSync(tempDir, { recursive: true, force: true });
