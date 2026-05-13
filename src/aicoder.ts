@@ -30,7 +30,6 @@ import {
   EXIT_META_ONLY,
 } from "./aicoder-pipeline";
 import {
-  initConvergenceState,
   recordRoundFindings,
   checkConvergence,
   formatConvergenceReport,
@@ -38,6 +37,7 @@ import {
   type ConvergenceConfig,
   type ConvergenceState,
 } from "./autonomous-loop/convergence";
+import { loadConvergenceState, saveConvergenceState, serializeConvergence } from "./autonomous-loop/convergence-state";
 import { loadReviewGateState, saveReviewGateState, clearReviewGateState, markForceDone } from "./autonomous-loop/review-gate-state";
 
 // Re-export so callers and the orchestrator can import from either module.
@@ -3876,28 +3876,15 @@ async function runReviewLoop(
   let lastReworkPrompt: string | null = null;
 
   // Convergence state: tracks repeated findings, empty PRs, and no-progress rounds
+  // Prefer RunState data; fall back to file persistence; fall back to fresh state
   let convergenceState: ConvergenceState = reviewState?.convergenceState
     ? {
         ...reviewState.convergenceState,
         identicalCount: new Map(Object.entries(reviewState.convergenceState.identicalCount)),
         lastRoundFindings: new Set(reviewState.convergenceState.lastRoundFindings),
       }
-    : initConvergenceState();
+    : loadConvergenceState();
   const convergenceConfig: ConvergenceConfig = { ...DEFAULT_CONVERGENCE_CONFIG };
-
-  // Serialize convergence state for RunState persistence (Map/Set → plain objects)
-  function serializeConvergence(cs: ConvergenceState): RunState["convergenceState"] {
-    return {
-      roundNumber: cs.roundNumber,
-      previousFindings: cs.previousFindings,
-      identicalCount: Object.fromEntries(cs.identicalCount),
-      emptyPRCount: cs.emptyPRCount,
-      findingsResolved: cs.findingsResolved,
-      findingsNew: cs.findingsNew,
-      noProgressCount: cs.noProgressCount,
-      lastRoundFindings: [...cs.lastRoundFindings],
-    };
-  }
 
   // Extract finding-like hashes from a rework prompt string.
   // Looks for file paths (e.g., "src/foo.ts") and severity keywords to produce stable hashes.
@@ -4073,6 +4060,7 @@ async function runReviewLoop(
       // Convergence: record findings from this round and check if loop should stop
       const roundFindings = extractFindingsFromPrompt(reworkPrompt);
       convergenceState = recordRoundFindings(convergenceState, roundFindings, true);
+      saveConvergenceState(convergenceState);
 
       // Review gate: persist findings so jira.close_issue can block Done transitions
       const gateFindings = roundFindings.map((f) => ({
@@ -4142,6 +4130,7 @@ async function runReviewLoop(
         runLogger.logError(`Rework produced no meaningful changes (${reworkValidation.reason}) — empty PR cycle ${convergenceState.emptyPRCount + 1}`);
       }
       convergenceState = recordRoundFindings(convergenceState, [], prHadChanges);
+      saveConvergenceState(convergenceState);
       if (!prHadChanges) {
         const convergence = checkConvergence(convergenceState, convergenceConfig);
         if (convergence.shouldStop) {

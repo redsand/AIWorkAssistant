@@ -8,6 +8,8 @@ import { gitlabClient } from "./integrations/gitlab/gitlab-client";
 import { jiraClient } from "./integrations/jira/jira-client";
 import { reviewAssistant } from "./code-review/review-assistant";
 import type { ReviewStreamEvent } from "./code-review/review-assistant";
+import { parseReviewFindings } from "./autonomous-loop/review-findings-parser";
+import { recordGateFindings } from "./autonomous-loop/review-gate-state";
 
 // ── ANSI color helpers ──────────────────────────────────────────────────────
 const useColor = process.stdout.isTTY && process.env.NO_COLOR !== "1";
@@ -718,6 +720,13 @@ async function pollMergeRequests(
       }
 
       const result = await runMultiAgentReview(config, target, mr.number, diff);
+
+      // Persist structured findings for review gate and convergence detection
+      const gateFindings = parseReviewFindings("", result.findings);
+      if (gateFindings.length > 0) {
+        recordGateFindings(gateFindings);
+        log.step(`Persisted ${gateFindings.length} findings to review gate state`);
+      }
 
       // Record the current commit SHA so we can detect when aicoder pushes rework
       const currentSha = await vcs.getLatestCommitSha(target.name, mr.number).catch(() => undefined);

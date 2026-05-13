@@ -32,8 +32,19 @@ function deserializeConvergence(data: Record<string, unknown>): ConvergenceState
   };
 }
 
+export interface SerializedConvergenceState {
+  roundNumber: number;
+  previousFindings: string[];
+  identicalCount: Record<string, number>;
+  emptyPRCount: number;
+  findingsResolved: number;
+  findingsNew: number;
+  noProgressCount: number;
+  lastRoundFindings: string[];
+}
+
 /** Serialize a ConvergenceState to a JSON-safe plain object. */
-export function serializeConvergence(state: ConvergenceState): Record<string, unknown> {
+export function serializeConvergence(state: ConvergenceState): SerializedConvergenceState {
   return {
     roundNumber: state.roundNumber,
     previousFindings: state.previousFindings,
