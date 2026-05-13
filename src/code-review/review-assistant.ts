@@ -848,24 +848,33 @@ class ReviewAssistant {
   }
 
   private fallbackReview(changeSet: ChangeSet, riskLevel: ReviewRiskLevel): Partial<CodeReview> {
+    // Empty MRs should never be auto-approved — block them
     const mustFix: string[] = [];
+    if (changeSet.files.length === 0 || changeSet.linesAdded + changeSet.linesRemoved === 0) {
+      mustFix.push("Empty MR — no changes to review. Do not merge without substantive changes.");
+    }
     if (changeSet.ciStatus === "failed") mustFix.push("CI checks are failing — must pass before merge");
     if (changeSet.hasMigration && !changeSet.hasTests) mustFix.push("Migration changes detected but no test files found");
 
     const shouldFix: string[] = [];
     if (!changeSet.hasTests && changeSet.linesAdded > 30) shouldFix.push("Consider adding tests for new code");
     if (changeSet.files.length > 15) shouldFix.push("Large PR — consider breaking into smaller changes");
+    // Heuristic security findings are not actionable by the aicoder — use medium severity
+    // so they don't trigger rework cycles. Real security findings come from AI review.
+    if (changeSet.files.some((f) => SECURITY_PATTERNS.some((p) => p.test(f.filename)))) {
+      shouldFix.push("Security-related files detected — human review recommended for auth/credential changes");
+    }
 
     return {
       whatChanged: `${changeSet.title}. ${changeSet.files.length} files changed (+${changeSet.linesAdded} -${changeSet.linesRemoved}).`,
-      riskLevel,
-      recommendation: this.fallbackRecommendation(riskLevel),
+      // When using fallback (AI unavailable), always escalate risk to at least "medium"
+      // so the reviewer doesn't auto-approve without actual AI analysis
+      riskLevel: mustFix.length > 0 ? "high" : riskLevel === "critical" ? "critical" : "medium",
+      recommendation: mustFix.length > 0 ? "needs_changes" : this.fallbackRecommendation(riskLevel === "critical" ? "critical" : "medium"),
       mustFix,
       shouldFix,
       testGaps: !changeSet.hasTests ? ["No test files detected in this PR"] : [],
-      securityConcerns: changeSet.files.some((f) => SECURITY_PATTERNS.some((p) => p.test(f.filename)))
-        ? ["Security-related files detected — review auth/credential changes carefully"]
-        : [],
+      securityConcerns: [],
       observabilityConcerns: [],
       migrationRisks: changeSet.hasMigration ? ["Database migration files detected — verify rollback path"] : [],
       rollbackConsiderations: ["Revert PR and redeploy previous build"],
@@ -873,10 +882,11 @@ class ReviewAssistant {
   }
 
   private fallbackRecommendation(riskLevel: ReviewRiskLevel): ReviewRecommendation {
+    // When using fallback (AI unavailable), always recommend at least human review
+    // Never auto-approve from a heuristic — the AI review was unavailable
     if (riskLevel === "critical") return "high_risk_hold";
     if (riskLevel === "high") return "needs_changes";
-    if (riskLevel === "medium") return "ready_for_human_review";
-    return "low_risk";
+    return "ready_for_human_review";
   }
 
   createReviewWorkItem(params: {

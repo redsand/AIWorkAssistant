@@ -444,36 +444,71 @@ export class GitlabClient {
 
     const resolvedId = this.resolveProjectId(projectId);
 
-    try {
-      console.log(`[GitLab] Accepting MR !${mrIid}`);
+    const buildBody = (mergeWhenPipelineSucceeds: boolean): Record<string, unknown> => {
       const body: Record<string, unknown> = {};
       if (options?.squashCommitMessage)
         body.squash_commit_message = options.squashCommitMessage;
       if (options?.shouldRemoveSourceBranch !== undefined)
         body.should_remove_source_branch = options.shouldRemoveSourceBranch;
-      if (options?.mergeWhenPipelineSucceeds !== undefined)
-        body.merge_when_pipeline_succeeds = options.mergeWhenPipelineSucceeds;
+      body.merge_when_pipeline_succeeds = mergeWhenPipelineSucceeds;
+      return body;
+    };
 
+    // First attempt: merge immediately (or with existing options)
+    try {
+      console.log(`[GitLab] Accepting MR !${mrIid}`);
       const response = await this.client.put(
         `/api/v4/projects/${resolvedId}/merge_requests/${mrIid}/merge`,
-        body,
+        buildBody(options?.mergeWhenPipelineSucceeds ?? false),
       );
       console.log(`[GitLab] MR !${mrIid} merged`);
       return response.data;
     } catch (error) {
-      if (axios.isAxiosError(error)) {
-        const status = error.response?.status;
-        const data = error.response?.data as any;
-        if (status === 405) {
-          throw new Error(
-            `Cannot merge MR !${mrIid}: ${data?.message || "merge not allowed"}`,
+      if (!axios.isAxiosError(error)) {
+        throw new Error(`Failed to merge MR: ${error instanceof Error ? error.message : "Unknown error"}`);
+      }
+
+      const status = error.response?.status;
+      const data = error.response?.data as any;
+
+      if (status === 406) {
+        throw new Error(
+          `MR !${mrIid} merge conflict: ${data?.message || "conflict"}`,
+        );
+      }
+
+      if (status === 405) {
+        // 405 usually means pipeline is running or merge is temporarily blocked.
+        // Retry with merge_when_pipeline_succeeds as a fallback.
+        console.log(`[GitLab] MR !${mrIid} merge returned 405 — retrying with merge_when_pipeline_succeeds`);
+        try {
+          const retryResponse = await this.client.put(
+            `/api/v4/projects/${resolvedId}/merge_requests/${mrIid}/merge`,
+            buildBody(true),
           );
-        } else if (status === 406) {
+          console.log(`[GitLab] MR !${mrIid} will merge when pipeline succeeds`);
+          return retryResponse.data;
+        } catch (retryError) {
+          if (axios.isAxiosError(retryError)) {
+            const retryStatus = retryError.response?.status;
+            const retryData = retryError.response?.data as any;
+            if (retryStatus === 405) {
+              throw new Error(
+                `Cannot merge MR !${mrIid}: ${retryData?.message || data?.message || "merge not allowed (pipeline may still be running)"}`,
+              );
+            }
+            if (retryStatus === 406) {
+              throw new Error(
+                `MR !${mrIid} merge conflict: ${retryData?.message || "conflict"}`,
+              );
+            }
+          }
           throw new Error(
-            `MR !${mrIid} merge conflict: ${data?.message || "conflict"}`,
+            `Failed to merge MR !${mrIid}: ${retryError instanceof Error ? retryError.message : "Unknown error"}`,
           );
         }
       }
+
       throw new Error(
         `Failed to merge MR: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
@@ -1343,6 +1378,35 @@ export class GitlabClient {
     } catch (error) {
       throw new Error(
         `Failed to list members: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
+  async listIssueNotes(
+    projectId: number | string | undefined,
+    issueIid: number,
+  ): Promise<Array<{ id: number; author: string; body: string; created_at: string }>> {
+    if (!this.isConfigured()) {
+      throw new Error("GitLab client not configured");
+    }
+
+    const resolvedId = this.resolveProjectId(projectId);
+
+    try {
+      const response = await this.client.get(
+        `/api/v4/projects/${resolvedId}/issues/${issueIid}/notes`,
+        { params: { per_page: 50, sort: "asc", order_by: "created_at" } },
+      );
+      const notes = (response.data || []).filter((n: any) => !n.system);
+      return notes.map((n: any) => ({
+        id: n.id,
+        author: n.author?.username || "Unknown",
+        body: n.body || "",
+        created_at: n.created_at,
+      }));
+    } catch (error) {
+      throw new Error(
+        `Failed to list issue notes: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
     }
   }

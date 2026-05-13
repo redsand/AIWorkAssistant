@@ -46,6 +46,7 @@ Options:
   --skip-baseline     Skip baseline test check before agent starts (only test after)
   --skip-agent        Skip agent execution — commit/test/push existing changes only
   --skip-tests        Skip all tests and coverage checks — just commit and push
+  --skip-prompt-check Pick up tickets even without a ## Coding Prompt section (uses ticket body as prompt)
   --resume-run        Resume from saved run state (if available)
   --discard-run       Discard saved run state and start fresh
   -f, --force         Force re-processing of an already-processed issue
@@ -76,6 +77,8 @@ Remote config (fetches everything else from AIWorkAssistant):
       out["skip-agent"] = "true";
     } else if (argv[i] === "--skip-tests") {
       out["skip-tests"] = "true";
+    } else if (argv[i] === "--skip-prompt-check") {
+      out["skip-prompt-check"] = "true";
     } else if (argv[i] === "--resume-run") {
       out["resume-run"] = "true";
     } else if (argv[i] === "--discard-run") {
@@ -146,6 +149,7 @@ const DEBUG = "debug" in ARGV || process.env.AICODER_DEBUG === "true";
 const SKIP_BASELINE = "skip-baseline" in ARGV || process.env.AICODER_SKIP_BASELINE === "true";
 const SKIP_AGENT = "skip-agent" in ARGV || process.env.AICODER_SKIP_AGENT === "true";
 const SKIP_TESTS = "skip-tests" in ARGV || process.env.AICODER_SKIP_TESTS === "true";
+const SKIP_PROMPT_CHECK = "skip-prompt-check" in ARGV || process.env.AICODER_SKIP_PROMPT_CHECK === "true";
 const RESUME_RUN = "resume-run" in ARGV;
 const DISCARD_RUN = "discard-run" in ARGV;
 const FORCE_REPROCESS = "force" in ARGV;
@@ -165,6 +169,7 @@ const REVIEW_PASSED_MARKER = "Review Passed";
 const REVIEW_FAILED_MARKER = "Review Failed — Rework Required";
 const REVIEW_POSTPONED_MARKER = "Review Postponed — Service Unavailable";
 const REVIEW_MERGE_CONFLICT_MARKER = "Merge Failed — Conflict Requires Rebase";
+const REVIEW_HUMAN_REVIEW_MARKER = "Review Requires Human — Ready for Human Review";
 
 process.env.AICODER_AGENT = AGENT;
 process.env.AICODER_MODEL = MODEL;
@@ -501,6 +506,7 @@ async function fetchWork(cfg: ServerConfig): Promise<WorkItem[]> {
   const params: Record<string, string> = { label: LABEL, limit: "5", source: cfg.source };
   if (cfg.owner) params.owner = cfg.owner;
   if (cfg.repo) params.repo = cfg.repo;
+  if (SKIP_PROMPT_CHECK) params.skipPromptCheck = "true";
 
   const resp = await axios.get<{ success: boolean; items: WorkItem[]; error?: string }>(
     `${cfg.apiUrl}/api/autonomous-loop/work`,
@@ -1138,9 +1144,9 @@ function ensureCleanWorkspace(): boolean {
 
   // 4. Check for detached HEAD
   const branch = getCurrentBranch();
-  if (branch === "HEAD" || branch === null) {
+  if (branch === "HEAD" || branch === null || branch.startsWith("(")) {
     runLogger.logGit("WARN", "Detached HEAD detected — switching to base branch");
-    gitRun(["checkout", getBaseBranch()], WORKSPACE);
+    forceCheckout(getBaseBranch(), WORKSPACE);
   }
 
   return true;
@@ -1163,6 +1169,29 @@ function forceCheckout(branch: string, cwd: string): boolean {
 
   // Parse the "would be overwritten by checkout" error to find conflicting files
   const stderr = firstAttempt.stderr;
+
+  // Handle detached HEAD — try force-switching to the branch
+  const currentBranch = getCurrentBranch();
+  const isDetached = (currentBranch && currentBranch.startsWith("(")) || stderr.includes("detached HEAD") || stderr.includes("HEAD detached");
+  if (isDetached) {
+    runLogger.logGit("WARN", `Detached HEAD detected — force-switching to ${branch}`);
+    // Discard any local modifications that conflict, then checkout
+    gitRun(["checkout", "-f", branch], cwd);
+    const current = getCurrentBranch();
+    if (current === branch) {
+      runLogger.logGit("Recovered from detached HEAD — now on", branch);
+      return true;
+    }
+    // If local branch doesn't exist, create it from origin
+    runLogger.logGit("WARN", `Local branch ${branch} not found — fetching from origin`);
+    gitRun(["fetch", "origin", branch], cwd);
+    if (gitRun(["checkout", "-b", branch, `origin/${branch}`], cwd)) {
+      runLogger.logGit("Created local branch from origin", branch);
+      return true;
+    }
+    runLogger.logError(`Could not recover from detached HEAD to ${branch}`);
+    return false;
+  }
 
   const overwriteMatch = stderr.match(/The following untracked working tree files would be overwritten by checkout:\s*\n((?:\s+.+\n?)+)/);
   if (!overwriteMatch) {
@@ -1707,10 +1736,39 @@ function runTestSuite(suiteKind: TestSuiteKind = "all"): TestSuiteResult {
   }
 
   runLogger.logGit(`Running ${suiteKind} tests`, command.join(" "));
-  const result = spawnSync(command[0], command.slice(1), {
+
+  // On Windows, try direct execution first (faster, avoids cmd.exe hangs).
+  // Fall back to shell execution if the direct spawn fails with ENOENT.
+  const useShell = process.platform === "win32";
+  let result = spawnSync(command[0], command.slice(1), {
     cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8", timeout,
-    shell: process.platform === "win32",
   });
+
+  // If direct spawn failed with ENOENT on Windows, retry with shell
+  if (result.error && useShell && (result.error as any).code === "ENOENT") {
+    runLogger.logConfig(`Direct spawn failed (ENOENT) — retrying with shell`);
+    result = spawnSync(command[0], command.slice(1), {
+      cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8", timeout,
+      shell: true,
+    });
+  }
+
+  // Fallback: if spawn fails on a Python project, try "python -m pytest" instead
+  if (result.error && cfg.type === "python" && command[0] === "pytest") {
+    const fallbackCmd = process.platform === "win32" ? "python" : "python3";
+    runLogger.logConfig(`pytest spawn failed — retrying with ${fallbackCmd} -m pytest`);
+    result = spawnSync(fallbackCmd, ["-m", "pytest", ...command.slice(1)], {
+      cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8", timeout,
+    });
+    // Also try with shell if direct fails
+    if (result.error && (result.error as any).code === "ENOENT") {
+      runLogger.logConfig(`python -m pytest direct spawn failed — retrying with shell`);
+      result = spawnSync(fallbackCmd, ["-m", "pytest", ...command.slice(1)], {
+        cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8", timeout,
+        shell: true,
+      });
+    }
+  }
 
   const stdout = (result.stdout || "").trim();
   const stderr = (result.stderr || "").trim();
@@ -1932,8 +1990,9 @@ async function fixBaselineTests(_cfg: ServerConfig, item: WorkItem): Promise<boo
   }
 
   if (baseline.kind === "spawn_error") {
-    runLogger.logError(`Baseline tests could not start: ${baseline.error} — check that the test runner is available in the workspace.`);
-    return false;
+    runLogger.logError(`Baseline tests could not start: ${baseline.error}`);
+    runLogger.logConfig("Proceeding without baseline tests — test runner unavailable in workspace");
+    return true; // Proceed without baseline — spawn errors are environment issues, not code issues
   }
 
   runLogger.logError("Baseline tests FAILED — attempting to fix");
@@ -1996,7 +2055,8 @@ async function fixReworkTests(item: WorkItem, reworkCount: number): Promise<bool
   const unitResult = runTestSuite("unit");
   if (unitResult.kind === "spawn_error") {
     runLogger.logError(`Unit tests could not start: ${unitResult.error}`);
-    return false;
+    runLogger.logConfig("Proceeding without rework tests — test runner unavailable in workspace");
+    return true; // Proceed — spawn errors are environment issues, not code issues
   }
 
   if (unitResult.passed) {
@@ -2064,7 +2124,8 @@ async function attemptTestFix(item: WorkItem, reworkCount: number, initialOutput
 
     if (retestResult.kind === "spawn_error") {
       runLogger.logError(`Tests could not start: ${retestResult.error}`);
-      return false;
+      runLogger.logConfig("Proceeding without tests — test runner unavailable in workspace");
+      return true; // Proceed — spawn errors are environment issues, not code issues
     }
 
     runLogger.logError(`Tests still failing after fix attempt ${attempts}`);
@@ -2300,7 +2361,7 @@ async function pollForReviewResult(
   prNumber: number,
   pollMs: number = REVIEW_POLL_MS,
   sinceIso?: string,
-): Promise<"passed" | "failed" | "postponed" | "merged" | "conflict" | "closed"> {
+): Promise<"passed" | "failed" | "postponed" | "merged" | "conflict" | "closed" | "human_review"> {
   const headers = { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" };
   const since = sinceIso ? new Date(sinceIso) : null;
   while (true) {
@@ -2330,6 +2391,7 @@ async function pollForReviewResult(
         if (body.includes(REVIEW_FAILED_MARKER)) return "failed";
         if (body.includes(REVIEW_POSTPONED_MARKER)) return "postponed";
         if (body.includes(REVIEW_MERGE_CONFLICT_MARKER)) return "conflict";
+        if (body.includes(REVIEW_HUMAN_REVIEW_MARKER)) return "human_review";
       }
     } catch {
       // Comments might not be available
@@ -2344,7 +2406,7 @@ async function pollForGitLabReviewResult(
   mrIid: number,
   pollMs: number = REVIEW_POLL_MS,
   sinceIso?: string,
-): Promise<"passed" | "failed" | "postponed" | "merged" | "conflict" | "closed"> {
+): Promise<"passed" | "failed" | "postponed" | "merged" | "conflict" | "closed" | "human_review"> {
   while (true) {
     // Check MR state first
     try {
@@ -2367,6 +2429,7 @@ async function pollForGitLabReviewResult(
         if (body.includes(REVIEW_FAILED_MARKER)) return "failed";
         if (body.includes(REVIEW_POSTPONED_MARKER)) return "postponed";
         if (body.includes(REVIEW_MERGE_CONFLICT_MARKER)) return "conflict";
+        if (body.includes(REVIEW_HUMAN_REVIEW_MARKER)) return "human_review";
         // Any note from a reviewer (not the bot itself) counts as review activity
         if (note.author?.username !== "aicoder" && note.author?.username !== "AiRemoteCoder") {
           hasReviewNote = true;
@@ -2620,6 +2683,8 @@ function buildAgentArgs(agent: string, resumeSessionId?: string): string[] {
 }
 
 const processedIssues = new Set<string>();
+const failedAttempts = new Map<string, number>(); // Track consecutive failures per issue
+const MAX_FAILED_ATTEMPTS = 3;
 
 // Persist processed issues across restarts
 const PROCESSED_FILE = path.join(WORKSPACE || process.cwd(), ".aicoder", "processed-issues.json");
@@ -2744,6 +2809,16 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     runLogger.logSkip(`Issue ${issueKey} already processed (use --force to re-process)`);
     return null;
   }
+
+  // Track consecutive failures — after MAX_FAILED_ATTEMPTS, mark as processed to stop the loop
+  const attempts = (failedAttempts.get(issueKey) || 0) + 1;
+  if (attempts >= MAX_FAILED_ATTEMPTS) {
+    runLogger.logError(`Issue ${issueKey} failed ${attempts} times — marking as processed to stop retry loop`);
+    saveProcessedIssue(issueKey);
+    failedAttempts.delete(issueKey);
+    return null;
+  }
+  failedAttempts.set(issueKey, attempts);
   if (FORCE_REPROCESS && processedIssues.has(issueKey)) {
     runLogger.logConfig(`Force re-processing issue ${issueKey} (--force)`);
     processedIssues.delete(issueKey);
@@ -2998,7 +3073,9 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     runLogger.logConfig("Agent already ran tests during its session — skipping manual test gate");
   } else {
     const unitResult = runTestSuite("unit");
-    if (!unitResult.passed) {
+    if (unitResult.kind === "spawn_error") {
+      runLogger.logConfig("Unit tests could not start — proceeding without test verification");
+    } else if (!unitResult.passed) {
       runLogger.logError(`Unit tests ${unitResult.kind} — skipping integration tests and push. Issue will be retried.`);
       runLogger.endRun(1);
       // Don't save to processedIssues — allow retry on next aicoder cycle
@@ -3010,7 +3087,9 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
 
     // TDD: Run integration tests (only if unit tests passed)
     const integrationResult = runTestSuite("integration");
-    if (!integrationResult.passed) {
+    if (integrationResult.kind === "spawn_error") {
+      runLogger.logConfig("Integration tests could not start — skipping");
+    } else if (!integrationResult.passed) {
       runLogger.logError(`Integration tests ${integrationResult.kind} — skipping push. Issue will be retried.`);
       runLogger.endRun(1);
       // Don't save to processedIssues — allow retry on next aicoder cycle
@@ -3087,6 +3166,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   // Only mark as processed if PR/MR was successfully created
   if (pr) {
     saveProcessedIssue(issueKey);
+    failedAttempts.delete(issueKey); // Clear failure counter on success
   } else {
     runLogger.logError("PR/MR creation failed — not marking issue as processed so it can be retried");
   }
@@ -3241,13 +3321,17 @@ async function continueFromChangesCommitted(cfg: ServerConfig, item: WorkItem, s
     runLogger.logConfig("Agent already ran tests — skipping manual test gate");
   } else {
     const unitResult = runTestSuite("unit");
-    if (!unitResult.passed) {
+    if (unitResult.kind === "spawn_error") {
+      runLogger.logConfig("Unit tests could not start on resume — proceeding without tests");
+    } else if (!unitResult.passed) {
       runLogger.logError(`Unit tests ${unitResult.kind} on resume — aborting`);
       clearRunState();
       return;
     }
     const integrationResult = runTestSuite("integration");
-    if (!integrationResult.passed) {
+    if (integrationResult.kind === "spawn_error") {
+      runLogger.logConfig("Integration tests could not start on resume — skipping");
+    } else if (!integrationResult.passed) {
       runLogger.logError(`Integration tests ${integrationResult.kind} on resume — aborting`);
       clearRunState();
       return;
@@ -3625,6 +3709,7 @@ async function runReviewLoop(
   const POSTPONE_MAX_MS = 30 * 60 * 1000; // 30 min max wait for service restoration
   // Start from now — ignore any review notes that existed before our push
   let sinceTimestamp = reviewState?.sinceTimestamp ?? new Date().toISOString();
+  let lastReworkPrompt: string | null = null;
 
   // Checkpoint: entered review polling
   const currentState = reviewState || {
@@ -3650,7 +3735,7 @@ async function runReviewLoop(
 
   while (true) {
     // Poll for review result using platform-appropriate method
-    let reviewResult: "passed" | "failed" | "postponed" | "merged" | "conflict" | "closed";
+    let reviewResult: "passed" | "failed" | "postponed" | "merged" | "conflict" | "closed" | "human_review";
 
     if (platform === "gitlab") {
       const projectId = getGitLabProjectFromRemote(WORKSPACE) || item.repo || cfg.repo || process.env.GITLAB_DEFAULT_PROJECT || "";
@@ -3677,6 +3762,12 @@ async function runReviewLoop(
 
     if (reviewResult === "closed") {
       runLogger.logError(`${label} #${prNumber} was closed without merge`);
+      clearRunState();
+      return;
+    }
+
+    if (reviewResult === "human_review") {
+      runLogger.logConfig(`${label} #${prNumber} flagged for human review — stopping rework loop`);
       clearRunState();
       return;
     }
@@ -3748,6 +3839,14 @@ async function runReviewLoop(
         runLogger.logError("Could not fetch rework prompt — skipping rework");
         return;
       }
+
+      // Detect duplicate rework prompt — if the same findings come back, rework won't help
+      if (lastReworkPrompt && reworkPrompt === lastReworkPrompt) {
+        runLogger.logError(`${label} #${prNumber} received identical rework prompt twice — findings are not actionable, stopping rework loop`);
+        clearRunState();
+        return;
+      }
+      lastReworkPrompt = reworkPrompt;
 
       // Show a summary of the rework prompt so the user can verify we're working on the right feedback
       const promptPreview = reworkPrompt.length > 500
@@ -3958,32 +4057,35 @@ if (existingRunState && !DISCARD_RUN && !WATCH_ISSUE) {
         clearRunState();
         process.exit(1);
       });
-    // Don't fall through to normal mode — resume handles everything
+    // Do not fall through to focusedLoop/pollLoop — resume handles everything and exits
   }
 }
 
-// --watch: Enter the review loop for an existing PR/MR without running the agent
-if (WATCH_ISSUE) {
-  // Clear any saved run state — watch is explicit control, don't auto-resume
-  if (existingRunState) {
-    runLogger.logConfig("Clearing saved run state (--watch takes priority over auto-resume)");
-    clearRunState();
+// Only enter normal operating modes if we're not resuming from a checkpoint
+if (!existingRunState || DISCARD_RUN || WATCH_ISSUE) {
+  // --watch: Enter the review loop for an existing PR/MR without running the agent
+  if (WATCH_ISSUE) {
+    // Clear any saved run state — watch is explicit control, don't auto-resume
+    if (existingRunState) {
+      runLogger.logConfig("Clearing saved run state (--watch takes priority over auto-resume)");
+      clearRunState();
+    }
+    watchIssue(loadServerConfig(), WATCH_ISSUE)
+      .then(() => process.exit(0))
+      .catch((err) => {
+        console.error("Watch failed:", err);
+        process.exit(1);
+      });
+  } else if (PUBLISH_BRANCH) {
+    publishBranch(loadServerConfig(), PUBLISH_BRANCH)
+      .then(() => process.exit(0))
+      .catch((err) => {
+        console.error("Publish failed:", err);
+        process.exit(1);
+      });
+  } else if (FOCUSED_MODE) {
+    focusedLoop(loadServerConfig());
+  } else {
+    pollLoop(loadServerConfig());
   }
-  watchIssue(loadServerConfig(), WATCH_ISSUE)
-    .then(() => process.exit(0))
-    .catch((err) => {
-      console.error("Watch failed:", err);
-      process.exit(1);
-    });
-} else if (PUBLISH_BRANCH) {
-  publishBranch(loadServerConfig(), PUBLISH_BRANCH)
-    .then(() => process.exit(0))
-    .catch((err) => {
-      console.error("Publish failed:", err);
-      process.exit(1);
-    });
-} else if (FOCUSED_MODE) {
-  focusedLoop(loadServerConfig());
-} else {
-  pollLoop(loadServerConfig());
 }

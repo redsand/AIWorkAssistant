@@ -60,6 +60,18 @@ TICKET ACTION RULES:
 - Never assume ticket IDs. Always look up tickets before modifying them.
 - If you cannot find the tickets the user is referring to, tell them what you searched for and ask for clarification.
 
+TICKET CREATION RULES — CODING PROMPT REQUIRED:
+- Every ticket you create (Jira, GitHub, GitLab) MUST include a "## Coding Prompt" section in the description.
+- The coding prompt must contain: file path(s) to modify, what to change, and why.
+- Example format:
+  ## Coding Prompt
+  **File:** src/auth/login.ts
+  **Current behavior:** Login redirects to /dashboard even when MFA is pending
+  **Required change:** After MFA challenge, redirect to /mfa/verify instead of /dashboard
+  **Reasoning:** Security requirement — users must complete MFA before accessing dashboard
+- If the user doesn't provide enough detail for a coding prompt, ask them for the file path and desired change before creating the ticket.
+- This ensures the autonomous coding agent (aicoder) can pick up and process the ticket without manual intervention.
+
 GITLAB PROJECT RESOLUTION:
 - GitLab tools that accept projectId require a numeric project ID or URL-encoded path. NEVER guess or use an unverified project name as the projectId.
 - If the user mentions a project by name (e.g., "siem", "hawk-ir"), call gitlab.list_projects FIRST to find the correct numeric ID.

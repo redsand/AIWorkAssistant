@@ -43,6 +43,7 @@ const log = {
 
 // Review result markers (must match aicoder.ts markers)
 const REVIEW_MERGE_CONFLICT_MARKER = "Merge Failed — Conflict Requires Rebase";
+const REVIEW_HUMAN_REVIEW_MARKER = "Review Requires Human — Ready for Human Review";
 
 function parseArgv(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -154,6 +155,7 @@ interface ReviewResult {
   summary: string;
   agentStatus?: Record<string, "passed" | "failed">;
   serviceUnavailable?: boolean;
+  recommendation?: string;
 }
 
 async function loadConfig(): Promise<ReviewerConfig> {
@@ -496,6 +498,7 @@ async function runAiReview(
       clean?: boolean;
       findings?: ReviewFinding[];
       summary?: string;
+      recommendation?: string;
       error?: string;
     }>(
       `${remoteUrl}/api/reviewer/review`,
@@ -513,6 +516,7 @@ async function runAiReview(
       clean: data.clean ?? false,
       findings,
       summary: data.summary ?? buildSummary(findings),
+      recommendation: data.recommendation,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -703,7 +707,17 @@ async function pollMergeRequests(
       log.review(`Found AI MR !${mr.number} in ${target.source}:${target.name}: ${mr.title}`);
       log.step("Fetching diff and running review...");
 
-      const result = await runMultiAgentReview(config, target, mr.number);
+      // Check for empty MR — skip review and DO NOT merge empty diffs
+      const diff = await vcs.getDiff(target.name, mr.number);
+      if (!diff || diff.trim().length === 0) {
+        log.warn(`MR !${mr.number} has no changes (empty diff) — skipping review, not merging`);
+        await vcs.addComment(target.name, mr.number, "## ⚠️ Empty MR — No Changes Detected\n\nThis MR has no code changes. It will not be reviewed or merged. Please add substantive changes or close this MR.");
+        reviewedMRs.add(mrKey);
+        saveReviewerState();
+        continue;
+      }
+
+      const result = await runMultiAgentReview(config, target, mr.number, diff);
 
       // Record the current commit SHA so we can detect when aicoder pushes rework
       const currentSha = await vcs.getLatestCommitSha(target.name, mr.number).catch(() => undefined);
@@ -744,6 +758,10 @@ async function pollMergeRequests(
         }
         // Post suggestions as a comment and create a tracking issue
         await postSuggestionsWithTracking(target, vcs, target.name, mr, result);
+      } else if (result.recommendation === "ready_for_human_review") {
+        // Review recommends human review — don't merge, don't rework, just flag for human
+        log.warn(`MR !${mr.number} flagged for human review — not merging or triggering rework`);
+        await vcs.addComment(target.name, mr.number, `## 🟡 ${REVIEW_HUMAN_REVIEW_MARKER}\n\n${result.summary}\n\nThis MR has been reviewed and requires human judgment before merging. No automatic rework will be performed.\n\n${formatAgentStatus(result.agentStatus)}`);
       } else {
         log.rework(`MR !${mr.number} needs rework — ${result.findings.length} findings (${result.summary})`);
         for (const f of result.findings) {
@@ -798,6 +816,7 @@ async function runMultiAgentReview(
   config: ReviewerConfig,
   target: RepoTarget,
   mrNumber: number,
+  preFetchedDiff?: string,
 ): Promise<ReviewResult> {
   const remoteUrl = process.env.AIWORKASSISTANT_URL?.replace(/\/$/, "");
   const remoteKey = process.env.AIWORKASSISTANT_API_KEY;
@@ -807,8 +826,8 @@ async function runMultiAgentReview(
     return runAiReviewStreaming(remoteUrl, remoteKey, target, config, mrNumber);
   }
 
-  // Local review: fetch diff and run AI review with streaming
-  return runLocalStreamingReview(config, target, mrNumber);
+  // Local review: use pre-fetched diff or fetch it
+  return runLocalStreamingReview(config, target, mrNumber, preFetchedDiff);
 }
 
 /**
@@ -818,9 +837,10 @@ async function runLocalStreamingReview(
   config: ReviewerConfig,
   target: RepoTarget,
   mrNumber: number,
+  preFetchedDiff?: string,
 ): Promise<ReviewResult> {
   const vcs = getVcsClient(target, config);
-  const diff = await vcs.getDiff(target.name, mrNumber);
+  const diff = preFetchedDiff ?? await vcs.getDiff(target.name, mrNumber);
 
   log.review(`Fetching diff for ${target.source}:${target.name} MR !${mrNumber} (${diff.length} chars)`);
   log.step("Running AI code review with streaming output...");
@@ -852,6 +872,7 @@ async function runLocalStreamingReview(
       clean: !hasCriticalOrHigh,
       findings,
       summary: review.suggestedReviewComment || buildSummary(findings),
+      recommendation: review.recommendation,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -867,6 +888,7 @@ async function runLocalStreamingReview(
       findings,
       summary: buildSummary(findings),
       agentStatus: { security: sec.status, qa: qa.status, quality: qual.status },
+      recommendation: hasCriticalOrHigh ? "needs_changes" : "ready_for_human_review",
     };
   }
 }
@@ -946,6 +968,7 @@ async function runAiReviewStreaming(
               findings: event.data?.findings ?? [],
               summary: event.data?.summary ?? buildSummary(event.data?.findings ?? []),
               agentStatus: event.data?.agentStatus,
+              recommendation: event.data?.recommendation,
             };
           }
         } catch {
@@ -1029,6 +1052,7 @@ async function mergeWithSummary(
   } catch (mergeErr) {
     const errMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
     const isConflict = /conflict|cannot_be_merged|rebase failed/i.test(errMsg);
+    const isPipelineBlocked = /pipeline.*running|merge_when_pipeline|merge not allowed.*pipeline/i.test(errMsg);
     log.merge(`Failed to merge MR !${mr.number}: ${errMsg}`);
 
     if (isConflict) {
@@ -1038,6 +1062,13 @@ async function mergeWithSummary(
         `## ⚠️ Review Passed — ${REVIEW_MERGE_CONFLICT_MARKER}\n\n${result.summary}\n\n${agentLine}\n\nMerge could not be completed due to conflicts with the base branch: ${errMsg}\n\nThe autonomous agent will attempt to rebase and resolve conflicts.`,
       ).catch(() => {});
       return "conflict";
+    } else if (isPipelineBlocked) {
+      await vcs.addComment(
+        project,
+        mr.number,
+        `## ⏳ Review Passed — Merge Pending Pipeline\n\n${result.summary}\n\n${agentLine}\n\nMerge is waiting for the pipeline to complete: ${errMsg}\n\nThis MR will be merged automatically when the pipeline succeeds.`,
+      ).catch(() => {});
+      return "merged";
     } else {
       await vcs.addComment(
         project,

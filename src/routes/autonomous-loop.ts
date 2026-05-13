@@ -30,11 +30,13 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
       label?: string;
       limit?: string;
       source?: string;
+      skipPromptCheck?: string;
     };
 
     const source = (query.source || "auto") as TicketSourceType | "auto";
     const label = query.label || DEFAULT_WORK_LABEL;
     const limit = Math.min(parseInt(query.limit || "10", 10), 50);
+    const skipPromptCheck = query.skipPromptCheck === "true";
 
     try {
       let items: NormalizedWorkItem[] = [];
@@ -43,16 +45,16 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
 
       switch (resolvedSource) {
         case "github":
-          items = await fetchGitHubWork(label, limit, query);
+          items = await fetchGitHubWork(label, limit, query, skipPromptCheck);
           break;
         case "gitlab":
-          items = await fetchGitLabWork(label, limit);
+          items = await fetchGitLabWork(label, limit, skipPromptCheck);
           break;
         case "jira":
-          items = await fetchJiraWork(label, limit, query.repo);
+          items = await fetchJiraWork(label, limit, query.repo, skipPromptCheck);
           break;
         case "jitbit":
-          items = await fetchJitbitWork(label, limit);
+          items = await fetchJitbitWork(label, limit, skipPromptCheck);
           break;
       }
 
@@ -244,6 +246,7 @@ async function fetchGitHubWork(
   label: string,
   limit: number,
   query: { owner?: string; repo?: string },
+  skipPromptCheck: boolean = false,
 ): Promise<NormalizedWorkItem[]> {
   const owner = query.owner || env.GITHUB_DEFAULT_OWNER;
   const repo = query.repo || env.GITHUB_DEFAULT_REPO;
@@ -254,15 +257,34 @@ async function fetchGitHubWork(
 
   const issues = await githubClient.listIssues("open", label, owner, repo);
 
-  return issues
-    .filter((issue: any) => {
-      if (issue.pull_request) return false;
-      const issueLabels: string[] = (issue.labels || []).map((l: any) =>
-        typeof l === "string" ? l : l.name,
+  const filtered: any[] = [];
+  for (const issue of issues) {
+    if (issue.pull_request) continue;
+    const issueLabels: string[] = (issue.labels || []).map((l: any) =>
+      typeof l === "string" ? l : l.name,
+    );
+    if (issueLabels.includes("missing-coding-prompt")) continue;
+    if (skipPromptCheck) { filtered.push(issue); continue; }
+    if (ticketToTaskGenerator.hasCodingPromptContent(issue.body || "")) {
+      filtered.push(issue);
+      continue;
+    }
+    // Description didn't match — check comments for coding prompt content
+    try {
+      const comments = await githubClient.listIssueComments(issue.number, owner, repo);
+      const hasPromptInComments = comments.some((c: any) =>
+        ticketToTaskGenerator.hasCodingPromptContent(c.body || ""),
       );
-      if (issueLabels.includes("missing-coding-prompt")) return false;
-      return ticketToTaskGenerator.hasCodingPromptContent(issue.body || "");
-    })
+      if (hasPromptInComments) {
+        console.log(`[GitHub] Issue #${issue.number}: coding prompt found in comments (not body)`);
+        filtered.push(issue);
+      }
+    } catch {
+      // Comments unavailable — skip issue
+    }
+  }
+
+  return filtered
     .slice(0, limit)
     .map((issue: any) => ({
       id: String(issue.number),
@@ -282,6 +304,7 @@ async function fetchGitHubWork(
 async function fetchGitLabWork(
   label: string,
   limit: number,
+  skipPromptCheck: boolean = false,
 ): Promise<NormalizedWorkItem[]> {
   if (!env.GITLAB_DEFAULT_PROJECT) {
     throw new Error("GITLAB_DEFAULT_PROJECT is required for GitLab source");
@@ -293,12 +316,31 @@ async function fetchGitLabWork(
     label,
   );
 
-  return issues
-    .filter((issue: any) => {
-      const issueLabels: string[] = (issue.labels || []);
-      if (issueLabels.includes("missing-coding-prompt")) return false;
-      return ticketToTaskGenerator.hasCodingPromptContent(issue.description || "");
-    })
+  const filtered: any[] = [];
+  for (const issue of issues) {
+    const issueLabels: string[] = (issue.labels || []);
+    if (issueLabels.includes("missing-coding-prompt")) continue;
+    if (skipPromptCheck) { filtered.push(issue); continue; }
+    if (ticketToTaskGenerator.hasCodingPromptContent(issue.description || "")) {
+      filtered.push(issue);
+      continue;
+    }
+    // Description didn't match — check issue notes for coding prompt content
+    try {
+      const notes = await gitlabClient.listIssueNotes(env.GITLAB_DEFAULT_PROJECT, issue.iid);
+      const hasPromptInNotes = notes.some((n: any) =>
+        ticketToTaskGenerator.hasCodingPromptContent(n.body || ""),
+      );
+      if (hasPromptInNotes) {
+        console.log(`[GitLab] Issue !${issue.iid}: coding prompt found in notes (not description)`);
+        filtered.push(issue);
+      }
+    } catch {
+      // Notes unavailable — skip issue
+    }
+  }
+
+  return filtered
     .slice(0, limit)
     .map((issue: any) => ({
       id: String(issue.iid),
@@ -317,31 +359,62 @@ async function fetchJiraWork(
   label: string,
   limit: number,
   repoFilter?: string,
+  skipPromptCheck: boolean = false,
 ): Promise<NormalizedWorkItem[]> {
   if (!env.JIRA_BASE_URL) {
     throw new Error("JIRA_BASE_URL is required for Jira source");
   }
 
   // Build JQL query with optional repo label filter.
-  // The repo name (e.g. "hawk-soard") is stored as a Jira label on the ticket.
+  // The repo name (e.g. "hawk-soar-cloud-v3") is stored as a Jira label on the ticket.
   // Strip any prefix like "gitlab:" from the repo filter.
+  // Use statusCategory keys (new/indeterminate) not display names — Jira JQL
+  // accepts category keys, not the user-visible "To Do"/"In Progress" labels.
   let jql: string;
   if (repoFilter) {
     const repoLabel = repoFilter.replace(/^(gitlab:|github:)/i, "");
-    jql = `labels = "${label}" AND labels = "${repoLabel}" AND statusCategory in ("To Do", "In Progress") ORDER BY priority ASC`;
+    jql = `labels = "${label}" AND labels = "${repoLabel}" AND statusCategory in (new, indeterminate) ORDER BY priority ASC`;
   } else {
-    jql = `labels = "${label}" AND statusCategory in ("To Do", "In Progress") ORDER BY priority ASC`;
+    jql = `labels = "${label}" AND statusCategory in (new, indeterminate) ORDER BY priority ASC`;
   }
   const issues = await jiraClient.searchIssues(jql, limit);
 
-  return issues
-    .filter((issue: any) => {
-      const issueLabels: string[] = issue.fields?.labels || [];
-      if (issueLabels.includes("missing-coding-prompt")) return false;
-      return ticketToTaskGenerator.hasCodingPromptContent(
-        issue.fields?.description ? extractJiraBodyText(issue.fields.description) : "",
+  console.log(`[Jira] fetchJiraWork: JQL="${jql}" returned ${issues.length} issues`);
+
+  const filtered: any[] = [];
+  for (const issue of issues) {
+    const issueLabels: string[] = issue.fields?.labels || [];
+    if (issueLabels.includes("missing-coding-prompt")) {
+      console.log(`[Jira] Skipping ${issue.key}: has "missing-coding-prompt" label`);
+      continue;
+    }
+    if (skipPromptCheck) {
+      filtered.push(issue);
+      continue;
+    }
+    const body = issue.fields?.description ? extractJiraBodyText(issue.fields.description) : "";
+    if (ticketToTaskGenerator.hasCodingPromptContent(body)) {
+      filtered.push(issue);
+      continue;
+    }
+    // Description didn't match — check comments for coding prompt content
+    try {
+      const comments = await jiraClient.getComments(issue.key);
+      const hasPromptInComments = comments.some((c: any) =>
+        ticketToTaskGenerator.hasCodingPromptContent(c.body || ""),
       );
-    })
+      if (hasPromptInComments) {
+        console.log(`[Jira] ${issue.key}: coding prompt found in comments (not description)`);
+        filtered.push(issue);
+      } else {
+        console.log(`[Jira] Skipping ${issue.key} ("${issue.fields?.summary || ""}"): no coding prompt content in description or comments (desc first 200 chars: ${body.slice(0, 200).replace(/\n/g, " ")})`);
+      }
+    } catch (err) {
+      console.log(`[Jira] Skipping ${issue.key}: could not fetch comments (${(err as Error).message}), description had no coding prompt`);
+    }
+  }
+
+  return filtered
     .slice(0, limit)
     .map((issue: any) => ({
       id: issue.key,
@@ -362,6 +435,7 @@ async function fetchJiraWork(
 async function fetchJitbitWork(
   label: string,
   limit: number,
+  skipPromptCheck: boolean = false,
 ): Promise<NormalizedWorkItem[]> {
   if (!env.JITBIT_ENABLED) {
     throw new Error("JITBIT_ENABLED must be true for Jitbit source");
@@ -374,6 +448,7 @@ async function fetchJitbitWork(
     .filter((ticket: any) => {
       const body = ticket.body || "";
       if (body.includes("missing-coding-prompt")) return false;
+      if (skipPromptCheck) return true;
       return ticketToTaskGenerator.hasCodingPromptContent(body);
     })
     .map((ticket: any) => ({
