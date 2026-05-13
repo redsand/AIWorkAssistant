@@ -1,52 +1,6 @@
 import { FastifyInstance } from "fastify";
 import { agentRunDatabase, AgentRunDatabase } from "./database";
-import type { AgentRunStep, AgentRun, AgentRunStats, AgentRunCreateParams, AgentRunCompleteParams, AgentRunStepCreate } from "./types";
-
-/** Fields safe to expose in stripped step responses (no prompts, responses, or params) */
-type SafeStepFields = Pick<
-  AgentRunStep,
-  "id" | "runId" | "stepType" | "toolName" | "success" | "errorMessage" | "durationMs" | "stepOrder" | "createdAt"
->;
-
-/** Sensitive run fields that must be excluded from non-owner responses */
-const SENSITIVE_RUN_FIELDS = new Set([
-  "sessionId",
-  "promptTokens",
-  "completionTokens",
-  "totalTokens",
-] as const);
-
-type SensitiveRunField = (typeof SENSITIVE_RUN_FIELDS extends Set<infer T> ? T : never);
-
-/** Run fields safe for non-owner responses — derived from the full type minus sensitive fields */
-type SafeRunFields = Omit<AgentRun, SensitiveRunField>;
-
-/** Strip sensitive step content (prompts, responses, params) for non-owner responses */
-function stripStepContent(steps: AgentRunStep[]): SafeStepFields[] {
-  return steps.map((step) => ({
-    id: step.id,
-    runId: step.runId,
-    stepType: step.stepType,
-    toolName: step.toolName,
-    success: step.success,
-    errorMessage: step.errorMessage,
-    durationMs: step.durationMs,
-    stepOrder: step.stepOrder,
-    createdAt: step.createdAt,
-  }));
-}
-
-/** Strip sensitive run-level fields (token counts) for non-owner responses */
-function stripSensitiveRunFields(run: AgentRun): SafeRunFields {
-  const result: Record<string, unknown> = { ...run };
-  for (const field of SENSITIVE_RUN_FIELDS) {
-    delete result[field];
-  }
-  return result as SafeRunFields;
-}
-
-/** Stats fields safe for per-user scoping — no global counts exposed */
-type SafeStatsFields = Pick<AgentRunStats, "avgToolLoopCount">;
+import type { AgentRunCreateParams, AgentRunCompleteParams, AgentRunStepCreate } from "./types";
 
 function safeParseInt(value: string | undefined, min: number, max: number, fallback: number): number {
   if (value === undefined) return fallback;
@@ -98,10 +52,6 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
       offset,
     });
 
-    // Strip sensitive fields when viewing aicoder runs (non-owner context)
-    if (filterUserId === "aicoder") {
-      return { ...result, runs: result.runs.map(stripSensitiveRunFields) };
-    }
     return result;
   });
 
@@ -111,23 +61,16 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
       return reply.code(401).send({ error: "Authentication required" });
     }
 
-    // Return only user-scoped stats, not global aggregates
-    // Global stats expose information about other users' activity
-    const userRuns = db.listRuns({ userId: request.userId, limit: 1000 });
-    const userRunsList = userRuns.runs;
-    const completed = userRunsList.filter((r) => r.status === "completed");
+    const allRuns = db.listRuns({ limit: 10000 });
+    const allRunsList = allRuns.runs;
+    const completed = allRunsList.filter((r) => r.status === "completed");
     const totalToolLoops = completed.reduce((sum, r) => sum + r.toolLoopCount, 0);
 
-    const stats: SafeStatsFields & {
-      totalRuns: number;
-      completedRuns: number;
-      failedRuns: number;
-      runningRuns: number;
-    } = {
-      totalRuns: userRuns.total,
+    const stats = {
+      totalRuns: allRuns.total,
       completedRuns: completed.length,
-      failedRuns: userRunsList.filter((r) => r.status === "failed").length,
-      runningRuns: userRunsList.filter((r) => r.status === "running").length,
+      failedRuns: allRunsList.filter((r) => r.status === "failed").length,
+      runningRuns: allRunsList.filter((r) => r.status === "running").length,
       avgToolLoopCount: completed.length > 0 ? totalToolLoops / completed.length : 0,
     };
 
@@ -149,19 +92,13 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
     const targetRun = current || latest;
 
     if (!targetRun) {
-      return { runs: runs.runs.map(stripSensitiveRunFields), current: null };
+      return { runs: runs.runs, current: null };
     }
 
-    // Return run metadata only — exclude step content AND sensitive fields for security
     const runWithSteps = db.getRunWithSteps(targetRun.id);
     return {
-      runs: runs.runs.map(stripSensitiveRunFields),
-      current: runWithSteps
-        ? {
-            ...stripSensitiveRunFields(runWithSteps),
-            steps: stripStepContent(runWithSteps.steps),
-          }
-        : null,
+      runs: runs.runs,
+      current: runWithSteps || null,
     };
   });
 
@@ -179,18 +116,6 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
         return reply.code(401).send({ error: "Authentication required" });
       }
 
-      // Only allow viewing your own runs (aicoder runs are viewable as metadata-only)
-      // Return generic 404 for unauthorized access to avoid leaking run existence (IDOR protection)
-      if (result.userId !== userId && result.userId !== "aicoder") {
-        return reply.code(404).send({ error: "Run not found" });
-      }
-
-      // Strip sensitive step content for aicoder runs (which anyone can see)
-      if (result.userId === "aicoder") {
-        return { ...stripSensitiveRunFields(result), steps: stripStepContent(result.steps) };
-      }
-
-      // Owner sees full content including steps
       return result;
     },
   );
@@ -209,19 +134,7 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
         return reply.code(401).send({ error: "Authentication required" });
       }
 
-      // Only allow viewing your own run steps (aicoder steps are metadata-only)
-      // Return generic 404 for unauthorized access to avoid leaking run existence (IDOR protection)
-      if (run.userId !== userId && run.userId !== "aicoder") {
-        return reply.code(404).send({ error: "Run not found" });
-      }
-
       const steps = db.getRunSteps(request.params.id);
-
-      // Strip sensitive content for aicoder runs
-      if (run.userId === "aicoder") {
-        return stripStepContent(steps);
-      }
-
       return steps;
     },
   );

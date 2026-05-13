@@ -167,7 +167,7 @@ describe("Agent Runs API Routes", () => {
       expect(body.runs.length).toBe(1);
     });
 
-    it("strips sensitive fields when viewing aicoder runs via userId filter", async () => {
+    it("returns full token fields when viewing aicoder runs via userId filter", async () => {
       const run = db.startRun({ userId: "aicoder", mode: "agent" });
       db.completeRun(run.id, {
         model: "claude-3",
@@ -186,11 +186,10 @@ describe("Agent Runs API Routes", () => {
       expect(response.statusCode).toBe(200);
       const body = response.json();
       expect(body.runs.length).toBe(1);
-      // Sensitive fields must be stripped when viewing aicoder runs
-      expect(body.runs[0]).not.toHaveProperty("promptTokens");
-      expect(body.runs[0]).not.toHaveProperty("completionTokens");
-      expect(body.runs[0]).not.toHaveProperty("totalTokens");
-      expect(body.runs[0]).not.toHaveProperty("sessionId");
+      // All fields visible — this is a single-user system
+      expect(body.runs[0]).toHaveProperty("promptTokens", 100);
+      expect(body.runs[0]).toHaveProperty("completionTokens", 200);
+      expect(body.runs[0]).toHaveProperty("totalTokens", 300);
     });
 
     it("does not strip sensitive fields for own runs", async () => {
@@ -249,8 +248,9 @@ describe("Agent Runs API Routes", () => {
       expect(response.json().error).toBe("Authentication required");
     });
 
-    it("returns aggregate statistics when authenticated", async () => {
+    it("returns global aggregate statistics when authenticated", async () => {
       db.startRun({ userId: "user1", mode: "chat" });
+      db.startRun({ userId: "aicoder", mode: "agent" });
 
       const response = await app.inject({
         method: "GET",
@@ -260,8 +260,9 @@ describe("Agent Runs API Routes", () => {
 
       expect(response.statusCode).toBe(200);
       const body = response.json();
-      expect(body.totalRuns).toBe(1);
-      expect(body.runningRuns).toBe(1);
+      // Global stats count all users' runs
+      expect(body.totalRuns).toBe(2);
+      expect(body.runningRuns).toBe(2);
     });
   });
 
@@ -291,20 +292,20 @@ describe("Agent Runs API Routes", () => {
       expect(body.current).toBeNull();
     });
 
-    it("returns aicoder runs with stripped step content when authenticated", async () => {
+    it("returns aicoder runs with full step content when authenticated", async () => {
       const run = db.startRun({ userId: "aicoder", mode: "agent" });
       db.addStep({
         runId: run.id,
         stepType: "model_request",
-        content: { prompt: "sensitive data" },
+        content: { prompt: "what are my open tasks?" },
         stepOrder: 0,
       });
       db.addStep({
         runId: run.id,
         stepType: "tool_result",
-        toolName: "read_file",
-        sanitizedParams: { path: "/secret/file" },
-        content: { output: "secret content" },
+        toolName: "jira.list_assigned",
+        sanitizedParams: { status: "In Progress" },
+        content: { issues: [] },
         stepOrder: 1,
       });
 
@@ -318,17 +319,15 @@ describe("Agent Runs API Routes", () => {
       const body = response.json();
       expect(body.runs.length).toBe(1);
       expect(body.current).not.toBeNull();
-      // Verify step content is stripped (no content/sanitizedParams fields)
+      // Full step content visible so the owner can review what aicoder did
       if (body.current && body.current.steps) {
-        for (const step of body.current.steps) {
-          expect(step).not.toHaveProperty("content");
-          expect(step).not.toHaveProperty("sanitizedParams");
-        }
+        expect(body.current.steps[0]).toHaveProperty("content");
+        expect(body.current.steps[1]).toHaveProperty("sanitizedParams");
       }
     });
 
-    it("strips sessionId from aicoder run metadata", async () => {
-      const run = db.startRun({ userId: "aicoder", sessionId: "secret-session-123", mode: "agent" });
+    it("returns sessionId and token counts in aicoder run metadata", async () => {
+      const run = db.startRun({ userId: "aicoder", sessionId: "session-abc-123", mode: "agent" });
       db.completeRun(run.id, {
         model: "claude-3",
         promptTokens: 100,
@@ -345,10 +344,11 @@ describe("Agent Runs API Routes", () => {
 
       expect(response.statusCode).toBe(200);
       const body = response.json();
-      // sessionId should be stripped from aicoder runs
-      expect(body.runs[0]).not.toHaveProperty("sessionId");
+      // All fields visible for debugging and cost tracking
+      expect(body.runs[0]).toHaveProperty("sessionId", "session-abc-123");
+      expect(body.runs[0]).toHaveProperty("promptTokens", 100);
       if (body.current) {
-        expect(body.current).not.toHaveProperty("sessionId");
+        expect(body.current).toHaveProperty("sessionId", "session-abc-123");
       }
     });
   });
@@ -365,8 +365,9 @@ describe("Agent Runs API Routes", () => {
       expect(response.statusCode).toBe(401);
     });
 
-    it("returns 404 when accessing another user's run (IDOR protection)", async () => {
+    it("allows any authenticated user to view any run", async () => {
       const run = db.startRun({ userId: "alice", mode: "chat" });
+      db.addStep({ runId: run.id, stepType: "model_request", stepOrder: 0 });
 
       const response = await app.inject({
         method: "GET",
@@ -374,8 +375,11 @@ describe("Agent Runs API Routes", () => {
         headers: { "x-user-id": "bob" },
       });
 
-      expect(response.statusCode).toBe(404);
-      expect(response.json().error).toBe("Run not found");
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.id).toBe(run.id);
+      expect(body.userId).toBe("alice");
+      expect(body.steps).toHaveLength(1);
     });
 
     it("returns own run with full steps when authenticated as owner", async () => {
@@ -396,12 +400,12 @@ describe("Agent Runs API Routes", () => {
       expect(body.steps[0].content).toBeDefined();
     });
 
-    it("returns aicoder run with stripped steps for any authenticated user", async () => {
+    it("returns aicoder run with full step content for any authenticated user", async () => {
       const run = db.startRun({ userId: "aicoder", mode: "agent" });
       db.addStep({
         runId: run.id,
         stepType: "model_request",
-        content: { prompt: "sensitive prompt data" },
+        content: { prompt: "list open jira issues" },
         stepOrder: 0,
       });
 
@@ -414,9 +418,8 @@ describe("Agent Runs API Routes", () => {
       expect(response.statusCode).toBe(200);
       const body = response.json();
       expect(body.id).toBe(run.id);
-      // aicoder runs have stripped step content
-      expect(body.steps[0]).not.toHaveProperty("content");
-      expect(body.steps[0]).not.toHaveProperty("sanitizedParams");
+      // Full content visible — owner needs to see what aicoder actually did
+      expect(body.steps[0]).toHaveProperty("content");
     });
 
     it("returns 404 for nonexistent run", async () => {
@@ -456,8 +459,9 @@ describe("Agent Runs API Routes", () => {
       expect(response.statusCode).toBe(401);
     });
 
-    it("returns 404 when accessing another user's run steps (IDOR protection)", async () => {
+    it("allows any authenticated user to view any run's steps", async () => {
       const run = db.startRun({ userId: "alice", mode: "chat" });
+      db.addStep({ runId: run.id, stepType: "model_request", stepOrder: 0 });
 
       const response = await app.inject({
         method: "GET",
@@ -465,8 +469,10 @@ describe("Agent Runs API Routes", () => {
         headers: { "x-user-id": "bob" },
       });
 
-      expect(response.statusCode).toBe(404);
-      expect(response.json().error).toBe("Run not found");
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body).toHaveLength(1);
+      expect(body[0].stepType).toBe("model_request");
     });
 
     it("returns own steps with full content when authenticated as owner", async () => {
@@ -489,12 +495,12 @@ describe("Agent Runs API Routes", () => {
       expect(body[0].content).toBeDefined();
     });
 
-    it("returns stripped steps for aicoder runs", async () => {
+    it("returns full step content for aicoder runs", async () => {
       const run = db.startRun({ userId: "aicoder", mode: "agent" });
       db.addStep({
         runId: run.id,
         stepType: "model_request",
-        content: { prompt: "secret" },
+        content: { prompt: "check for open issues" },
         stepOrder: 0,
       });
 
@@ -507,9 +513,8 @@ describe("Agent Runs API Routes", () => {
       expect(response.statusCode).toBe(200);
       const body = response.json();
       expect(body).toHaveLength(1);
-      // aicoder steps have stripped content
-      expect(body[0]).not.toHaveProperty("content");
-      expect(body[0]).not.toHaveProperty("sanitizedParams");
+      // Full content visible — owner needs to review what aicoder did
+      expect(body[0]).toHaveProperty("content");
     });
 
     it("returns 404 for nonexistent run", async () => {
