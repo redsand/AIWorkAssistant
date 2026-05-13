@@ -12,10 +12,11 @@
  */
 
 import { EventEmitter } from 'events';
-import { createHash } from 'crypto';
 import {
   defaultSemanticReviewConfig,
+  hashFinding,
   semanticReview,
+  validateSpecificity,
   type SemanticFinding,
   type SemanticReviewConfig,
 } from './semantic-review';
@@ -106,6 +107,12 @@ const BUILTIN_CHECKS: ((output: WorkOutput) => CheckResult)[] = [
   checkStructure,
 ];
 
+interface FilteredSemanticFindings {
+  findings: SemanticFinding[];
+  specificityDropped: number;
+  duplicateDropped: number;
+}
+
 // ---------------------------------------------------------------------------
 // Reviewer
 // ---------------------------------------------------------------------------
@@ -114,7 +121,7 @@ export class AutonomousLoopReviewer extends EventEmitter {
   private state: ReviewerState = 'idle';
   private readonly config: Required<Omit<ReviewerConfig, 'semanticReview'>> & Pick<ReviewerConfig, 'semanticReview'>;
   private readonly customChecks: ((output: WorkOutput) => CheckResult)[] = [];
-  private readonly seenSemanticFindingHashes = new Set<string>();
+  private readonly semanticFindingCounts = new Map<string, number>();
 
   constructor(config?: ReviewerConfig) {
     super();
@@ -180,6 +187,7 @@ export class AutonomousLoopReviewer extends EventEmitter {
     const allChecks = [...BUILTIN_CHECKS, ...this.customChecks];
     const checks = allChecks.map((check) => check(output));
     const semanticFindings: SemanticFinding[] = [];
+    let onlyGenericSemanticFindings = false;
 
     if (checks.every((check) => check.passed)) {
       const semanticConfig = this.config.semanticReview;
@@ -189,15 +197,21 @@ export class AutonomousLoopReviewer extends EventEmitter {
       if (semanticConfig !== false && (diff.trim() || issueContext.trim())) {
         try {
           const semanticResult = await semanticReview(diff, issueContext, semanticConfig ?? defaultSemanticReviewConfig());
-          const newFindings = semanticResult.findings.filter((finding) => {
-            const hash = hashSemanticFinding(finding);
-            if (this.seenSemanticFindingHashes.has(hash)) return false;
-            this.seenSemanticFindingHashes.add(hash);
-            return true;
-          });
+          const filtered = this.filterSemanticFindings(semanticResult.findings);
+          const newFindings = filtered.findings;
 
           semanticFindings.push(...newFindings);
           checks.push(...newFindings.map(semanticFindingToCheck));
+
+          if (semanticResult.findings.length > 0 && newFindings.length === 0 && filtered.specificityDropped > 0 && filtered.duplicateDropped === 0) {
+            onlyGenericSemanticFindings = true;
+            checks.push({
+              name: 'semantic-review-specificity',
+              passed: false,
+              score: 0.6,
+              message: 'Reviewer produced only generic findings. Escalating to human review.',
+            });
+          }
 
           if (semanticResult.recommendation === 'reject' && semanticResult.findings.length === 0) {
             checks.push({
@@ -237,6 +251,10 @@ export class AutonomousLoopReviewer extends EventEmitter {
       level = 'flag';
     }
 
+    if (onlyGenericSemanticFindings) {
+      level = 'flag';
+    }
+
     return {
       workId: output.id,
       level,
@@ -245,6 +263,35 @@ export class AutonomousLoopReviewer extends EventEmitter {
       semanticFindings,
       decidedAt: new Date().toISOString(),
     };
+  }
+
+  private filterSemanticFindings(findings: SemanticFinding[]): FilteredSemanticFindings {
+    const filtered: SemanticFinding[] = [];
+    let specificityDropped = 0;
+    let duplicateDropped = 0;
+
+    for (const finding of findings) {
+      const specificity = validateSpecificity(finding);
+      if (!specificity.valid) {
+        specificityDropped++;
+        console.warn(`[AutonomousLoopReviewer] Dropped semantic finding: ${specificity.reason}`, finding);
+        continue;
+      }
+
+      const hash = hashFinding(finding);
+      const count = this.semanticFindingCounts.get(hash) ?? 0;
+      if (count > 0) {
+        duplicateDropped++;
+        this.semanticFindingCounts.set(hash, count + 1);
+        console.warn("[AutonomousLoopReviewer] Finding already addressed in previous rounds", { hash, finding });
+        continue;
+      }
+
+      this.semanticFindingCounts.set(hash, count + 1);
+      filtered.push(finding);
+    }
+
+    return { findings: filtered, specificityDropped, duplicateDropped };
   }
 }
 
@@ -273,14 +320,4 @@ function semanticFindingScore(severity: SemanticFinding['severity']): number {
     case 'low':
       return 0.85;
   }
-}
-
-function hashSemanticFinding(finding: SemanticFinding): string {
-  const key = [
-    finding.file.trim(),
-    finding.severity,
-    finding.category,
-    finding.message.trim(),
-  ].join('\0');
-  return createHash('sha256').update(key).digest('hex');
 }

@@ -140,6 +140,7 @@ describe("AutonomousLoopReviewer semantic integration", () => {
           severity: "critical",
           category: "security",
           file: "src/auth.ts",
+          line: 12,
           message: "Empty PR claims to fix a security issue but changes no security code.",
         },
       ],
@@ -171,6 +172,7 @@ describe("AutonomousLoopReviewer semantic integration", () => {
       severity: "critical",
       category: "correctness",
       file: "src/run-state.ts",
+      line: 42,
       message: "ctx.run_state is written outside _kpi_lock.",
     };
     mockResponse({

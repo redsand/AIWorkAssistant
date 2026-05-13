@@ -25,6 +25,11 @@ export interface SemanticReviewResult {
   recommendation: "approve" | "request_changes" | "reject";
 }
 
+export interface SpecificityValidationResult {
+  valid: boolean;
+  reason?: string;
+}
+
 export function defaultSemanticReviewConfig(): SemanticReviewConfig {
   return {
     model: "glm-5",
@@ -46,6 +51,67 @@ const DEFAULT_RESULT: SemanticReviewResult = {
   riskLevel: "low",
   recommendation: "approve",
 };
+
+export function hashFinding(finding: SemanticFinding): string {
+  return [
+    finding.severity.toLowerCase(),
+    finding.category.toLowerCase(),
+    finding.file.toLowerCase().trim(),
+    normalizeMessage(finding.message),
+  ].join(":");
+}
+
+export function validateSpecificity(finding: SemanticFinding): SpecificityValidationResult {
+  if (!finding.file || finding.file === "unknown") {
+    return { valid: false, reason: "Finding must specify a file" };
+  }
+
+  if (finding.severity === "critical" && !finding.message.toLowerCase().includes("line") && !finding.line) {
+    return { valid: false, reason: "Critical findings must specify a line number or range" };
+  }
+
+  if (finding.message.length < 20) {
+    return { valid: false, reason: "Finding message is too short to be actionable" };
+  }
+
+  const genericPatterns = [
+    /security.related files detected/i,
+    /review.*carefully/i,
+    /general concern/i,
+    /potential issue/i,
+  ];
+
+  for (const pattern of genericPatterns) {
+    if (pattern.test(finding.message)) {
+      return { valid: false, reason: "Finding is too generic — must be specific and actionable" };
+    }
+  }
+
+  return { valid: true };
+}
+
+export function normalizeMessage(message: string): string {
+  const dataRaceFile = message
+    .toLowerCase()
+    .match(/data race.*?([\w-]+\.(?:py|ts|js|tsx|jsx))/i)?.[1];
+  if (dataRaceFile) {
+    return `data_race_${dataRaceFile.replace(/\.(?:py|ts|js|tsx|jsx)$/i, "")}`;
+  }
+
+  const withoutVariables = message
+    .toLowerCase()
+    .replace(/\b[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\b/g, "")
+    .replace(/\b[a-z_][a-z0-9_]*\b(?=\s+(?:is|are|was|were|outside|inside|under|without|with)\b)/g, "")
+    .replace(/\bline\s+\d+\b/g, "line")
+    .replace(/\d+/g, "")
+    .replace(/[^a-z0-9./-]+/g, " ")
+    .trim()
+    .replace(/\s+/g, "_");
+
+  return withoutVariables
+    .replace(/data_race.*?([\w-]+\.(?:py|ts|js|tsx|jsx))/i, "data_race_$1")
+    .replace(/\.(?:py|ts|js|tsx|jsx)\b/g, "");
+}
 
 export async function semanticReview(
   diff: string,
