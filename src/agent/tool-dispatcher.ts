@@ -16,6 +16,8 @@ import { hawkIrService } from "../integrations/hawk-ir/hawk-ir-service";
 import { roadmapDatabase } from "../roadmap/database";
 import { auditLogger } from "../audit/logger";
 import { env } from "../config/env";
+import { reviewGate, formatGateBlockComment } from "../autonomous-loop/review-gate";
+import { loadReviewGateState } from "../autonomous-loop/review-gate-state";
 import {
   getToolCategories,
   getToolsByCategory,
@@ -552,6 +554,43 @@ async function handleJiraCloseIssue(
   const key = params.key as string;
   if (!key) {
     return { success: false, error: "key is required" };
+  }
+
+  // Review gate: check whether unresolved critical/high findings block "Done" transition
+  const gateState = loadReviewGateState();
+  const forceDone = params.force_done === true || params.forceDone === true;
+  const gate = reviewGate(gateState.lastFindings, forceDone, gateState.reviewOccurred);
+
+  if (!gate.canMarkDone) {
+    const blockComment = formatGateBlockComment(gate);
+
+    // Post a comment on the Jira ticket explaining why it can't be closed
+    try {
+      await jiraClient.addComment(key, blockComment);
+    } catch {
+      // Comment posting is best-effort
+    }
+
+    // Transition to "In Progress" instead of "Done" if possible
+    const transitions = await jiraClient.getTransitions(key);
+    const inProgressNames = ["in progress", "start progress", "in progress"];
+    const inProgressTransition = transitions.find((t) =>
+      inProgressNames.some((n) => t.to.name.toLowerCase().includes(n)),
+    );
+
+    if (inProgressTransition) {
+      await jiraClient.transitionIssue(
+        key,
+        inProgressTransition.id,
+        `Review gate blocked Done transition: ${gate.criticalCount} critical and ${gate.highCount} high findings unresolved.`,
+      );
+    }
+
+    return {
+      success: false,
+      error: `Review gate blocked: ${gate.criticalCount} critical and ${gate.highCount} high findings unresolved. Ticket transitioned to In Progress instead. Use force_done=true to override.`,
+      data: { key, blockedBy: gate.blockedBy, criticalCount: gate.criticalCount, highCount: gate.highCount },
+    };
   }
 
   const transitions = await jiraClient.getTransitions(key);

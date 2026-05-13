@@ -38,6 +38,7 @@ import {
   type ConvergenceConfig,
   type ConvergenceState,
 } from "./autonomous-loop/convergence";
+import { loadReviewGateState, saveReviewGateState, clearReviewGateState, markForceDone } from "./autonomous-loop/review-gate-state";
 
 // Re-export so callers and the orchestrator can import from either module.
 export {
@@ -93,6 +94,7 @@ Options:
   --review-poll-ms <ms> Review result poll interval in focused mode (default: 30000)
   --wait-for-deps       Wait for unresolved dependencies instead of skipping
   --dry-run-push        Show what would be pushed without actually pushing (for debugging)
+  --force-done          Override review gate — allow Done transition with unresolved findings (audited)
   --help                Show this help
 
 Remote config (fetches everything else from AIWorkAssistant):
@@ -120,6 +122,8 @@ Remote config (fetches everything else from AIWorkAssistant):
       out["skip-poll"] = "true";
     } else if (argv[i] === "--dry-run-push") {
       out["dry-run-push"] = "true";
+    } else if (argv[i] === "--force-done") {
+      out["force-done"] = "true";
     } else if (argv[i] === "--resume-run") {
       out["resume-run"] = "true";
     } else if (argv[i] === "--discard-run") {
@@ -206,6 +210,13 @@ const MAX_REWORK = parseInt(ARGV["max-rework"] || process.env.AICODER_MAX_REWORK
 const REVIEW_POLL_MS = parseInt(ARGV["review-poll-ms"] || process.env.AICODER_REVIEW_POLL_MS || "30000", 10);
 const WAIT_FOR_DEPS = "wait-for-deps" in ARGV || process.env.AICODER_WAIT_FOR_DEPS === "true";
 const DRY_RUN_PUSH = "dry-run-push" in ARGV || process.env.AICODER_DRY_RUN_PUSH === "true";
+const FORCE_DONE = "force-done" in ARGV || process.env.AICODER_FORCE_DONE === "true";
+
+// If --force-done is set, mark the review gate as overridden (audited)
+if (FORCE_DONE) {
+  markForceDone();
+  console.log("[Review Gate] --force-done flag set: review gate will be bypassed for Done transitions (audited)");
+}
 
 // Tracks the exit code for the most recent pipeline run so --issue paths
 // can call process.exit() with a meaningful code instead of always exiting 0.
@@ -3962,6 +3973,7 @@ async function runReviewLoop(
     if (reviewResult === "passed" || reviewResult === "merged") {
       runLogger.logConfig(`${label} #${prNumber} passed review — pulling latest ${getBaseBranch()}`);
       clearRunState(); // Run completed successfully
+      clearReviewGateState(); // All findings resolved — clear the gate
       forceCheckout(getBaseBranch(), WORKSPACE);
       gitRun(["pull", "--ff-only", "origin", getBaseBranch()], WORKSPACE);
       return;
@@ -4061,6 +4073,17 @@ async function runReviewLoop(
       // Convergence: record findings from this round and check if loop should stop
       const roundFindings = extractFindingsFromPrompt(reworkPrompt);
       convergenceState = recordRoundFindings(convergenceState, roundFindings, true);
+
+      // Review gate: persist findings so jira.close_issue can block Done transitions
+      const gateFindings = roundFindings.map((f) => ({
+        severity: (f.severity || "high") as "critical" | "high" | "medium" | "low",
+        category: f.category || "review",
+        file: f.file || "",
+        message: `Finding in ${f.file || "unknown file"}`,
+      }));
+      const currentGateState = loadReviewGateState();
+      saveReviewGateState({ ...currentGateState, lastFindings: [...currentGateState.lastFindings, ...gateFindings] });
+
       const convergence = checkConvergence(convergenceState, convergenceConfig);
       runLogger.logWork(`Convergence check (round ${convergenceState.roundNumber}): ${convergence.reason} — ${convergence.message}`);
       if (convergence.shouldStop) {
