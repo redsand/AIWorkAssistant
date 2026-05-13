@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { spawnSync } from "child_process";
-import { pushBranch, gitRun } from "../../../src/autonomous-loop/git-ops";
+import { pushBranch, gitRun, stageAndCommit, gitRunWithOutput } from "../../../src/autonomous-loop/git-ops";
 
 let remoteDir: string;
 let localDir: string;
@@ -145,5 +145,76 @@ describe("pushBranch — force push after rebase failure", () => {
 
     const remoteHead = gitOut(["rev-parse", "refs/heads/ai/issue-100-fix"], remoteDir);
     expect(remoteHead).toBe(secondRunHead);
+  });
+});
+
+// ── stageAndCommit SHA detection (Bug 1 fix: nothing staged → skip push) ──────
+
+describe("stageAndCommit — SHA-based detection of empty rework cycles", () => {
+  it("returns true but does NOT create a new commit when nothing is staged", () => {
+    // Clean working tree: nothing to stage
+    const headBefore = gitOut(["rev-parse", "HEAD"], localDir);
+
+    const result = stageAndCommit("rework #1: trivial change", localDir);
+
+    const headAfter = gitOut(["rev-parse", "HEAD"], localDir);
+    expect(result).toBe(true); // stageAndCommit does not error on nothing-to-commit
+    expect(headAfter).toBe(headBefore); // SHA unchanged — no commit was made
+  });
+
+  it("returns true and advances HEAD when changes are staged", () => {
+    const headBefore = gitOut(["rev-parse", "HEAD"], localDir);
+
+    writeFile(localDir, "fix.ts", "export const v = 1;");
+    const result = stageAndCommit("feat: real change", localDir);
+
+    const headAfter = gitOut(["rev-parse", "HEAD"], localDir);
+    expect(result).toBe(true);
+    expect(headAfter).not.toBe(headBefore); // SHA advanced — commit was made
+  });
+
+  it("SHA comparison detects empty rework even when branch has prior commits (the IR-115 scenario)", () => {
+    // Simulate: first aicoder run creates a commit and pushes
+    git(["checkout", "-b", "ai/issue-115-fix"], localDir);
+    writeFile(localDir, "service.ts", "// original fix");
+    git(["add", "-A"], localDir);
+    git(["commit", "-m", "feat: original fix"], localDir);
+
+    const shaAfterFirstRun = gitOut(["rev-parse", "HEAD"], localDir);
+
+    // Rework agent runs but produces only a trailing newline — nothing staged
+    const headBefore = gitOut(["rev-parse", "HEAD"], localDir);
+    stageAndCommit("rework #1: address review feedback", localDir);
+    const headAfter = gitOut(["rev-parse", "HEAD"], localDir);
+
+    // SHA comparison correctly identifies no new commit
+    const reworkMadeCommit = headBefore !== headAfter;
+    expect(reworkMadeCommit).toBe(false);
+
+    // Verify: diff vs "base" (HEAD~1) is non-empty — validateDiffBeforePush
+    // would be fooled into thinking changes exist, but SHA comparison is not
+    const diffResult = gitRunWithOutput(["diff", "HEAD~1..HEAD", "--stat"], localDir);
+    expect(diffResult.ok).toBe(true);
+    expect(diffResult.stdout.trim().length).toBeGreaterThan(0); // diff exists vs prior commit
+
+    // HEAD is still the first run's SHA — force-pushing this would give reviewer same SHA
+    expect(headAfter).toBe(shaAfterFirstRun);
+  });
+
+  it("SHA comparison correctly identifies a real rework commit", () => {
+    git(["checkout", "-b", "ai/issue-115-fix2"], localDir);
+    writeFile(localDir, "service.ts", "// original");
+    git(["add", "-A"], localDir);
+    git(["commit", "-m", "feat: original"], localDir);
+
+    const headBefore = gitOut(["rev-parse", "HEAD"], localDir);
+
+    // Rework agent makes a real change
+    writeFile(localDir, "service.ts", "// fixed based on review");
+    stageAndCommit("rework #1: fix session regeneration", localDir);
+
+    const headAfter = gitOut(["rev-parse", "HEAD"], localDir);
+    const reworkMadeCommit = headBefore !== headAfter;
+    expect(reworkMadeCommit).toBe(true); // Push should proceed
   });
 });

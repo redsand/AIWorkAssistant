@@ -3102,9 +3102,38 @@ async function runReviewLoop(
       // Checkpoint: rework agent complete
       saveRunState({ ...currentState, checkpoint: "rework_agent_complete", reworkCount, sessionId: reworkResult.sessionId, convergenceState: serializeConvergence(convergenceState), promptStrategiesTried: [...promptStrategiesTried] });
 
+      // Capture SHA before commit so we can detect "nothing staged" without
+      // relying on validateDiffBeforePush, which compares vs the base branch and
+      // would return valid=true even if rework added no NEW commits (the branch
+      // already has the original PR changes). SHA comparison is the only reliable
+      // way to know whether stageAndCommit actually created a commit this cycle.
+      const reworkHeadBefore = gitRunWithOutput(["rev-parse", "HEAD"], WORKSPACE);
+
       if (!stageAndCommit(`[AI] rework #${reworkCount}: ${item.title}`)) {
         runLogger.logError("Rework stage/commit failed");
         return;
+      }
+
+      const reworkHeadAfter = gitRunWithOutput(["rev-parse", "HEAD"], WORKSPACE);
+      const reworkMadeCommit = reworkHeadBefore.ok && reworkHeadAfter.ok
+        && reworkHeadBefore.stdout.trim() !== reworkHeadAfter.stdout.trim();
+
+      if (!reworkMadeCommit) {
+        // stageAndCommit returned true but made no new commit (nothing was staged).
+        // Pushing with the same SHA would leave the reviewer in an infinite
+        // "[SKIP] already reviewed (SHA unchanged)" loop — skip the push instead.
+        runLogger.logGit("WARN", `Rework #${reworkCount} staged nothing — skipping push to avoid SHA-unchanged reviewer loop`);
+        previousFailures.push("EMPTY_PR");
+        convergenceState = recordRoundFindings(convergenceState, [], false);
+        saveConvergenceState(convergenceState);
+        const emptyConvergence = checkConvergence(convergenceState, convergenceConfig);
+        if (emptyConvergence.shouldStop) {
+          runLogger.logError(`Convergence detected (${emptyConvergence.reason}): ${emptyConvergence.message}`);
+          lastPipelineExitCode = EXIT_NO_CHANGES;
+          clearRunState();
+          return;
+        }
+        continue; // Poll again — reviewer still has the old SHA, next rework attempt will try again
       }
 
       // Convergence: check if rework produced actual changes (empty PR detection)

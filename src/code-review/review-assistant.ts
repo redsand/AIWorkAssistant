@@ -638,12 +638,30 @@ class ReviewAssistant {
             { role: "user", content: diffSummary },
           ],
           temperature: 0.3,
+          maxTokens: 4096,
         });
         const content = response.content.trim();
         const jsonMatch = content.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
           parsed = JSON.parse(jsonMatch[0]);
           aiSucceeded = true;
+        } else {
+          // Response was truncated before the closing } or produced no JSON at all.
+          // Heuristic fallback would produce 0 findings (dangerously lenient for security changes).
+          console.warn("[CodeReview] AI response did not contain valid JSON — response may be truncated");
+          console.warn("[CodeReview] AI response length:", content.length, "last 200 chars:", content.slice(-200));
+          parsed = {
+            riskLevel: "high" as const,
+            recommendation: "needs_changes" as const,
+            whatChanged: changeSet.title,
+            mustFix: ["AI review response was truncated — manual review required"],
+            shouldFix: ["The AI review could not complete. Review the changes manually."],
+            testGaps: [],
+            securityConcerns: ["AI review was unavailable — security review could not be completed"],
+            observabilityConcerns: [],
+            migrationRisks: [],
+          };
+          aiSucceeded = true; // Use truncation escalation, not heuristic fallback
         }
       } catch (err) {
         console.error("[CodeReview] AI generation failed, using fallback:", (err as Error).message);
@@ -713,6 +731,7 @@ class ReviewAssistant {
             { role: "user", content: diffSummary },
           ],
           temperature: 0.3,
+          maxTokens: 4096,
         })) {
           fullContent += chunk;
 
@@ -734,6 +753,22 @@ class ReviewAssistant {
         if (jsonMatch) {
           parsed = JSON.parse(jsonMatch[0]);
           aiSucceeded = true;
+        } else {
+          console.warn("[CodeReview] AI stream response did not contain valid JSON — response may be truncated");
+          console.warn("[CodeReview] Stream length:", content.length, "last 200 chars:", content.slice(-200));
+          onProgress?.({ type: "progress", message: "AI review response truncated — escalating to needs_changes" });
+          parsed = {
+            riskLevel: "high" as const,
+            recommendation: "needs_changes" as const,
+            whatChanged: changeSet.title,
+            mustFix: ["AI review response was truncated — manual review required"],
+            shouldFix: ["The AI review could not complete. Review the changes manually."],
+            testGaps: [],
+            securityConcerns: ["AI review was unavailable — security review could not be completed"],
+            observabilityConcerns: [],
+            migrationRisks: [],
+          };
+          aiSucceeded = true; // Use truncation escalation, not heuristic fallback
         }
       } catch (err) {
         console.error("[CodeReview] AI streaming failed, using fallback:", (err as Error).message);
@@ -848,29 +883,29 @@ class ReviewAssistant {
   }
 
   private fallbackReview(changeSet: ChangeSet, riskLevel: ReviewRiskLevel): Partial<CodeReview> {
-    // Empty MRs should never be auto-approved — block them
     const mustFix: string[] = [];
     if (changeSet.files.length === 0 || changeSet.linesAdded + changeSet.linesRemoved === 0) {
       mustFix.push("Empty MR — no changes to review. Do not merge without substantive changes.");
     }
     if (changeSet.ciStatus === "failed") mustFix.push("CI checks are failing — must pass before merge");
     if (changeSet.hasMigration && !changeSet.hasTests) mustFix.push("Migration changes detected but no test files found");
+    // Heuristic review cannot analyze code for security vulnerabilities or correctness.
+    // Always require explicit human sign-off when AI review was unavailable.
+    mustFix.push("AI review was unavailable — heuristic review only. Manual review required for security-sensitive changes.");
 
     const shouldFix: string[] = [];
     if (!changeSet.hasTests && changeSet.linesAdded > 30) shouldFix.push("Consider adding tests for new code");
     if (changeSet.files.length > 15) shouldFix.push("Large PR — consider breaking into smaller changes");
-    // Heuristic security findings are not actionable by the aicoder — use medium severity
-    // so they don't trigger rework cycles. Real security findings come from AI review.
     if (changeSet.files.some((f) => SECURITY_PATTERNS.some((p) => p.test(f.filename)))) {
       shouldFix.push("Security-related files detected — human review recommended for auth/credential changes");
     }
 
+    const hasSecurityFiles = changeSet.files.some((f) => SECURITY_PATTERNS.some((p) => p.test(f.filename)));
+
     return {
       whatChanged: `${changeSet.title}. ${changeSet.files.length} files changed (+${changeSet.linesAdded} -${changeSet.linesRemoved}).`,
-      // When using fallback (AI unavailable), always escalate risk to at least "medium"
-      // so the reviewer doesn't auto-approve without actual AI analysis
-      riskLevel: mustFix.length > 0 ? "high" : riskLevel === "critical" ? "critical" : "medium",
-      recommendation: mustFix.length > 0 ? "needs_changes" : this.fallbackRecommendation(riskLevel === "critical" ? "critical" : "medium"),
+      riskLevel: mustFix.length > 0 ? "high" : changeSet.hasMigration || hasSecurityFiles ? "high" : "medium",
+      recommendation: mustFix.length > 0 ? "needs_changes" : hasSecurityFiles ? "needs_changes" : "ready_for_human_review",
       mustFix,
       shouldFix,
       testGaps: !changeSet.hasTests ? ["No test files detected in this PR"] : [],

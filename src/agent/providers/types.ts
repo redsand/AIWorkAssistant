@@ -32,6 +32,8 @@ export interface ChatRequest {
   top_p?: number;
   model?: string;
   stream?: boolean;
+  /** Per-request output token limit. Overrides the provider default when set. */
+  maxTokens?: number;
 }
 
 export interface ChatResponse {
@@ -137,6 +139,10 @@ export abstract class AIProvider {
 
     if (request.stream) {
       body.stream = true;
+    }
+
+    if (request.maxTokens) {
+      body.max_tokens = request.maxTokens;
     }
 
     const msgTokens = this.estimateTokens(messages);

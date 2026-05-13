@@ -195,13 +195,12 @@ describe("reviewAssistant.reviewGitHubPullRequest — low-risk PR", () => {
     mockAiIsConfigured.mockReturnValue(false);
   });
 
-  it("returns a CodeReview with low risk level", async () => {
+  it("returns a CodeReview with correct metadata", async () => {
     const review = await reviewAssistant.reviewGitHubPullRequest({
       owner: "org",
       repo: "repo",
       prNumber: 1,
     });
-    expect(review.riskLevel).toBe("low");
     expect(review.platform).toBe("github");
     expect(review.prUrl).toBe(LOW_RISK_PR.html_url);
     expect(review.title).toBe(LOW_RISK_PR.title);
@@ -212,13 +211,16 @@ describe("reviewAssistant.reviewGitHubPullRequest — low-risk PR", () => {
     expect(review.generatedAt).toBeTruthy();
   });
 
-  it("sets recommendation to low_risk", async () => {
+  it("escalates to high/needs_changes when AI is unavailable (heuristic fallback always escalates)", async () => {
     const review = await reviewAssistant.reviewGitHubPullRequest({
       owner: "org",
       repo: "repo",
       prNumber: 1,
     });
-    expect(review.recommendation).toBe("low_risk");
+    // Fallback always escalates — AI review unavailable means needs human sign-off
+    expect(review.riskLevel).toBe("high");
+    expect(review.recommendation).toBe("needs_changes");
+    expect(review.mustFix.some((m) => /AI review was unavailable/i.test(m))).toBe(true);
   });
 });
 
@@ -277,7 +279,7 @@ describe("reviewAssistant.reviewGitHubPullRequest — missing diff", () => {
     mockAiIsConfigured.mockReturnValue(false);
   });
 
-  it("handles empty file list gracefully", async () => {
+  it("handles empty file list gracefully and escalates (empty MR + AI unavailable)", async () => {
     const review = await reviewAssistant.reviewGitHubPullRequest({
       owner: "org",
       repo: "repo",
@@ -286,7 +288,9 @@ describe("reviewAssistant.reviewGitHubPullRequest — missing diff", () => {
     expect(review.filesChanged).toBe(0);
     expect(review.linesAdded).toBe(0);
     expect(review.linesRemoved).toBe(0);
-    expect(review.riskLevel).toBe("low");
+    // Empty MR + AI unavailable both contribute to mustFix → high risk
+    expect(review.riskLevel).toBe("high");
+    expect(review.mustFix.some((m) => /empty/i.test(m))).toBe(true);
   });
 });
 
@@ -402,14 +406,15 @@ describe("reviewAssistant.generateReleaseReadinessReport", () => {
     mockAiIsConfigured.mockReturnValue(false);
   });
 
-  it("returns a release report with Go recommendation for low-risk clean PR", async () => {
+  it("returns a release report with correct metadata", async () => {
     const report = await reviewAssistant.generateReleaseReadinessReport({
       platform: "github",
       owner: "org",
       repo: "repo",
       prNumber: 1,
     });
-    expect(report.recommendation).toBe("go");
+    // When AI is unavailable, fallback always returns mustFix items → no_go for release
+    expect(report.recommendation).toBe("no_go");
     expect(report.platform).toBe("github");
     expect(report.title).toBe(LOW_RISK_PR.title);
     expect(report.rollbackPlan).toBeTruthy();
@@ -478,8 +483,20 @@ describe("reviewAssistant.reviewGitHubPullRequest — AI path", () => {
     expect(review.suggestedReviewComment).toBe("Looks good!");
   });
 
-  it("falls back gracefully when AI returns malformed JSON", async () => {
-    mockAiChat.mockResolvedValue({ content: "not json at all" });
+  it("passes maxTokens: 4096 in the chat request", async () => {
+    mockAiChat.mockResolvedValue({ content: JSON.stringify({ riskLevel: "low", recommendation: "low_risk", mustFix: [], shouldFix: [], testGaps: [], securityConcerns: [], observabilityConcerns: [], migrationRisks: [], rollbackConsiderations: [], whatChanged: "x" }) });
+
+    await reviewAssistant.reviewGitHubPullRequest({ owner: "org", repo: "repo", prNumber: 1 });
+
+    expect(mockAiChat).toHaveBeenCalledWith(
+      expect.objectContaining({ maxTokens: 4096 }),
+    );
+  });
+
+  it("escalates to high/needs_changes when AI response is truncated (no JSON braces)", async () => {
+    mockAiChat.mockResolvedValue({
+      content: "Here is my review of the changes. The session regeneration helper should use the `regenerateToken` helper for consi",
+    });
 
     const review = await reviewAssistant.reviewGitHubPullRequest({
       owner: "org",
@@ -487,7 +504,41 @@ describe("reviewAssistant.reviewGitHubPullRequest — AI path", () => {
       prNumber: 1,
     });
 
-    expect(review.riskLevel).toBeTruthy();
+    expect(review.riskLevel).toBe("high");
+    expect(review.recommendation).toBe("needs_changes");
+    expect(review.mustFix.some((m) => /truncated/i.test(m))).toBe(true);
+    expect(review.securityConcerns.some((c) => /AI review was unavailable/i.test(c))).toBe(true);
+  });
+
+  it("escalates to high/needs_changes when AI response is truncated mid-JSON", async () => {
+    // Simulates the exact bug: JSON cut off before closing }
+    mockAiChat.mockResolvedValue({
+      content: '{"riskLevel":"high","recommendation":"needs_changes","mustFix":["session regeneration"],"shouldFix":["missing error log',
+    });
+
+    const review = await reviewAssistant.reviewGitHubPullRequest({
+      owner: "org",
+      repo: "repo",
+      prNumber: 1,
+    });
+
+    expect(review.riskLevel).toBe("high");
+    expect(review.recommendation).toBe("needs_changes");
+    expect(review.mustFix.some((m) => /truncated/i.test(m))).toBe(true);
+  });
+
+  it("falls back gracefully when AI chat throws", async () => {
+    mockAiChat.mockRejectedValue(new Error("Connection timeout"));
+
+    const review = await reviewAssistant.reviewGitHubPullRequest({
+      owner: "org",
+      repo: "repo",
+      prNumber: 1,
+    });
+
+    // Fell through to heuristic fallback — still escalates due to AI unavailable notice
+    expect(review.riskLevel).toBe("high");
+    expect(review.recommendation).toBe("needs_changes");
     expect(review.generatedAt).toBeTruthy();
   });
 });
