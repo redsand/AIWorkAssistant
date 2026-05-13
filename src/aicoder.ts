@@ -2129,12 +2129,20 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
         return null;
       }
     } else {
-      runLogger.logError(`Rebase failed — PR not created`);
-      lastPipelineExitCode = EXIT_GIT_FAILURE;
-      runLogger.endRun(EXIT_GIT_FAILURE);
-      trackStep(run.id, "tool_call", "Rebase failed", { toolName: "git_rebase", success: false });
-      failRunTrack(run.id, "Rebase failed");
-      return null;
+      // Rebase failed — stale commits from a previous run are on the remote branch.
+      // The aicoder owns ai/issue-* branches exclusively, so force push is safe.
+      runLogger.logGit(`Rebase failed — aborting and force pushing to replace stale remote branch`);
+      gitRun(["rebase", "--abort"], WORKSPACE);
+      if (pushBranch(branchName, true)) {
+        trackStep(run.id, "tool_call", `Force pushed branch after rebase failure: ${branchName}`, { toolName: "git_push" });
+      } else {
+        runLogger.logError(`Force push failed after rebase failure — PR not created`);
+        lastPipelineExitCode = EXIT_GIT_FAILURE;
+        runLogger.endRun(EXIT_GIT_FAILURE);
+        trackStep(run.id, "tool_call", "Force push failed after rebase failure", { toolName: "git_push", success: false });
+        failRunTrack(run.id, "Force push failed after rebase failure");
+        return null;
+      }
     }
   }
   trackStep(run.id, "tool_call", `Pushed branch: ${branchName}`, { toolName: "git_push" });
