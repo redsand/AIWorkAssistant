@@ -219,6 +219,13 @@ const envSchema = z.object({
   ESCALATION_EMAIL_TO: z.string().default(""),
   ESCALATION_EMAIL_TO_L3: z.string().default(""),
 
+  // Azure Communication Services (email via M365)
+  ACS_CONNECTION_STRING: z.string().default(""),
+  ACS_SENDER_ADDRESS: z.string().default(""),
+
+  // Email provider selection: "auto" (prefer ACS, fall back to SMTP), "acs", or "smtp"
+  EMAIL_PROVIDER: z.enum(["acs", "smtp", "auto"]).default("auto"),
+
   // Push notification polling
   PUSH_POLL_INTERVAL_MIN: z.coerce.number().default(5),
   PUSH_ESCALATION_L2_MINUTES: z.coerce.number().default(5),

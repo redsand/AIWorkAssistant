@@ -16,6 +16,27 @@ import { createAgentRunsClient } from "./agent-runs/client";
 import type { AgentRunStepCreate } from "./agent-runs/types";
 import type { AgentRun as AgentRunRecord } from "./agent-runs/types";
 import type { ProviderType } from "./integrations/ollama-launcher";
+import {
+  validateOutputFromDiff,
+  EXIT_SUCCESS,
+  EXIT_NO_CHANGES,
+  EXIT_PLACEHOLDER_ONLY,
+  EXIT_GIT_FAILURE,
+  EXIT_TEST_FAILURE,
+  EXIT_REVIEW_FAILED,
+  EXIT_MAX_REWORK,
+} from "./aicoder-pipeline";
+
+// Re-export so callers and the orchestrator can import from either module.
+export {
+  EXIT_SUCCESS,
+  EXIT_NO_CHANGES,
+  EXIT_PLACEHOLDER_ONLY,
+  EXIT_GIT_FAILURE,
+  EXIT_TEST_FAILURE,
+  EXIT_REVIEW_FAILED,
+  EXIT_MAX_REWORK,
+};
 
 function parseArgv(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -167,6 +188,10 @@ const SKIP_POLL = "skip-poll" in ARGV || process.env.AICODER_SKIP_POLL === "true
 const MAX_REWORK = parseInt(ARGV["max-rework"] || process.env.AICODER_MAX_REWORK || "10", 10);
 const REVIEW_POLL_MS = parseInt(ARGV["review-poll-ms"] || process.env.AICODER_REVIEW_POLL_MS || "30000", 10);
 const WAIT_FOR_DEPS = "wait-for-deps" in ARGV || process.env.AICODER_WAIT_FOR_DEPS === "true";
+
+// Tracks the exit code for the most recent pipeline run so --issue paths
+// can call process.exit() with a meaningful code instead of always exiting 0.
+let lastPipelineExitCode: number = EXIT_SUCCESS;
 
 // Review result markers (must match reviewer.ts comment headers)
 const REVIEW_PASSED_MARKER = "Review Passed";
@@ -980,6 +1005,22 @@ function gitRunWithOutput(args: string[], cwd: string): { ok: boolean; stdout: s
     stdout: (result.stdout || "").trim(),
     stderr: (result.stderr || "").trim(),
   };
+}
+
+/**
+ * Validate agent output by diffing the feature branch against its base.
+ * Wraps validateOutputFromDiff with real git calls.
+ * Returns { valid: true } on git infrastructure errors so a transient git
+ * problem doesn't false-positive as EXIT_NO_CHANGES.
+ */
+function validateOutput(baseBranch: string): ReturnType<typeof validateOutputFromDiff> {
+  const statResult = gitRunWithOutput(["diff", `${baseBranch}...HEAD`, "--stat"], WORKSPACE);
+  if (!statResult.ok) {
+    runLogger.logGit("git diff --stat failed — skipping output validation", statResult.stderr);
+    return { valid: true, exitCode: EXIT_SUCCESS, reason: "git diff unavailable — skipped" };
+  }
+  const diffResult = gitRunWithOutput(["diff", `${baseBranch}...HEAD`], WORKSPACE);
+  return validateOutputFromDiff(statResult.stdout, diffResult.stdout, SKIP_AGENT);
 }
 
 function getCurrentBranch(): string | null {
@@ -3057,13 +3098,28 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
 
   if (!stageAndCommit(`[AI] ${item.title}`)) {
     runLogger.logError("Stage/commit failed — skipping push");
-    runLogger.endRun(1);
+    lastPipelineExitCode = EXIT_GIT_FAILURE;
+    runLogger.endRun(EXIT_GIT_FAILURE);
     // Don't save to processedIssues — allow retry on next aicoder cycle
     trackStep(run.id, "tool_call", "Stage & commit failed", { toolName: "git_commit", success: false });
     failRunTrack(run.id, "Stage/commit failed");
     return null;
   }
   trackStep(run.id, "tool_call", "Staged and committed changes", { toolName: "git_commit" });
+
+  // Validate output — catch empty diffs and placeholder-only changes before
+  // spending time on tests, a push, and a PR that would be a false positive.
+  if (!SKIP_AGENT) {
+    const validation = validateOutput(getBaseBranch());
+    if (!validation.valid) {
+      lastPipelineExitCode = validation.exitCode;
+      runLogger.logError(`Output validation failed (exit ${validation.exitCode}): ${validation.reason}`);
+      runLogger.endRun(validation.exitCode);
+      trackStep(run.id, "tool_call", `Output validation failed: ${validation.reason}`, { toolName: "validate_output", success: false });
+      failRunTrack(run.id, `Output validation failed: ${validation.reason}`);
+      return null;
+    }
+  }
 
   // Checkpoint: changes committed
   saveRunState({ ...currentState, checkpoint: "changes_committed" });
@@ -3081,7 +3137,8 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
       runLogger.logConfig("Unit tests could not start — proceeding without test verification");
     } else if (!unitResult.passed) {
       runLogger.logError(`Unit tests ${unitResult.kind} — skipping integration tests and push. Issue will be retried.`);
-      runLogger.endRun(1);
+      lastPipelineExitCode = EXIT_TEST_FAILURE;
+      runLogger.endRun(EXIT_TEST_FAILURE);
       // Don't save to processedIssues — allow retry on next aicoder cycle
       trackStep(run.id, "tool_call", `Unit tests ${unitResult.kind}`, { toolName: "test_unit", success: false, errorMessage: unitResult.kind });
       failRunTrack(run.id, `Unit tests ${unitResult.kind}`);
@@ -3095,7 +3152,8 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
       runLogger.logConfig("Integration tests could not start — skipping");
     } else if (!integrationResult.passed) {
       runLogger.logError(`Integration tests ${integrationResult.kind} — skipping push. Issue will be retried.`);
-      runLogger.endRun(1);
+      lastPipelineExitCode = EXIT_TEST_FAILURE;
+      runLogger.endRun(EXIT_TEST_FAILURE);
       // Don't save to processedIssues — allow retry on next aicoder cycle
       trackStep(run.id, "tool_call", `Integration tests ${integrationResult.kind}`, { toolName: "test_integration", success: false, errorMessage: integrationResult.kind });
       failRunTrack(run.id, `Integration tests ${integrationResult.kind}`);
@@ -3111,7 +3169,8 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
         runLogger.logConfig(`Coverage tool not available — skipping coverage check`);
       } else {
         runLogger.logError(`Coverage check ${coverageResult.kind} — skipping push. Issue will be retried.`);
-        runLogger.endRun(1);
+        lastPipelineExitCode = EXIT_TEST_FAILURE;
+        runLogger.endRun(EXIT_TEST_FAILURE);
         // Don't save to processedIssues — allow retry on next aicoder cycle
         trackStep(run.id, "tool_call", `Coverage check ${coverageResult.kind}`, { toolName: "coverage", success: false });
         failRunTrack(run.id, `Coverage check ${coverageResult.kind}`);
@@ -3132,14 +3191,16 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
         trackStep(run.id, "tool_call", `Pushed branch after rebase: ${branchName}`, { toolName: "git_push" });
       } else {
         runLogger.logError(`Push failed after rebase — PR not created`);
-        runLogger.endRun(1);
+        lastPipelineExitCode = EXIT_GIT_FAILURE;
+        runLogger.endRun(EXIT_GIT_FAILURE);
         trackStep(run.id, "tool_call", "Push failed after rebase", { toolName: "git_push", success: false });
         failRunTrack(run.id, "Push failed after rebase");
         return null;
       }
     } else {
       runLogger.logError(`Rebase failed — PR not created`);
-      runLogger.endRun(1);
+      lastPipelineExitCode = EXIT_GIT_FAILURE;
+      runLogger.endRun(EXIT_GIT_FAILURE);
       trackStep(run.id, "tool_call", "Rebase failed", { toolName: "git_rebase", success: false });
       failRunTrack(run.id, "Rebase failed");
       return null;
@@ -3166,7 +3227,8 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   const totalDuration = Date.now() - startTime;
   completeRunTrack(run.id, { model: AGENT, toolLoopCount: currentRunStepOrder, totalTokens: 0 });
   trackStep(run.id, "note", `Completed in ${(totalDuration / 1000).toFixed(1)}s${pr ? ` — PR #${pr.prNumber}` : ""}`);
-  runLogger.endRun(exitCode);
+  if (pr) lastPipelineExitCode = EXIT_SUCCESS;
+  runLogger.endRun(pr ? EXIT_SUCCESS : exitCode);
   // Only mark as processed if PR/MR was successfully created
   if (pr) {
     saveProcessedIssue(issueKey);
@@ -3459,7 +3521,7 @@ async function focusedLoop(cfg: ServerConfig): Promise<void> {
       process.exit(1);
     }
     await focusedProcessWorkItem(cfg, target, ghToken, owner, repo);
-    return;
+    process.exit(lastPipelineExitCode);
   }
 
   runLogger.logConfig(`Polling ${cfg.apiUrl} for label="${LABEL}"`);
@@ -3776,6 +3838,7 @@ async function runReviewLoop(
 
     if (reviewResult === "human_review") {
       runLogger.logConfig(`${label} #${prNumber} flagged for human review — stopping rework loop`);
+      lastPipelineExitCode = EXIT_REVIEW_FAILED;
       clearRunState();
       return;
     }
@@ -3795,6 +3858,7 @@ async function runReviewLoop(
       reworkCount++;
       if (reworkCount > MAX_REWORK) {
         runLogger.logError(`${label} #${prNumber} exceeded max rework cycles (${MAX_REWORK}) after conflict resolution attempts`);
+        lastPipelineExitCode = EXIT_MAX_REWORK;
         clearRunState();
         return;
       }
@@ -3822,6 +3886,7 @@ async function runReviewLoop(
       reworkCount++;
       if (reworkCount > MAX_REWORK) {
         runLogger.logError(`${label} #${prNumber} exceeded max rework cycles (${MAX_REWORK})`);
+        lastPipelineExitCode = EXIT_MAX_REWORK;
         clearRunState();
         return;
       }
@@ -3925,7 +3990,7 @@ async function pollLoop(cfg: ServerConfig): Promise<void> {
       process.exit(1);
     }
     await processWorkItem(cfg, target);
-    return;
+    process.exit(lastPipelineExitCode);
   }
 
   runLogger.logConfig(`Polling ${cfg.apiUrl} for label="${LABEL}"`);

@@ -1,6 +1,6 @@
 import { notificationStore } from "../notification-store";
 import { env } from "../../config/env";
-import { sendEscalationEmail, isEmailConfigured } from "./email";
+import { sendEmail, isEmailConfigured, getActiveProviderName } from "./email";
 
 export interface EscalationConfig {
   level2AfterMinutes: number;
@@ -66,12 +66,13 @@ export class EscalationEngine {
 
         if (this.config.level2Channels.includes("email") && this.config.onCallEmail) {
           if (isEmailConfigured()) {
-            const sent = await sendEscalationEmail(
-              this.config.onCallEmail,
+            const sent = await sendEmail({
+              to: this.config.onCallEmail,
               subject,
-              `${message}\n\nAcknowledge: ${deepLink}`,
-            );
-            console.log(`[Escalation L2] Email to ${this.config.onCallEmail}: ${sent ? "sent" : "failed"}`);
+              plainText: `${message}\n\nAcknowledge: ${deepLink}`,
+              html: `<p>${message}</p><p><a href="${deepLink}">Acknowledge</a></p>`,
+            });
+            console.log(`[Escalation L2] Email to ${this.config.onCallEmail}: ${sent ? "sent" : "failed"} (provider: ${getActiveProviderName()})`);
           } else {
             console.log(`[Escalation L2] Email not configured — would email: ${this.config.onCallEmail}`);
           }
@@ -99,12 +100,13 @@ export class EscalationEngine {
 
         if (this.config.backupEmail) {
           if (isEmailConfigured()) {
-            const sent = await sendEscalationEmail(
-              this.config.backupEmail,
+            const sent = await sendEmail({
+              to: this.config.backupEmail,
               subject,
-              message,
-            );
-            console.log(`[Escalation L3] Email to ${this.config.backupEmail}: ${sent ? "sent" : "failed"}`);
+              plainText: message,
+              html: `<p>${message.replace(/\n\n/g, "</p><p>")}</p>`,
+            });
+            console.log(`[Escalation L3] Email to ${this.config.backupEmail}: ${sent ? "sent" : "failed"} (provider: ${getActiveProviderName()})`);
           } else {
             console.log(`[Escalation L3] Email not configured — would email: ${this.config.backupEmail}`);
           }
