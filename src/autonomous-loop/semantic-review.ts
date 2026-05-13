@@ -10,7 +10,7 @@ export interface SemanticReviewConfig {
 }
 
 export interface SemanticFinding {
-  severity: "critical" | "high" | "medium" | "low";
+  severity: "critical" | "high" | "medium" | "low" | "info";
   category: "security" | "correctness" | "testing" | "performance" | "style";
   file: string;
   line?: number;
@@ -40,7 +40,7 @@ export function defaultSemanticReviewConfig(): SemanticReviewConfig {
   };
 }
 
-const SEVERITIES = new Set(["critical", "high", "medium", "low"]);
+const SEVERITIES = new Set(["critical", "high", "medium", "low", "info"]);
 const CATEGORIES = new Set(["security", "correctness", "testing", "performance", "style"]);
 const RISK_LEVELS = new Set(["low", "medium", "high", "critical"]);
 const RECOMMENDATIONS = new Set(["approve", "request_changes", "reject"]);
@@ -51,6 +51,17 @@ const DEFAULT_RESULT: SemanticReviewResult = {
   riskLevel: "low",
   recommendation: "approve",
 };
+
+const CONCURRENCY_ANTI_PATTERNS: Array<{
+  pattern: RegExp;
+  description: string;
+  severity: SemanticFinding["severity"];
+}> = [
+  { pattern: /self\.\w+\[/, description: "Dictionary access without visible lock", severity: "medium" },
+  { pattern: /with self\._\w+lock/, description: "Lock usage — verify scope covers all shared state access", severity: "info" },
+  { pattern: /async def.*self\./, description: "Async method accessing instance state — verify thread safety", severity: "medium" },
+  { pattern: /global\s+\w+/, description: "Global state modification", severity: "high" },
+];
 
 export function hashFinding(finding: SemanticFinding): string {
   return [
@@ -130,7 +141,86 @@ export async function semanticReview(
     config.timeoutMs,
   );
 
-  return parseSemanticReviewResponse(response.content);
+  const parsed = parseSemanticReviewResponse(response.content);
+  const staticFindings = analyzeThreadSafety(diff);
+  const findings = dedupeFindings([...parsed.findings, ...staticFindings]);
+
+  return {
+    ...parsed,
+    findings,
+    riskLevel: inferRiskLevel(findings),
+    recommendation: parsed.recommendation === "approve" ? inferRecommendation(findings) : parsed.recommendation,
+  };
+}
+
+export function analyzeThreadSafety(diff: string): SemanticFinding[] {
+  const findings: SemanticFinding[] = [];
+  const files = parseDiffFiles(diff);
+
+  for (const file of files) {
+    if (!file.path.endsWith(".py")) continue;
+
+    const addedLines = file.lines.filter((line) => line.added);
+    const lockLines = addedLines.filter((line) => /with self\._\w*lock\b/.test(line.content));
+    const hasVisibleLock = lockLines.length > 0;
+    const touchesSharedState = addedLines.some((line) => /self\.\w+/.test(line.content));
+
+    if (hasVisibleLock && touchesSharedState) {
+      const lockLine = lockLines[0];
+      findings.push({
+        severity: "info",
+        category: "correctness",
+        file: file.path,
+        line: lockLine.newLine,
+        message: "Thread Safety: lock usage detected; verify the lock scope covers all shared state access.",
+      });
+    }
+
+    const dualWriteLines = addedLines.filter((line) =>
+      /legacy|run_state|case_context|context/i.test(line.content) &&
+      /self\.\w+/.test(line.content) &&
+      /=|\.update\(|\.setdefault\(|\.append\(/.test(line.content),
+    );
+    const hasLegacyWrite = dualWriteLines.some((line) => /legacy|run_state/i.test(line.content));
+    const hasContextWrite = dualWriteLines.some((line) => /context|case_context/i.test(line.content));
+    if (hasLegacyWrite && hasContextWrite) {
+      const firstLine = dualWriteLines[0];
+      findings.push({
+        severity: "critical",
+        category: "correctness",
+        file: file.path,
+        line: firstLine.newLine,
+        message: `Thread Safety: dual-write pattern near line ${firstLine.newLine ?? "unknown"} updates legacy and context state; confirm both writes are atomic under the same lock.`,
+        suggestedFix: "Move both writes under the same lock or replace the dual-write with a single authoritative state update.",
+      });
+      continue;
+    }
+
+    for (const line of addedLines) {
+      for (const antiPattern of CONCURRENCY_ANTI_PATTERNS) {
+        if (!antiPattern.pattern.test(line.content)) continue;
+        if (antiPattern.severity === "info" && hasVisibleLock) continue;
+
+        if (antiPattern.description === "Dictionary access without visible lock" && hasVisibleLock) {
+          continue;
+        }
+
+        const severity = antiPattern.description === "Dictionary access without visible lock"
+          ? "high"
+          : antiPattern.severity;
+        findings.push({
+          severity,
+          category: "correctness",
+          file: file.path,
+          line: line.newLine,
+          message: `Thread Safety: ${antiPattern.description} at line ${line.newLine ?? "unknown"}; lock correctness cannot be confirmed from this diff.`,
+          suggestedFix: severity === "high" ? "Guard the shared state access with the appropriate lock or make the operation atomic." : undefined,
+        });
+      }
+    }
+  }
+
+  return dedupeFindings(findings);
 }
 
 export function parseSemanticReviewResponse(content: string): SemanticReviewResult {
@@ -187,6 +277,22 @@ function buildMessages(diff: string, issueContext: string, config: SemanticRevie
         "- Testing: Are there tests for the changed behavior? Are they meaningful or empty stubs?",
         "- Completeness: Does the PR actually address all parts of the issue?",
         "- Thread Safety: If the code touches shared state, are locks used correctly?",
+        "",
+        "## Thread Safety Review",
+        "If the diff touches any of the following, flag it for careful review:",
+        "- Shared state variables (class attributes accessed from multiple methods)",
+        "- Lock/mutex acquisition and release patterns",
+        "- Dictionary or list mutations in multi-threaded contexts",
+        "- Global state modifications",
+        "- Async/await patterns with shared state",
+        "",
+        "For each thread-safety finding, verify:",
+        "- Is shared state accessed under the appropriate lock?",
+        "- Are there read-modify-write sequences that should be atomic?",
+        "- Could a context switch between operations cause data corruption?",
+        "- Are there dual-write patterns (writing to both old and new data structures)?",
+        "If lock correctness cannot be confirmed, flag it as high severity.",
+        "If a dual-write pattern can race or split state, flag it as critical.",
         "",
         "Issue context:",
         issueText,
@@ -262,6 +368,63 @@ function inferRecommendation(findings: SemanticFinding[]): SemanticReviewResult[
   if (findings.some((finding) => finding.severity === "critical")) return "reject";
   if (findings.some((finding) => finding.severity === "high" || finding.severity === "medium")) return "request_changes";
   return "approve";
+}
+
+function dedupeFindings(findings: SemanticFinding[]): SemanticFinding[] {
+  const seen = new Set<string>();
+  const deduped: SemanticFinding[] = [];
+
+  for (const finding of findings) {
+    const hash = hashFinding(finding);
+    if (seen.has(hash)) continue;
+    seen.add(hash);
+    deduped.push(finding);
+  }
+
+  return deduped;
+}
+
+function parseDiffFiles(diff: string): Array<{
+  path: string;
+  lines: Array<{ added: boolean; content: string; newLine?: number }>;
+}> {
+  const files: Array<{
+    path: string;
+    lines: Array<{ added: boolean; content: string; newLine?: number }>;
+  }> = [];
+  let current: { path: string; lines: Array<{ added: boolean; content: string; newLine?: number }> } | null = null;
+  let newLine = 0;
+
+  for (const rawLine of diff.split(/\r?\n/)) {
+    const fileMatch = rawLine.match(/^diff --git a\/.+ b\/(.+)$/);
+    if (fileMatch) {
+      current = { path: fileMatch[1], lines: [] };
+      files.push(current);
+      newLine = 0;
+      continue;
+    }
+
+    if (!current) continue;
+
+    const hunkMatch = rawLine.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunkMatch) {
+      newLine = Number(hunkMatch[1]);
+      continue;
+    }
+
+    if (rawLine.startsWith("+++") || rawLine.startsWith("---")) continue;
+
+    if (rawLine.startsWith("+")) {
+      current.lines.push({ added: true, content: rawLine.slice(1), newLine });
+      newLine++;
+    } else if (rawLine.startsWith("-")) {
+      continue;
+    } else {
+      if (newLine > 0) newLine++;
+    }
+  }
+
+  return files;
 }
 
 function truncate(value: string, maxChars: number): string {

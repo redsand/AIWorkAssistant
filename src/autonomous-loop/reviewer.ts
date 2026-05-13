@@ -303,7 +303,7 @@ function getStringMetadata(output: WorkOutput, key: string): string | undefined 
 function semanticFindingToCheck(finding: SemanticFinding): CheckResult {
   return {
     name: `semantic-${finding.category}`,
-    passed: false,
+    passed: finding.severity === 'info',
     score: semanticFindingScore(finding.severity),
     message: `${finding.severity.toUpperCase()} ${finding.file}${finding.line ? `:${finding.line}` : ''}: ${finding.message}`,
   };
@@ -319,5 +319,7 @@ function semanticFindingScore(severity: SemanticFinding['severity']): number {
       return 0.6;
     case 'low':
       return 0.85;
+    case 'info':
+      return 1;
   }
 }
