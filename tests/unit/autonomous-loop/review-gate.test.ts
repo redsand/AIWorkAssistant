@@ -4,7 +4,9 @@ import {
   formatGateBlockComment,
   initReviewGateState,
   updateGateState,
+  DEFAULT_GATE_CONFIG,
   type ReviewGateFinding,
+  type ReviewGateConfig,
 } from "../../../src/autonomous-loop/review-gate";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -156,6 +158,94 @@ describe("reviewGate", () => {
       expect(result.highCount).toBe(2);
       expect(result.blockedBy).toHaveLength(3);
     });
+  });
+});
+
+// ── ReviewGateConfig ──────────────────────────────────────────────────────────
+
+describe("reviewGate — config-driven blocking", () => {
+  const mediumSecurityFinding: ReviewGateFinding = {
+    severity: "medium",
+    category: "security",
+    file: "src/session.ts",
+    message: "Session cookie sameSite='none' allows CSRF",
+  };
+
+  const lowSecurityFinding: ReviewGateFinding = {
+    severity: "low",
+    category: "security",
+    file: "src/headers.ts",
+    message: "Missing Strict-Transport-Security header",
+  };
+
+  const mediumQualityFinding: ReviewGateFinding = {
+    severity: "medium",
+    category: "quality",
+    file: "src/utils.ts",
+    message: "Missing error handling in retry logic",
+  };
+
+  it("medium-severity finding with default config → NOT blocked", () => {
+    const result = reviewGate([mediumQualityFinding], false, true);
+    expect(result.canMarkDone).toBe(true);
+    expect(result.blockedBy).toHaveLength(0);
+  });
+
+  it("medium-severity security finding with default config → blocked via alwaysBlockCategories", () => {
+    const result = reviewGate([mediumSecurityFinding], false, true);
+    expect(result.canMarkDone).toBe(false);
+    expect(result.blockedBy).toHaveLength(1);
+    expect(result.blockedBy[0]).toContain("MEDIUM");
+    expect(result.blockedBy[0]).toContain("src/session.ts");
+  });
+
+  it("medium-severity finding with blockOnSeverity 'medium' → blocked", () => {
+    const config: ReviewGateConfig = { ...DEFAULT_GATE_CONFIG, blockOnSeverity: "medium" };
+    const result = reviewGate([mediumQualityFinding], false, true, config);
+    expect(result.canMarkDone).toBe(false);
+    expect(result.blockedBy).toHaveLength(1);
+  });
+
+  it("low-severity finding with category 'security' → blocked via alwaysBlockCategories", () => {
+    const result = reviewGate([lowSecurityFinding], false, true);
+    expect(result.canMarkDone).toBe(false);
+    expect(result.blockedBy).toHaveLength(1);
+    expect(result.blockedBy[0]).toContain("LOW");
+    expect(result.blockedBy[0]).toContain("src/headers.ts");
+  });
+
+  it("high-severity finding with default config → blocked", () => {
+    const result = reviewGate([highFinding], false, true);
+    expect(result.canMarkDone).toBe(false);
+    expect(result.highCount).toBe(1);
+  });
+
+  it("empty alwaysBlockCategories skips category blocking", () => {
+    const config: ReviewGateConfig = { ...DEFAULT_GATE_CONFIG, alwaysBlockCategories: [] };
+    const result = reviewGate([lowSecurityFinding], false, true, config);
+    expect(result.canMarkDone).toBe(true);
+  });
+
+  it("blockOnNoReview: false allows Done without a review", () => {
+    const config: ReviewGateConfig = { ...DEFAULT_GATE_CONFIG, blockOnNoReview: false };
+    const result = reviewGate([], false, false, config);
+    expect(result.canMarkDone).toBe(true);
+  });
+
+  it("mixed security and non-security medium findings — only security is blocked", () => {
+    const result = reviewGate([mediumSecurityFinding, mediumQualityFinding], false, true);
+    expect(result.canMarkDone).toBe(false);
+    expect(result.blockedBy).toHaveLength(1);
+    expect(result.blockedBy[0]).toContain("src/session.ts");
+  });
+
+  it("formatGateBlockComment counts 'other' blocked findings correctly", () => {
+    const result = reviewGate([lowSecurityFinding], false, true);
+    const comment = formatGateBlockComment(result);
+    expect(comment).toContain("Cannot mark as Done");
+    expect(comment).toContain("other");
+    expect(comment).toContain("src/headers.ts");
+    expect(comment).toContain("LOW");
   });
 });
 
