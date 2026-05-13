@@ -1382,6 +1382,31 @@ export class GitlabClient {
     }
   }
 
+  async addIssueNote(
+    projectId: number | string | undefined,
+    issueIid: number,
+    body: string,
+  ): Promise<void> {
+    if (!this.isConfigured()) {
+      throw new Error("GitLab client not configured");
+    }
+
+    const resolvedId = this.resolveProjectId(projectId);
+
+    try {
+      console.log(`[GitLab] Adding note to issue #${issueIid} in project ${resolvedId}`);
+      await this.client.post(
+        `/api/v4/projects/${resolvedId}/issues/${issueIid}/notes`,
+        { body },
+      );
+      console.log(`[GitLab] Note added to issue #${issueIid}`);
+    } catch (error) {
+      throw new Error(
+        `Failed to add note to issue #${issueIid}: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
   async listIssueNotes(
     projectId: number | string | undefined,
     issueIid: number,

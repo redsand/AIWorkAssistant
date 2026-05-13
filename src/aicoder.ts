@@ -10,6 +10,7 @@ import { prioritizeItems } from "./integrations/ollama-launcher/priority-sorter"
 import { type TicketSourceType, SourceResolver } from "./integrations/source-resolver";
 import { jiraClient } from "./integrations/jira/jira-client";
 import { gitlabClient } from "./integrations/gitlab/gitlab-client";
+import { githubClient } from "./integrations/github/github-client";
 import { agentRunDatabase } from "./agent-runs/database";
 import { createAgentRunsClient } from "./agent-runs/client";
 import type { AgentRunStepCreate } from "./agent-runs/types";
@@ -2700,6 +2701,57 @@ async function focusedProcessWorkItemInner(
   await runReviewLoop(cfg, item, ghToken, owner, repo, prNumber);
 }
 
+/**
+ * After an MR/PR is merged, close the originating issue on the source platform.
+ * Jira: transition to Done + post completion comment.
+ * GitLab/GitHub: close the issue + post completion comment.
+ * Failures are non-fatal — logged but do not abort the run.
+ */
+async function closeSourceIssue(
+  cfg: ServerConfig,
+  item: WorkItem,
+  prNumber: number,
+): Promise<void> {
+  const platform = detectRemotePlatform(WORKSPACE);
+  const mrLabel = platform === "gitlab" ? `MR !${prNumber}` : `PR #${prNumber}`;
+  const completionComment =
+    `✅ Autonomous loop complete — ${mrLabel} merged to ${getBaseBranch()}`;
+
+  try {
+    if (cfg.source === "jira") {
+      if (!jiraClient.isConfigured()) {
+        runLogger.logGit("WARN", `Jira not configured — skipping ticket transition for ${item.id}`);
+        return;
+      }
+      await jiraClient.addComment(item.id, completionComment);
+      const transitions = await jiraClient.getTransitions(item.id);
+      const closeNames = ["done", "completed", "resolved", "closed"];
+      const doneTransition = transitions.find((t) =>
+        closeNames.some((n) => t.name.toLowerCase().includes(n)),
+      );
+      if (doneTransition) {
+        await jiraClient.transitionIssue(item.id, doneTransition.id);
+        runLogger.logWork(`Transitioned Jira ${item.id} to "${doneTransition.name}"`);
+      } else {
+        runLogger.logGit("WARN", `No Done transition found for ${item.id} — available: ${transitions.map((t) => t.name).join(", ")}`);
+      }
+    } else if (cfg.source === "gitlab" && gitlabClient.isConfigured()) {
+      const projectId = getGitLabProjectFromRemote(WORKSPACE) || item.repo || cfg.repo;
+      await gitlabClient.addIssueNote(projectId, item.number, completionComment);
+      await gitlabClient.editIssue(projectId, item.number, { stateEvent: "close" });
+      runLogger.logWork(`Closed GitLab issue #${item.number}`);
+    } else if (cfg.source === "github") {
+      await githubClient.addIssueComment(item.number, completionComment, item.owner, item.repo);
+      await githubClient.updateIssue(item.number, { state: "closed" }, item.owner, item.repo);
+      runLogger.logWork(`Closed GitHub issue #${item.number}`);
+    }
+  } catch (error) {
+    runLogger.logError(
+      `Failed to close source issue after merge: ${error instanceof Error ? error.message : "Unknown error"}`,
+    );
+  }
+}
+
 async function runReviewLoop(
   cfg: ServerConfig,
   item: WorkItem,
@@ -2851,6 +2903,7 @@ async function runReviewLoop(
       clearReviewGateState(); // All findings resolved — clear the gate
       forceCheckout(getBaseBranch(), WORKSPACE);
       gitRun(["pull", "--ff-only", "origin", getBaseBranch()], WORKSPACE);
+      await closeSourceIssue(cfg, item, prNumber);
       return;
     }
 

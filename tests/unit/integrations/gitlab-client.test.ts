@@ -365,7 +365,7 @@ describe("GitlabClient", () => {
       expect(mr.state).toBe("merged");
       expect(mockPut).toHaveBeenCalledWith(
         "/api/v4/projects/siem/merge_requests/5/merge",
-        {},
+        expect.objectContaining({ merge_when_pipeline_succeeds: false }),
       );
     });
 
@@ -649,6 +649,50 @@ describe("GitlabClient", () => {
 
       const valid = await client.validateConfig();
       expect(valid).toBe(false);
+    });
+  });
+
+  describe("addIssueNote()", () => {
+    it("should post a note to the issue", async () => {
+      const { client, mockPost } = createMockedClient();
+      mockPost.mockResolvedValue({ data: { id: 1 } });
+
+      await client.addIssueNote("siem", 42, "✅ Autonomous loop complete");
+
+      expect(mockPost).toHaveBeenCalledWith(
+        "/api/v4/projects/siem/issues/42/notes",
+        { body: "✅ Autonomous loop complete" },
+      );
+    });
+
+    it("should use default project when no projectId given", async () => {
+      const { client, mockPost } = createMockedClient();
+      mockPost.mockResolvedValue({ data: {} });
+
+      await client.addIssueNote(undefined, 7, "done");
+
+      expect(mockPost).toHaveBeenCalledWith(
+        "/api/v4/projects/siem/issues/7/notes",
+        { body: "done" },
+      );
+    });
+
+    it("should throw when not configured", async () => {
+      const { client } = createMockedClient();
+      (client as any).token = "";
+
+      await expect(client.addIssueNote("siem", 1, "msg")).rejects.toThrow(
+        "GitLab client not configured",
+      );
+    });
+
+    it("should throw on API error", async () => {
+      const { client, mockPost } = createMockedClient();
+      mockPost.mockRejectedValue(new Error("Forbidden"));
+
+      await expect(client.addIssueNote("siem", 1, "msg")).rejects.toThrow(
+        "Failed to add note",
+      );
     });
   });
 });
