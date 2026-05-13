@@ -60,7 +60,7 @@ Options:
   --repo <name>         Comma-separated repos/projects to watch (overrides REVIEW_REPOS)
   --owner <name>        GitHub owner (overrides GITHUB_DEFAULT_OWNER)
   --gitlab-project <id> GitLab project path or ID (overrides GITLAB_DEFAULT_PROJECT)
-  --poll-ms <ms>        Poll interval in milliseconds (default: 30000)
+  --poll-ms <ms>        Poll interval in milliseconds (default: 30000); use 0 for one-shot (run once and exit)
   --help                 Show this help
 
 Remote config (fetches everything else from AIWorkAssistant):
@@ -1237,6 +1237,10 @@ async function main(): Promise<void> {
       await pollMergeRequests(config);
     } catch (err) {
       console.error("[ERROR]", err);
+    }
+    if (config.pollIntervalMs === 0) {
+      log.config("poll-ms=0: one-shot mode — exiting after first cycle");
+      break;
     }
     await new Promise((r) => setTimeout(r, config.pollIntervalMs));
   }

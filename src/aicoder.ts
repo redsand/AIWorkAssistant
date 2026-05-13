@@ -47,6 +47,7 @@ Options:
   --skip-agent        Skip agent execution — commit/test/push existing changes only
   --skip-tests        Skip all tests and coverage checks — just commit and push
   --skip-prompt-check Pick up tickets even without a ## Coding Prompt section (uses ticket body as prompt)
+  --skip-poll         Run one work cycle and exit without polling (useful for manual testing)
   --resume-run        Resume from saved run state (if available)
   --discard-run       Discard saved run state and start fresh
   -f, --force         Force re-processing of an already-processed issue
@@ -79,6 +80,8 @@ Remote config (fetches everything else from AIWorkAssistant):
       out["skip-tests"] = "true";
     } else if (argv[i] === "--skip-prompt-check") {
       out["skip-prompt-check"] = "true";
+    } else if (argv[i] === "--skip-poll") {
+      out["skip-poll"] = "true";
     } else if (argv[i] === "--resume-run") {
       out["resume-run"] = "true";
     } else if (argv[i] === "--discard-run") {
@@ -160,6 +163,7 @@ const TARGET_ISSUE_KEY = ARGV.issue || null;
 const PUBLISH_BRANCH = ARGV.publish || null;
 const BASE_BRANCH_CANDIDATES = [ARGV.base || process.env.AICODER_BASE_BRANCH, "main", "master"].filter(Boolean) as string[];
 const FOCUSED_MODE = !("poll" in ARGV || process.env.AICODER_POLL_MODE === "true");
+const SKIP_POLL = "skip-poll" in ARGV || process.env.AICODER_SKIP_POLL === "true";
 const MAX_REWORK = parseInt(ARGV["max-rework"] || process.env.AICODER_MAX_REWORK || "10", 10);
 const REVIEW_POLL_MS = parseInt(ARGV["review-poll-ms"] || process.env.AICODER_REVIEW_POLL_MS || "30000", 10);
 const WAIT_FOR_DEPS = "wait-for-deps" in ARGV || process.env.AICODER_WAIT_FOR_DEPS === "true";
@@ -3486,6 +3490,10 @@ async function focusedLoop(cfg: ServerConfig): Promise<void> {
       runLogger.logError((err as Error).message);
     }
 
+    if (SKIP_POLL) {
+      runLogger.log("STOP", "skip-poll: exiting after one cycle");
+      break;
+    }
     await new Promise((r) => setTimeout(r, POLL_MS));
   }
 }
@@ -3947,6 +3955,10 @@ async function pollLoop(cfg: ServerConfig): Promise<void> {
       runLogger.logError((err as Error).message);
     }
 
+    if (SKIP_POLL) {
+      runLogger.log("STOP", "skip-poll: exiting after one cycle");
+      break;
+    }
     await new Promise((r) => setTimeout(r, POLL_MS));
   }
 }
