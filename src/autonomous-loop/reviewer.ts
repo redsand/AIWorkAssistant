@@ -12,6 +12,12 @@
  */
 
 import { EventEmitter } from 'events';
+import { createHash } from 'crypto';
+import {
+  semanticReview,
+  type SemanticFinding,
+  type SemanticReviewConfig,
+} from './semantic-review';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -24,6 +30,8 @@ export interface ReviewerConfig {
   humanReviewThreshold?: number;
   /** Maximum items to review per cycle (default: 50) */
   batchSize?: number;
+  /** LLM semantic review config. Set to false to disable. */
+  semanticReview?: SemanticReviewConfig | false;
 }
 
 export interface WorkOutput {
@@ -38,6 +46,7 @@ export interface ReviewResult {
   level: 'auto' | 'flag' | 'block';
   score: number;
   checks: CheckResult[];
+  semanticFindings: SemanticFinding[];
   decidedAt: string;
 }
 
@@ -102,8 +111,9 @@ const BUILTIN_CHECKS: ((output: WorkOutput) => CheckResult)[] = [
 
 export class AutonomousLoopReviewer extends EventEmitter {
   private state: ReviewerState = 'idle';
-  private readonly config: Required<ReviewerConfig>;
+  private readonly config: Required<Omit<ReviewerConfig, 'semanticReview'>> & Pick<ReviewerConfig, 'semanticReview'>;
   private readonly customChecks: ((output: WorkOutput) => CheckResult)[] = [];
+  private readonly seenSemanticFindingHashes = new Set<string>();
 
   constructor(config?: ReviewerConfig) {
     super();
@@ -111,6 +121,7 @@ export class AutonomousLoopReviewer extends EventEmitter {
       autoApproveThreshold: config?.autoApproveThreshold ?? 0.8,
       humanReviewThreshold: config?.humanReviewThreshold ?? 0.4,
       batchSize: config?.batchSize ?? 50,
+      semanticReview: config?.semanticReview,
     };
   }
 
@@ -138,7 +149,7 @@ export class AutonomousLoopReviewer extends EventEmitter {
     const results: ReviewResult[] = [];
 
     for (const output of batch) {
-      const result = this.reviewSingle(output);
+      const result = await this.reviewSingle(output);
       results.push(result);
       this.emit('item-reviewed', result);
     }
@@ -164,9 +175,47 @@ export class AutonomousLoopReviewer extends EventEmitter {
   // Internals
   // -----------------------------------------------------------------------
 
-  private reviewSingle(output: WorkOutput): ReviewResult {
+  private async reviewSingle(output: WorkOutput): Promise<ReviewResult> {
     const allChecks = [...BUILTIN_CHECKS, ...this.customChecks];
     const checks = allChecks.map((check) => check(output));
+    const semanticFindings: SemanticFinding[] = [];
+
+    if (checks.every((check) => check.passed)) {
+      const semanticConfig = this.config.semanticReview;
+      const diff = getStringMetadata(output, 'diff') ?? output.content;
+      const issueContext = getStringMetadata(output, 'issueContext') ?? getStringMetadata(output, 'issue') ?? '';
+
+      if (semanticConfig !== false && (diff.trim() || issueContext.trim())) {
+        try {
+          const semanticResult = await semanticReview(diff, issueContext, semanticConfig ?? defaultSemanticReviewConfig());
+          const newFindings = semanticResult.findings.filter((finding) => {
+            const hash = hashSemanticFinding(finding);
+            if (this.seenSemanticFindingHashes.has(hash)) return false;
+            this.seenSemanticFindingHashes.add(hash);
+            return true;
+          });
+
+          semanticFindings.push(...newFindings);
+          checks.push(...newFindings.map(semanticFindingToCheck));
+
+          if (semanticResult.recommendation === 'reject' && semanticResult.findings.length === 0) {
+            checks.push({
+              name: 'semantic-review',
+              passed: false,
+              score: 0,
+              message: semanticResult.summary,
+            });
+          }
+        } catch (error) {
+          checks.push({
+            name: 'semantic-review',
+            passed: false,
+            score: 0.6,
+            message: error instanceof Error ? error.message : 'Semantic review failed',
+          });
+        }
+      }
+    }
 
     const totalScore = checks.reduce((sum, c) => sum + c.score, 0) / checks.length;
 
@@ -179,12 +228,68 @@ export class AutonomousLoopReviewer extends EventEmitter {
       level = 'block';
     }
 
+    if (semanticFindings.some((finding) => finding.severity === 'critical') && level === 'auto') {
+      level = 'flag';
+    }
+
+    if (semanticFindings.some((finding) => finding.severity === 'high') && level === 'auto') {
+      level = 'flag';
+    }
+
     return {
       workId: output.id,
       level,
       score: Math.round(totalScore * 100) / 100,
       checks,
+      semanticFindings,
       decidedAt: new Date().toISOString(),
     };
   }
+}
+
+function defaultSemanticReviewConfig(): SemanticReviewConfig {
+  return {
+    model: 'glm-5',
+    maxTokens: 16000,
+    timeoutMs: 120000,
+    includeDiff: true,
+    includeIssueContext: true,
+  };
+}
+
+function getStringMetadata(output: WorkOutput, key: string): string | undefined {
+  const value = output.metadata?.[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function semanticFindingToCheck(finding: SemanticFinding): CheckResult {
+  return {
+    name: `semantic-${finding.category}`,
+    passed: false,
+    score: semanticFindingScore(finding.severity),
+    message: `${finding.severity.toUpperCase()} ${finding.file}${finding.line ? `:${finding.line}` : ''}: ${finding.message}`,
+  };
+}
+
+function semanticFindingScore(severity: SemanticFinding['severity']): number {
+  switch (severity) {
+    case 'critical':
+      return 0;
+    case 'high':
+      return 0.2;
+    case 'medium':
+      return 0.6;
+    case 'low':
+      return 0.85;
+  }
+}
+
+function hashSemanticFinding(finding: SemanticFinding): string {
+  const key = [
+    finding.file.trim(),
+    finding.severity,
+    finding.category,
+    finding.message.trim(),
+  ].join('\0');
+  return createHash('sha256').update(key).digest('hex');
 }
