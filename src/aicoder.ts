@@ -29,6 +29,15 @@ import {
   EXIT_WHITESPACE_ONLY,
   EXIT_META_ONLY,
 } from "./aicoder-pipeline";
+import {
+  initConvergenceState,
+  recordRoundFindings,
+  checkConvergence,
+  formatConvergenceReport,
+  DEFAULT_CONVERGENCE_CONFIG,
+  type ConvergenceConfig,
+  type ConvergenceState,
+} from "./autonomous-loop/convergence";
 
 // Re-export so callers and the orchestrator can import from either module.
 export {
@@ -292,6 +301,16 @@ interface RunState {
   prNumber?: number;
   reworkCount?: number;
   sinceTimestamp?: string;
+  convergenceState?: {
+    roundNumber: number;
+    previousFindings: string[];
+    identicalCount: Record<string, number>;
+    emptyPRCount: number;
+    findingsResolved: number;
+    findingsNew: number;
+    noProgressCount: number;
+    lastRoundFindings: string[];
+  };
   apiUrl: string;
   apiKey: string;
   startedAt: string;
@@ -3845,6 +3864,60 @@ async function runReviewLoop(
   let sinceTimestamp = reviewState?.sinceTimestamp ?? new Date().toISOString();
   let lastReworkPrompt: string | null = null;
 
+  // Convergence state: tracks repeated findings, empty PRs, and no-progress rounds
+  let convergenceState: ConvergenceState = reviewState?.convergenceState
+    ? {
+        ...reviewState.convergenceState,
+        identicalCount: new Map(Object.entries(reviewState.convergenceState.identicalCount)),
+        lastRoundFindings: new Set(reviewState.convergenceState.lastRoundFindings),
+      }
+    : initConvergenceState();
+  const convergenceConfig: ConvergenceConfig = { ...DEFAULT_CONVERGENCE_CONFIG };
+
+  // Serialize convergence state for RunState persistence (Map/Set → plain objects)
+  function serializeConvergence(cs: ConvergenceState): RunState["convergenceState"] {
+    return {
+      roundNumber: cs.roundNumber,
+      previousFindings: cs.previousFindings,
+      identicalCount: Object.fromEntries(cs.identicalCount),
+      emptyPRCount: cs.emptyPRCount,
+      findingsResolved: cs.findingsResolved,
+      findingsNew: cs.findingsNew,
+      noProgressCount: cs.noProgressCount,
+      lastRoundFindings: [...cs.lastRoundFindings],
+    };
+  }
+
+  // Extract finding-like hashes from a rework prompt string.
+  // Looks for file paths (e.g., "src/foo.ts") and severity keywords to produce stable hashes.
+  function extractFindingsFromPrompt(prompt: string): Array<{ file?: string; severity?: string; category?: string }> {
+    const findings: Array<{ file?: string; severity?: string; category?: string }> = [];
+    // Match patterns like "src/path/file.ts" which appear in review findings
+    const fileRegex = /(?:^|\s|`)([\w./-]+\.(?:ts|js|py|rs|go|java|rb|yml|yaml|json|md))\b/gim;
+    const severityRegex = /\b(critical|high|medium|low|info|blocker|major|minor)\b/gi;
+    const files = new Set<string>();
+    let m: RegExpExecArray | null;
+    while ((m = fileRegex.exec(prompt)) !== null) {
+      files.add(m[1]);
+    }
+    const severities = new Set<string>();
+    while ((m = severityRegex.exec(prompt)) !== null) {
+      severities.add(m[1].toLowerCase());
+    }
+    // If we found files, create one finding per file+severity combo
+    if (files.size > 0) {
+      for (const file of files) {
+        const sevIter = severities.values();
+        const firstSev = sevIter.next().value;
+        findings.push({ file, severity: firstSev || "high", category: "review" });
+      }
+    } else {
+      // No files found — create a single generic finding from the prompt hash
+      findings.push({ file: undefined, severity: "high", category: "generic" });
+    }
+    return findings;
+  }
+
   // Checkpoint: entered review polling
   const currentState = reviewState || {
     issueKey: item.id,
@@ -3865,7 +3938,7 @@ async function runReviewLoop(
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-  saveRunState({ ...currentState, checkpoint: "review_polling", prNumber, reworkCount, sinceTimestamp });
+  saveRunState({ ...currentState, checkpoint: "review_polling", prNumber, reworkCount, sinceTimestamp, convergenceState: serializeConvergence(convergenceState) });
 
   while (true) {
     // Poll for review result using platform-appropriate method
@@ -3985,6 +4058,28 @@ async function runReviewLoop(
       }
       lastReworkPrompt = reworkPrompt;
 
+      // Convergence: record findings from this round and check if loop should stop
+      const roundFindings = extractFindingsFromPrompt(reworkPrompt);
+      convergenceState = recordRoundFindings(convergenceState, roundFindings, true);
+      const convergence = checkConvergence(convergenceState, convergenceConfig);
+      runLogger.logWork(`Convergence check (round ${convergenceState.roundNumber}): ${convergence.reason} — ${convergence.message}`);
+      if (convergence.shouldStop) {
+        runLogger.logError(`Convergence detected (${convergence.reason}): ${convergence.message}`);
+        const report = formatConvergenceReport(convergence, convergenceState, convergenceConfig);
+        runLogger.logWork(report);
+        lastPipelineExitCode = convergence.reason === "empty_prs" ? EXIT_NO_CHANGES : EXIT_MAX_REWORK;
+        // Post convergence report to Jira if configured
+        if (jiraClient.isConfigured()) {
+          try {
+            await jiraClient.addComment(item.id, report);
+          } catch {
+            // Non-fatal: convergence report is best-effort
+          }
+        }
+        clearRunState();
+        return;
+      }
+
       // Show a summary of the rework prompt so the user can verify we're working on the right feedback
       const promptPreview = reworkPrompt.length > 500
         ? reworkPrompt.slice(0, 500) + `\n... (${reworkPrompt.length} chars total)`
@@ -4004,15 +4099,43 @@ async function runReviewLoop(
       }
 
       // Checkpoint: rework agent complete
-      saveRunState({ ...currentState, checkpoint: "rework_agent_complete", reworkCount, sessionId: reworkResult.sessionId });
+      saveRunState({ ...currentState, checkpoint: "rework_agent_complete", reworkCount, sessionId: reworkResult.sessionId, convergenceState: serializeConvergence(convergenceState) });
 
       if (!stageAndCommit(`[AI] rework #${reworkCount}: ${item.title}`)) {
         runLogger.logError("Rework stage/commit failed");
         return;
       }
 
+      // Convergence: check if rework produced actual changes (empty PR detection)
+      const baseBranch = getBaseBranch();
+      const reworkDiffStat = gitRunWithOutput(["diff", `${baseBranch}...HEAD`, "--stat"], WORKSPACE);
+      const reworkDiffContent = gitRunWithOutput(["diff", `${baseBranch}...HEAD`], WORKSPACE);
+      const reworkValidation = validateDiffBeforePush(
+        reworkDiffStat.ok ? reworkDiffStat.stdout : "",
+        reworkDiffContent.ok ? reworkDiffContent.stdout : "",
+      );
+      const prHadChanges = reworkValidation.valid;
+      if (!prHadChanges) {
+        runLogger.logError(`Rework produced no meaningful changes (${reworkValidation.reason}) — empty PR cycle ${convergenceState.emptyPRCount + 1}`);
+      }
+      convergenceState = recordRoundFindings(convergenceState, [], prHadChanges);
+      if (!prHadChanges) {
+        const convergence = checkConvergence(convergenceState, convergenceConfig);
+        if (convergence.shouldStop) {
+          runLogger.logError(`Convergence detected (${convergence.reason}): ${convergence.message}`);
+          lastPipelineExitCode = EXIT_NO_CHANGES;
+          const report = formatConvergenceReport(convergence, convergenceState, convergenceConfig);
+          runLogger.logWork(report);
+          if (jiraClient.isConfigured()) {
+            try { await jiraClient.addComment(item.id, report); } catch { /* best-effort */ }
+          }
+          clearRunState();
+          return;
+        }
+      }
+
       // Checkpoint: rework committed
-      saveRunState({ ...currentState, checkpoint: "rework_committed", reworkCount });
+      saveRunState({ ...currentState, checkpoint: "rework_committed", reworkCount, convergenceState: serializeConvergence(convergenceState) });
 
       // TDD: Tiered test gate after rework — fix failing tests if possible
       const reworkTestPassed = await fixReworkTests(item, reworkCount);
@@ -4022,7 +4145,7 @@ async function runReviewLoop(
       }
 
       // Checkpoint: rework tests passed
-      saveRunState({ ...currentState, checkpoint: "rework_tests_passed", reworkCount });
+      saveRunState({ ...currentState, checkpoint: "rework_tests_passed", reworkCount, convergenceState: serializeConvergence(convergenceState) });
 
       if (!pushBranch(item.suggestedBranch, true)) {
         runLogger.logError("Rework push failed");
@@ -4031,7 +4154,7 @@ async function runReviewLoop(
 
       // Checkpoint: rework pushed — update state for review loop resumption
       sinceTimestamp = new Date().toISOString();
-      saveRunState({ ...currentState, checkpoint: "rework_pushed", reworkCount, sinceTimestamp, prNumber });
+      saveRunState({ ...currentState, checkpoint: "rework_pushed", reworkCount, sinceTimestamp, prNumber, convergenceState: serializeConvergence(convergenceState) });
 
       runLogger.logConfig(`Rework pushed for ${label} #${prNumber} — waiting for review again`);
       continue;
