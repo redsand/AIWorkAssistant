@@ -57,6 +57,14 @@ vi.mock("../../../src/integrations/jira/jira-service", () => ({
   },
 }));
 
+vi.mock("../../../src/autonomous-loop/review-gate-state", () => ({
+  loadReviewGateState: vi.fn(() => ({
+    lastFindings: [],
+    reviewOccurred: true,
+    forceDoneUsed: false,
+  })),
+}));
+
 vi.mock("../../../src/integrations/gitlab/gitlab-client", () => ({
   gitlabClient: {
     getMergeRequests: vi.fn(),
