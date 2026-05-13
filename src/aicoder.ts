@@ -3048,13 +3048,13 @@ async function runReviewLoop(
 
       // Convergence: check if rework produced actual changes (empty PR detection)
       const baseBranch = getBaseBranch();
-      const reworkDiffStat = gitRunWithOutput(["diff", `${baseBranch}...HEAD`, "--stat"], WORKSPACE);
-      const reworkDiffContent = gitRunWithOutput(["diff", `${baseBranch}...HEAD`], WORKSPACE);
-      const reworkValidation = validateDiffBeforePush(
+      let reworkDiffStat = gitRunWithOutput(["diff", `${baseBranch}...HEAD`, "--stat"], WORKSPACE);
+      let reworkDiffContent = gitRunWithOutput(["diff", `${baseBranch}...HEAD`], WORKSPACE);
+      let reworkValidation = validateDiffBeforePush(
         reworkDiffStat.ok ? reworkDiffStat.stdout : "",
         reworkDiffContent.ok ? reworkDiffContent.stdout : "",
       );
-      const prHadChanges = reworkValidation.valid;
+      let prHadChanges = reworkValidation.valid;
       if (!prHadChanges) {
         runLogger.logError(`Rework produced no meaningful changes (${reworkValidation.reason}) — empty PR cycle ${convergenceState.emptyPRCount + 1}`);
         previousFailures.push("EMPTY_PR");
@@ -3071,11 +3071,36 @@ async function runReviewLoop(
               diffFromLastAttempt: reworkDiffContent.ok ? reworkDiffContent.stdout : "",
             }));
             if (!decision.shouldEscalate) {
-              runLogger.logWork(`Empty PR convergence selected prompt strategy ${decision.strategy}; waiting for the next rework cycle to apply it`);
-              saveRunState({ ...currentState, checkpoint: "rework_agent_complete", reworkCount, convergenceState: serializeConvergence(convergenceState), promptStrategiesTried: [...promptStrategiesTried] });
-              continue;
+              recordPromptStrategy(decision.strategy);
+              runLogger.logWork(`Empty PR convergence selected prompt strategy ${decision.strategy}; retrying immediately`);
+              const retryResult = await runAgent(decision.prompt);
+              if (!retryResult.finDetected && retryResult.exitCode !== 0) {
+                runLogger.logError(`Recovery rework agent exited with code ${retryResult.exitCode} — stopping`);
+                return;
+              }
+              saveRunState({ ...currentState, checkpoint: "rework_agent_complete", reworkCount, sessionId: retryResult.sessionId, convergenceState: serializeConvergence(convergenceState), promptStrategiesTried: [...promptStrategiesTried] });
+              if (!stageAndCommit(`[AI] rework #${reworkCount} recovery: ${item.title}`)) {
+                runLogger.logError("Recovery rework stage/commit failed");
+                return;
+              }
+              reworkDiffStat = gitRunWithOutput(["diff", `${baseBranch}...HEAD`, "--stat"], WORKSPACE);
+              reworkDiffContent = gitRunWithOutput(["diff", `${baseBranch}...HEAD`], WORKSPACE);
+              reworkValidation = validateDiffBeforePush(
+                reworkDiffStat.ok ? reworkDiffStat.stdout : "",
+                reworkDiffContent.ok ? reworkDiffContent.stdout : "",
+              );
+              prHadChanges = reworkValidation.valid;
+              if (prHadChanges) {
+                runLogger.logWork(`Recovery prompt strategy ${decision.strategy} produced meaningful changes`);
+              } else {
+                runLogger.logError(`Recovery prompt strategy ${decision.strategy} still produced no meaningful changes (${reworkValidation.reason})`);
+              }
             }
           }
+          if (prHadChanges) {
+            convergenceState = recordRoundFindings(convergenceState, [], true);
+            saveConvergenceState(convergenceState);
+          } else {
           runLogger.logError(`Convergence detected (${convergence.reason}): ${convergence.message}`);
           lastPipelineExitCode = EXIT_NO_CHANGES;
           const report = formatConvergenceReport(convergence, convergenceState, convergenceConfig);
@@ -3085,6 +3110,7 @@ async function runReviewLoop(
           }
           clearRunState();
           return;
+          }
         }
       }
 
