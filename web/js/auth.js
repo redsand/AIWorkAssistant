@@ -65,6 +65,7 @@ export async function login() {
   const { hideLoginOverlay } = await import("./ui.js");
   const { initializeChat } = await import("./chat.js");
   const { loadRoadmaps } = await import("./sidebar.js");
+  const { loadConversations } = await import("./conversations.js");
 
   const username = document.getElementById("username").value.trim();
   const password = document.getElementById("password").value;
@@ -106,6 +107,7 @@ export async function login() {
 
       initializeChat();
       loadRoadmaps();
+      loadConversations();
     } else {
       loginError.textContent = data.error || "Invalid credentials.";
       loginError.classList.add("visible");
