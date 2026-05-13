@@ -1,6 +1,6 @@
 import { FastifyInstance } from "fastify";
 import { agentRunDatabase, AgentRunDatabase } from "./database";
-import type { AgentRunStep, AgentRun, AgentRunStats } from "./types";
+import type { AgentRunStep, AgentRun, AgentRunStats, AgentRunCreateParams, AgentRunCompleteParams, AgentRunStepCreate } from "./types";
 
 /** Fields safe to expose in stripped step responses (no prompts, responses, or params) */
 type SafeStepFields = Pick<
@@ -225,4 +225,111 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
       return steps;
     },
   );
+
+  // ── Write endpoints (used by aicoder/reviewer to report runs) ─────────────
+
+  const API_KEY = process.env.AIWORKASSISTANT_API_KEY;
+
+  function authenticateWrite(request: any): boolean {
+    const auth = request.headers.authorization;
+    if (!auth) return false;
+    const token = auth.startsWith("Bearer ") ? auth.slice(7) : auth;
+    return token === API_KEY;
+  }
+
+  // POST /agent-runs — start a new run
+  fastify.post("/agent-runs", async (request, reply) => {
+    if (!authenticateWrite(request)) {
+      return reply.code(401).send({ error: "Invalid API key" });
+    }
+    const body = request.body as AgentRunCreateParams;
+    if (!body.userId || !body.mode) {
+      return reply.code(400).send({ error: "userId and mode are required" });
+    }
+    const run = db.startRun(body);
+    return reply.code(201).send(run);
+  });
+
+  // POST /agent-runs/:id/complete — mark run complete
+  fastify.post<{ Params: { id: string } }>(
+    "/agent-runs/:id/complete",
+    async (request, reply) => {
+      if (!authenticateWrite(request)) {
+        return reply.code(401).send({ error: "Invalid API key" });
+      }
+      const run = db.getRun(request.params.id);
+      if (!run) {
+        return reply.code(404).send({ error: "Run not found" });
+      }
+      const body = request.body as AgentRunCompleteParams;
+      db.completeRun(request.params.id, body);
+      return { success: true };
+    },
+  );
+
+  // POST /agent-runs/:id/fail — mark run failed
+  fastify.post<{ Params: { id: string } }>(
+    "/agent-runs/:id/fail",
+    async (request, reply) => {
+      if (!authenticateWrite(request)) {
+        return reply.code(401).send({ error: "Invalid API key" });
+      }
+      const run = db.getRun(request.params.id);
+      if (!run) {
+        return reply.code(404).send({ error: "Run not found" });
+      }
+      const body = request.body as { errorMessage: string };
+      if (!body.errorMessage) {
+        return reply.code(400).send({ error: "errorMessage is required" });
+      }
+      db.failRun(request.params.id, body.errorMessage);
+      return { success: true };
+    },
+  );
+
+  // POST /agent-runs/:id/steps — add a step
+  fastify.post<{ Params: { id: string } }>(
+    "/agent-runs/:id/steps",
+    async (request, reply) => {
+      if (!authenticateWrite(request)) {
+        return reply.code(401).send({ error: "Invalid API key" });
+      }
+      const run = db.getRun(request.params.id);
+      if (!run) {
+        return reply.code(404).send({ error: "Run not found" });
+      }
+      const body = request.body as AgentRunStepCreate;
+      if (!body.stepType || body.stepOrder == null) {
+        return reply.code(400).send({ error: "stepType and stepOrder are required" });
+      }
+      const step = db.addStep({ ...body, runId: request.params.id });
+      return reply.code(201).send(step);
+    },
+  );
+
+  // POST /agent-runs/:id/touch — update last_activity_at
+  fastify.post<{ Params: { id: string } }>(
+    "/agent-runs/:id/touch",
+    async (request, reply) => {
+      if (!authenticateWrite(request)) {
+        return reply.code(401).send({ error: "Invalid API key" });
+      }
+      const run = db.getRun(request.params.id);
+      if (!run) {
+        return reply.code(404).send({ error: "Run not found" });
+      }
+      db.touchRun(request.params.id);
+      return { success: true };
+    },
+  );
+
+  // POST /agent-runs/stale — mark stale runs as failed
+  fastify.post("/agent-runs/stale", async (request, reply) => {
+    if (!authenticateWrite(request)) {
+      return reply.code(401).send({ error: "Invalid API key" });
+    }
+    const body = request.body as { olderThanMinutes?: number };
+    const count = db.markStaleRunsAsFailed(body?.olderThanMinutes);
+    return { success: true, markedFailed: count };
+  });
 }

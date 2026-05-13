@@ -12,7 +12,9 @@ import { type TicketSourceType, type LookupMode, SourceResolver } from "./integr
 import { jiraClient } from "./integrations/jira/jira-client";
 import { gitlabClient } from "./integrations/gitlab/gitlab-client";
 import { agentRunDatabase } from "./agent-runs/database";
+import { createAgentRunsClient } from "./agent-runs/client";
 import type { AgentRunStepCreate } from "./agent-runs/types";
+import type { AgentRun as AgentRunRecord } from "./agent-runs/types";
 import type { ProviderType } from "./integrations/ollama-launcher";
 
 function parseArgv(): Record<string, string> {
@@ -2691,13 +2693,14 @@ function clearRunState(): void {
   }
 }
 
-// Agent-runs tracking: record aicoder steps to the database for API visibility
+// Agent-runs tracking: record aicoder steps via API (preferred) or direct DB (fallback)
 let currentRunStepOrder = 0;
+const agentRunsClient = createAgentRunsClient();
 
 function trackStep(runId: string, stepType: AgentRunStepCreate["stepType"], content: string, extra?: Partial<Pick<AgentRunStepCreate, "toolName" | "success" | "errorMessage" | "durationMs">>): void {
   try {
     currentRunStepOrder++;
-    agentRunDatabase.addStep({
+    const step: AgentRunStepCreate = {
       runId,
       stepType,
       toolName: extra?.toolName ?? null,
@@ -2707,10 +2710,31 @@ function trackStep(runId: string, stepType: AgentRunStepCreate["stepType"], cont
       errorMessage: extra?.errorMessage ?? null,
       durationMs: extra?.durationMs ?? null,
       stepOrder: currentRunStepOrder,
-    });
-    agentRunDatabase.touchRun(runId);
+    };
+    if (agentRunsClient) {
+      agentRunsClient.addStep(step).catch(() => {});
+    } else {
+      agentRunDatabase.addStep(step);
+      agentRunDatabase.touchRun(runId);
+    }
   } catch {
     // Non-fatal: tracking should never crash the aicoder
+  }
+}
+
+function completeRunTrack(runId: string, data: { model: string; toolLoopCount: number; totalTokens: number }): void {
+  if (agentRunsClient) {
+    agentRunsClient.completeRun(runId, data).catch(() => {});
+  } else {
+    agentRunDatabase.completeRun(runId, data);
+  }
+}
+
+function failRunTrack(runId: string, errorMessage: string): void {
+  if (agentRunsClient) {
+    agentRunsClient.failRun(runId, errorMessage).catch(() => {});
+  } else {
+    failRunTrack(runId, errorMessage);
   }
 }
 
@@ -2748,10 +2772,17 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
 
   // Create agent-runs record for API visibility
   currentRunStepOrder = 0;
-  const run = agentRunDatabase.startRun({
-    userId: "aicoder",
-    mode: `issue:${issueKey}`,
-  });
+  let run: AgentRunRecord;
+  if (agentRunsClient) {
+    const apiRun = await agentRunsClient.startRun({ userId: "aicoder", mode: `issue:${issueKey}` });
+    if (apiRun) {
+      run = apiRun;
+    } else {
+      run = agentRunDatabase.startRun({ userId: "aicoder", mode: `issue:${issueKey}` });
+    }
+  } else {
+    run = agentRunDatabase.startRun({ userId: "aicoder", mode: `issue:${issueKey}` });
+  }
   trackStep(run.id, "note", `Starting work on ${issueKey}: ${item.title}`);
 
   const startTime = Date.now();
@@ -2888,7 +2919,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     runLogger.logError(`Could not create branch ${branchName} — skipping`);
     runLogger.endRun(1);
     trackStep(run.id, "tool_call", `Branch checkout failed: ${branchName}`, { toolName: "git_checkout", success: false });
-    agentRunDatabase.failRun(run.id, `Could not create branch ${branchName}`);
+    failRunTrack(run.id, `Could not create branch ${branchName}`);
     return null;
   }
   trackStep(run.id, "tool_call", `Checked out branch: ${branchName}${fromBranch ? ` (from ${fromBranch})` : ""}`, { toolName: "git_checkout" });
@@ -2905,7 +2936,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     runLogger.endRun(1);
     // Don't save to processedIssues — allow retry on next aicoder cycle
     trackStep(run.id, "tool_call", "Baseline tests failed", { toolName: "test_baseline", success: false });
-    agentRunDatabase.failRun(run.id, "Baseline tests could not be fixed");
+    failRunTrack(run.id, "Baseline tests could not be fixed");
     return null;
   }
 
@@ -2941,7 +2972,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     runLogger.log(`WARN`, `Agent exited with code ${exitCode} and no FIN signal — skipping push`);
     runLogger.endRun(exitCode);
     // Don't save to processedIssues — allow retry on next aicoder cycle
-    agentRunDatabase.failRun(run.id, `Agent exited with code ${exitCode}, no FIN signal`);
+    failRunTrack(run.id, `Agent exited with code ${exitCode}, no FIN signal`);
     return null;
   }
 
@@ -2950,7 +2981,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     runLogger.endRun(1);
     // Don't save to processedIssues — allow retry on next aicoder cycle
     trackStep(run.id, "tool_call", "Stage & commit failed", { toolName: "git_commit", success: false });
-    agentRunDatabase.failRun(run.id, "Stage/commit failed");
+    failRunTrack(run.id, "Stage/commit failed");
     return null;
   }
   trackStep(run.id, "tool_call", "Staged and committed changes", { toolName: "git_commit" });
@@ -2972,7 +3003,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
       runLogger.endRun(1);
       // Don't save to processedIssues — allow retry on next aicoder cycle
       trackStep(run.id, "tool_call", `Unit tests ${unitResult.kind}`, { toolName: "test_unit", success: false, errorMessage: unitResult.kind });
-      agentRunDatabase.failRun(run.id, `Unit tests ${unitResult.kind}`);
+      failRunTrack(run.id, `Unit tests ${unitResult.kind}`);
       return null;
     }
     trackStep(run.id, "tool_call", "Unit tests passed", { toolName: "test_unit" });
@@ -2984,7 +3015,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
       runLogger.endRun(1);
       // Don't save to processedIssues — allow retry on next aicoder cycle
       trackStep(run.id, "tool_call", `Integration tests ${integrationResult.kind}`, { toolName: "test_integration", success: false, errorMessage: integrationResult.kind });
-      agentRunDatabase.failRun(run.id, `Integration tests ${integrationResult.kind}`);
+      failRunTrack(run.id, `Integration tests ${integrationResult.kind}`);
       return null;
     }
     trackStep(run.id, "tool_call", "Integration tests passed", { toolName: "test_integration" });
@@ -3000,7 +3031,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
         runLogger.endRun(1);
         // Don't save to processedIssues — allow retry on next aicoder cycle
         trackStep(run.id, "tool_call", `Coverage check ${coverageResult.kind}`, { toolName: "coverage", success: false });
-        agentRunDatabase.failRun(run.id, `Coverage check ${coverageResult.kind}`);
+        failRunTrack(run.id, `Coverage check ${coverageResult.kind}`);
         return null;
       }
     }
@@ -3020,14 +3051,14 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
         runLogger.logError(`Push failed after rebase — PR not created`);
         runLogger.endRun(1);
         trackStep(run.id, "tool_call", "Push failed after rebase", { toolName: "git_push", success: false });
-        agentRunDatabase.failRun(run.id, "Push failed after rebase");
+        failRunTrack(run.id, "Push failed after rebase");
         return null;
       }
     } else {
       runLogger.logError(`Rebase failed — PR not created`);
       runLogger.endRun(1);
       trackStep(run.id, "tool_call", "Rebase failed", { toolName: "git_rebase", success: false });
-      agentRunDatabase.failRun(run.id, "Rebase failed");
+      failRunTrack(run.id, "Rebase failed");
       return null;
     }
   }
@@ -3050,7 +3081,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   }
 
   const totalDuration = Date.now() - startTime;
-  agentRunDatabase.completeRun(run.id, { model: AGENT, toolLoopCount: currentRunStepOrder, totalTokens: 0 });
+  completeRunTrack(run.id, { model: AGENT, toolLoopCount: currentRunStepOrder, totalTokens: 0 });
   trackStep(run.id, "note", `Completed in ${(totalDuration / 1000).toFixed(1)}s${pr ? ` — PR #${pr.prNumber}` : ""}`);
   runLogger.endRun(exitCode);
   // Only mark as processed if PR/MR was successfully created
@@ -3884,9 +3915,15 @@ loadProcessedIssues();
 
 // Mark any stale aicoder runs (from a previous crash) as failed
 try {
-  const stale = agentRunDatabase.markStaleRunsAsFailed(30);
-  if (stale > 0) {
-    runLogger.logConfig(`Marked ${stale} stale agent run(s) as failed`);
+  if (agentRunsClient) {
+    agentRunsClient.markStaleRunsAsFailed(30).then((stale) => {
+      if (stale > 0) runLogger.logConfig(`Marked ${stale} stale agent run(s) as failed (via API)`);
+    }).catch(() => {});
+  } else {
+    const stale = agentRunDatabase.markStaleRunsAsFailed(30);
+    if (stale > 0) {
+      runLogger.logConfig(`Marked ${stale} stale agent run(s) as failed`);
+    }
   }
 } catch {
   // Non-fatal
