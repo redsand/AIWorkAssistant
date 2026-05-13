@@ -121,6 +121,17 @@ The agent can invoke tools based on user requests:
   },
   "approval": "required"
 }
+
+// Delete comment
+{
+  "tool": "jira.delete_comment",
+  "params": {
+    "key": "IR-101",
+    "commentId": "10234",
+    "dryRun": true
+  },
+  "approval": "required"
+}
 ```
 
 ### Engineering Tools

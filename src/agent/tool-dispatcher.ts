@@ -685,6 +685,42 @@ async function handleJiraGetComments(
   return { success: true, data: comments };
 }
 
+async function handleJiraDeleteComment(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  if (params.dryRun === true) {
+    return { success: true, dryRun: true, data: dryRunResult({
+      toolName: "jira.delete_comment",
+      summary: `Would delete comment ${params.commentId} from Jira issue ${params.key}`,
+      targetSystem: "jira",
+      changes: [
+        { field: "comment", description: `Delete comment ${params.commentId} from ${params.key}` },
+      ],
+      riskLevel: "high",
+      paramsPreview: { key: params.key, commentId: params.commentId },
+    }) };
+  }
+  if (!env.ENABLE_JIRA_TRANSITIONS) {
+    return { success: false, error: "Jira delete operations are disabled" };
+  }
+  if (!jiraClient.isConfigured()) {
+    return { success: false, error: "Jira client not configured" };
+  }
+
+  const key = params.key as string;
+  const commentId = params.commentId as string;
+  if (!key || !commentId) {
+    return { success: false, error: "key and commentId are required" };
+  }
+
+  await jiraClient.deleteComment(key, commentId);
+  return {
+    success: true,
+    data: { key, commentId, deleted: true },
+  };
+}
+
 async function handleJiraGetProject(
   params: Record<string, unknown>,
   userId: string,
@@ -5925,6 +5961,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "jira.search_issues": handleJiraSearchIssues,
   "jira.list_transitions": handleJiraListTransitions,
   "jira.get_comments": handleJiraGetComments,
+  "jira.delete_comment": handleJiraDeleteComment,
   "jira.get_project": handleJiraGetProject,
   "jira.list_projects": handleJiraListProjects,
   "gitlab.list_projects": handleGitlabListProjects,

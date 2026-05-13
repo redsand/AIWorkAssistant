@@ -542,6 +542,30 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     actionType: "jira.issue.read",
     riskLevel: "low",
   },
+  {
+    name: "jira.delete_comment",
+    description:
+      "Delete a comment from a Jira issue. Use with caution — this is irreversible. Requires approval before execution.",
+    params: {
+      key: {
+        type: "string",
+        description: "Jira issue key (e.g., IR-101)",
+        required: true,
+      },
+      commentId: {
+        type: "string",
+        description: "ID of the comment to delete",
+        required: true,
+      },
+      dryRun: {
+        type: "boolean",
+        description: "Preview what would happen without executing",
+        required: false,
+      },
+    },
+    actionType: "jira.comment.delete",
+    riskLevel: "high",
+  },
 
   // GitLab tools
   {

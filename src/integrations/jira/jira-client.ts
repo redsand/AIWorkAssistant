@@ -373,6 +373,36 @@ export class JiraClient {
     }
   }
 
+  async deleteComment(issueKey: string, commentId: string): Promise<void> {
+    if (!this.isConfigured()) {
+      throw new Error("Jira client not configured");
+    }
+
+    try {
+      console.log(`[Jira] Deleting comment ${commentId} from ${issueKey}`);
+      await this.client.delete(
+        `/rest/api/2/issue/${issueKey}/comment/${commentId}`,
+      );
+      console.log(`[Jira] Comment ${commentId} deleted from ${issueKey}`);
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        if (status === 404) {
+          throw new Error(
+            `Comment ${commentId} not found on issue ${issueKey}`,
+          );
+        } else if (status === 403) {
+          throw new Error(
+            `No permission to delete comment ${commentId} on issue ${issueKey}`,
+          );
+        }
+      }
+      throw new Error(
+        `Failed to delete comment ${commentId} from ${issueKey}: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
   /**
    * Get available transitions for issue
    */

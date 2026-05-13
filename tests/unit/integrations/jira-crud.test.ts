@@ -345,6 +345,56 @@ describe("Jira CRUD Operations", () => {
     });
   });
 
+  describe("jiraClient.deleteComment()", () => {
+    it("should delete a comment", async () => {
+      const { client, mockGet: _mockGet } = createMockedClient();
+      const mockDelete = vi.fn().mockResolvedValue({ status: 204 });
+      (client as any).client.delete = mockDelete;
+
+      await client.deleteComment("IR-101", "10234");
+
+      expect(mockDelete).toHaveBeenCalledWith(
+        "/rest/api/2/issue/IR-101/comment/10234",
+      );
+    });
+
+    it("should throw on 404", async () => {
+      const { client } = createMockedClient();
+      const error: any = new Error("Not Found");
+      error.response = { status: 404 };
+      vi.mocked(axios.isAxiosError).mockReturnValue(true);
+      const mockDelete = vi.fn().mockRejectedValue(error);
+      (client as any).client.delete = mockDelete;
+
+      await expect(client.deleteComment("IR-101", "99999")).rejects.toThrow(
+        "not found",
+      );
+    });
+
+    it("should throw on 403 permission denied", async () => {
+      const { client } = createMockedClient();
+      const error: any = new Error("Forbidden");
+      error.response = { status: 403 };
+      vi.mocked(axios.isAxiosError).mockReturnValue(true);
+      const mockDelete = vi.fn().mockRejectedValue(error);
+      (client as any).client.delete = mockDelete;
+
+      await expect(client.deleteComment("IR-101", "10234")).rejects.toThrow(
+        "No permission",
+      );
+    });
+
+    it("should throw when not configured", async () => {
+      const { client } = createMockedClient();
+      (client as any).email = "";
+      (client as any).apiToken = "";
+
+      await expect(client.deleteComment("IR-101", "10234")).rejects.toThrow(
+        "Jira client not configured",
+      );
+    });
+  });
+
   describe("jiraClient.searchIssues()", () => {
     it("should search with JQL via POST and return issues", async () => {
       const { client, mockPost } = createMockedClient();
@@ -697,6 +747,54 @@ describe("Tool Dispatcher: Jira CRUD", () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain("key is required");
+    });
+  });
+
+  describe("jira.delete_comment", () => {
+    it("should return dry-run result when dryRun is true", async () => {
+      const result = await dispatchToolCall("jira.delete_comment", {
+        key: "IR-101",
+        commentId: "10234",
+        dryRun: true,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.dryRun).toBe(true);
+      expect((result.data as any).summary).toContain("Would delete comment");
+    });
+
+    it("should return error when Jira client is not configured", async () => {
+      vi.spyOn(jiraClient, "isConfigured").mockReturnValue(false);
+
+      const result = await dispatchToolCall("jira.delete_comment", {
+        key: "IR-101",
+        commentId: "10234",
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("not configured");
+    });
+
+    it("should delete comment and return success", async () => {
+      vi.spyOn(jiraClient, "isConfigured").mockReturnValue(true);
+      vi.spyOn(jiraClient, "deleteComment").mockResolvedValue(undefined);
+
+      const result = await dispatchToolCall("jira.delete_comment", {
+        key: "IR-101",
+        commentId: "10234",
+      });
+
+      expect(result.success).toBe(true);
+      expect((result.data as any).deleted).toBe(true);
+    });
+
+    it("should return error when key or commentId is missing", async () => {
+      vi.spyOn(jiraClient, "isConfigured").mockReturnValue(true);
+
+      const result = await dispatchToolCall("jira.delete_comment", {});
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("required");
     });
   });
 
