@@ -101,7 +101,7 @@ Remote config (fetches everything else from AIWorkAssistant):
   AIWORKASSISTANT_URL      Base URL of the server (default: http://localhost:3050)
   AIWORKASSISTANT_API_KEY  API key for authentication (required)
 `);
-      process.exit(0);
+      process.exit(EXIT_SUCCESS);
     }
     if (argv[i].startsWith("--") && argv[i + 1] && !argv[i + 1].startsWith("--")) {
       out[argv[i].slice(2)] = argv[i + 1];
@@ -877,7 +877,7 @@ async function publishBranch(cfg: ServerConfig, branchName: string): Promise<voi
     }
     console.log("\n=== END DRY RUN ===");
     runLogger.endRun(EXIT_SUCCESS);
-    process.exit(0);
+    process.exit(EXIT_SUCCESS);
   }
 
   // 3. Push branch to origin
@@ -4331,7 +4331,7 @@ if (existingRunState && !DISCARD_RUN && !WATCH_ISSUE) {
     resumeFromCheckpoint(existingRunState)
       .then(() => {
         clearRunState();
-        process.exit(0);
+        process.exit(lastPipelineExitCode);
       })
       .catch((err) => {
         console.error("Resume failed:", err);
@@ -4352,14 +4352,14 @@ if (!existingRunState || DISCARD_RUN || WATCH_ISSUE) {
       clearRunState();
     }
     watchIssue(loadServerConfig(), WATCH_ISSUE)
-      .then(() => process.exit(0))
+      .then(() => process.exit(lastPipelineExitCode))
       .catch((err) => {
         console.error("Watch failed:", err);
         process.exit(1);
       });
   } else if (PUBLISH_BRANCH) {
     publishBranch(loadServerConfig(), PUBLISH_BRANCH)
-      .then(() => process.exit(0))
+      .then(() => process.exit(EXIT_SUCCESS))
       .catch((err) => {
         console.error("Publish failed:", err);
         process.exit(1);
