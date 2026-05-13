@@ -13,7 +13,7 @@
 export const EXIT_SUCCESS = 0;
 export const EXIT_NO_CHANGES = 2;       // agent ran but produced no file changes
 export const EXIT_PLACEHOLDER_ONLY = 3; // agent produced only stub/TODO content
-export const EXIT_GIT_FAILURE = 4;      // git commit, push, or rebase failed
+export const EXIT_GIT_FAILURE = 4;      // git commit, push, rebase, or force-push-after-rebase-abort failed
 export const EXIT_TEST_FAILURE = 5;     // test suite failed after agent changes
 export const EXIT_REVIEW_FAILED = 6;    // PR flagged for human review (unresolvable)
 export const EXIT_MAX_REWORK = 7;       // rework cycle limit exceeded
