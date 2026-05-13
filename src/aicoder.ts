@@ -26,6 +26,7 @@ import {
   EXIT_REVIEW_FAILED,
   EXIT_MAX_REWORK,
 } from "./aicoder-pipeline";
+import { validateDiffBeforePush } from "./aicoder-pipeline";
 
 // Re-export so callers and the orchestrator can import from either module.
 export {
@@ -36,6 +37,8 @@ export {
   EXIT_TEST_FAILURE,
   EXIT_REVIEW_FAILED,
   EXIT_MAX_REWORK,
+  EXIT_WHITESPACE_ONLY,
+  EXIT_META_ONLY,
 };
 
 function parseArgv(): Record<string, string> {
@@ -78,6 +81,7 @@ Options:
   --max-rework <n>      Max rework cycles per issue in focused mode (default: 10)
   --review-poll-ms <ms> Review result poll interval in focused mode (default: 30000)
   --wait-for-deps       Wait for unresolved dependencies instead of skipping
+  --dry-run-push        Show what would be pushed without actually pushing (for debugging)
   --help                Show this help
 
 Remote config (fetches everything else from AIWorkAssistant):
@@ -103,6 +107,8 @@ Remote config (fetches everything else from AIWorkAssistant):
       out["skip-prompt-check"] = "true";
     } else if (argv[i] === "--skip-poll") {
       out["skip-poll"] = "true";
+    } else if (argv[i] === "--dry-run-push") {
+      out["dry-run-push"] = "true";
     } else if (argv[i] === "--resume-run") {
       out["resume-run"] = "true";
     } else if (argv[i] === "--discard-run") {
@@ -188,6 +194,7 @@ const SKIP_POLL = "skip-poll" in ARGV || process.env.AICODER_SKIP_POLL === "true
 const MAX_REWORK = parseInt(ARGV["max-rework"] || process.env.AICODER_MAX_REWORK || "10", 10);
 const REVIEW_POLL_MS = parseInt(ARGV["review-poll-ms"] || process.env.AICODER_REVIEW_POLL_MS || "30000", 10);
 const WAIT_FOR_DEPS = "wait-for-deps" in ARGV || process.env.AICODER_WAIT_FOR_DEPS === "true";
+const DRY_RUN_PUSH = "dry-run-push" in ARGV || process.env.AICODER_DRY_RUN_PUSH === "true";
 
 // Tracks the exit code for the most recent pipeline run so --issue paths
 // can call process.exit() with a meaningful code instead of always exiting 0.
@@ -804,7 +811,44 @@ async function publishBranch(cfg: ServerConfig, branchName: string): Promise<voi
     }
   }
 
-  // 2. Push branch to origin
+  // 2. Validate diff before push — reject empty, whitespace-only, or meta-only changes
+  const baseBranch = getBaseBranch();
+  const diffStatResult = gitRunWithOutput(["diff", `${baseBranch}...HEAD`, "--stat"], WORKSPACE);
+  const diffContentResult = gitRunWithOutput(["diff", `${baseBranch}...HEAD`], WORKSPACE);
+
+  const diffValidation = validateDiffBeforePush(
+    diffStatResult.ok ? diffStatResult.stdout : "",
+    diffContentResult.ok ? diffContentResult.stdout : "",
+  );
+
+  if (!diffValidation.valid) {
+    runLogger.logError(`Pre-push validation failed (${diffValidation.reason}): ${diffValidation.stats.filesChanged} files, ${diffValidation.stats.insertions} insertions, ${diffValidation.stats.deletions} deletions`);
+    runLogger.logError(`Exit code ${diffValidation.exitCode} — PR will not be created`);
+    runLogger.endRun(diffValidation.exitCode);
+    process.exit(diffValidation.exitCode);
+  }
+
+  runLogger.logWork(`Diff validation passed: ${diffValidation.stats.filesChanged} files, ${diffValidation.stats.insertions} insertions, ${diffValidation.stats.deletions} deletions`);
+
+  // --dry-run-push: show what would be pushed without actually pushing
+  if (DRY_RUN_PUSH) {
+    runLogger.logConfig("Dry-run mode — skipping push and PR creation");
+    console.log("\n=== DRY RUN: Diff Summary ===");
+    console.log(`Base branch: ${baseBranch}`);
+    console.log(`Feature branch: ${branchName}`);
+    console.log(`Files changed: ${diffValidation.stats.filesChanged}`);
+    console.log(`Insertions: ${diffValidation.stats.insertions}`);
+    console.log(`Deletions: ${diffValidation.stats.deletions}`);
+    if (diffStatResult.ok) {
+      console.log("\n--- Diff Stat ---");
+      console.log(diffStatResult.stdout.trim());
+    }
+    console.log("\n=== END DRY RUN ===");
+    runLogger.endRun(EXIT_SUCCESS);
+    process.exit(0);
+  }
+
+  // 3. Push branch to origin
   runLogger.logGit(`Pushing branch to origin: ${branchName}`);
   if (!gitRun(["push", "origin", branchName], WORKSPACE)) {
     // Try with --force-with-lease if regular push fails (branch may already exist)
@@ -3119,6 +3163,24 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
       failRunTrack(run.id, `Output validation failed: ${validation.reason}`);
       return null;
     }
+
+    // Extended validation: reject whitespace-only and meta-only changes
+    const baseBranch = getBaseBranch();
+    const diffStatResult = gitRunWithOutput(["diff", `${baseBranch}...HEAD`, "--stat"], WORKSPACE);
+    const diffContentResult = gitRunWithOutput(["diff", `${baseBranch}...HEAD`], WORKSPACE);
+    const diffValidation = validateDiffBeforePush(
+      diffStatResult.ok ? diffStatResult.stdout : "",
+      diffContentResult.ok ? diffContentResult.stdout : "",
+    );
+    if (!diffValidation.valid) {
+      lastPipelineExitCode = diffValidation.exitCode;
+      runLogger.logError(`Pre-push validation failed (${diffValidation.reason}): ${diffValidation.stats.filesChanged} files, ${diffValidation.stats.insertions} insertions, ${diffValidation.stats.deletions} deletions`);
+      runLogger.endRun(diffValidation.exitCode);
+      trackStep(run.id, "tool_call", `Pre-push validation failed: ${diffValidation.reason}`, { toolName: "validate_diff", success: false });
+      failRunTrack(run.id, `Pre-push validation failed: ${diffValidation.reason}`);
+      return null;
+    }
+    runLogger.logWork(`Diff validation passed: ${diffValidation.stats.filesChanged} files, ${diffValidation.stats.insertions} insertions, ${diffValidation.stats.deletions} deletions`);
   }
 
   // Checkpoint: changes committed

@@ -17,6 +17,8 @@ export const EXIT_GIT_FAILURE = 4;      // git commit, push, or rebase failed
 export const EXIT_TEST_FAILURE = 5;     // test suite failed after agent changes
 export const EXIT_REVIEW_FAILED = 6;    // PR flagged for human review (unresolvable)
 export const EXIT_MAX_REWORK = 7;       // rework cycle limit exceeded
+export const EXIT_WHITESPACE_ONLY = 8;  // only whitespace changes
+export const EXIT_META_ONLY = 9;        // only meta file changes (.gitignore, etc.)
 
 // ── Pure validation logic ─────────────────────────────────────────────────────
 
@@ -83,4 +85,126 @@ export function validateOutputFromDiff(
   }
 
   return { valid: true, exitCode: EXIT_SUCCESS, reason: "ok" };
+}
+
+// ── Pre-push diff validation ──────────────────────────────────────────────────
+
+/**
+ * Files that are purely metadata / configuration with no functional impact.
+ * Changes confined to these files should not produce a PR.
+ */
+const META_FILE_PATTERNS = [
+  ".gitignore",
+  ".gitattributes",
+  ".editorconfig",
+  ".prettierrc",
+  ".prettierignore",
+  ".eslintrc",
+  ".eslintrc.js",
+  ".eslintrc.json",
+  ".eslintrc.yml",
+  ".eslintignore",
+  "tsconfig.json",
+  "tsconfig.*.json",
+  "jest.config.js",
+  "jest.config.ts",
+  "vitest.config.ts",
+  "vitest.config.js",
+  ".mocharc.yml",
+  ".nvmrc",
+  ".python-version",
+  "package-lock.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "Gemfile.lock",
+  "poetry.lock",
+  "Cargo.lock",
+];
+
+function isMetaFile(filePath: string): boolean {
+  const basename = filePath.replace(/.*\//, "");
+  return META_FILE_PATTERNS.includes(basename);
+}
+
+export interface DiffValidationResult {
+  valid: boolean;
+  stats: {
+    filesChanged: number;
+    insertions: number;
+    deletions: number;
+  };
+  reason?: string;
+  exitCode: number;
+}
+
+/**
+ * Validate that a branch has meaningful changes before pushing / creating a PR.
+ *
+ * Checks:
+ *  1. NO_CHANGES — zero files changed
+ *  2. WHITESPACE_ONLY — all added lines are whitespace (no functional change)
+ *  3. META_ONLY — all changed files are meta/config files
+ *  4. Otherwise valid
+ */
+export function validateDiffBeforePush(
+  diffStat: string,
+  diffContent: string,
+): DiffValidationResult {
+  const emptyStats = { filesChanged: 0, insertions: 0, deletions: 0 };
+
+  // 1. Empty diff — no changes at all
+  const stat = diffStat.trim();
+  if (!stat) {
+    return { valid: false, stats: emptyStats, reason: "NO_CHANGES", exitCode: EXIT_NO_CHANGES };
+  }
+
+  // Parse --stat output for file count, insertions, deletions
+  // Format: " file1 | 5 ++--\n file2 | 3 ++-\n 2 files changed, 5 insertions(+), 3 deletions(-)"
+  const summaryLine = stat.split("\n").pop() || "";
+  const filesMatch = summaryLine.match(/(\d+) files? changed/);
+  const insMatch = summaryLine.match(/(\d+) insertion/);
+  const delMatch = summaryLine.match(/(\d+) deletion/);
+
+  const filesChanged = filesMatch ? parseInt(filesMatch[1], 10) : 0;
+  const insertions = insMatch ? parseInt(insMatch[1], 10) : 0;
+  const deletions = delMatch ? parseInt(delMatch[1], 10) : 0;
+  const stats = { filesChanged, insertions, deletions };
+
+  if (filesChanged === 0) {
+    return { valid: false, stats: emptyStats, reason: "NO_CHANGES", exitCode: EXIT_NO_CHANGES };
+  }
+
+  // 2. Parse added lines and check for whitespace-only changes
+  const addedLines = diffContent
+    .split("\n")
+    .filter((l) => l.startsWith("+") && !l.startsWith("+++"));
+
+  if (addedLines.length === 0) {
+    // Only deletions — that's a real change
+    return { valid: true, stats, exitCode: EXIT_SUCCESS, reason: "ok (deletions only)" };
+  }
+
+  const nonWhitespaceAdded = addedLines.filter((l) => l.trim().length > 1); // "+" plus content
+  if (nonWhitespaceAdded.length === 0) {
+    return { valid: false, stats, reason: "WHITESPACE_ONLY", exitCode: EXIT_WHITESPACE_ONLY };
+  }
+
+  // 3. Check if all changed files are meta/config files
+  // Parse file paths from the diff: lines like "diff --git a/path b/path"
+  const changedFiles = diffContent
+    .split("\n")
+    .filter((l) => l.startsWith("diff --git "))
+    .map((l) => {
+      // "diff --git a/src/foo.ts b/src/foo.ts" -> "src/foo.ts"
+      const match = l.match(/^diff --git a\/(.+?) b\//);
+      return match ? match[1] : "";
+    })
+    .filter(Boolean);
+
+  if (changedFiles.length > 0 && changedFiles.every(isMetaFile)) {
+    return { valid: false, stats, reason: "META_ONLY", exitCode: EXIT_META_ONLY };
+  }
+
+  // 4. Legitimate changes
+  return { valid: true, stats, exitCode: EXIT_SUCCESS, reason: "ok" };
 }
