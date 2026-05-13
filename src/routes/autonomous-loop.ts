@@ -6,6 +6,7 @@ import { jitbitClient } from "../integrations/jitbit/jitbit-client";
 import { ticketToTaskGenerator } from "../engineering/ticket-to-task";
 import { env } from "../config/env";
 import type { TicketSourceType } from "../integrations/source-resolver";
+import { closeSourceIssue } from "../autonomous-loop/close-source-issue";
 
 const AI_BRANCH_PREFIX = "ai/issue-";
 const DEFAULT_WORK_LABEL = "ready-for-agent";
@@ -141,6 +142,19 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
         repo,
       );
 
+      await closeSourceIssue(
+        {
+          source: "github",
+          issueKey: `${owner}/${repo}#${body.issueNumber}`,
+          mrIid: body.prNumber,
+          branchName: body.branchName,
+          exitCode: body.agentExitCode,
+        },
+        jiraClient,
+        null,
+        githubClient,
+      );
+
       return { success: true, acknowledged: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -206,6 +220,20 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
       const commentBody = `🤖 **AiRemoteCoder completed work**\n\n- Branch: \`${body.branchName}\`${body.mrUrl ? `\n- MR: ${body.mrUrl}` : body.mrIid ? `\n- MR: !${body.mrIid}` : ""}\n- Exit code: ${body.agentExitCode ?? "unknown"}\n\nReview is in progress.`;
 
       await jiraClient.addComment(body.issueKey, commentBody);
+
+      await closeSourceIssue(
+        {
+          source: "jira",
+          issueKey: body.issueKey,
+          mrIid: body.mrIid,
+          mrUrl: body.mrUrl,
+          branchName: body.branchName,
+          exitCode: body.agentExitCode,
+        },
+        jiraClient,
+        gitlabClient.isConfigured() ? gitlabClient : null,
+        null,
+      );
 
       return { success: true, acknowledged: true };
     } catch (err) {

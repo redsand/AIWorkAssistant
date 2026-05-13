@@ -9,6 +9,10 @@
 import axios from "axios";
 import type { ServerConfig, WorkItem, PipelineLogger } from "./types";
 import { detectRemotePlatform } from "./pr-creator";
+import { closeSourceIssue } from "./close-source-issue";
+import { jiraClient } from "../integrations/jira/jira-client";
+import { gitlabClient } from "../integrations/gitlab/gitlab-client";
+import { githubClient } from "../integrations/github/github-client";
 
 const noop: PipelineLogger = {
   logGit: () => {},
@@ -48,6 +52,25 @@ export async function notifyComplete(
     } catch {
       // non-fatal
     }
+
+    // Close the Jira issue directly from the pipeline process as well,
+    // so the ticket transitions to Done even when the server route cannot.
+    try {
+      await closeSourceIssue(
+        {
+          source: "jira",
+          issueKey: item.id || String(item.number),
+          mrIid: prNumber,
+          branchName,
+          exitCode: exitCode ?? undefined,
+        },
+        jiraClient,
+        gitlabClient.isConfigured() ? gitlabClient : null,
+        null,
+      );
+    } catch {
+      // non-fatal
+    }
     return;
   }
 
@@ -66,5 +89,27 @@ export async function notifyComplete(
     );
   } catch {
     // non-fatal
+  }
+
+  // Close the GitHub issue directly from the pipeline process.
+  if (cfg.source === "github") {
+    const owner = item.owner || cfg.owner;
+    const repo = item.repo || cfg.repo;
+    try {
+      await closeSourceIssue(
+        {
+          source: "github",
+          issueKey: `${owner}/${repo}#${item.number}`,
+          mrIid: prNumber,
+          branchName,
+          exitCode: exitCode ?? undefined,
+        },
+        jiraClient,
+        null,
+        githubClient,
+      );
+    } catch {
+      // non-fatal
+    }
   }
 }

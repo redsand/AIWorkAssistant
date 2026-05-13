@@ -211,3 +211,137 @@ describe("GitLab closeSourceIssue flow", () => {
     );
   });
 });
+
+// ── closeSourceIssue module ───────────────────────────────────────────────────
+
+import { closeSourceIssue } from "../../../src/autonomous-loop/close-source-issue";
+
+describe("closeSourceIssue — Jira", () => {
+  beforeEach(() => { vi.restoreAllMocks(); });
+
+  it("posts comment then transitions to Done", async () => {
+    const { mockGet, mockPost } = mockAxiosInstance();
+    const client = new JiraClient();
+
+    mockGet.mockResolvedValueOnce({
+      data: { transitions: [{ id: "31", name: "Done", to: { name: "Done", id: "41" } }] },
+    });
+    mockPost.mockResolvedValue({ data: {} });
+
+    await closeSourceIssue(
+      { source: "jira", issueKey: "IR-99", mrIid: 4, branchName: "ai/issue-99-fix" },
+      client,
+      null,
+      null,
+    );
+
+    const calls = mockPost.mock.calls;
+    expect(calls[0][0]).toContain("/comment"); // comment first
+    expect(calls[1][0]).toContain("/transitions"); // then transition
+  });
+
+  it("warns and skips transition when no Done-like transition exists", async () => {
+    const { mockGet, mockPost } = mockAxiosInstance();
+    const client = new JiraClient();
+
+    mockGet.mockResolvedValueOnce({
+      data: { transitions: [{ id: "11", name: "To Do", to: { name: "To Do", id: "11" } }] },
+    });
+    mockPost.mockResolvedValue({ data: {} }); // comment still posts
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await closeSourceIssue(
+      { source: "jira", issueKey: "IR-99", mrIid: 4 },
+      client,
+      null,
+      null,
+    );
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("No \"Done\" transition found"),
+    );
+    expect(mockPost).toHaveBeenCalledTimes(1); // comment only, no transition
+  });
+
+  it("still tries transition even if comment posting fails", async () => {
+    const { mockGet, mockPost } = mockAxiosInstance();
+    const client = new JiraClient();
+
+    mockGet.mockResolvedValueOnce({
+      data: { transitions: [{ id: "31", name: "Done", to: { name: "Done", id: "41" } }] },
+    });
+    mockPost
+      .mockRejectedValueOnce(new Error("comment failed"))
+      .mockResolvedValueOnce({ data: {} }); // transition succeeds
+
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await closeSourceIssue(
+      { source: "jira", issueKey: "IR-99" },
+      client,
+      null,
+      null,
+    );
+
+    // transition was still attempted
+    const transitionCall = mockPost.mock.calls.find((c) => String(c[0]).includes("/transitions"));
+    expect(transitionCall).toBeDefined();
+  });
+});
+
+describe("closeSourceIssue — GitLab", () => {
+  beforeEach(() => { vi.restoreAllMocks(); });
+
+  it("adds note then closes issue", async () => {
+    const { mockPost, mockPut } = mockAxiosInstance();
+    const client = new GitlabClient();
+    mockPost.mockResolvedValue({ data: {} });
+    mockPut.mockResolvedValue({ data: { state: "closed" } });
+
+    const jira = new JiraClient();
+    await closeSourceIssue(
+      { source: "gitlab", issueKey: "siem#42", mrIid: 7 },
+      jira,
+      client,
+      null,
+    );
+
+    expect(mockPost).toHaveBeenCalledWith(
+      "/api/v4/projects/siem/issues/42/notes",
+      expect.objectContaining({ body: expect.stringContaining("Autonomous loop completed") }),
+    );
+    expect(mockPut).toHaveBeenCalledWith(
+      "/api/v4/projects/siem/issues/42",
+      { state_event: "close" },
+    );
+  });
+
+  it("warns and skips when issueKey format is invalid", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { mockPost } = mockAxiosInstance();
+    const client = new GitlabClient();
+    const jira = new JiraClient();
+
+    await closeSourceIssue(
+      { source: "gitlab", issueKey: "bad-format" },
+      jira,
+      client,
+      null,
+    );
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Cannot parse GitLab issueKey"),
+    );
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  it("warns when gitlabClient is null", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const jira = new JiraClient();
+
+    await closeSourceIssue({ source: "gitlab", issueKey: "siem#42" }, jira, null, null);
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("GitLab client not available"));
+  });
+});
