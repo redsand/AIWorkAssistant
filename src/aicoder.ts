@@ -18,6 +18,7 @@ import type { AgentRun as AgentRunRecord } from "./agent-runs/types";
 import type { ProviderType } from "./integrations/ollama-launcher";
 import {
   validateOutputFromDiff,
+  validateDiffBeforePush,
   EXIT_SUCCESS,
   EXIT_NO_CHANGES,
   EXIT_PLACEHOLDER_ONLY,
@@ -25,8 +26,9 @@ import {
   EXIT_TEST_FAILURE,
   EXIT_REVIEW_FAILED,
   EXIT_MAX_REWORK,
+  EXIT_WHITESPACE_ONLY,
+  EXIT_META_ONLY,
 } from "./aicoder-pipeline";
-import { validateDiffBeforePush } from "./aicoder-pipeline";
 
 // Re-export so callers and the orchestrator can import from either module.
 export {
