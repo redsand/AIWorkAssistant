@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { semanticReview } from "../src/autonomous-loop/semantic-review";
-import { AutonomousLoopReviewer } from "../src/autonomous-loop/reviewer";
+import { semanticReview, defaultSemanticReviewConfig } from "../../../src/autonomous-loop/semantic-review";
+import { AutonomousLoopReviewer } from "../../../src/autonomous-loop/reviewer";
 
 const chat = vi.fn();
 
-vi.mock("../src/agent/providers/factory", () => ({
+vi.mock("../../../src/agent/providers/factory", () => ({
   getProvider: () => ({ chat }),
 }));
 
@@ -27,6 +27,16 @@ function mockResponse(content: unknown) {
 describe("semanticReview", () => {
   beforeEach(() => {
     chat.mockReset();
+  });
+
+  it("exports a default semantic review config", () => {
+    expect(defaultSemanticReviewConfig()).toEqual({
+      model: "glm-5",
+      maxTokens: 16000,
+      timeoutMs: 120000,
+      includeDiff: true,
+      includeIssueContext: true,
+    });
   });
 
   it("returns no findings for a clean diff", async () => {

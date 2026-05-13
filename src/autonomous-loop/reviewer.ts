@@ -14,6 +14,7 @@
 import { EventEmitter } from 'events';
 import { createHash } from 'crypto';
 import {
+  defaultSemanticReviewConfig,
   semanticReview,
   type SemanticFinding,
   type SemanticReviewConfig,
@@ -245,16 +246,6 @@ export class AutonomousLoopReviewer extends EventEmitter {
       decidedAt: new Date().toISOString(),
     };
   }
-}
-
-function defaultSemanticReviewConfig(): SemanticReviewConfig {
-  return {
-    model: 'glm-5',
-    maxTokens: 16000,
-    timeoutMs: 120000,
-    includeDiff: true,
-    includeIssueContext: true,
-  };
 }
 
 function getStringMetadata(output: WorkOutput, key: string): string | undefined {

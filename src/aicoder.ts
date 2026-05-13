@@ -1,21 +1,58 @@
 #!/usr/bin/env tsx
 import "dotenv/config";
-import { spawn, spawnSync } from "child_process";
+import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import axios from "axios";
 import { OllamaLauncher } from "./integrations/ollama-launcher";
 import { RunLogger } from "./integrations/ollama-launcher/run-logger";
-import { prioritizeItems, type PriorityMode } from "./integrations/ollama-launcher/priority-sorter";
-import { createStreamFormatter } from "./integrations/ollama-launcher/stream-formatter";
-import { type TicketSourceType, type LookupMode, SourceResolver } from "./integrations/source-resolver";
+import { prioritizeItems } from "./integrations/ollama-launcher/priority-sorter";
+import { type TicketSourceType, SourceResolver } from "./integrations/source-resolver";
 import { jiraClient } from "./integrations/jira/jira-client";
 import { gitlabClient } from "./integrations/gitlab/gitlab-client";
 import { agentRunDatabase } from "./agent-runs/database";
 import { createAgentRunsClient } from "./agent-runs/client";
 import type { AgentRunStepCreate } from "./agent-runs/types";
 import type { AgentRun as AgentRunRecord } from "./agent-runs/types";
-import type { ProviderType } from "./integrations/ollama-launcher";
+// ── Module imports ─────────────────────────────────────────────────────────────
+import type {
+  ServerConfig, WorkItem, GeneratedPrompt,
+  TestSuiteKind, PipelineCheckpoint, RunState,
+} from "./autonomous-loop/types";
+import {
+  ARGV, WORKSPACE, AGENT, LABEL, PRIORITY, SOURCE, LOOKUP,
+  USE_OLLAMA, DEBUG, SKIP_BASELINE, SKIP_AGENT, SKIP_TESTS, SKIP_PROMPT_CHECK,
+  RESUME_RUN, DISCARD_RUN, FORCE_REPROCESS, WATCH_ISSUE, MODEL, OLLAMA_URL,
+  TARGET_ISSUE_KEY, PUBLISH_BRANCH, BASE_BRANCH_CANDIDATES, FOCUSED_MODE,
+  SKIP_POLL, MAX_REWORK, REVIEW_POLL_MS, WAIT_FOR_DEPS, DRY_RUN_PUSH, FORCE_DONE,
+  POLL_MS, MAX_CYCLES, UNIT_TEST_TIMEOUT, INTEGRATION_TEST_TIMEOUT,
+} from "./autonomous-loop/arg-parser";
+import { getProjectConfig as _getProjectConfig } from "./autonomous-loop/project-detect";
+import {
+  gitRun as _gitRun,
+  gitRunWithOutput as _gitRunWithOutput,
+  getCurrentBranch as _getCurrentBranch,
+  isRebaseInProgress,
+  recoverFromRebase as _recoverFromRebase,
+  stageAndCommit as _stageAndCommit,
+  pushBranch as _pushBranch,
+  getBaseBranch as _getBaseBranch,
+  getConflictFiles as _getConflictFiles,
+  getBranchModifiedFiles as _getBranchModifiedFiles,
+  pullAndUpdateBase as _pullAndUpdateBase,
+} from "./autonomous-loop/git-ops";
+import { runTestSuite as _runTestSuite, checkCoverage as _checkCoverage } from "./autonomous-loop/test-runner";
+import { runAgent as _runAgent } from "./autonomous-loop/agent-runner";
+import type { AgentConfig } from "./autonomous-loop/agent-runner";
+import {
+  detectRemotePlatform,
+  getGitLabProjectFromRemote,
+  findExistingGitLabMR,
+  createPR as _createPR,
+  truncate,
+  extractIssueKeyFromBranchName,
+} from "./autonomous-loop/pr-creator";
+import { notifyComplete as _notifyComplete, authHeaders } from "./autonomous-loop/notify";
 import {
   validateOutputFromDiff,
   validateDiffBeforePush,
@@ -53,170 +90,6 @@ export {
   EXIT_META_ONLY,
 };
 
-function parseArgv(): Record<string, string> {
-  const out: Record<string, string> = {};
-  const argv = process.argv.slice(2);
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--help" || argv[i] === "-h") {
-      console.log(`
-aicoder — AiRemoteCoder autonomous coding agent
-
-Usage: aicoder [options]
-
-Options:
-  --workspace <path>   Target project directory for git operations (default: cwd)
-  --source <type>      Issue source: github | gitlab | jira | jitbit | auto (default: auto)
-  --owner <name>       GitHub/GitLab owner (overrides server default)
-  --repo <name>        Repository/project name (overrides server default)
-  --agent <name>       Coding agent: codex | opencode | claude (default: claude)
-  --ollama             Route agent through Ollama launcher (sets OPENAI_BASE_URL, etc.)
-  --model <name>       Override model for the agent (e.g. glm-5.1:cloud)
-  --label <label>      Issue label to filter (default: ready-for-agent)
-  --priority <mode>    Ticket priority: label | auto (default: label)
-  --lookup <mode>      Source auto-detect mode: memory | llm (default: memory)
-  --poll-ms <ms>       Poll interval in milliseconds (default: 60000)
-  --max-cycles <n>     Stop after n work cycles (0 = unlimited)
-  --issue <number>     Work on a specific issue by number (skips polling, runs once)
-  --publish <branch>   Create PR/MR from an existing branch and exit
-  --watch <key>        Watch an existing PR/MR for review feedback and rework (issue key or number)
-  --skip-baseline     Skip baseline test check before agent starts (only test after)
-  --skip-agent        Skip agent execution — commit/test/push existing changes only
-  --skip-tests        Skip all tests and coverage checks — just commit and push
-  --skip-prompt-check Pick up tickets even without a ## Coding Prompt section (uses ticket body as prompt)
-  --skip-poll         Run one work cycle and exit without polling (useful for manual testing)
-  --resume-run        Resume from saved run state (if available)
-  --discard-run       Discard saved run state and start fresh
-  -f, --force         Force re-processing of an already-processed issue
-  --debug             Write raw LLM stream events to .aicoder/logs/ for inspection
-  --base <branch>      Base branch to start from (default: main). Use this to chain PRs.
-  --poll                Use legacy fire-and-forget poll mode (default: focused mode)
-  --max-rework <n>      Max rework cycles per issue in focused mode (default: 10)
-  --review-poll-ms <ms> Review result poll interval in focused mode (default: 30000)
-  --wait-for-deps       Wait for unresolved dependencies instead of skipping
-  --dry-run-push        Show what would be pushed without actually pushing (for debugging)
-  --force-done          Override review gate — allow Done transition with unresolved findings (audited)
-  --help                Show this help
-
-Remote config (fetches everything else from AIWorkAssistant):
-  AIWORKASSISTANT_URL      Base URL of the server (default: http://localhost:3050)
-  AIWORKASSISTANT_API_KEY  API key for authentication (required)
-`);
-      process.exit(EXIT_SUCCESS);
-    }
-    if (argv[i].startsWith("--") && argv[i + 1] && !argv[i + 1].startsWith("--")) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    } else if (argv[i] === "--ollama") {
-      out["ollama"] = "true";
-    } else if (argv[i] === "--debug") {
-      out["debug"] = "true";
-    } else if (argv[i] === "--skip-baseline") {
-      out["skip-baseline"] = "true";
-    } else if (argv[i] === "--skip-agent") {
-      out["skip-agent"] = "true";
-    } else if (argv[i] === "--skip-tests") {
-      out["skip-tests"] = "true";
-    } else if (argv[i] === "--skip-prompt-check") {
-      out["skip-prompt-check"] = "true";
-    } else if (argv[i] === "--skip-poll") {
-      out["skip-poll"] = "true";
-    } else if (argv[i] === "--dry-run-push") {
-      out["dry-run-push"] = "true";
-    } else if (argv[i] === "--force-done") {
-      out["force-done"] = "true";
-    } else if (argv[i] === "--resume-run") {
-      out["resume-run"] = "true";
-    } else if (argv[i] === "--discard-run") {
-      out["discard-run"] = "true";
-    } else if (argv[i] === "--force" || argv[i] === "-f") {
-      out["force"] = "true";
-    } else if (argv[i] === "--watch" && argv[i + 1] && !argv[i + 1].startsWith("--")) {
-      out["watch"] = argv[i + 1];
-      i++;
-      out["force"] = "true";
-      out["discard-run"] = "true";
-    }
-  }
-  return out;
-}
-
-const ARGV = parseArgv();
-
-/**
- * AiRemoteCoder — autonomous coding agent (Agent 1 in the two-agent loop).
- *
- * Default mode (focused): Picks the highest-priority issue, codes it, creates
- * a PR, then waits for reviewer feedback. On rework, re-runs the agent on the
- * same branch and force-pushes until the PR passes review or max rework cycles
- * are exceeded. Dependency-aware: parses "depends on #N" from issue bodies and
- * branches from the dependency PR's branch when needed.
- *
- * Legacy mode (--poll): Fire-and-forget — codes, pushes, creates PR, moves on.
- *
- * Agent 2 (reviewer.ts) polls the resulting PRs, reviews them with AI,
- * and merges or injects a rework prompt back onto the original issue.
- *
- * Required env vars:
- *   AIWORKASSISTANT_URL      Base URL of the AIWorkAssistant server
- *   AIWORKASSISTANT_API_KEY  API key for authentication
- *
- * Optional env vars:
- *   AICODER_REPO        GitHub repo name (overrides server default)
- *   AICODER_OWNER       GitHub owner (overrides server default)
- *   AICODER_LABEL       Issue label to poll (default: ready-for-agent)
- *   AICODER_PRIORITY    Ticket priority mode: label | auto (default: label)
- *   AICODER_AGENT       Coding agent binary: codex | opencode | claude (default: claude)
- *   AICODER_WORKSPACE   Working directory of the target repo (default: cwd)
- *   AICODER_POLL_MS     Poll interval in ms (default: 60000)
- *   AICODER_MAX_CYCLES  Max issues to process before stopping (default: unlimited)
- *   AICODER_BASE_BRANCH Base branch for new branches (default: main)
- *   AICODER_POLL_MODE   Set to "true" for legacy fire-and-forget mode
- *   AICODER_MAX_REWORK  Max rework cycles per issue in focused mode (default: 5)
- *   AICODER_REVIEW_POLL_MS  Review poll interval in focused mode (default: 30000)
- *   AICODER_WAIT_FOR_DEPS   Set to "true" to wait for unresolved dependencies
- *   FIN_SIGNAL          Token to detect in agent stdout (default: FIN)
- */
-
-const FIN_TOKEN = process.env.FIN_SIGNAL || "FIN";
-const FIN_ESCAPED = FIN_TOKEN.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const FIN_REGEX = new RegExp(`(?:^|\\s)${FIN_ESCAPED}(?:$|\\s)`);
-const FIN_LINE_REGEX = new RegExp(`^${FIN_ESCAPED}$`, "m");
-const POLL_MS = parseInt(ARGV["poll-ms"] || process.env.AICODER_POLL_MS || "60000", 10);
-const MAX_CYCLES = parseInt(ARGV["max-cycles"] || process.env.AICODER_MAX_CYCLES || "0", 10);
-const WORKSPACE = ARGV.workspace || process.env.AICODER_WORKSPACE || process.cwd();
-const AGENT = (ARGV.agent || process.env.AICODER_AGENT || "claude") as ProviderType;
-const LABEL = ARGV.label || process.env.AICODER_LABEL || "ready-for-agent";
-const PRIORITY = (ARGV.priority || process.env.AICODER_PRIORITY || "label") as PriorityMode;
-const SOURCE = (ARGV.source || process.env.AICODER_SOURCE || "auto") as TicketSourceType | "auto";
-const LOOKUP = (ARGV.lookup || process.env.AICODER_LOOKUP || "memory") as LookupMode;
-const USE_OLLAMA = "ollama" in ARGV || process.env.AICODER_OLLAMA === "true";
-const DEBUG = "debug" in ARGV || process.env.AICODER_DEBUG === "true";
-const SKIP_BASELINE = "skip-baseline" in ARGV || process.env.AICODER_SKIP_BASELINE === "true";
-const SKIP_AGENT = "skip-agent" in ARGV || process.env.AICODER_SKIP_AGENT === "true";
-const SKIP_TESTS = "skip-tests" in ARGV || process.env.AICODER_SKIP_TESTS === "true";
-const SKIP_PROMPT_CHECK = "skip-prompt-check" in ARGV || process.env.AICODER_SKIP_PROMPT_CHECK === "true";
-const RESUME_RUN = "resume-run" in ARGV;
-const DISCARD_RUN = "discard-run" in ARGV;
-const FORCE_REPROCESS = "force" in ARGV;
-const WATCH_ISSUE = ARGV.watch || null;
-const MODEL = ARGV.model || process.env.AICODER_MODEL || "";
-const OLLAMA_URL = process.env.OLLAMA_API_URL || "http://localhost:11434";
-const TARGET_ISSUE_KEY = ARGV.issue || null;
-const PUBLISH_BRANCH = ARGV.publish || null;
-const BASE_BRANCH_CANDIDATES = [ARGV.base || process.env.AICODER_BASE_BRANCH, "main", "master"].filter(Boolean) as string[];
-const FOCUSED_MODE = !("poll" in ARGV || process.env.AICODER_POLL_MODE === "true");
-const SKIP_POLL = "skip-poll" in ARGV || process.env.AICODER_SKIP_POLL === "true";
-const MAX_REWORK = parseInt(ARGV["max-rework"] || process.env.AICODER_MAX_REWORK || "10", 10);
-const REVIEW_POLL_MS = parseInt(ARGV["review-poll-ms"] || process.env.AICODER_REVIEW_POLL_MS || "30000", 10);
-const WAIT_FOR_DEPS = "wait-for-deps" in ARGV || process.env.AICODER_WAIT_FOR_DEPS === "true";
-const DRY_RUN_PUSH = "dry-run-push" in ARGV || process.env.AICODER_DRY_RUN_PUSH === "true";
-const FORCE_DONE = "force-done" in ARGV || process.env.AICODER_FORCE_DONE === "true";
-
-// If --force-done is set, mark the review gate as overridden (audited)
-if (FORCE_DONE) {
-  markForceDone();
-  console.log("[Review Gate] --force-done flag set: review gate will be bypassed for Done transitions (audited)");
-}
 
 // Tracks the exit code for the most recent pipeline run so --issue paths
 // can call process.exit() with a meaningful code instead of always exiting 0.
@@ -235,316 +108,37 @@ process.env.AICODER_OLLAMA = USE_OLLAMA ? "true" : "false";
 const ollamaLauncher = USE_OLLAMA ? new OllamaLauncher({ ollamaUrl: OLLAMA_URL }) : null;
 const runLogger = new RunLogger(WORKSPACE);
 
-interface ServerConfig {
-  owner: string;
-  repo: string;
-  source: string;
-  apiUrl: string;
-  apiKey: string;
+// If --force-done is set, mark the review gate as overridden (audited)
+if (FORCE_DONE) {
+  markForceDone();
+  console.log("[Review Gate] --force-done flag set: review gate will be bypassed for Done transitions (audited)");
 }
 
-interface WorkItem {
-  id: string;
-  number: number;
-  title: string;
-  url: string;
-  owner: string;
-  repo: string;
-  suggestedBranch: string;
-  labels?: string[];
-}
+// ── Workspace-bound bridges ──────────────────────────────────────────────────
+// Bind extracted module functions to the local WORKSPACE + runLogger so all
+// existing call sites continue to work without signature changes.
+const getProjectConfig = () => _getProjectConfig(WORKSPACE, runLogger);
+const gitRun = (args: string[], cwd: string) => _gitRun(args, cwd, runLogger);
+const gitRunWithOutput = (args: string[], cwd: string) => _gitRunWithOutput(args, cwd, runLogger);
+const getCurrentBranch = () => _getCurrentBranch(WORKSPACE);
+const recoverFromRebase = (cwd: string) => _recoverFromRebase(cwd, runLogger);
+const stageAndCommit = (message: string) => _stageAndCommit(message, WORKSPACE, runLogger);
+const pushBranch = (branchName: string, force = false) => _pushBranch(branchName, WORKSPACE, runLogger, force);
+const getBaseBranch = () => _getBaseBranch(WORKSPACE, BASE_BRANCH_CANDIDATES, runLogger);
+const getConflictFiles = () => _getConflictFiles(WORKSPACE);
+const getBranchModifiedFiles = () => _getBranchModifiedFiles(WORKSPACE, getBaseBranch(), runLogger);
+// pullAndUpdateBase needs forceCheckout (declared below) — works via function hoisting
+const pullAndUpdateBase = () => _pullAndUpdateBase(WORKSPACE, BASE_BRANCH_CANDIDATES, runLogger, (b: string, d: string) => forceCheckout(b, d));
+const runTestSuite = (suiteKind: TestSuiteKind = "all") => _runTestSuite(suiteKind, getProjectConfig(), WORKSPACE, runLogger, UNIT_TEST_TIMEOUT, INTEGRATION_TEST_TIMEOUT);
+const checkCoverage = () => _checkCoverage(getProjectConfig(), WORKSPACE, runLogger);
+const agentCfg: AgentConfig = { agent: AGENT, workspace: WORKSPACE, model: MODEL, debug: DEBUG, ollamaUrl: OLLAMA_URL };
+let activeChild: import("child_process").ChildProcess | null = null;
+const runAgent = (prompt: string, resumeSessionId?: string) => _runAgent(prompt, agentCfg, ollamaLauncher, resumeSessionId, runLogger, (child) => { activeChild = child; });
+const createPR = (cfg: ServerConfig, item: WorkItem, branchName: string) => _createPR(cfg, item, branchName, WORKSPACE, getBaseBranch(), runLogger);
+const notifyComplete = (cfg: ServerConfig, item: WorkItem, prNumber: number, branchName: string, exitCode: number | null) => _notifyComplete(cfg, item, prNumber, branchName, exitCode, WORKSPACE, runLogger);
 
-interface GeneratedPrompt {
-  prompt: string;
-  skipped: boolean;
-  skipReason: string | null;
-}
 
-interface RunResult {
-  finDetected: boolean;
-  exitCode: number | null;
-  ranTests?: boolean;
-  sessionId?: string;
-}
 
-type TestSuiteKind = "unit" | "integration" | "all";
-type TestSuiteOutcome = "pass" | "fail" | "timeout" | "spawn_error";
-
-interface TestSuiteResult {
-  passed: boolean;
-  output: string;
-  exitCode: number | null;
-  signal: string | null;
-  timedOut: boolean;
-  error: string | null;
-  kind: TestSuiteOutcome;
-}
-
-type PipelineCheckpoint =
-  | "issue_transitioned"
-  | "branch_checked_out"
-  | "baseline_tests_pass"
-  | "agent_complete"
-  | "changes_committed"
-  | "tests_passed"
-  | "branch_pushed"
-  | "pr_created"
-  | "review_polling"
-  | "rework_agent_complete"
-  | "rework_committed"
-  | "rework_tests_passed"
-  | "rework_pushed";
-
-interface RunState {
-  issueKey: string;
-  issueNumber: number;
-  title: string;
-  url: string;
-  owner: string;
-  repo: string;
-  suggestedBranch: string;
-  labels?: string[];
-  source: "github" | "gitlab" | "jira";
-  checkpoint: PipelineCheckpoint;
-  fromBranch?: string;
-  sessionId?: string;
-  agentRanTests?: boolean;
-  prNumber?: number;
-  reworkCount?: number;
-  sinceTimestamp?: string;
-  convergenceState?: {
-    roundNumber: number;
-    previousFindings: string[];
-    identicalCount: Record<string, number>;
-    emptyPRCount: number;
-    findingsResolved: number;
-    findingsNew: number;
-    noProgressCount: number;
-    lastRoundFindings: string[];
-  };
-  apiUrl: string;
-  apiKey: string;
-  startedAt: string;
-  updatedAt: string;
-}
-
-interface ProjectConfig {
-  type: "node" | "python" | "rust" | "go" | "make" | "unknown";
-  testCommand: string[];
-  unitTestCommand: string[];
-  integrationTestCommand: string[];
-  coverageCommand: string[];
-  buildCommand: string[];
-  hasTests: boolean;
-}
-
-/**
- * Find a Python test subdirectory by searching for common test layouts.
- * Searches for directories matching one of `keywords` at any depth under
- * common test roots (tests/, test/, src/test/, <package>/test/).
- * Returns the relative path from `workspace` (e.g. "hawkSoar/test/unit")
- * or undefined if no match found.
- */
-function findPythonTestDir(workspace: string, keywords: string[]): string | undefined {
-  // Gather candidate root directories to search under
-  const topDirs = fs.readdirSync(workspace, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
-    .map((d) => d.name);
-
-  // Common test roots: tests/, test/, and <package>/test/ (for src-layout packages)
-  const testRoots = ["tests", "test"];
-  for (const top of topDirs) {
-    const subTest = path.join(top, "test");
-    const subTests = path.join(top, "tests");
-    if (fs.existsSync(path.join(workspace, subTest))) testRoots.push(subTest);
-    if (fs.existsSync(path.join(workspace, subTests))) testRoots.push(subTests);
-  }
-
-  for (const root of testRoots) {
-    const rootPath = path.join(workspace, root);
-    if (!fs.existsSync(rootPath) || !fs.statSync(rootPath).isDirectory()) continue;
-
-    // Direct child: tests/unit/, test/integration/
-    for (const kw of keywords) {
-      const direct = path.join(workspace, root, kw);
-      if (fs.existsSync(direct) && fs.statSync(direct).isDirectory()) {
-        // Return forward-slash relative path
-        return path.relative(workspace, direct).replace(/\\/g, "/");
-      }
-    }
-
-    // Nested: tests/<package>/unit/, e.g. tests/hawkSoar/unit/
-    try {
-      const entries = fs.readdirSync(rootPath, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        for (const kw of keywords) {
-          const nested = path.join(workspace, root, entry.name, kw);
-          if (fs.existsSync(nested) && fs.statSync(nested).isDirectory()) {
-            return path.relative(workspace, nested).replace(/\\/g, "/");
-          }
-        }
-      }
-    } catch {
-      // Permission or OS error — skip this root
-    }
-  }
-
-  return undefined;
-}
-
-function hasPytestCov(workspace: string): boolean {
-  try {
-    const result = spawnSync(process.platform === "win32" ? "python" : "python3", ["-c", "import pytest_cov"], {
-      cwd: workspace, stdio: "pipe", encoding: "utf-8", timeout: 10_000,
-    });
-    return result.status === 0;
-  } catch {
-    return false;
-  }
-}
-
-function detectProjectConfig(workspace: string): ProjectConfig {
-  const envTest = process.env.AICODER_TEST_CMD;
-  const envUnit = process.env.AICODER_UNIT_TEST_CMD;
-  const envIntegration = process.env.AICODER_INTEGRATION_TEST_CMD;
-  const envCoverage = process.env.AICODER_COVERAGE_CMD;
-
-  if (envTest) {
-    const testCmd = envTest.split(" ");
-    return {
-      type: "unknown",
-      testCommand: testCmd,
-      unitTestCommand: envUnit ? envUnit.split(" ") : testCmd,
-      integrationTestCommand: envIntegration ? envIntegration.split(" ") : testCmd,
-      coverageCommand: envCoverage ? envCoverage.split(" ") : [],
-      buildCommand: [],
-      hasTests: true,
-    };
-  }
-
-  const pkgJsonPath = path.join(workspace, "package.json");
-  const pyprojectPath = path.join(workspace, "pyproject.toml");
-  const setupPyPath = path.join(workspace, "setup.py");
-  const pytestIniPath = path.join(workspace, "pytest.ini");
-  const cargoPath = path.join(workspace, "Cargo.toml");
-  const goModPath = path.join(workspace, "go.mod");
-  const makefilePath = path.join(workspace, "Makefile");
-
-  if (fs.existsSync(pkgJsonPath)) {
-    try {
-      const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8"));
-      const scripts = pkg.scripts ?? {};
-      const testCmd: string[] = "test" in scripts ? ["npm", "test"] : [];
-      const hasTestScript = "test" in scripts;
-      const unitCmd: string[] = "test-unit" in scripts
-        ? ["npm", "run", "test-unit"]
-        : hasTestScript ? ["npm", "test", "--", "tests/unit"] : [];
-      const integrationCmd: string[] = "test-integration" in scripts
-        ? ["npm", "run", "test-integration"]
-        : hasTestScript ? ["npm", "test", "--", "tests/integration"] : [];
-      const coverageCmd: string[] = "test:coverage" in scripts
-        ? ["npm", "run", "test:coverage"]
-        : [];
-      const buildCmd: string[] = "build" in scripts
-        ? ["npm", "run", "build"]
-        : [];
-      return {
-        type: "node",
-        testCommand: testCmd,
-        unitTestCommand: envUnit ? envUnit.split(" ") : unitCmd,
-        integrationTestCommand: envIntegration ? envIntegration.split(" ") : integrationCmd,
-        coverageCommand: envCoverage ? envCoverage.split(" ") : coverageCmd,
-        buildCommand: buildCmd,
-        hasTests: hasTestScript,
-      };
-    } catch {
-      return { type: "node", testCommand: [], unitTestCommand: [], integrationTestCommand: [], coverageCommand: [], buildCommand: [], hasTests: false };
-    }
-  }
-
-  if (fs.existsSync(pyprojectPath) || fs.existsSync(setupPyPath) || fs.existsSync(pytestIniPath)) {
-    // Auto-detect test directories instead of hardcoding conventions.
-    // Common layouts: tests/unit/, hawkSoar/test/unit/, src/test/unit/, etc.
-    const unitDir = findPythonTestDir(workspace, ["unit", "units"]);
-    const integrationDir = findPythonTestDir(workspace, ["integration", "integrations", "functional", "e2e"]);
-
-    return {
-      type: "python",
-      testCommand: ["pytest"],
-      unitTestCommand: envUnit ? envUnit.split(" ") : unitDir ? ["pytest", unitDir] : ["pytest"],
-      integrationTestCommand: envIntegration ? envIntegration.split(" ") : integrationDir ? ["pytest", integrationDir] : ["pytest"],
-      coverageCommand: envCoverage ? envCoverage.split(" ") : hasPytestCov(workspace) ? ["pytest", "--cov"] : [],
-      buildCommand: [],
-      hasTests: true,
-    };
-  }
-
-  if (fs.existsSync(cargoPath)) {
-    return {
-      type: "rust",
-      testCommand: ["cargo", "test"],
-      unitTestCommand: envUnit ? envUnit.split(" ") : ["cargo", "test", "--lib"],
-      integrationTestCommand: envIntegration ? envIntegration.split(" ") : ["cargo", "test"],
-      coverageCommand: [],
-      buildCommand: ["cargo", "build"],
-      hasTests: true,
-    };
-  }
-
-  if (fs.existsSync(goModPath)) {
-    return {
-      type: "go",
-      testCommand: ["go", "test", "./..."],
-      unitTestCommand: envUnit ? envUnit.split(" ") : ["go", "test", "./...", "-short"],
-      integrationTestCommand: envIntegration ? envIntegration.split(" ") : ["go", "test", "./..."],
-      coverageCommand: [],
-      buildCommand: ["go", "build", "./..."],
-      hasTests: true,
-    };
-  }
-
-  if (fs.existsSync(makefilePath)) {
-    const makeContent = fs.readFileSync(makefilePath, "utf-8");
-    const hasTarget = (name: string) => new RegExp(`^${name}:`, "m").test(makeContent);
-    const testCmd: string[] = hasTarget("test") ? ["make", "test"] : [];
-    const unitCmd: string[] = hasTarget("test-unit") ? ["make", "test-unit"] : testCmd.length > 0 ? ["make", "test"] : [];
-    const integrationCmd: string[] = hasTarget("test-integration") ? ["make", "test-integration"] : testCmd.length > 0 ? ["make", "test"] : [];
-    const coverageCmd: string[] = hasTarget("test-coverage") ? ["make", "test-coverage"] : [];
-    const buildCmd: string[] = hasTarget("build") ? ["make", "build"] : [];
-    return {
-      type: "make",
-      testCommand: testCmd,
-      unitTestCommand: envUnit ? envUnit.split(" ") : unitCmd,
-      integrationTestCommand: envIntegration ? envIntegration.split(" ") : integrationCmd,
-      coverageCommand: envCoverage ? envCoverage.split(" ") : coverageCmd,
-      buildCommand: buildCmd,
-      hasTests: testCmd.length > 0,
-    };
-  }
-
-  return {
-    type: "unknown",
-    testCommand: [],
-    unitTestCommand: [],
-    integrationTestCommand: [],
-    coverageCommand: [],
-    buildCommand: [],
-    hasTests: false,
-  };
-}
-
-let projectConfig: ProjectConfig | null = null;
-function getProjectConfig(): ProjectConfig {
-  if (!projectConfig) {
-    projectConfig = detectProjectConfig(WORKSPACE);
-    runLogger.logConfig(`Detected project type: ${projectConfig.type}, test: ${projectConfig.testCommand.join(" ") || "none"}`);
-  }
-  return projectConfig;
-}
-
-const UNIT_TEST_TIMEOUT = parseInt(process.env.AICODER_UNIT_TEST_TIMEOUT || "300000", 10);
-const INTEGRATION_TEST_TIMEOUT = parseInt(process.env.AICODER_INTEGRATION_TEST_TIMEOUT || "600000", 10);
 const BASELINE_MAX_FIX_ATTEMPTS = parseInt(process.env.AICODER_BASELINE_MAX_FIX || "2", 10);
 
 function loadServerConfig(): ServerConfig {
@@ -564,10 +158,6 @@ function loadServerConfig(): ServerConfig {
     repo: ARGV.repo || process.env.AICODER_REPO || "",
     source: SOURCE,
   };
-}
-
-function authHeaders(cfg: ServerConfig): Record<string, string> {
-  return { Authorization: `Bearer ${cfg.apiKey}` };
 }
 
 async function fetchWork(cfg: ServerConfig): Promise<WorkItem[]> {
@@ -615,18 +205,6 @@ async function generatePrompt(
  * Detect whether the git remote origin points to GitHub, GitLab, or unknown.
  * Returns "github" for github.com URLs, "gitlab" for gitlab.* URLs, "unknown" otherwise.
  */
-function detectRemotePlatform(cwd: string): "github" | "gitlab" | "unknown" {
-  const result = spawnSync("git", ["remote", "get-url", "origin"], {
-    cwd, stdio: "pipe", encoding: "utf-8",
-  });
-  if (result.status !== 0 || !result.stdout.trim()) {
-    return "unknown";
-  }
-  const url = result.stdout.trim().toLowerCase();
-  if (url.includes("github.com")) return "github";
-  if (url.includes("gitlab")) return "gitlab";
-  return "unknown";
-}
 
 /**
  * Extract the GitLab project path from the git remote URL.
@@ -634,197 +212,18 @@ function detectRemotePlatform(cwd: string): "github" | "gitlab" | "unknown" {
  * SSH (git@gitlab.example.com:group/project.git) formats.
  * Returns the URL-encoded path suitable for GitLab API calls (e.g. "siem%2Fhawk-soard").
  */
-function getGitLabProjectFromRemote(cwd: string): string | null {
-  const result = spawnSync("git", ["remote", "get-url", "origin"], {
-    cwd, stdio: "pipe", encoding: "utf-8",
-  });
-  if (result.status !== 0 || !result.stdout.trim()) return null;
-
-  const url = result.stdout.trim();
-  let projectPath: string | null = null;
-
-  // HTTPS: https://gitlab.example.com/group/subgroup/project.git
-  const httpsMatch = url.match(/^https?:\/\/[^/]+\/(.+?)(?:\.git)?$/i);
-  if (httpsMatch) {
-    projectPath = httpsMatch[1];
-  }
-
-  // SSH: git@gitlab.example.com:group/subgroup/project.git
-  const sshMatch = url.match(/^git@[^:]+:(.+?)(?:\.git)?$/i);
-  if (sshMatch) {
-    projectPath = sshMatch[1];
-  }
-
-  if (!projectPath) return null;
-  // Encode for GitLab API (slashes become %2F)
-  return encodeURIComponent(projectPath);
-}
 
 /** Find an existing open MR for the given source branch. */
-async function findExistingGitLabMR(
-  projectId: string,
-  sourceBranch: string,
-): Promise<{ iid: number; web_url: string } | null> {
-  try {
-    const mrs = await gitlabClient.getMergeRequests(projectId, "opened");
-    const existing = (mrs || []).find(
-      (mr: any) => mr.source_branch === sourceBranch,
-    );
-    return existing ? { iid: existing.iid, web_url: existing.web_url } : null;
-  } catch {
-    return null;
-  }
-}
 
 /** Find an existing open GitHub PR for the given source branch. */
-async function findExistingGitHubPR(
-  ghToken: string | undefined,
-  owner: string,
-  repo: string,
-  branchName: string,
-): Promise<{ number: number; html_url: string } | null> {
-  if (!ghToken || !owner || !repo) return null;
-  try {
-    const resp = await axios.get(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
-      params: { state: "open", head: `${owner}:${branchName}`, per_page: 5 },
-      headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" },
-    });
-    const prs = resp.data;
-    if (prs.length > 0) {
-      return { number: prs[0].number, html_url: prs[0].html_url };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
 
-async function createPR(
-  cfg: ServerConfig,
-  item: WorkItem,
-  branchName: string,
-): Promise<{ prNumber: number; url: string } | null> {
-  const platform = detectRemotePlatform(WORKSPACE);
-  runLogger.logGit(`Detected remote platform: ${platform}`);
 
-  if (platform === "gitlab") {
-    // Derive project path from git remote — more reliable than Jira project key
-    const gitlabProject = getGitLabProjectFromRemote(WORKSPACE) || process.env.GITLAB_DEFAULT_PROJECT || cfg.repo || item.repo;
-    try {
-      const resp = await axios.post<{ success: boolean; mrIid?: number; url?: string; error?: string }>(
-        `${cfg.apiUrl}/api/autonomous-loop/mr`,
-        {
-          project: gitlabProject,
-          title: `[AI] ${item.title}`,
-          sourceBranch: branchName,
-          targetBranch: getBaseBranch(),
-          description: item.url ? `Closes ${item.url}\n\nIssue: ${item.id}\n\n_Generated by AiRemoteCoder autonomous agent._` : `Issue: ${item.id}\n\n_Generated by AiRemoteCoder autonomous agent._`,
-          removeSourceBranch: true,
-        },
-        { headers: authHeaders(cfg) },
-      );
-      if (resp.data.success) {
-        return { prNumber: resp.data.mrIid ?? 0, url: resp.data.url ?? "" };
-      }
-
-      // If MR already exists for this branch, find and return it instead of failing
-      const errMsg = resp.data.error ?? "";
-      if (errMsg.includes("already exists")) {
-        runLogger.logGit(`MR already exists for branch ${branchName} — looking up existing MR`);
-        const existing = await findExistingGitLabMR(gitlabProject, branchName);
-        if (existing) {
-          runLogger.logGit(`Found existing MR !${existing.iid}: ${existing.web_url}`);
-          return { prNumber: existing.iid, url: existing.web_url };
-        }
-      }
-
-      runLogger.logError(`GitLab MR creation failed: ${errMsg}`);
-      return null;
-    } catch (err) {
-      const errMsg = (err as Error).message;
-      // Also handle the case where the axios call itself throws due to "already exists"
-      if (errMsg.includes("already exists")) {
-        runLogger.logGit(`MR already exists for branch ${branchName} — looking up existing MR`);
-        const existing = await findExistingGitLabMR(gitlabProject, branchName);
-        if (existing) {
-          runLogger.logGit(`Found existing MR !${existing.iid}: ${existing.web_url}`);
-          return { prNumber: existing.iid, url: existing.web_url };
-        }
-      }
-      runLogger.logError(`GitLab MR creation failed: ${errMsg}`);
-      return null;
-    }
-  }
-
-  // Default: GitHub PR
-  const ghToken = process.env.GITHUB_TOKEN;
-  const owner = item.owner || cfg.owner || "redsand";
-  const repo = item.repo || cfg.repo || "";
-  try {
-    const resp = await axios.post<{ success: boolean; prNumber: number; url: string }>(
-      `${cfg.apiUrl}/api/autonomous-loop/pr`,
-      {
-        owner,
-        repo,
-        title: `[AI] ${item.title}`,
-        head: branchName,
-        base: "main",
-        issueNumber: item.number,
-      },
-      { headers: authHeaders(cfg) },
-    );
-    if (resp.data.success) {
-      return { prNumber: resp.data.prNumber, url: resp.data.url };
-    }
-
-    // PR creation returned non-success — check if PR already exists
-    const errMsg = (resp.data as any).error ?? (resp.data as any).message ?? "";
-    if (errMsg.includes("already exists") || errMsg.includes("already open") || errMsg.includes("422") || errMsg.includes("Validation Failed")) {
-      runLogger.logGit(`PR already exists for branch ${branchName} — looking up existing PR`);
-      const existing = await findExistingGitHubPR(ghToken, owner, repo, branchName);
-      if (existing) {
-        runLogger.logGit(`Found existing PR #${existing.number}: ${existing.html_url}`);
-        return { prNumber: existing.number, url: existing.html_url };
-      }
-    }
-
-    runLogger.logError(`GitHub PR creation failed: ${errMsg || "unknown error"}`);
-    return null;
-  } catch (err: any) {
-    const errMsg = (err as Error).message;
-    const status = err?.response?.status;
-    // 422 almost always means PR already exists for this branch
-    // Handle "already exists" from the axios error response
-    if (status === 422 || errMsg.includes("already exists") || errMsg.includes("already open") || errMsg.includes("Validation Failed")) {
-      runLogger.logGit(`PR already exists for branch ${branchName} — looking up existing PR`);
-      const existing = await findExistingGitHubPR(ghToken, owner, repo, branchName);
-      if (existing) {
-        runLogger.logGit(`Found existing PR #${existing.number}: ${existing.html_url}`);
-        return { prNumber: existing.number, url: existing.html_url };
-      }
-    }
-    runLogger.logError(`PR creation failed: ${errMsg}`);
-    return null;
-  }
-}
-
-function truncate(text: string, maxLen: number): string {
-  if (text.length <= maxLen) return text;
-  return text.slice(0, maxLen - 1) + "…";
-}
 
 // ---------------------------------------------------------------------------
 // Extract issue key from branch name
 // Jira: ai/issue-ir-82-fix-thing → IR-82
 // Numeric: ai/issue-51-fix-thing → 51
 // ---------------------------------------------------------------------------
-function extractIssueKeyFromBranchName(branchName: string): string | null {
-  const jiraMatch = branchName.match(/issue-([a-z]+-\d+)/i);
-  if (jiraMatch) return jiraMatch[1].toUpperCase();
-  const numMatch = branchName.match(/issue-(\d+)/i);
-  if (numMatch) return numMatch[1];
-  return null;
-}
 
 // ---------------------------------------------------------------------------
 // Publish an existing branch as a PR/MR with full reviewer context
@@ -1016,72 +415,8 @@ async function publishBranch(cfg: ServerConfig, branchName: string): Promise<voi
   runLogger.logWork("Publish complete");
 }
 
-async function notifyComplete(
-  cfg: ServerConfig,
-  item: WorkItem,
-  prNumber: number,
-  branchName: string,
-  exitCode: number | null,
-): Promise<void> {
-  const platform = detectRemotePlatform(WORKSPACE);
 
-  // For Jira sources on GitLab, post completion to the Jira endpoint
-  if (cfg.source === "jira" && platform === "gitlab") {
-    try {
-      await axios.post(
-        `${cfg.apiUrl}/api/autonomous-loop/complete/jira`,
-        {
-          issueKey: item.id || String(item.number),
-          branchName,
-          mrIid: prNumber,
-          agentExitCode: exitCode,
-        },
-        { headers: authHeaders(cfg) },
-      );
-    } catch {
-      // notification is non-fatal
-    }
-    return;
-  }
 
-  try {
-    await axios.post(
-      `${cfg.apiUrl}/api/autonomous-loop/complete`,
-      {
-        owner: item.owner || cfg.owner,
-        repo: item.repo || cfg.repo,
-        issueNumber: item.number,
-        prNumber,
-        branchName,
-        agentExitCode: exitCode,
-      },
-      { headers: authHeaders(cfg) },
-    );
-  } catch {
-    // notification is non-fatal
-  }
-}
-
-function gitRun(args: string[], cwd: string): boolean {
-  const result = spawnSync("git", args, { cwd, stdio: "pipe", encoding: "utf-8" });
-  if (result.status !== 0) {
-    runLogger.logGit(`git ${args.join(" ")}`, `failed: ${result.stderr?.trim()}`);
-    return false;
-  }
-  return true;
-}
-
-function gitRunWithOutput(args: string[], cwd: string): { ok: boolean; stdout: string; stderr: string } {
-  const result = spawnSync("git", args, { cwd, stdio: "pipe", encoding: "utf-8" });
-  if (result.status !== 0) {
-    runLogger.logGit(`git ${args.join(" ")}`, `failed: ${result.stderr?.trim()}`);
-  }
-  return {
-    ok: result.status === 0,
-    stdout: (result.stdout || "").trim(),
-    stderr: (result.stderr || "").trim(),
-  };
-}
 
 /**
  * Validate agent output by diffing the feature branch against its base.
@@ -1099,19 +434,7 @@ function validateOutput(baseBranch: string): ReturnType<typeof validateOutputFro
   return validateOutputFromDiff(statResult.stdout, diffResult.stdout, SKIP_AGENT);
 }
 
-function getCurrentBranch(): string | null {
-  const result = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-  });
-  if (result.status !== 0) return null;
-  return result.stdout.trim();
-}
 
-function isRebaseInProgress(cwd: string): boolean {
-  const gitDir = path.join(cwd, ".git");
-  return fs.existsSync(path.join(gitDir, "rebase-merge"))
-      || fs.existsSync(path.join(gitDir, "rebase-apply"));
-}
 
 /**
  * Recover from a stuck rebase state. Tries git rebase --abort first,
@@ -1119,91 +442,6 @@ function isRebaseInProgress(cwd: string): boolean {
  * .git/rebase-merge/ and .git/rebase-apply/ as a last resort.
  * Never uses git reset --hard — always preserves working tree changes.
  */
-function recoverFromRebase(cwd: string): boolean {
-  if (!isRebaseInProgress(cwd)) return true;
-
-  runLogger.logGit("WARN", "Mid-rebase state detected — attempting recovery");
-
-  // Step 1: Try a clean abort
-  if (gitRun(["rebase", "--abort"], cwd)) return true;
-
-  // Step 2: Abort may fail because git can't move/remove locked untracked files.
-  // Parse stderr for the file paths blocking the operation.
-  runLogger.logGit("WARN", "git rebase --abort failed — attempting to remove blocking files");
-  const abortResult = gitRunWithOutput(["rebase", "--abort"], cwd);
-  const abortErr = abortResult.stderr;
-
-  // Extract file paths from error messages like:
-  //   "error: unable to unlink old 'path/to/file.log': Invalid argument"
-  //   "The following untracked working tree files would be overwritten by checkout:"
-  const unlinkMatches = abortErr.matchAll(/unable to unlink old '([^']+)'/g);
-  const overwriteSection = abortErr.match(/The following untracked working tree files would be overwritten by checkout:\s*\n((?:\s+.+\n?)+)/);
-
-  const blockingFiles: string[] = [];
-  for (const m of unlinkMatches) blockingFiles.push(m[1]);
-  if (overwriteSection) {
-    overwriteSection[1].split("\n").forEach(line => {
-      const f = line.trim();
-      if (f) blockingFiles.push(f);
-    });
-  }
-
-  // Try to remove each blocking file
-  for (const filePath of blockingFiles) {
-    const absPath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
-    try {
-      fs.unlinkSync(absPath);
-      runLogger.logGit("Removed blocking file", filePath);
-    } catch {
-      // File may be locked — try renaming it out of the way
-      try {
-        const bakPath = absPath + ".blocking.bak";
-        fs.renameSync(absPath, bakPath);
-        runLogger.logGit("Renamed blocking file", `${filePath} -> ${bakPath}`);
-      } catch {
-        runLogger.logGit("WARN", `Could not remove or rename blocking file: ${filePath}`);
-      }
-    }
-  }
-
-  // Step 3: Retry abort after clearing blocking files
-  if (gitRun(["rebase", "--abort"], cwd)) {
-    runLogger.logGit("Rebase abort succeeded after removing blocking files");
-    return true;
-  }
-
-  // Step 4: Manual cleanup — read original HEAD BEFORE removing rebase state
-  runLogger.logGit("WARN", "Manual rebase cleanup — reading orig-head before removing state");
-  const gitDir = path.join(cwd, ".git");
-  let origHead: string | null = null;
-  for (const dir of ["rebase-merge", "rebase-apply"]) {
-    const origHeadPath = path.join(gitDir, dir, "orig-head");
-    try {
-      if (fs.existsSync(origHeadPath)) {
-        origHead = fs.readFileSync(origHeadPath, "utf-8").trim();
-        runLogger.logGit("Read orig-head", origHead);
-      }
-    } catch { /* file may not exist */ }
-  }
-
-  // Now remove the rebase state directories
-  for (const dir of ["rebase-merge", "rebase-apply"]) {
-    const dirPath = path.join(gitDir, dir);
-    if (fs.existsSync(dirPath)) {
-      fs.rmSync(dirPath, { recursive: true, force: true });
-    }
-  }
-
-  // Soft reset to preserve all staged/working tree changes
-  const resetTarget = origHead || "HEAD";
-  if (!gitRun(["reset", "--soft", resetTarget], cwd)) {
-    runLogger.logGit("WARN", "git reset --soft failed — trying git reset --soft HEAD");
-    gitRun(["reset", "--soft", "HEAD"], cwd);
-  }
-
-  runLogger.logGit("Rebase recovery completed — repo should be in a clean state");
-  return !isRebaseInProgress(cwd);
-}
 
 /**
  * Ensure the workspace is in a clean, usable state. Fixes:
@@ -1355,16 +593,6 @@ function forceCheckout(branch: string, cwd: string): boolean {
 }
 
 /** Get list of files with conflict markers in the working tree. */
-function getConflictFiles(): string[] {
-  const statusResult = spawnSync("git", ["status", "--porcelain"], {
-    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-  });
-  if (statusResult.status !== 0) return [];
-  return statusResult.stdout.trim().split("\n")
-    .filter(line => /^(DD|AU|UD|UA|DU|UU|AA)/.test(line))
-    .map(line => line.slice(3).trim())
-    .filter(Boolean);
-}
 
 /** Pop stash and handle any conflicts that arise from the pop. */
 function safeStashPop(cwd: string): boolean {
@@ -1383,45 +611,6 @@ function safeStashPop(cwd: string): boolean {
  * Get the list of files modified by the current branch compared to the base branch.
  * Used to determine which files the AI changed, so we can decide conflict resolution strategy.
  */
-function getBranchModifiedFiles(): string[] {
-  // Try comparing against the remote base branch first
-  let result = spawnSync("git", ["diff", "--name-only", `origin/${getBaseBranch()}`], {
-    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-  });
-  if (result.status === 0) {
-    const files = result.stdout.trim().split("\n").filter(Boolean);
-    if (files.length > 0) return files;
-  }
-
-  // Fallback: compare against the local base branch (may not be fetched)
-  result = spawnSync("git", ["diff", "--name-only", getBaseBranch()], {
-    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-  });
-  if (result.status === 0) {
-    const files = result.stdout.trim().split("\n").filter(Boolean);
-    if (files.length > 0) return files;
-  }
-
-  // Last resort: if on an AI branch, diff against HEAD~N where N is branch commit count
-  const current = getCurrentBranch();
-  if (current && current.startsWith("ai/")) {
-    const mergeBase = spawnSync("git", ["merge-base", "HEAD", getBaseBranch()], {
-      cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-    });
-    if (mergeBase.status === 0) {
-      const base = mergeBase.stdout.trim();
-      result = spawnSync("git", ["diff", "--name-only", base], {
-        cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-      });
-      if (result.status === 0) {
-        return result.stdout.trim().split("\n").filter(Boolean);
-      }
-    }
-  }
-
-  // All methods failed — return empty (callers should handle this)
-  return [];
-}
 
 /**
  * Resolve git conflicts in the working tree. For files modified by the AI branch,
@@ -1607,79 +796,6 @@ async function rebaseAndResolveConflicts(branchName: string): Promise<boolean> {
   return true;
 }
 
-function resolveBaseBranch(): string {
-  // Try git remote HEAD first (e.g., refs/remotes/origin/master)
-  const headResult = spawnSync("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], {
-    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-  });
-  if (headResult.status === 0) {
-    const match = headResult.stdout.trim().match(/refs\/remotes\/origin\/(.+)/);
-    if (match) {
-      const resolved = match[1];
-      runLogger.logGit("Base branch resolved from remote HEAD", resolved);
-      return resolved;
-    }
-  }
-
-  // Fall back: try each candidate until one exists as a local or remote branch
-  for (const candidate of BASE_BRANCH_CANDIDATES) {
-    const verify = spawnSync("git", ["rev-parse", "--verify", candidate], {
-      cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-    });
-    if (verify.status === 0) {
-      runLogger.logGit("Base branch resolved from local", candidate);
-      return candidate;
-    }
-    // Also try as remote ref
-    const remoteVerify = spawnSync("git", ["rev-parse", "--verify", `origin/${candidate}`], {
-      cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-    });
-    if (remoteVerify.status === 0) {
-      runLogger.logGit("Base branch resolved from remote", candidate);
-      return candidate;
-    }
-  }
-
-  // Last resort: use whatever branch we're on
-  const current = getCurrentBranch();
-  runLogger.logGit("WARN", `Could not resolve base branch — using current: ${current}`);
-  return current ?? "main";
-}
-
-let _resolvedBaseBranch: string | null = null;
-function getBaseBranch(): string {
-  if (!_resolvedBaseBranch) {
-    _resolvedBaseBranch = resolveBaseBranch();
-  }
-  return _resolvedBaseBranch;
-}
-
-function pullAndUpdateBase(): boolean {
-  // Recover from any stuck rebase state before attempting checkout
-  if (isRebaseInProgress(WORKSPACE)) {
-    runLogger.logGit("WARN", "Mid-rebase state detected — recovering before pull");
-    if (!recoverFromRebase(WORKSPACE)) {
-      runLogger.logError("Could not recover from mid-rebase state — skipping pull");
-      return false;
-    }
-  }
-  const base = getBaseBranch();
-  const previousBranch = getCurrentBranch();
-  runLogger.logGit("Pulling latest", base);
-  if (!forceCheckout(base, WORKSPACE)) {
-    runLogger.logError(`Failed to switch to ${base}`);
-    return false;
-  }
-  if (!gitRun(["pull", "--ff-only", "origin", base], WORKSPACE)) {
-    runLogger.logError(`Pull --ff-only failed for ${base} — base branch may be stale`);
-    // Restore previous branch if we switched
-    if (previousBranch && previousBranch !== base) {
-      forceCheckout(previousBranch, WORKSPACE);
-    }
-    return false;
-  }
-  return true;
-}
 
 async function checkoutBranch(branchName: string, fromBranch?: string): Promise<boolean> {
   // Recover from any stuck rebase state before doing anything
@@ -1831,158 +947,7 @@ async function resolveRebaseConflictsInPlace(branchName: string): Promise<boolea
   return false;
 }
 
-function runTestSuite(suiteKind: TestSuiteKind = "all"): TestSuiteResult {
-  const cfg = getProjectConfig();
 
-  let command: string[];
-  let timeout: number;
-
-  switch (suiteKind) {
-    case "unit":
-      command = cfg.unitTestCommand;
-      timeout = UNIT_TEST_TIMEOUT;
-      break;
-    case "integration":
-      command = cfg.integrationTestCommand;
-      timeout = INTEGRATION_TEST_TIMEOUT;
-      break;
-    default:
-      command = cfg.testCommand;
-      timeout = 300_000;
-  }
-
-  if (command.length === 0) {
-    runLogger.logConfig(`No ${suiteKind} test command detected — skipping`);
-    return { passed: true, output: `No ${suiteKind} test command detected — skipping`, exitCode: 0, signal: null, timedOut: false, error: null, kind: "pass" };
-  }
-
-  runLogger.logGit(`Running ${suiteKind} tests`, command.join(" "));
-
-  // On Windows, try direct execution first (faster, avoids cmd.exe hangs).
-  // Fall back to shell execution if the direct spawn fails with ENOENT.
-  const useShell = process.platform === "win32";
-  let result = spawnSync(command[0], command.slice(1), {
-    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8", timeout,
-  });
-
-  // If direct spawn failed with ENOENT on Windows, retry with shell
-  if (result.error && useShell && (result.error as any).code === "ENOENT") {
-    runLogger.logConfig(`Direct spawn failed (ENOENT) — retrying with shell`);
-    result = spawnSync(command[0], command.slice(1), {
-      cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8", timeout,
-      shell: true,
-    });
-  }
-
-  // Fallback: if spawn fails on a Python project, try "python -m pytest" instead
-  if (result.error && cfg.type === "python" && command[0] === "pytest") {
-    const fallbackCmd = process.platform === "win32" ? "python" : "python3";
-    runLogger.logConfig(`pytest spawn failed — retrying with ${fallbackCmd} -m pytest`);
-    result = spawnSync(fallbackCmd, ["-m", "pytest", ...command.slice(1)], {
-      cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8", timeout,
-    });
-    // Also try with shell if direct fails
-    if (result.error && (result.error as any).code === "ENOENT") {
-      runLogger.logConfig(`python -m pytest direct spawn failed — retrying with shell`);
-      result = spawnSync(fallbackCmd, ["-m", "pytest", ...command.slice(1)], {
-        cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8", timeout,
-        shell: true,
-      });
-    }
-  }
-
-  const stdout = (result.stdout || "").trim();
-  const stderr = (result.stderr || "").trim();
-  const combined = `${stdout}\n${stderr}`;
-  const spawnError = result.error?.message ?? null;
-  const timedOut = (result as any).timedOut === true;
-  const signal = result.signal ?? null;
-
-  let kind: TestSuiteOutcome;
-  if (result.status === 0) {
-    kind = "pass";
-  } else if (spawnError) {
-    kind = "spawn_error";
-  } else if (timedOut || (result.status === null && signal)) {
-    kind = "timeout";
-  } else {
-    kind = "fail";
-  }
-
-  const passed = kind === "pass";
-
-  if (!passed) {
-    const lastLines = combined.split("\n").slice(-15).join("\n");
-    switch (kind) {
-      case "spawn_error":
-        runLogger.logError(`${suiteKind} tests could not start: ${spawnError}`);
-        break;
-      case "timeout":
-        runLogger.logError(`${suiteKind} tests timed out after ${timeout}ms${signal ? ` (killed by ${signal})` : ""}${lastLines ? `\n${lastLines}` : ""}`);
-        break;
-      default:
-        runLogger.logError(`${suiteKind} tests failed (exit code ${result.status}):\n${lastLines || "no output captured"}`);
-    }
-  } else {
-    runLogger.logGit(`${suiteKind} tests passed`, command.join(" "));
-  }
-
-  return { passed, output: combined, exitCode: result.status, signal, timedOut, error: spawnError, kind };
-}
-
-function checkCoverage(): { passed: boolean; kind: TestSuiteOutcome; output?: string } {
-  const cfg = getProjectConfig();
-
-  if (cfg.coverageCommand.length === 0) {
-    runLogger.logConfig("No coverage command detected — skipping coverage check");
-    return { passed: true, kind: "pass" };
-  }
-
-  runLogger.logGit("Checking coverage thresholds", cfg.coverageCommand.join(" "));
-  const result = spawnSync(cfg.coverageCommand[0], cfg.coverageCommand.slice(1), {
-    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8", timeout: 300_000,
-    shell: process.platform === "win32",
-  });
-
-  const stdout = (result.stdout || "").trim();
-  const stderr = (result.stderr || "").trim();
-  const combined = `${stdout}\n${stderr}`;
-  const spawnError = result.error?.message ?? null;
-  const timedOut = (result as any).timedOut === true;
-  const signal = result.signal ?? null;
-
-  let kind: TestSuiteOutcome;
-  if (result.status === 0) {
-    kind = "pass";
-  } else if (spawnError) {
-    kind = "spawn_error";
-  } else if (timedOut || (result.status === null && signal)) {
-    kind = "timeout";
-  } else if (/unrecognized arguments:\s*--cov/.test(combined) || /no module named\s*['"]pytest_cov['"]/i.test(combined)) {
-    // pytest-cov plugin not installed — not a coverage failure, just unavailable
-    kind = "spawn_error";
-  } else {
-    kind = "fail";
-  }
-
-  if (kind !== "pass") {
-    const lastLines = combined.split("\n").slice(-20).join("\n");
-    switch (kind) {
-      case "spawn_error":
-        runLogger.logError(`Coverage check could not start: ${spawnError}`);
-        break;
-      case "timeout":
-        runLogger.logError(`Coverage check timed out after 300000ms${signal ? ` (killed by ${signal})` : ""}${lastLines ? `\n${lastLines}` : ""}`);
-        break;
-      default:
-        runLogger.logError(`Coverage check failed (exit code ${result.status}):\n${lastLines || "no output captured"}`);
-    }
-    return { passed: false, kind, output: combined };
-  }
-
-  runLogger.logGit("Coverage thresholds met");
-  return { passed: true, kind };
-}
 
 function buildConflictResolutionPrompt(conflictFiles: string[], branchName: string): string {
   // Read conflict markers from each file
@@ -2311,51 +1276,7 @@ async function llmEvaluateTestFailure(testOutput: string, _item: WorkItem): Prom
   return false;
 }
 
-function pushBranch(branchName: string, force: boolean = false): boolean {
-  const args = force ? ["push", "--force", "origin", branchName] : ["push", "origin", branchName];
-  runLogger.logGit(force ? "Force pushing to origin" : "Pushing to origin", branchName);
-  return gitRun(args, WORKSPACE);
-}
 
-function stageAndCommit(message: string): boolean {
-  // Stage new, modified, and deleted files
-  if (!gitRun(["add", "--all"], WORKSPACE)) {
-    // --all can fail on reserved names (e.g. Windows "nul") or permission errors.
-    // Fall back to staging only tracked-file changes, then add new files individually.
-    runLogger.logGit("git add --all failed — retrying with tracked-only + new files", "");
-    gitRun(["add", "-u"], WORKSPACE);
-    // Collect untracked files (excluding .gitignore entries) and add them one by one
-    const lsResult = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], {
-      cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-    });
-    if (lsResult.status === 0 && lsResult.stdout.trim()) {
-      const newFiles = lsResult.stdout.trim().split("\n");
-      for (const f of newFiles) {
-        if (!f.trim()) continue;
-        if (!gitRun(["add", f.trim()], WORKSPACE)) {
-          runLogger.logGit("Skipping untrackable file", f.trim());
-        }
-      }
-    }
-  }
-
-  // Check if there is anything staged to commit
-  const status = spawnSync("git", ["diff", "--cached", "--quiet"], {
-    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-  });
-  // exit code 1 means there ARE staged changes; 0 means nothing staged
-  if (status.status === 0) {
-    runLogger.logGit("Nothing staged to commit", "skipping commit");
-    return true;
-  }
-
-  runLogger.logGit("Committing", message);
-  if (!gitRun(["commit", "-m", message], WORKSPACE)) {
-    runLogger.logError("git commit failed");
-    return false;
-  }
-  return true;
-}
 
 // --- Dependency resolution ---
 
@@ -2648,160 +1569,9 @@ async function fetchGitLabReworkPrompt(
   return null;
 }
 
-async function runAgent(prompt: string, resumeSessionId?: string): Promise<RunResult> {
-  if (ollamaLauncher) {
-    return runAgentViaLauncher(prompt, resumeSessionId);
-  }
-  return runAgentDirect(prompt, resumeSessionId);
-}
 
-async function runAgentViaLauncher(prompt: string, resumeSessionId?: string): Promise<RunResult> {
-  if (!prompt) {
-    runLogger.logError("No prompt provided to agent — skipping");
-    return { finDetected: false, exitCode: -1 };
-  }
-  return new Promise((resolve) => {
-    if (resumeSessionId) {
-      runLogger.logConfig(`Resuming Claude session ${resumeSessionId.slice(0, 8)}`);
-    }
-    runLogger.logAgent(`Starting ${AGENT} via Ollama launcher`);
 
-    let capturedSessionId: string | undefined;
-    const options: import("./integrations/ollama-launcher").LaunchOptions = {
-      provider: AGENT,
-      prompt,
-      cwd: WORKSPACE,
-      ollamaUrl: OLLAMA_URL,
-      model: MODEL || undefined,
-      resumeSessionId,
-    };
 
-    ollamaLauncher!.launchStream(options).then((child) => {
-      activeChild = child;
-      let finDetected = false;
-      let outputBuf = "";
-      const formatter = createStreamFormatter(AGENT, WORKSPACE, {
-        debug: DEBUG,
-        workspace: WORKSPACE,
-        onSessionId: (sid) => { capturedSessionId = sid; },
-      });
-
-      child.stdout?.on("data", (chunk: Buffer) => {
-        const text = chunk.toString();
-        const formatted = formatter.push(text);
-        if (formatted) process.stdout.write(formatted);
-        outputBuf += text;
-
-        if (!finDetected && (FIN_LINE_REGEX.test(outputBuf) || FIN_REGEX.test(outputBuf))) {
-          finDetected = true;
-          const matchStart = Math.max(0, outputBuf.lastIndexOf(FIN_TOKEN) - 40);
-          const matchEnd = Math.min(outputBuf.length, outputBuf.lastIndexOf(FIN_TOKEN) + FIN_TOKEN.length + 40);
-          runLogger.logAgent(`FIN signal detected near: ...${outputBuf.slice(matchStart, matchEnd)}...`);
-          child.kill("SIGTERM");
-        }
-      });
-
-      child.on("close", (code) => {
-        const remaining = formatter.flush();
-        if (remaining) process.stdout.write(remaining);
-        activeChild = null;
-        resolve({ finDetected, exitCode: code, ranTests: formatter.ranTests, sessionId: capturedSessionId });
-      });
-
-      child.on("error", (err) => {
-        activeChild = null;
-        runLogger.logError(`Launcher failed: ${err.message}`);
-        resolve({ finDetected: false, exitCode: -1 });
-      });
-    }).catch((err) => {
-      activeChild = null;
-      runLogger.logError(`Failed to start ${AGENT} via launcher: ${err.message}`);
-      resolve({ finDetected: false, exitCode: -1 });
-    });
-  });
-}
-
-async function runAgentDirect(prompt: string, resumeSessionId?: string): Promise<RunResult> {
-  return new Promise((resolve) => {
-    if (resumeSessionId) {
-      runLogger.logConfig(`Resuming Claude session ${resumeSessionId.slice(0, 8)}`);
-    }
-    runLogger.logAgent(`Starting ${AGENT}`);
-
-    const agentArgs = buildAgentArgs(AGENT, resumeSessionId);
-    const child = spawn(AGENT, agentArgs, {
-      cwd: WORKSPACE,
-      stdio: ["pipe", "pipe", "inherit"],
-      shell: process.platform === "win32",
-    });
-    activeChild = child;
-
-    let finDetected = false;
-    let outputBuf = "";
-    let capturedSessionId: string | undefined;
-    const formatter = createStreamFormatter(AGENT, WORKSPACE, {
-      debug: DEBUG,
-      workspace: WORKSPACE,
-      onSessionId: (sid) => { capturedSessionId = sid; },
-    });
-
-    // Pipe prompt via stdin to avoid command-line length limits
-    child.stdin?.write(prompt);
-    child.stdin?.end();
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      const text = chunk.toString();
-      const formatted = formatter.push(text);
-      if (formatted) process.stdout.write(formatted);
-      outputBuf += text;
-
-      if (!finDetected && (FIN_LINE_REGEX.test(outputBuf) || FIN_REGEX.test(outputBuf))) {
-        finDetected = true;
-        const matchStart = Math.max(0, outputBuf.lastIndexOf(FIN_TOKEN) - 40);
-        const matchEnd = Math.min(outputBuf.length, outputBuf.lastIndexOf(FIN_TOKEN) + FIN_TOKEN.length + 40);
-        runLogger.logAgent(`FIN signal detected near: ...${outputBuf.slice(matchStart, matchEnd)}...`);
-        child.kill("SIGTERM");
-      }
-    });
-
-    child.on("close", (code) => {
-      const remaining = formatter.flush();
-      if (remaining) process.stdout.write(remaining);
-      activeChild = null;
-      resolve({ finDetected, exitCode: code, ranTests: formatter.ranTests, sessionId: capturedSessionId });
-    });
-
-    child.on("error", (err) => {
-      activeChild = null;
-      runLogger.logError(`Failed to start ${AGENT}: ${err.message}`);
-      resolve({ finDetected: false, exitCode: -1 });
-    });
-  });
-}
-
-function buildAgentArgs(agent: string, resumeSessionId?: string): string[] {
-  switch (agent) {
-    case "codex":
-      return [
-        "exec",
-        "--model",
-        process.env.CODEX_MODEL || "o4-mini",
-        "--json",
-        "--dangerously-bypass-approvals-and-sandbox",
-      ];
-    case "opencode":
-      return [];
-    case "claude": {
-      const args = ["-p", "--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"];
-      if (resumeSessionId) {
-        args.push("--resume", resumeSessionId);
-      }
-      return args;
-    }
-    default:
-      return [];
-  }
-}
 
 const processedIssues = new Set<string>();
 const failedAttempts = new Map<string, number>(); // Track consecutive failures per issue
@@ -4231,9 +3001,6 @@ async function pollLoop(cfg: ServerConfig): Promise<void> {
     await new Promise((r) => setTimeout(r, POLL_MS));
   }
 }
-
-// Kill active agent child process on exit
-let activeChild: import("child_process").ChildProcess | null = null;
 
 function cleanup() {
   if (activeChild && !activeChild.killed) {
