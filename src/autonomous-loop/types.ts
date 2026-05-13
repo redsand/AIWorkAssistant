@@ -81,6 +81,7 @@ export interface RunState {
   agentRanTests?: boolean;
   prNumber?: number;
   reworkCount?: number;
+  promptStrategiesTried?: string[];
   sinceTimestamp?: string;
   convergenceState?: {
     roundNumber: number;

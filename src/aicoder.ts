@@ -70,10 +70,19 @@ import {
   recordRoundFindings,
   checkConvergence,
   formatConvergenceReport,
+  createConvergencePromptDecision,
   DEFAULT_CONVERGENCE_CONFIG,
   type ConvergenceConfig,
   type ConvergenceState,
 } from "./autonomous-loop/convergence";
+import {
+  detectFailurePatterns,
+  generatePrompt as generateStrategyPrompt,
+  selectStrategy,
+  type PromptContext,
+  type PromptStrategy,
+} from "./autonomous-loop/prompt-strategies";
+import type { SemanticFinding } from "./autonomous-loop/semantic-review";
 import { loadConvergenceState, saveConvergenceState, serializeConvergence } from "./autonomous-loop/convergence-state";
 import { loadReviewGateState, saveReviewGateState, clearReviewGateState, markForceDone } from "./autonomous-loop/review-gate-state";
 
@@ -94,6 +103,64 @@ export {
 // Tracks the exit code for the most recent pipeline run so --issue paths
 // can call process.exit() with a meaningful code instead of always exiting 0.
 let lastPipelineExitCode: number = EXIT_SUCCESS;
+
+const PROMPT_STRATEGIES: PromptStrategy[] = [
+  "standard",
+  "rework_with_feedback",
+  "simplified",
+  "file_focused",
+  "test_first",
+  "incremental",
+  "escalate_human",
+];
+
+function isPromptStrategy(value: string): value is PromptStrategy {
+  return PROMPT_STRATEGIES.includes(value as PromptStrategy);
+}
+
+function normalizeSemanticSeverity(value: string | undefined): SemanticFinding["severity"] {
+  switch (value) {
+    case "critical":
+    case "high":
+    case "medium":
+    case "low":
+      return value;
+    case "blocker":
+      return "critical";
+    case "major":
+      return "high";
+    case "minor":
+    case "info":
+      return "low";
+    default:
+      return "high";
+  }
+}
+
+function normalizeSemanticCategory(value: string | undefined): SemanticFinding["category"] {
+  switch (value) {
+    case "security":
+    case "correctness":
+    case "testing":
+    case "performance":
+    case "style":
+      return value;
+    case "qa":
+      return "testing";
+    default:
+      return "correctness";
+  }
+}
+
+function extractFilesFromText(text: string): string[] {
+  const files = new Set<string>();
+  const fileRegex = /(?:^|\s|`)([\w./-]+\.(?:ts|tsx|js|jsx|py|rs|go|java|rb|yml|yaml|json|md))\b/gim;
+  let match: RegExpExecArray | null;
+  while ((match = fileRegex.exec(text)) !== null) {
+    files.add(match[1]);
+  }
+  return [...files];
+}
 
 // Review result markers (must match reviewer.ts comment headers)
 const REVIEW_PASSED_MARKER = "Review Passed";
@@ -2644,6 +2711,10 @@ async function runReviewLoop(
   // Start from now — ignore any review notes that existed before our push
   let sinceTimestamp = reviewState?.sinceTimestamp ?? new Date().toISOString();
   let lastReworkPrompt: string | null = null;
+  const previousFailures: string[] = [];
+  const promptStrategiesTried = new Set<PromptStrategy>(
+    (reviewState?.promptStrategiesTried ?? []).filter(isPromptStrategy),
+  );
 
   // Convergence state: tracks repeated findings, empty PRs, and no-progress rounds
   // Prefer RunState data; fall back to file persistence; fall back to fresh state
@@ -2686,6 +2757,45 @@ async function runReviewLoop(
     return findings;
   }
 
+  function toSemanticFindings(findings: Array<{ file?: string; severity?: string; category?: string; message?: string }>): SemanticFinding[] {
+    return findings.map((finding) => ({
+      severity: normalizeSemanticSeverity(finding.severity),
+      category: normalizeSemanticCategory(finding.category),
+      file: finding.file || "unknown",
+      message: finding.message || `Finding in ${finding.file || "unknown file"}`,
+    }));
+  }
+
+  function buildPromptContext(input: {
+    codingPrompt: string;
+    reviewerFindings: SemanticFinding[];
+    diffFromLastAttempt?: string;
+    testOutput?: string;
+  }): PromptContext {
+    const affectedFiles = [...new Set([
+      ...input.reviewerFindings.map((finding) => finding.file).filter((file) => file && file !== "unknown"),
+      ...extractFilesFromText(input.codingPrompt),
+    ])];
+
+    return {
+      issueKey: item.id,
+      issueTitle: item.title,
+      issueDescription: item.url || item.title,
+      codingPrompt: input.codingPrompt,
+      affectedFiles,
+      previousAttempts: reworkCount,
+      previousFailures,
+      reviewerFindings: input.reviewerFindings,
+      diffFromLastAttempt: input.diffFromLastAttempt,
+      testOutput: input.testOutput,
+      strategiesTried: [...promptStrategiesTried],
+    };
+  }
+
+  function recordPromptStrategy(strategy: PromptStrategy): void {
+    promptStrategiesTried.add(strategy);
+  }
+
   // Checkpoint: entered review polling
   const currentState = reviewState || {
     issueKey: item.id,
@@ -2706,7 +2816,7 @@ async function runReviewLoop(
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-  saveRunState({ ...currentState, checkpoint: "review_polling", prNumber, reworkCount, sinceTimestamp, convergenceState: serializeConvergence(convergenceState) });
+  saveRunState({ ...currentState, checkpoint: "review_polling", prNumber, reworkCount, sinceTimestamp, convergenceState: serializeConvergence(convergenceState), promptStrategiesTried: [...promptStrategiesTried] });
 
   while (true) {
     // Poll for review result using platform-appropriate method
@@ -2819,11 +2929,9 @@ async function runReviewLoop(
         return;
       }
 
-      // Detect duplicate rework prompt — if the same findings come back, rework won't help
       if (lastReworkPrompt && reworkPrompt === lastReworkPrompt) {
-        runLogger.logError(`${label} #${prNumber} received identical rework prompt twice — findings are not actionable, stopping rework loop`);
-        clearRunState();
-        return;
+        runLogger.logWork(`${label} #${prNumber} received identical rework prompt again — switching prompt strategy if possible`);
+        previousFailures.push("GENERIC_REVIEW_FEEDBACK");
       }
       lastReworkPrompt = reworkPrompt;
 
@@ -2847,9 +2955,34 @@ async function runReviewLoop(
       const currentGateState = loadReviewGateState();
       saveReviewGateState({ ...currentGateState, lastFindings: [...currentGateState.lastFindings, ...gateFindings] });
 
+      const semanticFindings = toSemanticFindings(roundFindings);
+      const detectedFailures = detectFailurePatterns({
+        reworkPrompt,
+        reviewerFindings: semanticFindings,
+      });
+      previousFailures.push(...detectedFailures);
+
       const convergence = checkConvergence(convergenceState, convergenceConfig);
       runLogger.logWork(`Convergence check (round ${convergenceState.roundNumber}): ${convergence.reason} — ${convergence.message}`);
+      let strategyAlreadySelected = false;
       if (convergence.shouldStop) {
+        if (convergence.recommendation === "requeue_different_prompt") {
+          const decision = createConvergencePromptDecision(convergence, buildPromptContext({
+            codingPrompt: reworkPrompt,
+            reviewerFindings: semanticFindings,
+          }));
+          if (!decision.shouldEscalate) {
+            recordPromptStrategy(decision.strategy);
+            reworkPrompt = decision.prompt;
+            strategyAlreadySelected = true;
+            runLogger.logWork(`Convergence requested a different prompt strategy: ${decision.strategy}`);
+          } else {
+            runLogger.logError(decision.prompt);
+            lastPipelineExitCode = EXIT_MAX_REWORK;
+            clearRunState();
+            return;
+          }
+        } else {
         runLogger.logError(`Convergence detected (${convergence.reason}): ${convergence.message}`);
         const report = formatConvergenceReport(convergence, convergenceState, convergenceConfig);
         runLogger.logWork(report);
@@ -2864,6 +2997,27 @@ async function runReviewLoop(
         }
         clearRunState();
         return;
+        }
+      }
+
+      if (!strategyAlreadySelected) {
+        const strategyContext = buildPromptContext({
+          codingPrompt: reworkPrompt,
+          reviewerFindings: semanticFindings,
+        });
+        const strategy = selectStrategy(strategyContext);
+        if (strategy === "escalate_human") {
+          const escalationPrompt = generateStrategyPrompt(strategy, strategyContext);
+          runLogger.logError(escalationPrompt);
+          lastPipelineExitCode = EXIT_REVIEW_FAILED;
+          clearRunState();
+          return;
+        }
+        if (strategy !== "rework_with_feedback") {
+          reworkPrompt = generateStrategyPrompt(strategy, strategyContext);
+          runLogger.logWork(`Using prompt strategy ${strategy} for rework cycle ${reworkCount}`);
+        }
+        recordPromptStrategy(strategy);
       }
 
       // Show a summary of the rework prompt so the user can verify we're working on the right feedback
@@ -2885,7 +3039,7 @@ async function runReviewLoop(
       }
 
       // Checkpoint: rework agent complete
-      saveRunState({ ...currentState, checkpoint: "rework_agent_complete", reworkCount, sessionId: reworkResult.sessionId, convergenceState: serializeConvergence(convergenceState) });
+      saveRunState({ ...currentState, checkpoint: "rework_agent_complete", reworkCount, sessionId: reworkResult.sessionId, convergenceState: serializeConvergence(convergenceState), promptStrategiesTried: [...promptStrategiesTried] });
 
       if (!stageAndCommit(`[AI] rework #${reworkCount}: ${item.title}`)) {
         runLogger.logError("Rework stage/commit failed");
@@ -2903,12 +3057,25 @@ async function runReviewLoop(
       const prHadChanges = reworkValidation.valid;
       if (!prHadChanges) {
         runLogger.logError(`Rework produced no meaningful changes (${reworkValidation.reason}) — empty PR cycle ${convergenceState.emptyPRCount + 1}`);
+        previousFailures.push("EMPTY_PR");
       }
       convergenceState = recordRoundFindings(convergenceState, [], prHadChanges);
       saveConvergenceState(convergenceState);
       if (!prHadChanges) {
         const convergence = checkConvergence(convergenceState, convergenceConfig);
         if (convergence.shouldStop) {
+          if (convergence.recommendation === "requeue_different_prompt") {
+            const decision = createConvergencePromptDecision(convergence, buildPromptContext({
+              codingPrompt: reworkPrompt,
+              reviewerFindings: [],
+              diffFromLastAttempt: reworkDiffContent.ok ? reworkDiffContent.stdout : "",
+            }));
+            if (!decision.shouldEscalate) {
+              runLogger.logWork(`Empty PR convergence selected prompt strategy ${decision.strategy}; waiting for the next rework cycle to apply it`);
+              saveRunState({ ...currentState, checkpoint: "rework_agent_complete", reworkCount, convergenceState: serializeConvergence(convergenceState), promptStrategiesTried: [...promptStrategiesTried] });
+              continue;
+            }
+          }
           runLogger.logError(`Convergence detected (${convergence.reason}): ${convergence.message}`);
           lastPipelineExitCode = EXIT_NO_CHANGES;
           const report = formatConvergenceReport(convergence, convergenceState, convergenceConfig);
@@ -2922,17 +3089,18 @@ async function runReviewLoop(
       }
 
       // Checkpoint: rework committed
-      saveRunState({ ...currentState, checkpoint: "rework_committed", reworkCount, convergenceState: serializeConvergence(convergenceState) });
+      saveRunState({ ...currentState, checkpoint: "rework_committed", reworkCount, convergenceState: serializeConvergence(convergenceState), promptStrategiesTried: [...promptStrategiesTried] });
 
       // TDD: Tiered test gate after rework — fix failing tests if possible
       const reworkTestPassed = await fixReworkTests(item, reworkCount);
       if (!reworkTestPassed) {
+        previousFailures.push("TESTS_FAILING");
         runLogger.logError("Rework tests could not be fixed — stopping");
         return;
       }
 
       // Checkpoint: rework tests passed
-      saveRunState({ ...currentState, checkpoint: "rework_tests_passed", reworkCount, convergenceState: serializeConvergence(convergenceState) });
+      saveRunState({ ...currentState, checkpoint: "rework_tests_passed", reworkCount, convergenceState: serializeConvergence(convergenceState), promptStrategiesTried: [...promptStrategiesTried] });
 
       if (!pushBranch(item.suggestedBranch, true)) {
         runLogger.logError("Rework push failed");
@@ -2941,7 +3109,7 @@ async function runReviewLoop(
 
       // Checkpoint: rework pushed — update state for review loop resumption
       sinceTimestamp = new Date().toISOString();
-      saveRunState({ ...currentState, checkpoint: "rework_pushed", reworkCount, sinceTimestamp, prNumber, convergenceState: serializeConvergence(convergenceState) });
+      saveRunState({ ...currentState, checkpoint: "rework_pushed", reworkCount, sinceTimestamp, prNumber, convergenceState: serializeConvergence(convergenceState), promptStrategiesTried: [...promptStrategiesTried] });
 
       runLogger.logConfig(`Rework pushed for ${label} #${prNumber} — waiting for review again`);
       continue;

@@ -10,6 +10,13 @@
  * Pure functions — no side effects, no I/O. All state is passed in.
  */
 
+import {
+  generatePrompt,
+  selectStrategy,
+  type PromptContext,
+  type PromptStrategy,
+} from "./prompt-strategies";
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface ConvergenceConfig {
@@ -66,6 +73,12 @@ export interface ConvergenceResult {
   reason: StopReason;
   message: string;
   recommendation: Recommendation;
+}
+
+export interface ConvergencePromptDecision {
+  strategy: PromptStrategy;
+  prompt: string;
+  shouldEscalate: boolean;
 }
 
 // ── Finding hashing ───────────────────────────────────────────────────────────
@@ -250,4 +263,19 @@ export function formatConvergenceReport(
   ];
 
   return lines.join("\n");
+}
+
+export function createConvergencePromptDecision(
+  result: ConvergenceResult,
+  context: PromptContext,
+): ConvergencePromptDecision {
+  const strategy = result.recommendation === "requeue_different_prompt"
+    ? selectStrategy(context)
+    : "escalate_human";
+
+  return {
+    strategy,
+    prompt: generatePrompt(strategy, context),
+    shouldEscalate: strategy === "escalate_human",
+  };
 }
