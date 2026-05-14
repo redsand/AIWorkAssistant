@@ -45,6 +45,7 @@ import {
 import { runTestSuite as _runTestSuite, checkCoverage as _checkCoverage } from "./autonomous-loop/test-runner";
 import { runAgent as _runAgent } from "./autonomous-loop/agent-runner";
 import type { AgentConfig } from "./autonomous-loop/agent-runner";
+import { enrichPrompt } from "./autonomous-loop/prompt-enricher";
 import {
   detectRemotePlatform,
   getGitLabProjectFromRemote,
@@ -1989,7 +1990,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     agentRanTests = false;
   } else {
     trackStep(run.id, "note", `Running ${AGENT} agent...`);
-    const agentResult = await runAgent(generated.prompt);
+    const agentResult = await runAgent(await enrichPrompt(generated.prompt, WORKSPACE));
     finDetected = agentResult.finDetected;
     exitCode = agentResult.exitCode;
     agentRanTests = agentResult.ranTests ?? false;
@@ -2282,7 +2283,7 @@ async function continueFromBaselineTestsPass(cfg: ServerConfig, item: WorkItem, 
   }
 
   const resumeId = state.sessionId && AGENT === "claude" ? state.sessionId : undefined;
-  const agentResult = await runAgent(generated.prompt, resumeId);
+  const agentResult = await runAgent(await enrichPrompt(generated.prompt, WORKSPACE), resumeId);
 
   if (!agentResult.finDetected && agentResult.exitCode !== 0) {
     // Resume failed — try fresh if we were resuming
@@ -3096,7 +3097,7 @@ async function runReviewLoop(
         return;
       }
 
-      const reworkResult = await runAgent(reworkPrompt);
+      const reworkResult = await runAgent(await enrichPrompt(reworkPrompt, WORKSPACE));
       if (!reworkResult.finDetected && reworkResult.exitCode !== 0) {
         runLogger.logError(`Rework agent exited with code ${reworkResult.exitCode} — stopping`);
         return;
