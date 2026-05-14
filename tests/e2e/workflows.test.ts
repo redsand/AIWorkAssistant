@@ -267,6 +267,7 @@ describe("E2E: Calendar CRUD + ICS Export", () => {
         startTime,
         duration: 90,
         description: "Deep work session",
+        autoSchedule: true,
       },
     });
 

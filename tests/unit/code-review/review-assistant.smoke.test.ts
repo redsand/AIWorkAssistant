@@ -147,6 +147,19 @@ The fix uses \`process.env.DB_PASSWORD\` which is much better.
 const TRUNCATED_MID_JSON =
   '{"whatChanged":"Removes hardcoded credentials","riskLevel":"medium","mustFix":[],"shouldFix":["config/loader.ts:14 — add';
 
+/**
+ * Simulates the production IR-98/MR-11 truncation: the model completes all important fields
+ * (riskLevel, mustFix, securityConcerns) but gets cut off mid-suggestedReviewComment.
+ * extractPartialReview should recover the real findings from this partial content.
+ */
+const TRUNCATED_BEFORE_COMMENT =
+  `{"whatChanged":"Removes hardcoded OpenAI API key and Elasticsearch credentials from .env file","riskLevel":"critical",` +
+  `"recommendation":"needs_changes","mustFix":["Revoke exposed credentials immediately — they are in git history regardless of file deletion",` +
+  `"Run BFG Repo-Cleaner or git filter-repo to scrub secrets from git history"],"shouldFix":[".env.example:4 — add trailing newline"],` +
+  `"testGaps":["Verify .gitignore pattern excludes nested .env files"],"securityConcerns":["OpenAI key sk-6T1TX... is in git history — must be revoked",` +
+  `"Elasticsearch password exposed — must be rotated"],"observabilityConcerns":[],"migrationRisks":[],"rollbackConsiderations":["Rollback would re-expose .env file"],` +
+  `"suggestedReviewComment":"🔴 CRITICAL: hardcoded credentials were committed. Deleting the file does not remove them from git history`;
+
 // ── Helper: async generator from string chunks ────────────────────────────────
 
 async function* chunked(content: string, size = 50): AsyncGenerator<string> {
@@ -404,6 +417,52 @@ describe("smoke: streaming path — markdown with {} triggers retries", () => {
   });
 });
 
+describe("smoke: streaming path — partial extraction from production truncation pattern", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAiIsConfigured.mockReturnValue(true);
+    setupGitHubMocks();
+    // All 3 retries return the truncated-before-suggestedReviewComment response
+    mockAiChatStream.mockImplementation(() => chunked(TRUNCATED_BEFORE_COMMENT));
+  });
+
+  it("recovers real findings via partial extraction instead of fake escalation", async () => {
+    const review = await reviewAssistant.reviewWithStreaming(
+      { owner: "org", repo: "hawk-soar-cloud-v3", prNumber: 98 },
+    );
+
+    // extractPartialReview should recover actual riskLevel/recommendation/findings
+    expect(review.riskLevel).toBe("critical");
+    expect(review.recommendation).toBe("needs_changes");
+    // Real mustFix items extracted — not the fake escalation message
+    expect(review.mustFix.some((m) => /revoke|credentials|BFG/i.test(m))).toBe(true);
+    expect(review.mustFix.every((m) => !/truncated|manual review|unavailable/i.test(m))).toBe(true);
+    // Real security concerns extracted
+    expect(review.securityConcerns.some((c) => /OpenAI|key|sk-/i.test(c))).toBe(true);
+  });
+
+  it("uses all 3 retries before attempting partial extraction", async () => {
+    await reviewAssistant.reviewWithStreaming(
+      { owner: "org", repo: "hawk-soar-cloud-v3", prNumber: 98 },
+    );
+    expect(mockAiChatStream).toHaveBeenCalledTimes(3);
+  });
+
+  it("partial review succeeds if a later retry returns complete JSON", async () => {
+    mockAiChatStream
+      .mockImplementationOnce(() => chunked(TRUNCATED_BEFORE_COMMENT))
+      .mockImplementationOnce(() => chunked(JSON.stringify(FULL_AI_REVIEW)));
+
+    const review = await reviewAssistant.reviewWithStreaming(
+      { owner: "org", repo: "hawk-soar-cloud-v3", prNumber: 98 },
+    );
+
+    expect(mockAiChatStream).toHaveBeenCalledTimes(2);
+    expect(review.riskLevel).toBe("medium");
+    expect(review.whatChanged).toBe(FULL_AI_REVIEW.whatChanged);
+  });
+});
+
 describe("smoke: streaming path — truncated stream (no closing brace)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -412,14 +471,29 @@ describe("smoke: streaming path — truncated stream (no closing brace)", () => 
     mockAiChatStream.mockImplementation(() => chunked(TRUNCATED_MID_JSON));
   });
 
-  it("escalates immediately without retrying", async () => {
+  it("retries all MAX_REVIEW_RETRIES (3) times then escalates with truncation message", async () => {
     const review = await reviewAssistant.reviewWithStreaming(
       { owner: "org", repo: "hawk-soar-cloud-v3", prNumber: 98 },
     );
 
-    expect(mockAiChatStream).toHaveBeenCalledTimes(1);
+    // Streaming path retries truncation (model may produce complete JSON on retry)
+    expect(mockAiChatStream).toHaveBeenCalledTimes(3);
     expect(review.riskLevel).toBe("high");
-    expect(review.mustFix.some((m) => /truncated/i.test(m))).toBe(true);
+    expect(review.mustFix.some((m) => /truncated|manual review/i.test(m))).toBe(true);
     expect(review.securityConcerns.some((c) => /AI review was unavailable/i.test(c))).toBe(true);
+  });
+
+  it("succeeds if a later retry returns complete JSON", async () => {
+    mockAiChatStream
+      .mockImplementationOnce(() => chunked(TRUNCATED_MID_JSON))
+      .mockImplementationOnce(() => chunked(JSON.stringify(FULL_AI_REVIEW)));
+
+    const review = await reviewAssistant.reviewWithStreaming(
+      { owner: "org", repo: "hawk-soar-cloud-v3", prNumber: 98 },
+    );
+
+    expect(mockAiChatStream).toHaveBeenCalledTimes(2);
+    expect(review.riskLevel).toBe("medium");
+    expect(review.whatChanged).toBe(FULL_AI_REVIEW.whatChanged);
   });
 });

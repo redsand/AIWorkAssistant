@@ -483,13 +483,13 @@ describe("reviewAssistant.reviewGitHubPullRequest — AI path", () => {
     expect(review.suggestedReviewComment).toBe("Looks good!");
   });
 
-  it("passes maxTokens: 16384 in the chat request (raised from 4096 → 8192 → 16384; 64K context window has headroom)", async () => {
+  it("passes maxTokens: 65536 in the chat request (full 64K context window — verbose output must complete)", async () => {
     mockAiChat.mockResolvedValue({ content: JSON.stringify({ riskLevel: "low", recommendation: "low_risk", mustFix: [], shouldFix: [], testGaps: [], securityConcerns: [], observabilityConcerns: [], migrationRisks: [], rollbackConsiderations: [], whatChanged: "x" }) });
 
     await reviewAssistant.reviewGitHubPullRequest({ owner: "org", repo: "repo", prNumber: 1 });
 
     expect(mockAiChat).toHaveBeenCalledWith(
-      expect.objectContaining({ maxTokens: 16384 }),
+      expect.objectContaining({ maxTokens: 65536 }),
     );
   });
 
@@ -794,8 +794,8 @@ describe("REVIEW_SYSTEM_PROMPT — output budget and conciseness constraints", (
     expect(systemMsg.content).toMatch(/150 words|under 150/i);
     // Prompt must include an output budget constraint
     expect(systemMsg.content).toMatch(/output budget|1500 tokens|under.*token/i);
-    // maxTokens: 16384 (raised from 4096 → 16384; glm-5 has 64K context)
-    expect(mockAiChat.mock.calls[0][0].maxTokens).toBe(16384);
+    // maxTokens: 65536 (raised from 4096 → 65536; glm-5 has 64K context)
+    expect(mockAiChat.mock.calls[0][0].maxTokens).toBe(65536);
   });
 
   it("system prompt limits each array to 5 items max", async () => {
@@ -870,11 +870,11 @@ describe("regression: AI review truncated mid-JSON (IR-106 / breakglass MR)", ()
     expect(review.riskLevel).toBe("high");
   });
 
-  it("passes maxTokens: 16384 even for security-sensitive PRs", async () => {
+  it("passes maxTokens: 65536 even for security-sensitive PRs", async () => {
     mockAiChat.mockResolvedValue({ content: JSON.stringify({ riskLevel: "high", recommendation: "needs_changes", mustFix: ["auth.ts:1 — x"], shouldFix: [], testGaps: [], securityConcerns: [], observabilityConcerns: [], migrationRisks: [], rollbackConsiderations: [], whatChanged: "breakglass endpoint" }) });
 
     await reviewAssistant.reviewGitHubPullRequest({ owner: "org", repo: "repo", prNumber: 42 });
 
-    expect(mockAiChat).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 16384 }));
+    expect(mockAiChat).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 65536 }));
   });
 });

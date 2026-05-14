@@ -48,7 +48,66 @@ const TEST_PATTERNS = [/\.test\./i, /\.spec\./i, /tests?\//i, /__tests__\//i];
 
 const MAX_REVIEW_RETRIES = 3;
 
-const REVIEW_SYSTEM_PROMPT = `You are a senior staff engineer performing a thorough code review. Given a PR/MR changeset, produce a JSON review object with these exact fields:
+/**
+ * Recovers review fields from a truncated JSON string using field-level regex.
+ * The model consistently gets cut off in `suggestedReviewComment` (the last verbose field)
+ * but all critical fields (riskLevel, mustFix, securityConcerns, etc.) appear before it.
+ * Returns null if not enough meaningful data is present.
+ */
+function extractPartialReview(content: string): Partial<CodeReview> | null {
+  // Extract a simple quoted string value for a named field
+  const strField = (field: string): string | undefined => {
+    const m = content.match(new RegExp(String.raw`"${field}"\s*:\s*"((?:[^"\\]|\\.)*)"`));
+    return m ? m[1].replace(/\\n/g, " ").replace(/\\"/g, '"').trim() : undefined;
+  };
+
+  // Extract array items that appear completely before truncation
+  const arrField = (field: string): string[] => {
+    const fieldIdx = content.indexOf(`"${field}"`);
+    if (fieldIdx === -1) return [];
+    const bracketIdx = content.indexOf("[", fieldIdx + field.length + 2);
+    if (bracketIdx === -1) return [];
+    const segment = content.slice(bracketIdx + 1);
+    const items: string[] = [];
+    const re = /"((?:[^"\\]|\\.)*)"/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(segment)) !== null) {
+      // String followed by ":" is a JSON key — we've left this array
+      const tail = segment.slice(m.index + m[0].length).trimStart();
+      if (tail.startsWith(":")) break;
+      items.push(m[1].replace(/\\n/g, " ").replace(/\\"/g, '"').trim().slice(0, 200));
+      if (items.length >= 5) break;
+    }
+    return items;
+  };
+
+  const result: Partial<CodeReview> = {
+    riskLevel: strField("riskLevel") as ReviewRiskLevel | undefined,
+    recommendation: strField("recommendation") as ReviewRecommendation | undefined,
+    whatChanged: strField("whatChanged"),
+    suggestedReviewComment: strField("suggestedReviewComment"),
+    mustFix: arrField("mustFix"),
+    shouldFix: arrField("shouldFix"),
+    testGaps: arrField("testGaps"),
+    securityConcerns: arrField("securityConcerns"),
+    observabilityConcerns: arrField("observabilityConcerns"),
+    migrationRisks: arrField("migrationRisks"),
+    rollbackConsiderations: arrField("rollbackConsiderations"),
+  };
+
+  const meaningful =
+    (result.riskLevel && result.recommendation) ||
+    (result.mustFix && result.mustFix.length > 0) ||
+    (result.securityConcerns && result.securityConcerns.length > 0);
+
+  return meaningful ? result : null;
+}
+
+const REVIEW_SYSTEM_PROMPT = `OUTPUT FORMAT: Respond with ONLY a valid JSON object. No markdown fences (\`\`\`json). No text before or after the JSON. Stop writing immediately after the closing \`}\`. Exceeding the output budget causes the review to be discarded.
+
+OUTPUT BUDGET: The entire JSON response MUST be under 1500 tokens. Each string value: max 120 characters (hard cut). Each array: max 5 items. suggestedReviewComment: max 80 words. Be extremely concise — omit all explanation beyond the specific finding.
+
+You are a senior staff engineer performing a code review. Given a PR/MR changeset, produce a JSON review object with these exact fields:
 - whatChanged (string): 2-4 sentence plain-English summary of what this PR does
 - riskLevel (string): one of: low, medium, high, critical
 - recommendation (string): one of: ready_for_human_review, needs_changes, low_risk, high_risk_hold
@@ -70,9 +129,7 @@ CRITICAL RULES:
 4. For new/added files (status: "added"), the entire file content is the diff — you can see the full implementation. Do not claim an added file is empty or missing content you can see in the diff.
 5. When checking if requirements from the issue are met, verify against the ACTUAL code shown, not assumptions about what might be missing.
 
-OUTPUT BUDGET: Keep the entire JSON response under 1500 tokens. Each string value: max 120 characters. Each array: max 5 items. Be direct and specific — no padding or repetition.
-
-Respond with ONLY the JSON object, no markdown fences.`;
+Respond with ONLY the JSON object. No markdown fences. No text after the closing brace.`;
 
 const RELEASE_SYSTEM_PROMPT = `You are a senior staff engineer preparing a release readiness assessment. Given a PR/MR changeset, produce a JSON object with these exact fields:
 - recommendation (string): one of: go, no_go, conditional_go
@@ -646,7 +703,7 @@ class ReviewAssistant {
               { role: "user", content: diffSummary },
             ],
             temperature: 0.3,
-            maxTokens: 16384,
+            maxTokens: 65536,
           });
           const content = response.content.trim();
           const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -747,6 +804,7 @@ class ReviewAssistant {
 
     let parsed: Partial<CodeReview> = {};
     let aiSucceeded = false;
+    let lastStreamContent = "";
 
     if (aiClient.isConfigured()) {
       for (let attempt = 1; attempt <= MAX_REVIEW_RETRIES && !aiSucceeded; attempt++) {
@@ -765,7 +823,7 @@ class ReviewAssistant {
               { role: "user", content: diffSummary },
             ],
             temperature: 0.3,
-            maxTokens: 16384,
+            maxTokens: 65536,
           })) {
             fullContent += chunk;
 
@@ -782,7 +840,11 @@ class ReviewAssistant {
 
           onProgress?.({ type: "progress", message: "AI review complete — parsing results..." });
 
-          const content = fullContent.trim();
+          // Strip markdown code fences the model sometimes adds despite the instruction
+          const stripped = fullContent.trim().replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "");
+          const content = stripped.trim();
+          lastStreamContent = content; // save for partial extraction if all retries fail
+
           const jsonMatch = content.match(/\{[\s\S]*\}/);
           if (jsonMatch) {
             try {
@@ -793,23 +855,9 @@ class ReviewAssistant {
               console.warn(`[CodeReview] Stream attempt ${attempt}: JSON.parse failed (model returned non-JSON). First 200 chars:`, content.slice(0, 200));
             }
           } else {
-            // No closing brace found — response is truncated; escalate immediately (no retry)
-            console.warn("[CodeReview] AI stream response did not contain valid JSON — response may be truncated");
-            console.warn("[CodeReview] Stream length:", content.length, "last 200 chars:", content.slice(-200));
-            onProgress?.({ type: "progress", message: "AI review response truncated — escalating to needs_changes" });
-            parsed = {
-              riskLevel: "high" as const,
-              recommendation: "needs_changes" as const,
-              whatChanged: changeSet.title,
-              mustFix: ["AI review response was truncated — manual review required"],
-              shouldFix: ["The AI review could not complete. Review the changes manually."],
-              testGaps: [],
-              securityConcerns: ["AI review was unavailable — security review could not be completed"],
-              observabilityConcerns: [],
-              migrationRisks: [],
-            };
-            aiSucceeded = true;
-            break;
+            // No closing brace — response is likely truncated; retry may produce complete JSON
+            console.warn(`[CodeReview] Stream attempt ${attempt}: response has no complete JSON object — likely truncated. Length: ${content.length}, last 200 chars:`, content.slice(-200));
+            onProgress?.({ type: "progress", message: `AI review response truncated on attempt ${attempt} — retrying...` });
           }
         } catch (err) {
           console.error(`[CodeReview] Stream attempt ${attempt} failed:`, (err as Error).message);
@@ -817,20 +865,31 @@ class ReviewAssistant {
       }
 
       if (!aiSucceeded) {
-        console.warn("[CodeReview] All stream retries exhausted — escalating to needs_changes");
-        onProgress?.({ type: "progress", message: "AI review failed after retries — escalating to needs_changes" });
-        parsed = {
-          riskLevel: "high" as const,
-          recommendation: "needs_changes" as const,
-          whatChanged: changeSet.title,
-          mustFix: ["AI review was unavailable after retries — manual review required"],
-          shouldFix: ["Review the changes manually. The AI could not complete its assessment."],
-          testGaps: [],
-          securityConcerns: ["AI review was unavailable — security review could not be completed"],
-          observabilityConcerns: [],
-          migrationRisks: [],
-        };
-        aiSucceeded = true;
+        // Try to salvage real findings from the last (best) truncated response
+        // The model consistently completes riskLevel/mustFix/securityConcerns before
+        // getting cut off in the verbose suggestedReviewComment field
+        const partial = extractPartialReview(lastStreamContent);
+        if (partial) {
+          console.warn("[CodeReview] All stream retries truncated — recovered partial review from last response");
+          onProgress?.({ type: "progress", message: "AI review truncated — recovered partial findings" });
+          parsed = partial;
+          aiSucceeded = true;
+        } else {
+          console.warn("[CodeReview] All stream retries exhausted and no partial data extractable — escalating to needs_changes");
+          onProgress?.({ type: "progress", message: "AI review failed after retries — escalating to needs_changes" });
+          parsed = {
+            riskLevel: "high" as const,
+            recommendation: "needs_changes" as const,
+            whatChanged: changeSet.title,
+            mustFix: ["AI review response was truncated after retries — manual review required"],
+            shouldFix: ["Review the changes manually. The AI could not complete its assessment."],
+            testGaps: [],
+            securityConcerns: ["AI review was unavailable — security review could not be completed"],
+            observabilityConcerns: [],
+            migrationRisks: [],
+          };
+          aiSucceeded = true;
+        }
       }
     }
 

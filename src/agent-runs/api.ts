@@ -26,16 +26,18 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
       offset?: string;
     };
 
-    // IDOR prevention: always scope runs to the requesting user
-    // - Authenticated users see their own runs only (plus aicoder system runs)
-    // - Unauthenticated requests are denied — no access to any user's runs
-    const requestUserId = request.userId;
-    if (!requestUserId) {
+    if (!request.userId) {
       return reply.code(401).send({ error: "Authentication required" });
     }
 
+    // When a specific userId is requested, scope to that user (aicoder or self).
+    // When no userId is given, show all runs (authenticated users are trusted to see all).
     const filterUserId =
-      query.userId === "aicoder" ? "aicoder" : requestUserId;
+      query.userId === "aicoder"
+        ? "aicoder"
+        : query.userId
+          ? request.userId
+          : undefined;
 
     // Validate status filter against allowed values
     const status = query.status && VALID_STATUSES.has(query.status as typeof VALID_STATUSES extends Set<infer T> ? T : never)

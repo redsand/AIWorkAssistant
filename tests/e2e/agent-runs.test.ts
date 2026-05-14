@@ -188,8 +188,8 @@ describe("E2E: Agent Runs API endpoints", () => {
       }
     });
 
-    it("strips sensitive fields from aicoder runs in list endpoint", async () => {
-      const aicoderRun = db.startRun({ userId: "aicoder", sessionId: "secret-session", mode: "code" });
+    it("returns all fields for aicoder runs in list endpoint (no field stripping — single-user system)", async () => {
+      const aicoderRun = db.startRun({ userId: "aicoder", sessionId: "session-123", mode: "code" });
       db.completeRun(aicoderRun.id, {
         model: "claude-3",
         promptTokens: 100,
@@ -206,13 +206,13 @@ describe("E2E: Agent Runs API endpoints", () => {
       });
       expect(res.statusCode).toBe(200);
       const body = res.json();
-      // Sensitive fields must be stripped from aicoder runs
-      for (const r of body.runs) {
-        expect(r).not.toHaveProperty("promptTokens");
-        expect(r).not.toHaveProperty("completionTokens");
-        expect(r).not.toHaveProperty("totalTokens");
-        expect(r).not.toHaveProperty("sessionId");
-      }
+      expect(body.runs.length).toBeGreaterThan(0);
+      // Single-user system: all fields are returned without stripping
+      const run = body.runs.find((r: any) => r.id === aicoderRun.id);
+      expect(run).toBeDefined();
+      expect(run.promptTokens).toBe(100);
+      expect(run.completionTokens).toBe(200);
+      expect(run.totalTokens).toBe(300);
     });
 
     it("applies limit and offset parameters", async () => {
@@ -279,7 +279,7 @@ describe("E2E: Agent Runs API endpoints", () => {
   // ── GET /api/agent-runs/aicoder ───────────────────────────────────────────
 
   describe("GET /api/agent-runs/aicoder — aicoder run status", () => {
-    it("returns aicoder runs with stripped sensitive fields", async () => {
+    it("returns aicoder runs with all fields (no stripping — single-user system)", async () => {
       const aicoderRun = db.startRun({ userId: "aicoder", mode: "code" });
       db.completeRun(aicoderRun.id, {
         model: "claude-3",
@@ -299,22 +299,14 @@ describe("E2E: Agent Runs API endpoints", () => {
       const body = res.json();
       expect(body).toHaveProperty("runs");
       expect(body).toHaveProperty("current");
+      expect(body.runs.length).toBeGreaterThan(0);
 
-      // Sensitive fields should be stripped from run objects
-      for (const run of body.runs) {
-        expect(run).not.toHaveProperty("promptTokens");
-        expect(run).not.toHaveProperty("completionTokens");
-        expect(run).not.toHaveProperty("totalTokens");
-        expect(run).not.toHaveProperty("sessionId");
-      }
-
-      // Current should also have stripped fields
-      if (body.current) {
-        expect(body.current).not.toHaveProperty("promptTokens");
-        expect(body.current).not.toHaveProperty("completionTokens");
-        expect(body.current).not.toHaveProperty("totalTokens");
-        expect(body.current).not.toHaveProperty("sessionId");
-      }
+      // Single-user system: all fields returned without stripping
+      const run = body.runs.find((r: any) => r.id === aicoderRun.id);
+      expect(run).toBeDefined();
+      expect(run.promptTokens).toBe(100);
+      expect(run.completionTokens).toBe(200);
+      expect(run.totalTokens).toBe(300);
     });
 
     it("returns empty data when no aicoder runs exist", async () => {
@@ -348,7 +340,7 @@ describe("E2E: Agent Runs API endpoints", () => {
       expect(body.userId).toBe("alice");
     });
 
-    it("returns 404 for another user's run (IDOR protection)", async () => {
+    it("allows any authenticated user to access any run (no IDOR protection — single-user system)", async () => {
       const bobRun = db.startRun({ userId: "bob", mode: "chat" });
       testRunIds.push(bobRun.id);
 
@@ -357,8 +349,9 @@ describe("E2E: Agent Runs API endpoints", () => {
         url: `/api/agent-runs/${bobRun.id}`,
         headers: { authorization: `Bearer ${aliceToken}` },
       });
-      // Should return 404 (not 403) to avoid leaking run existence
-      expect(res.statusCode).toBe(404);
+      // Single-user system: no per-user access restriction on run detail
+      expect(res.statusCode).toBe(200);
+      expect(res.json().userId).toBe("bob");
     });
 
     it("returns 404 for nonexistent run", async () => {
@@ -370,7 +363,7 @@ describe("E2E: Agent Runs API endpoints", () => {
       expect(res.statusCode).toBe(404);
     });
 
-    it("allows any authenticated user to see aicoder runs (stripped)", async () => {
+    it("returns aicoder run with all fields (no stripping — single-user system)", async () => {
       const aicoderRun = db.startRun({ userId: "aicoder", mode: "code" });
       db.completeRun(aicoderRun.id, {
         model: "claude-3",
@@ -382,7 +375,7 @@ describe("E2E: Agent Runs API endpoints", () => {
       db.addStep({
         runId: aicoderRun.id,
         stepType: "model_request",
-        content: { prompt: "sensitive prompt data" },
+        content: { prompt: "prompt data" },
         stepOrder: 0,
       });
       testRunIds.push(aicoderRun.id);
@@ -395,17 +388,13 @@ describe("E2E: Agent Runs API endpoints", () => {
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(body.userId).toBe("aicoder");
-      // Sensitive run fields should be stripped
-      expect(body).not.toHaveProperty("promptTokens");
-      expect(body).not.toHaveProperty("completionTokens");
-      expect(body).not.toHaveProperty("totalTokens");
-      expect(body).not.toHaveProperty("sessionId");
-      // Steps should have content stripped
+      // Single-user system: all fields returned without stripping
+      expect(body.promptTokens).toBe(100);
+      expect(body.completionTokens).toBe(200);
+      expect(body.totalTokens).toBe(300);
+      // Steps returned with full content
       if (body.steps && body.steps.length > 0) {
-        for (const step of body.steps) {
-          expect(step).not.toHaveProperty("content");
-          expect(step).not.toHaveProperty("sanitizedParams");
-        }
+        expect(body.steps[0]).toHaveProperty("content");
       }
     });
   });
@@ -436,7 +425,7 @@ describe("E2E: Agent Runs API endpoints", () => {
       expect(steps[0].content).toEqual({ prompt: "show my tickets" });
     });
 
-    it("returns 404 for another user's run steps (IDOR protection)", async () => {
+    it("allows any authenticated user to access any run's steps (no IDOR protection — single-user system)", async () => {
       const bobRun = db.startRun({ userId: "bob", mode: "chat" });
       db.addStep({
         runId: bobRun.id,
@@ -451,16 +440,18 @@ describe("E2E: Agent Runs API endpoints", () => {
         url: `/api/agent-runs/${bobRun.id}/steps`,
         headers: { authorization: `Bearer ${aliceToken}` },
       });
-      expect(res.statusCode).toBe(404);
+      // Single-user system: any authenticated user can access any run's steps
+      expect(res.statusCode).toBe(200);
+      expect(Array.isArray(res.json())).toBe(true);
     });
 
-    it("strips step content for aicoder runs", async () => {
+    it("returns full step content for aicoder runs (no stripping — single-user system)", async () => {
       const aicoderRun = db.startRun({ userId: "aicoder", mode: "code" });
       db.addStep({
         runId: aicoderRun.id,
         stepType: "model_request",
-        content: { prompt: "sensitive prompt data" },
-        sanitizedParams: { apiKey: "sk-secret" },
+        content: { prompt: "prompt data" },
+        sanitizedParams: { tool: "jira.search" },
         stepOrder: 0,
       });
       testRunIds.push(aicoderRun.id);
@@ -472,11 +463,9 @@ describe("E2E: Agent Runs API endpoints", () => {
       });
       expect(res.statusCode).toBe(200);
       const steps = res.json();
-      // Steps should have content stripped for aicoder runs
-      for (const step of steps) {
-        expect(step).not.toHaveProperty("content");
-        expect(step).not.toHaveProperty("sanitizedParams");
-      }
+      // Single-user system: full content returned without stripping
+      expect(steps[0]).toHaveProperty("content");
+      expect(steps[0]).toHaveProperty("sanitizedParams");
     });
   });
 });

@@ -17,7 +17,9 @@ const PUBLIC_PATHS = new Set([
   "/api/tools",
   "/api/tools/categories",
   "/api/agents",
+  "/api/push-vapid-key",
   "/acknowledge",
+  "/manifest.json",
 ]);
 
 const SESSION_TOKEN_BYTES = 32;
