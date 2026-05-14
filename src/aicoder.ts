@@ -970,8 +970,8 @@ async function checkoutBranch(branchName: string, fromBranch?: string): Promise<
  */
 async function resolveRebaseConflictsInPlace(branchName: string): Promise<boolean> {
   if (!isRebaseInProgress(WORKSPACE)) {
-    // Rebase succeeded cleanly or was not attempted — check the result
-    return gitRun(["rebase", getBaseBranch()], WORKSPACE) || false;
+    // No conflicts — rebase already completed cleanly before this was called
+    return true;
   }
 
   // Rebase is in progress with conflicts — resolve them
@@ -1495,7 +1495,7 @@ async function pollForReviewResult(
       );
       for (const c of commentsResp.data || []) {
         // Skip comments from before our last push to avoid re-triggering on old reviews
-        if (since && c.created_at && new Date(c.created_at) <= since) continue;
+        if (since && c.created_at && new Date(c.created_at) < since) continue;
         const body: string = c.body || "";
         if (body.includes(REVIEW_PASSED_MARKER)) return "passed";
         if (body.includes(REVIEW_FAILED_MARKER)) return "failed";
@@ -1533,7 +1533,7 @@ async function pollForGitLabReviewResult(
       const notes = await gitlabClient.listMergeRequestNotes(projectId, mrIid, "desc");
       for (const note of notes) {
         // Skip notes from before our last push to avoid re-triggering on old reviews
-        if (sinceIso && note.created_at && note.created_at <= sinceIso) continue;
+        if (sinceIso && note.created_at && new Date(note.created_at) < new Date(sinceIso)) continue;
         const body: string = note.body || "";
         if (body.includes(REVIEW_PASSED_MARKER)) return "passed";
         if (body.includes(REVIEW_FAILED_MARKER)) return "failed";
@@ -1584,7 +1584,7 @@ async function fetchReworkPrompt(
       const body: string = c.body || "";
       const created = c.created_at ? new Date(c.created_at) : null;
       // Only consider comments newer than sinceTimestamp to avoid re-processing old feedback
-      if (since && created && created <= since) continue;
+      if (since && created && created < since) continue;
       if (body.includes("Rework from PR Review")) {
         return body;
       }
@@ -1601,7 +1601,7 @@ async function fetchReworkPrompt(
     for (const c of prResp.data || []) {
       const body: string = c.body || "";
       const created = c.created_at ? new Date(c.created_at) : null;
-      if (since && created && created <= since) continue;
+      if (since && created && created < since) continue;
       if (body.includes("Review Failed — Rework Required")) {
         return body;
       }
@@ -1623,7 +1623,7 @@ async function fetchGitLabReworkPrompt(
     for (const note of notes) {
       const body: string = note.body || "";
       const created = note.created_at ? new Date(note.created_at) : null;
-      if (since && created && created <= since) continue;
+      if (since && created && created < since) continue;
       if (body.includes("Rework from PR Review")) {
         return body;
       }
@@ -2784,7 +2784,7 @@ async function runReviewLoop(
         identicalCount: new Map(Object.entries(reviewState.convergenceState.identicalCount)),
         lastRoundFindings: new Set(reviewState.convergenceState.lastRoundFindings),
       }
-    : loadConvergenceState();
+    : loadConvergenceState(item.id);
   const convergenceConfig: ConvergenceConfig = { ...DEFAULT_CONVERGENCE_CONFIG };
 
   // Extract finding-like hashes from a rework prompt string.
@@ -3004,7 +3004,7 @@ async function runReviewLoop(
         ? persistedGateFindings.map((f) => ({ file: f.file, severity: f.severity, category: f.category }))
         : regexFindings;
       convergenceState = recordRoundFindings(convergenceState, roundFindings, true);
-      saveConvergenceState(convergenceState);
+      saveConvergenceState(convergenceState, item.id);
 
       // Review gate: persist findings so jira.close_issue can block Done transitions
       const gateFindings = roundFindings.map((f) => ({
@@ -3128,7 +3128,7 @@ async function runReviewLoop(
         runLogger.logGit("WARN", `Rework #${reworkCount} staged nothing — skipping push to avoid SHA-unchanged reviewer loop`);
         previousFailures.push("EMPTY_PR");
         convergenceState = recordRoundFindings(convergenceState, [], false);
-        saveConvergenceState(convergenceState);
+        saveConvergenceState(convergenceState, item.id);
         const emptyConvergence = checkConvergence(convergenceState, convergenceConfig);
         if (emptyConvergence.shouldStop) {
           runLogger.logError(`Convergence detected (${emptyConvergence.reason}): ${emptyConvergence.message}`);
@@ -3153,7 +3153,7 @@ async function runReviewLoop(
         previousFailures.push("EMPTY_PR");
       }
       convergenceState = recordRoundFindings(convergenceState, [], prHadChanges);
-      saveConvergenceState(convergenceState);
+      saveConvergenceState(convergenceState, item.id);
       if (!prHadChanges) {
         const convergence = checkConvergence(convergenceState, convergenceConfig);
         if (convergence.shouldStop) {
@@ -3192,7 +3192,7 @@ async function runReviewLoop(
           }
           if (prHadChanges) {
             convergenceState = recordRoundFindings(convergenceState, [], true);
-            saveConvergenceState(convergenceState);
+            saveConvergenceState(convergenceState, item.id);
           } else {
           runLogger.logError(`Convergence detected (${convergence.reason}): ${convergence.message}`);
           lastPipelineExitCode = EXIT_NO_CHANGES;

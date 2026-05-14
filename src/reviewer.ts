@@ -736,9 +736,11 @@ async function pollMergeRequests(
                 });
               }
 
-              // Clear state so the next aicoder push picks a clean slate
+              // Keep reviewedMRShas entry so the MR is NOT re-reviewed on the same SHA.
+              // Only remove it when aicoder pushes new commits (SHA changes in verifyReviewerState).
+              // Deleting the SHA here would cause an immediate re-review with the same diff,
+              // posting a duplicate rework prompt.
               reviewedMRs.delete(mrKey);
-              reviewedMRShas.delete(mrKey);
               mrSkipCounts.delete(mrKey);
               currentPollIntervalMs = null;
             } else {
@@ -840,52 +842,11 @@ function getVcsClient(target: RepoTarget, config: ReviewerConfig): VcsClient {
 }
 
 // ── Convert CodeReview findings to ReviewFinding format ────────────────────────
-
-function findingFromText(
-  text: string,
-  severity: ReviewFinding["severity"],
-  category: ReviewFinding["category"],
-): ReviewFinding {
-  // Pattern 1: "filename.ext:line — description"
-  const explicitMatch = text.match(/^([\w./\-]+\.\w{1,10})\s*:\s*(\d+)\s*[,\s]*[—\-–]/);
-  if (explicitMatch) {
-    return { severity, category, file: explicitMatch[1], line: parseInt(explicitMatch[2], 10), message: text, suggestion: "See the full review comment on the PR." };
-  }
-  // Pattern 2: "filename.ext — description"
-  const fileOnlyMatch = text.match(/^([\w./\-]+\.\w{1,10})\s*[—\-–]/);
-  if (fileOnlyMatch) {
-    return { severity, category, file: fileOnlyMatch[1], message: text, suggestion: "See the full review comment on the PR." };
-  }
-  // Pattern 3: first filename before the " — " separator
-  const beforeDash = text.split(/\s+[—\-–]\s+/)[0];
-  const looseMatch = beforeDash.match(/\b([\w./\-]+\.\w{1,10})(?::(\d+))?/);
-  return {
-    severity,
-    category,
-    file: looseMatch?.[1] ?? "unknown",
-    line: looseMatch?.[2] ? parseInt(looseMatch[2], 10) : undefined,
-    message: text,
-    suggestion: "See the full review comment on the PR.",
-  };
-}
+// Implementation lives in src/code-review/findings-adapter.ts (shared with reviewer-config.ts)
+import { findingFromText as _findingFromText, codeReviewToFindings as _codeReviewToFindings } from "./code-review/findings-adapter";
 
 function codeReviewToFindings(review: { mustFix?: string[]; securityConcerns?: string[]; migrationRisks?: string[]; shouldFix?: string[]; testGaps?: string[]; observabilityConcerns?: string[] }): ReviewFinding[] {
-  const findings: ReviewFinding[] = [];
-
-  const add = (items: string[], severity: ReviewFinding["severity"], category: ReviewFinding["category"]) => {
-    for (const text of items) {
-      findings.push(findingFromText(text, severity, category));
-    }
-  };
-
-  add(review.mustFix || [], "critical", "quality");
-  add(review.securityConcerns || [], "high", "security");
-  add(review.migrationRisks || [], "high", "quality");
-  add(review.shouldFix || [], "medium", "quality");
-  add(review.testGaps || [], "medium", "qa");
-  add(review.observabilityConcerns || [], "low", "quality");
-
-  return findings;
+  return _codeReviewToFindings(review) as ReviewFinding[];
 }
 
 async function runMultiAgentReview(
@@ -1225,10 +1186,16 @@ function buildReworkPrompt(result: ReviewResult): string {
     .filter((f) => f.severity === "critical" || f.severity === "high")
     .map(
       (f) =>
-        `- Fix [${f.severity}] ${f.category} issue in ${f.file}${f.line ? `:${f.line}` : ""}: ${f.message}\n  Apply: ${f.suggestion}`,
+        `- Fix [${f.severity}] ${f.category} issue in ${f.file}${f.line ? `:${f.line}` : ""}: ${f.message}`,
     );
 
-  return `## Coding Prompt\n\n### Rework from PR Review\n\nThe following issues must be fixed before merge:\n\n${tasks.join("\n")}\n\n### Reasoning\nThese findings were identified by the security, QA, and code quality review agents. All critical and high severity issues must be resolved. Re-run the full implementation addressing each finding.`;
+  // Include the AI-generated review comment as the primary guidance — it contains
+  // specific, actionable suggestions that the structured findings list cannot carry.
+  const reviewGuidance = result.summary && result.summary !== buildSummary(result.findings)
+    ? `\n### Reviewer Notes\n\n${result.summary}\n`
+    : "";
+
+  return `## Coding Prompt\n\n### Rework from PR Review\n\nThe following issues must be fixed before merge:\n\n${tasks.join("\n")}\n${reviewGuidance}\n### Reasoning\nThese findings were identified by the security, QA, and code quality review agents. All critical and high severity issues must be resolved. Re-run the full implementation addressing each finding.`;
 }
 
 async function postSuggestionsWithTracking(

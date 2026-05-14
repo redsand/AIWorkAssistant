@@ -14,7 +14,16 @@ import * as path from "path";
 import { type ConvergenceState, initConvergenceState } from "./convergence";
 
 const DEFAULT_WORKSPACE = process.cwd();
-const STATE_FILE = path.join(DEFAULT_WORKSPACE, ".aicoder", "convergence-state.json");
+
+function stateFilePath(issueKey?: string): string {
+  const base = path.join(DEFAULT_WORKSPACE, ".aicoder");
+  if (issueKey) {
+    // Sanitize issue key for use as a filename (e.g. "IR-110" → safe)
+    const safe = issueKey.replace(/[^a-zA-Z0-9_\-]/g, "_");
+    return path.join(base, `convergence-state-${safe}.json`);
+  }
+  return path.join(base, "convergence-state.json");
+}
 
 let currentState: ConvergenceState | null = null;
 
@@ -57,39 +66,44 @@ export function serializeConvergence(state: ConvergenceState): SerializedConverg
   };
 }
 
-export function loadConvergenceState(): ConvergenceState {
-  if (currentState) return currentState;
+export function loadConvergenceState(issueKey?: string): ConvergenceState {
+  if (!issueKey && currentState) return currentState;
+  const file = stateFilePath(issueKey);
   try {
-    if (fs.existsSync(STATE_FILE)) {
-      const data = JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
+    if (fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, "utf-8"));
       if (data && typeof data.roundNumber === "number") {
-        currentState = deserializeConvergence(data);
-        return currentState;
+        const state = deserializeConvergence(data);
+        if (!issueKey) currentState = state;
+        return state;
       }
     }
   } catch {
     // File doesn't exist or is corrupt — start fresh
   }
-  currentState = initConvergenceState();
-  return currentState;
+  const fresh = initConvergenceState();
+  if (!issueKey) currentState = fresh;
+  return fresh;
 }
 
-export function saveConvergenceState(state: ConvergenceState): void {
-  currentState = state;
+export function saveConvergenceState(state: ConvergenceState, issueKey?: string): void {
+  if (!issueKey) currentState = state;
+  const file = stateFilePath(issueKey);
   try {
-    const dir = path.dirname(STATE_FILE);
+    const dir = path.dirname(file);
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(STATE_FILE, JSON.stringify(serializeConvergence(state), null, 2), "utf-8");
+    fs.writeFileSync(file, JSON.stringify(serializeConvergence(state), null, 2), "utf-8");
   } catch {
     // Persistence failure is non-fatal
   }
 }
 
-export function clearConvergenceState(): void {
-  currentState = null;
+export function clearConvergenceState(issueKey?: string): void {
+  if (!issueKey) currentState = null;
+  const file = stateFilePath(issueKey);
   try {
-    if (fs.existsSync(STATE_FILE)) {
-      fs.unlinkSync(STATE_FILE);
+    if (fs.existsSync(file)) {
+      fs.unlinkSync(file);
     }
   } catch {
     // Non-fatal

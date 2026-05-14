@@ -16,85 +16,9 @@ export interface ReviewerConfig {
   gitlabProject: string;
 }
 
-export interface ReviewFinding {
-  severity: "critical" | "high" | "medium" | "low";
-  category: "security" | "qa" | "quality";
-  file: string;
-  line?: number;
-  message: string;
-  suggestion: string;
-}
-
-function findingFromText(
-  text: string,
-  severity: ReviewFinding["severity"],
-  category: ReviewFinding["category"],
-): ReviewFinding {
-  // Extract the first file:line reference from finding text.
-  // The model is instructed to write "filename.ext:line_number — description".
-  // Some findings reference multiple files ("file1.js:10, file2.js:20 — desc") —
-  // we extract just the first one since that's the primary location.
-
-  // Pattern 1: "filename.ext:line — description" (explicit file:line, required format)
-  const explicitMatch = text.match(/^([\w./\-]+\.\w{1,10})\s*:\s*(\d+)\s*[,\s]*[—\-–]/);
-  if (explicitMatch) {
-    return {
-      severity,
-      category,
-      file: explicitMatch[1],
-      line: parseInt(explicitMatch[2], 10),
-      message: text,
-      suggestion: "See the full review comment on the PR.",
-    };
-  }
-  // Pattern 2: "filename.ext — description" (file without line number)
-  const fileOnlyMatch = text.match(/^([\w./\-]+\.\w{1,10})\s*[—\-–]/);
-  if (fileOnlyMatch) {
-    return {
-      severity,
-      category,
-      file: fileOnlyMatch[1],
-      line: undefined,
-      message: text,
-      suggestion: "See the full review comment on the PR.",
-    };
-  }
-  // Pattern 3: fallback — first filename.ext anywhere in text (before the " — " separator)
-  // Only search in the part before " — " to avoid picking up filenames from the description.
-  const beforeDash = text.split(/\s+[—\-–]\s+/)[0];
-  const looseMatch = beforeDash.match(/\b([\w./\-]+\.\w{1,10})(?::(\d+))?/);
-  return {
-    severity,
-    category,
-    file: looseMatch?.[1] ?? "unknown",
-    line: looseMatch?.[2] ? parseInt(looseMatch[2], 10) : undefined,
-    message: text,
-    suggestion: "See the full review comment on the PR.",
-  };
-}
-
-function codeReviewToFindings(review: CodeReview): ReviewFinding[] {
-  const findings: ReviewFinding[] = [];
-
-  const add = (
-    items: string[],
-    severity: ReviewFinding["severity"],
-    category: ReviewFinding["category"],
-  ) => {
-    for (const text of items) {
-      findings.push(findingFromText(text, severity, category));
-    }
-  };
-
-  add(review.mustFix, "critical", "quality");
-  add(review.securityConcerns, "high", "security");
-  add(review.migrationRisks, "high", "quality");
-  add(review.shouldFix, "medium", "quality");
-  add(review.testGaps, "medium", "qa");
-  add(review.observabilityConcerns, "low", "quality");
-
-  return findings;
-}
+export type { ReviewFinding } from "../code-review/findings-adapter";
+import type { ReviewFinding } from "../code-review/findings-adapter";
+import { codeReviewToFindings } from "../code-review/findings-adapter";
 
 export async function reviewerConfigRoutes(fastify: FastifyInstance) {
   fastify.get("/config", async (_request, _reply): Promise<ReviewerConfig> => {

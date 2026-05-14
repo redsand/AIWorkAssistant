@@ -187,7 +187,7 @@ export function checkConvergence(
   config: ConvergenceConfig,
 ): ConvergenceResult {
   // 1. Hard round cap
-  if (state.roundNumber > config.maxRounds) {
+  if (state.roundNumber >= config.maxRounds) {
     return {
       shouldStop: true,
       reason: "max_rounds",
