@@ -30,9 +30,13 @@ function findingFromText(
   severity: ReviewFinding["severity"],
   category: ReviewFinding["category"],
 ): ReviewFinding {
-  // Try multiple patterns to extract file reference from finding text
-  // Pattern 1: "filename.ext:line — description" (explicit file:line format)
-  const explicitMatch = text.match(/^([\w./\-]+\.\w{1,10})\s*:\s*(\d+)\s*[—\-–]/);
+  // Extract the first file:line reference from finding text.
+  // The model is instructed to write "filename.ext:line_number — description".
+  // Some findings reference multiple files ("file1.js:10, file2.js:20 — desc") —
+  // we extract just the first one since that's the primary location.
+
+  // Pattern 1: "filename.ext:line — description" (explicit file:line, required format)
+  const explicitMatch = text.match(/^([\w./\-]+\.\w{1,10})\s*:\s*(\d+)\s*[,\s]*[—\-–]/);
   if (explicitMatch) {
     return {
       severity,
@@ -43,7 +47,7 @@ function findingFromText(
       suggestion: "See the full review comment on the PR.",
     };
   }
-  // Pattern 2: "filename.ext — description" (file without line)
+  // Pattern 2: "filename.ext — description" (file without line number)
   const fileOnlyMatch = text.match(/^([\w./\-]+\.\w{1,10})\s*[—\-–]/);
   if (fileOnlyMatch) {
     return {
@@ -55,20 +59,10 @@ function findingFromText(
       suggestion: "See the full review comment on the PR.",
     };
   }
-  // Pattern 3: "in filename.ext" or "in path/filename.ext"
-  const inMatch = text.match(/\bin\s+([\w./\-]+\.\w{1,10})/);
-  if (inMatch) {
-    return {
-      severity,
-      category,
-      file: inMatch[1],
-      line: undefined,
-      message: text,
-      suggestion: "See the full review comment on the PR.",
-    };
-  }
-  // Pattern 4: fallback — any filename.ext anywhere in text
-  const looseMatch = text.match(/\b([\w./\-]+\.\w{1,10})(?::(\d+))?/);
+  // Pattern 3: fallback — first filename.ext anywhere in text (before the " — " separator)
+  // Only search in the part before " — " to avoid picking up filenames from the description.
+  const beforeDash = text.split(/\s+[—\-–]\s+/)[0];
+  const looseMatch = beforeDash.match(/\b([\w./\-]+\.\w{1,10})(?::(\d+))?/);
   return {
     severity,
     category,
@@ -197,7 +191,8 @@ export async function reviewerConfigRoutes(fastify: FastifyInstance) {
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
-      Connection: "keep-alive",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
     });
 
     const sendEvent = (event: ReviewStreamEvent) => {

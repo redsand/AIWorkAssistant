@@ -95,10 +95,15 @@ function extractPartialReview(content: string): Partial<CodeReview> | null {
     rollbackConsiderations: arrField("rollbackConsiderations"),
   };
 
-  const meaningful =
-    (result.riskLevel && result.recommendation) ||
-    (result.mustFix && result.mustFix.length > 0) ||
-    (result.securityConcerns && result.securityConcerns.length > 0);
+  // Accept the partial if we recovered any structured field — riskLevel alone is enough,
+  // or any array with at least one item. The caller has fallbacks for missing fields.
+  const anyArray = [
+    result.mustFix, result.shouldFix, result.testGaps,
+    result.securityConcerns, result.observabilityConcerns,
+    result.migrationRisks, result.rollbackConsiderations,
+  ].some((a) => a && a.length > 0);
+
+  const meaningful = !!result.riskLevel || !!result.recommendation || anyArray;
 
   return meaningful ? result : null;
 }
@@ -703,7 +708,8 @@ class ReviewAssistant {
               { role: "user", content: diffSummary },
             ],
             temperature: 0.3,
-            maxTokens: 65536,
+            maxTokens: 4096,
+            jsonMode: true,
           });
           const content = response.content.trim();
           const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -815,6 +821,7 @@ class ReviewAssistant {
           onProgress?.({ type: "progress", message: "Running AI code review..." });
 
           let fullContent = "";
+          let pendingChunk = "";
           let lastStreamTime = Date.now();
 
           for await (const chunk of aiClient.chatStream({
@@ -823,19 +830,24 @@ class ReviewAssistant {
               { role: "user", content: diffSummary },
             ],
             temperature: 0.3,
-            maxTokens: 65536,
+            maxTokens: 4096,
+            jsonMode: true,
           })) {
             fullContent += chunk;
+            pendingChunk += chunk;
 
-            // Throttle stream events to avoid flooding — emit every 500ms or 200 chars
+            // Throttle stream events — emit accumulated chunk every 500ms or 200 chars
             const now = Date.now();
-            if (now - lastStreamTime > 500 || fullContent.length % 200 < chunk.length) {
-              const preview = fullContent.length > 150
-                ? fullContent.slice(-150)
-                : fullContent;
-              onProgress?.({ type: "stream", chunk: preview });
+            if (now - lastStreamTime > 500 || pendingChunk.length >= 200) {
+              onProgress?.({ type: "stream", chunk: pendingChunk });
+              pendingChunk = "";
               lastStreamTime = now;
             }
+          }
+
+          // Flush any remaining buffered chunk
+          if (pendingChunk) {
+            onProgress?.({ type: "stream", chunk: pendingChunk });
           }
 
           onProgress?.({ type: "progress", message: "AI review complete — parsing results..." });

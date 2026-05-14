@@ -227,10 +227,28 @@ class TicketBridge {
     const issue = await jiraClient.getIssue(source.id);
 
     const jiraLabels: string[] = (issue.fields as any).labels || [];
-    if (
-      ctx.skipMissingCodingPrompt &&
-      jiraLabels.includes("missing-coding-prompt")
-    ) {
+    const comments = await jiraClient.getComments(source.id);
+
+    const body = this.extractJiraBody(issue);
+    let codingPrompt = this.extractCodingPromptSection(body);
+
+    // If the issue body has no coding prompt, check comments (most recent first).
+    // The reviewer posts rework prompts as Jira comments with a ## Coding Prompt section.
+    if (!codingPrompt && comments.length > 0) {
+      for (let i = comments.length - 1; i >= 0; i--) {
+        const c = comments[i] as any;
+        const cbody = typeof c.body === "string" ? c.body : this.extractAdfText(c.body);
+        const fromComment = this.extractCodingPromptSection(cbody);
+        if (fromComment) {
+          codingPrompt = fromComment;
+          break;
+        }
+      }
+    }
+
+    // Only skip after checking comments — reviewer rework prompts land in comments,
+    // so a missing-coding-prompt label must not block pickup when a comment has the section.
+    if (ctx.skipMissingCodingPrompt && jiraLabels.includes("missing-coding-prompt") && !codingPrompt) {
       return {
         prompt: "",
         title: (issue.fields?.summary as string) || source.id,
@@ -243,11 +261,6 @@ class TicketBridge {
         skipReason: "missing-coding-prompt",
       };
     }
-
-    const comments = await jiraClient.getComments(source.id);
-
-    const body = this.extractJiraBody(issue);
-    const codingPrompt = this.extractCodingPromptSection(body);
     const acceptanceCriteria = ctx.includeAcceptanceCriteria
       ? this.extractAcceptanceCriteria(body)
       : [];
@@ -354,6 +367,15 @@ class TicketBridge {
     if (!node) return "";
     if (typeof node === "string") return node;
     if (node.type === "text") return node.text || "";
+    if (node.type === "heading") {
+      // Reconstruct markdown heading so ## Coding Prompt survives the ADF round-trip
+      const level = typeof node.attrs?.level === "number" ? node.attrs.level : 1;
+      const prefix = "#".repeat(Math.min(level, 6));
+      const text = (node.content as any[] ?? [])
+        .map((child: any) => this.extractAdfText(child))
+        .join("");
+      return `${prefix} ${text}`;
+    }
     if (node.content) {
       return (node.content as any[])
         .map((child) => this.extractAdfText(child))

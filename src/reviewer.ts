@@ -840,22 +840,41 @@ function getVcsClient(target: RepoTarget, config: ReviewerConfig): VcsClient {
 }
 
 // ── Convert CodeReview findings to ReviewFinding format ────────────────────────
+
+function findingFromText(
+  text: string,
+  severity: ReviewFinding["severity"],
+  category: ReviewFinding["category"],
+): ReviewFinding {
+  // Pattern 1: "filename.ext:line — description"
+  const explicitMatch = text.match(/^([\w./\-]+\.\w{1,10})\s*:\s*(\d+)\s*[,\s]*[—\-–]/);
+  if (explicitMatch) {
+    return { severity, category, file: explicitMatch[1], line: parseInt(explicitMatch[2], 10), message: text, suggestion: "See the full review comment on the PR." };
+  }
+  // Pattern 2: "filename.ext — description"
+  const fileOnlyMatch = text.match(/^([\w./\-]+\.\w{1,10})\s*[—\-–]/);
+  if (fileOnlyMatch) {
+    return { severity, category, file: fileOnlyMatch[1], message: text, suggestion: "See the full review comment on the PR." };
+  }
+  // Pattern 3: first filename before the " — " separator
+  const beforeDash = text.split(/\s+[—\-–]\s+/)[0];
+  const looseMatch = beforeDash.match(/\b([\w./\-]+\.\w{1,10})(?::(\d+))?/);
+  return {
+    severity,
+    category,
+    file: looseMatch?.[1] ?? "unknown",
+    line: looseMatch?.[2] ? parseInt(looseMatch[2], 10) : undefined,
+    message: text,
+    suggestion: "See the full review comment on the PR.",
+  };
+}
+
 function codeReviewToFindings(review: { mustFix?: string[]; securityConcerns?: string[]; migrationRisks?: string[]; shouldFix?: string[]; testGaps?: string[]; observabilityConcerns?: string[] }): ReviewFinding[] {
   const findings: ReviewFinding[] = [];
 
-  const add = (
-    items: string[],
-    severity: ReviewFinding["severity"],
-    category: ReviewFinding["category"],
-  ) => {
+  const add = (items: string[], severity: ReviewFinding["severity"], category: ReviewFinding["category"]) => {
     for (const text of items) {
-      findings.push({
-        severity,
-        category,
-        file: "unknown",
-        message: text,
-        suggestion: "See the full review comment on the PR.",
-      });
+      findings.push(findingFromText(text, severity, category));
     }
   };
 

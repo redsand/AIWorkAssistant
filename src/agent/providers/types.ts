@@ -34,6 +34,8 @@ export interface ChatRequest {
   stream?: boolean;
   /** Per-request output token limit. Overrides the provider default when set. */
   maxTokens?: number;
+  /** Force JSON output via response_format (OpenAI-compatible providers: Ollama, ZAI, OpenCode). */
+  jsonMode?: boolean;
 }
 
 export interface ChatResponse {
@@ -143,6 +145,10 @@ export abstract class AIProvider {
 
     if (request.maxTokens) {
       body.max_tokens = request.maxTokens;
+    }
+
+    if (request.jsonMode) {
+      body.response_format = { type: "json_object" };
     }
 
     const msgTokens = this.estimateTokens(messages);

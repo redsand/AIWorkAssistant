@@ -85,8 +85,10 @@ export interface ConvergencePromptDecision {
 
 /**
  * Normalize a finding to a stable hash string.
- * Uses file + severity + category so that cosmetic differences in
- * the finding message don't create spurious new hashes.
+ * Uses file + severity + category as the primary key.
+ * When file is unknown/missing, appends a message fragment so that
+ * distinct findings don't collapse to the same hash and trigger
+ * false "stuck" detection.
  */
 export function hashFinding(finding: {
   file?: string;
@@ -94,11 +96,22 @@ export function hashFinding(finding: {
   category?: string;
   message?: string;
 }): string {
-  const parts = [
-    finding.file?.trim() || "",
-    (finding.severity ?? "unknown").toLowerCase().trim(),
-    (finding.category ?? "unknown").toLowerCase().trim(),
-  ];
+  const file = finding.file?.trim() || "";
+  const severity = (finding.severity ?? "unknown").toLowerCase().trim();
+  const category = (finding.category ?? "unknown").toLowerCase().trim();
+
+  const parts = [file, severity, category];
+
+  if (!file || file === "unknown") {
+    // Include a normalized message prefix so distinct no-file findings hash differently
+    const msgSig = (finding.message ?? "")
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 60);
+    parts.push(msgSig);
+  }
+
   return parts.join("::");
 }
 

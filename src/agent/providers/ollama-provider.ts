@@ -251,31 +251,33 @@ export class OllamaProvider extends AIProvider {
         },
       );
 
+      // Buffer incomplete lines — multiple SSE events can arrive in one chunk.
+      // Parsing the raw chunk directly drops all but the first event in the batch.
+      let lineBuffer = "";
       for await (const chunk of response.data) {
-        const line = chunk.toString();
+        lineBuffer += chunk.toString();
+        const lines = lineBuffer.split("\n");
+        lineBuffer = lines.pop() ?? ""; // keep any incomplete trailing line
 
-        if (!line.startsWith("data: ")) {
-          continue;
-        }
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
 
-        const data = line.slice(6).trim();
+          const data = line.slice(6).trim();
+          if (data === "[DONE]" || !data) continue;
 
-        if (data === "[DONE]" || !data) {
-          break;
-        }
+          try {
+            const parsed = JSON.parse(data);
+            const delta = parsed.choices[0]?.delta;
 
-        try {
-          const parsed = JSON.parse(data);
-          const delta = parsed.choices[0]?.delta;
-
-          if (delta?.reasoning_content || delta?.thinking) {
-            yield `<<THINKING>>${delta.reasoning_content || delta.thinking}<<//THINKING>>`;
+            if (delta?.reasoning_content || delta?.thinking) {
+              yield `<<THINKING>>${delta.reasoning_content || delta.thinking}<<//THINKING>>`;
+            }
+            if (delta?.content) {
+              yield delta.content;
+            }
+          } catch {
+            continue;
           }
-          if (delta?.content) {
-            yield delta.content;
-          }
-        } catch {
-          continue;
         }
       }
 

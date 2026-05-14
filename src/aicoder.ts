@@ -1758,7 +1758,7 @@ function failRunTrack(runId: string, errorMessage: string): void {
   if (agentRunsClient) {
     agentRunsClient.failRun(runId, errorMessage).catch(() => {});
   } else {
-    failRunTrack(runId, errorMessage);
+    agentRunDatabase.failRun(runId, errorMessage);
   }
 }
 
@@ -3056,6 +3056,8 @@ async function runReviewLoop(
             // Non-fatal: convergence report is best-effort
           }
         }
+        // Prevent re-pickup on next poll — ready-for-agent label stays but we've escalated
+        saveProcessedIssue(item.id);
         clearRunState();
         return;
         }
@@ -3071,6 +3073,7 @@ async function runReviewLoop(
           const escalationPrompt = generateStrategyPrompt(strategy, strategyContext);
           runLogger.logError(escalationPrompt);
           lastPipelineExitCode = EXIT_REVIEW_FAILED;
+          saveProcessedIssue(item.id);
           clearRunState();
           return;
         }
