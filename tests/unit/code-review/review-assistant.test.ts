@@ -483,13 +483,13 @@ describe("reviewAssistant.reviewGitHubPullRequest — AI path", () => {
     expect(review.suggestedReviewComment).toBe("Looks good!");
   });
 
-  it("passes maxTokens: 4096 in the chat request", async () => {
+  it("passes maxTokens: 16384 in the chat request (raised from 4096 → 8192 → 16384; 64K context window has headroom)", async () => {
     mockAiChat.mockResolvedValue({ content: JSON.stringify({ riskLevel: "low", recommendation: "low_risk", mustFix: [], shouldFix: [], testGaps: [], securityConcerns: [], observabilityConcerns: [], migrationRisks: [], rollbackConsiderations: [], whatChanged: "x" }) });
 
     await reviewAssistant.reviewGitHubPullRequest({ owner: "org", repo: "repo", prNumber: 1 });
 
     expect(mockAiChat).toHaveBeenCalledWith(
-      expect.objectContaining({ maxTokens: 4096 }),
+      expect.objectContaining({ maxTokens: 16384 }),
     );
   });
 
@@ -752,5 +752,129 @@ describe("reviewAssistant.createReviewWorkItem", () => {
         }),
       }),
     );
+  });
+});
+
+// ── REVIEW_SYSTEM_PROMPT output-budget constraints ────────────────────────────
+
+import { reviewAssistant as _ra } from "../../../src/code-review/review-assistant";
+
+describe("REVIEW_SYSTEM_PROMPT — output budget and conciseness constraints", () => {
+  it("prompt includes an explicit token/word budget to prevent truncation", () => {
+    // Access via the module: the prompt is used internally, but we can verify
+    // its content through the chat call made during a review.
+    // We reconstruct what was sent by inspecting the mock call.
+    beforeEach(() => {
+      vi.clearAllMocks();
+      mockGithubIsConfigured.mockReturnValue(true);
+      mockGetPullRequest.mockResolvedValue(LOW_RISK_PR);
+      mockGetPullRequestFiles.mockResolvedValue(LOW_RISK_FILES);
+      mockListPullRequestChecks.mockResolvedValue(PASSING_CHECKS);
+      mockListPullRequestComments.mockResolvedValue([]);
+      mockAiIsConfigured.mockReturnValue(true);
+    });
+  });
+
+  it("system prompt enforces max 150-word suggestedReviewComment", async () => {
+    vi.clearAllMocks();
+    mockGithubIsConfigured.mockReturnValue(true);
+    mockGetPullRequest.mockResolvedValue(LOW_RISK_PR);
+    mockGetPullRequestFiles.mockResolvedValue(LOW_RISK_FILES);
+    mockListPullRequestChecks.mockResolvedValue(PASSING_CHECKS);
+    mockListPullRequestComments.mockResolvedValue([]);
+    mockAiIsConfigured.mockReturnValue(true);
+
+    mockAiChat.mockResolvedValue({ content: JSON.stringify({ riskLevel: "low", recommendation: "low_risk", mustFix: [], shouldFix: [], testGaps: [], securityConcerns: [], observabilityConcerns: [], migrationRisks: [], rollbackConsiderations: [], whatChanged: "x" }) });
+
+    await reviewAssistant.reviewGitHubPullRequest({ owner: "org", repo: "repo", prNumber: 1 });
+
+    const systemMsg = mockAiChat.mock.calls[0][0].messages.find((m: { role: string }) => m.role === "system");
+    expect(systemMsg).toBeDefined();
+    // Prompt must constrain suggestedReviewComment length
+    expect(systemMsg.content).toMatch(/150 words|under 150/i);
+    // Prompt must include an output budget constraint
+    expect(systemMsg.content).toMatch(/output budget|1500 tokens|under.*token/i);
+    // maxTokens: 16384 (raised from 4096 → 16384; glm-5 has 64K context)
+    expect(mockAiChat.mock.calls[0][0].maxTokens).toBe(16384);
+  });
+
+  it("system prompt limits each array to 5 items max", async () => {
+    vi.clearAllMocks();
+    mockGithubIsConfigured.mockReturnValue(true);
+    mockGetPullRequest.mockResolvedValue(LOW_RISK_PR);
+    mockGetPullRequestFiles.mockResolvedValue(LOW_RISK_FILES);
+    mockListPullRequestChecks.mockResolvedValue(PASSING_CHECKS);
+    mockListPullRequestComments.mockResolvedValue([]);
+    mockAiIsConfigured.mockReturnValue(true);
+
+    mockAiChat.mockResolvedValue({ content: JSON.stringify({ riskLevel: "low", recommendation: "low_risk", mustFix: [], shouldFix: [], testGaps: [], securityConcerns: [], observabilityConcerns: [], migrationRisks: [], rollbackConsiderations: [], whatChanged: "x" }) });
+
+    await reviewAssistant.reviewGitHubPullRequest({ owner: "org", repo: "repo", prNumber: 1 });
+
+    const systemMsg = mockAiChat.mock.calls[0][0].messages.find((m: { role: string }) => m.role === "system");
+    expect(systemMsg.content).toMatch(/max 5 items|5 items/i);
+  });
+});
+
+// ── Regression: IR-106 mid-JSON truncation scenario ──────────────────────────
+
+describe("regression: AI review truncated mid-JSON (IR-106 / breakglass MR)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGithubIsConfigured.mockReturnValue(true);
+    mockGetPullRequest.mockResolvedValue({
+      ...HIGH_RISK_PR,
+      title: "Breakglass Emergency Access — Session Bypasses",
+      head: { ref: "ai/issue-106-breakglass", sha: "4ad1c559" },
+    });
+    mockGetPullRequestFiles.mockResolvedValue(HIGH_RISK_FILES);
+    mockListPullRequestChecks.mockResolvedValue(PASSING_CHECKS);
+    mockListPullRequestComments.mockResolvedValue([]);
+    mockAiIsConfigured.mockReturnValue(true);
+  });
+
+  it("escalates when JSON is cut off inside a migrationRisks string value", async () => {
+    // Mirrors the exact truncation seen in production for IR-106
+    mockAiChat.mockResolvedValue({
+      content: '{"whatChanged":"Adds breakglass emergency access endpoint","riskLevel":"high","recommendation":"needs_changes","mustFix":["auth.ts:42 — session not regenerated after privilege elevation"],"shouldFix":[],"testGaps":[],"securityConcerns":["loggingAttempts Map grows large — indicate an active enumeration"],"observabilityConcerns":[],"migrationRisks": "/api/breakglass/lo',
+    });
+
+    const review = await reviewAssistant.reviewGitHubPullRequest({ owner: "org", repo: "repo", prNumber: 42 });
+
+    expect(review.riskLevel).toBe("high");
+    expect(review.recommendation).toBe("needs_changes");
+    expect(review.mustFix.some((m) => /truncated/i.test(m))).toBe(true);
+    expect(review.securityConcerns.some((c) => /AI review was unavailable/i.test(c))).toBe(true);
+  });
+
+  it("does NOT escalate when the same review completes within 8192 tokens", async () => {
+    const fullReview = {
+      whatChanged: "Adds breakglass emergency access endpoint with rate limiting",
+      riskLevel: "high",
+      recommendation: "needs_changes",
+      mustFix: ["auth.ts:42 — session not regenerated after privilege elevation"],
+      shouldFix: ["breakglass.ts:18 — loggingAttempts Map can grow unbounded"],
+      testGaps: ["No test for rate-limit enforcement"],
+      securityConcerns: ["Weak rate limit: 10 attempts per IP — brute-forceable"],
+      observabilityConcerns: [],
+      migrationRisks: [],
+      rollbackConsiderations: ["Revert and redeploy"],
+      suggestedReviewComment: "🟠 HIGH: session not regenerated after privilege elevation. Weak rate limit.",
+    };
+    mockAiChat.mockResolvedValue({ content: JSON.stringify(fullReview) });
+
+    const review = await reviewAssistant.reviewGitHubPullRequest({ owner: "org", repo: "repo", prNumber: 42 });
+
+    expect(review.mustFix).toContain("auth.ts:42 — session not regenerated after privilege elevation");
+    expect(review.mustFix.every((m) => !/truncated/i.test(m))).toBe(true);
+    expect(review.riskLevel).toBe("high");
+  });
+
+  it("passes maxTokens: 16384 even for security-sensitive PRs", async () => {
+    mockAiChat.mockResolvedValue({ content: JSON.stringify({ riskLevel: "high", recommendation: "needs_changes", mustFix: ["auth.ts:1 — x"], shouldFix: [], testGaps: [], securityConcerns: [], observabilityConcerns: [], migrationRisks: [], rollbackConsiderations: [], whatChanged: "breakglass endpoint" }) });
+
+    await reviewAssistant.reviewGitHubPullRequest({ owner: "org", repo: "repo", prNumber: 42 });
+
+    expect(mockAiChat).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 16384 }));
   });
 });

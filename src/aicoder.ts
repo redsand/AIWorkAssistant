@@ -2903,7 +2903,7 @@ async function runReviewLoop(
       clearReviewGateState(); // All findings resolved — clear the gate
       forceCheckout(getBaseBranch(), WORKSPACE);
       gitRun(["pull", "--ff-only", "origin", getBaseBranch()], WORKSPACE);
-      await closeSourceIssue(cfg, item, prNumber);
+      // Issue closing is the reviewer's responsibility after the MR is actually merged.
       return;
     }
 

@@ -10,6 +10,8 @@ import { reviewAssistant } from "./code-review/review-assistant";
 import type { ReviewStreamEvent } from "./code-review/review-assistant";
 import { parseReviewFindings } from "./autonomous-loop/review-findings-parser";
 import { recordGateFindings } from "./autonomous-loop/review-gate-state";
+import { formatConvergenceReport, initConvergenceState, recordRoundFindings, checkConvergence, DEFAULT_CONVERGENCE_CONFIG } from "./autonomous-loop/convergence";
+import { closeSourceIssue } from "./autonomous-loop/close-source-issue";
 
 // ── ANSI color helpers ──────────────────────────────────────────────────────
 const useColor = process.stdout.isTTY && process.env.NO_COLOR !== "1";
@@ -540,6 +542,15 @@ async function runAiReview(
 
 const reviewedMRs = new Set<string>(); // "source:project/mrNumber"
 const reviewedMRShas = new Map<string, string>(); // mrKey → last_commit_sha
+const mrSkipCounts = new Map<string, number>(); // mrKey → consecutive SHA-unchanged skips
+
+/** Stop polling an MR after this many consecutive SHA-unchanged skips. */
+const MAX_CONSECUTIVE_SKIPS = parseInt(process.env.MAX_CONSECUTIVE_SKIPS ?? "5", 10);
+
+/** Backoff bounds for the outer poll loop when MRs are being skipped. */
+const BASE_POLL_INTERVAL_MS = 30_000;
+const MAX_POLL_INTERVAL_MS = 300_000;
+let currentPollIntervalMs: number | null = null; // null = use config.pollIntervalMs
 
 // ── Persistent reviewer state ────────────────────────────────────────────────
 const REVIEWER_STATE_FILE = path.join(process.cwd(), ".aicoder", "reviewer-state.json");
@@ -696,8 +707,45 @@ async function pollMergeRequests(
           if (currentSha && currentSha !== lastSha) {
             log.review(`MR !${mr.number} has new commits (SHA: ${lastSha.slice(0,8)} → ${currentSha.slice(0,8)}) — re-reviewing`);
             reviewedMRs.delete(mrKey);
+            mrSkipCounts.delete(mrKey);
+            // SHA changed → reset backoff
+            currentPollIntervalMs = null;
           } else {
-            log.skip(`MR !${mr.number} already reviewed (SHA unchanged) — waiting for rework`);
+            // SHA unchanged — increment skip counter
+            const skipCount = (mrSkipCounts.get(mrKey) ?? 0) + 1;
+            mrSkipCounts.set(mrKey, skipCount);
+            log.skip(`MR !${mr.number} already reviewed (SHA unchanged) — waiting for rework [skip ${skipCount}/${MAX_CONSECUTIVE_SKIPS}]`);
+
+            if (skipCount >= MAX_CONSECUTIVE_SKIPS) {
+              // Too many consecutive skips — stop polling this MR and report to Jira
+              log.warn(`MR !${mr.number} skipped ${skipCount} times with no rework — posting convergence report`);
+
+              const convergenceState = recordRoundFindings(initConvergenceState(), [], false);
+              const convergence = checkConvergence(convergenceState, DEFAULT_CONVERGENCE_CONFIG);
+              const report = formatConvergenceReport(
+                { ...convergence, reason: "empty_prs", message: `Reviewer skipped MR !${mr.number} ${skipCount} times (SHA unchanged). The aicoder has not pushed new commits. Stopping poll — will resume when the aicoder pushes a rework.` },
+                convergenceState,
+                DEFAULT_CONVERGENCE_CONFIG,
+              );
+
+              // Post to Jira if we can identify the linked issue
+              const issueKey = vcs.extractLinkedIssueKey(mr.body) || vcs.extractIssueKeyFromBranch(mr.sourceBranch);
+              if (issueKey && /^[A-Z]+-\d+$/.test(issueKey) && jiraClient.isConfigured()) {
+                await addCommentToJiraIssue(issueKey, report).catch((err) => {
+                  log.warn(`Could not post convergence report to Jira ${issueKey}: ${err instanceof Error ? err.message : err}`);
+                });
+              }
+
+              // Clear state so the next aicoder push picks a clean slate
+              reviewedMRs.delete(mrKey);
+              reviewedMRShas.delete(mrKey);
+              mrSkipCounts.delete(mrKey);
+              currentPollIntervalMs = null;
+            } else {
+              // Apply exponential backoff: each skip doubles the wait, capped at MAX_POLL_INTERVAL_MS
+              const base = currentPollIntervalMs ?? BASE_POLL_INTERVAL_MS;
+              currentPollIntervalMs = Math.min(base * 1.5, MAX_POLL_INTERVAL_MS);
+            }
             continue;
           }
         } else {
@@ -1045,7 +1093,7 @@ function buildSummary(findings: ReviewFinding[]): string {
 async function mergeWithSummary(
   vcs: VcsClient,
   project: string,
-  mr: { number: number; title: string },
+  mr: { number: number; title: string; body?: string | null; sourceBranch?: string },
   result: ReviewResult,
 ): Promise<"merged" | "conflict" | "failed"> {
   const agentLine = formatAgentStatus(result.agentStatus);
@@ -1057,6 +1105,26 @@ async function mergeWithSummary(
     );
     await vcs.merge(project, mr.number, `Merge [AI] ${mr.title}`, result.summary);
     log.merge(`MR !${mr.number} merged in ${project}`);
+
+    // Close the originating source issue now that the MR is confirmed merged.
+    const issueKey = vcs.extractLinkedIssueKey(mr.body ?? null)
+      || vcs.extractIssueKeyFromBranch(mr.sourceBranch);
+    if (issueKey) {
+      const isJira = /^[A-Z]+-\d+$/.test(issueKey);
+      await closeSourceIssue(
+        {
+          source: isJira ? "jira" : "gitlab",
+          issueKey: isJira ? issueKey : `${project}#${issueKey}`,
+          mrIid: mr.number,
+        },
+        jiraClient,
+        gitlabClient.isConfigured() ? gitlabClient : null,
+        null,
+      ).catch((err) => {
+        log.warn(`Could not close source issue ${issueKey} after merge: ${err instanceof Error ? err.message : err}`);
+      });
+    }
+
     return "merged";
   } catch (mergeErr) {
     const errMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
@@ -1251,7 +1319,11 @@ async function main(): Promise<void> {
       log.config("poll-ms=0: one-shot mode — exiting after first cycle");
       break;
     }
-    await new Promise((r) => setTimeout(r, config.pollIntervalMs));
+    const waitMs = currentPollIntervalMs ?? config.pollIntervalMs;
+    if (currentPollIntervalMs !== null) {
+      log.poll(`Backoff active — next poll in ${Math.round(waitMs / 1000)}s (base: ${config.pollIntervalMs / 1000}s)`);
+    }
+    await new Promise((r) => setTimeout(r, waitMs));
   }
 }
 

@@ -46,6 +46,8 @@ const CONFIG_PATTERNS = [
 const SECURITY_PATTERNS = [/auth/i, /secret/i, /password/i, /token/i, /crypt/i, /jwt/i, /oauth/i, /permission/i, /role/i, /acl/i];
 const TEST_PATTERNS = [/\.test\./i, /\.spec\./i, /tests?\//i, /__tests__\//i];
 
+const MAX_REVIEW_RETRIES = 3;
+
 const REVIEW_SYSTEM_PROMPT = `You are a senior staff engineer performing a thorough code review. Given a PR/MR changeset, produce a JSON review object with these exact fields:
 - whatChanged (string): 2-4 sentence plain-English summary of what this PR does
 - riskLevel (string): one of: low, medium, high, critical
@@ -57,7 +59,7 @@ const REVIEW_SYSTEM_PROMPT = `You are a senior staff engineer performing a thoro
 - observabilityConcerns (string[]): logging, metrics, alerting gaps. Empty array if none.
 - migrationRisks (string[]): schema/data migration risks. Empty array if none.
 - rollbackConsiderations (string[]): what is needed to roll back safely. At least one item.
-- suggestedReviewComment (string): a markdown review comment Tim can post verbatim. Start with a brief summary, then bullet key points.
+- suggestedReviewComment (string): a markdown review comment to post on the PR/MR. Keep it under 150 words. One short paragraph summary then bullet points — no sub-bullets, no lengthy explanations.
 
 Consider the original issue/ticket requirements alongside the code changes. If previous review comments exist, assess whether earlier feedback was addressed. The review should be holistic — does the code actually solve the stated problem? Are there gaps between what the issue asked for and what the code delivers?
 
@@ -68,7 +70,9 @@ CRITICAL RULES:
 4. For new/added files (status: "added"), the entire file content is the diff — you can see the full implementation. Do not claim an added file is empty or missing content you can see in the diff.
 5. When checking if requirements from the issue are met, verify against the ACTUAL code shown, not assumptions about what might be missing.
 
-Be specific and actionable. Respond with ONLY the JSON object, no markdown fences.`;
+OUTPUT BUDGET: Keep the entire JSON response under 1500 tokens. Each string value: max 120 characters. Each array: max 5 items. Be direct and specific — no padding or repetition.
+
+Respond with ONLY the JSON object, no markdown fences.`;
 
 const RELEASE_SYSTEM_PROMPT = `You are a senior staff engineer preparing a release readiness assessment. Given a PR/MR changeset, produce a JSON object with these exact fields:
 - recommendation (string): one of: go, no_go, conditional_go
@@ -631,40 +635,66 @@ class ReviewAssistant {
     let aiSucceeded = false;
 
     if (aiClient.isConfigured()) {
-      try {
-        const response = await aiClient.chat({
-          messages: [
-            { role: "system", content: REVIEW_SYSTEM_PROMPT },
-            { role: "user", content: diffSummary },
-          ],
-          temperature: 0.3,
-          maxTokens: 4096,
-        });
-        const content = response.content.trim();
-        const jsonMatch = content.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          parsed = JSON.parse(jsonMatch[0]);
-          aiSucceeded = true;
-        } else {
-          // Response was truncated before the closing } or produced no JSON at all.
-          // Heuristic fallback would produce 0 findings (dangerously lenient for security changes).
-          console.warn("[CodeReview] AI response did not contain valid JSON — response may be truncated");
-          console.warn("[CodeReview] AI response length:", content.length, "last 200 chars:", content.slice(-200));
-          parsed = {
-            riskLevel: "high" as const,
-            recommendation: "needs_changes" as const,
-            whatChanged: changeSet.title,
-            mustFix: ["AI review response was truncated — manual review required"],
-            shouldFix: ["The AI review could not complete. Review the changes manually."],
-            testGaps: [],
-            securityConcerns: ["AI review was unavailable — security review could not be completed"],
-            observabilityConcerns: [],
-            migrationRisks: [],
-          };
-          aiSucceeded = true; // Use truncation escalation, not heuristic fallback
+      for (let attempt = 1; attempt <= MAX_REVIEW_RETRIES && !aiSucceeded; attempt++) {
+        if (attempt > 1) {
+          console.warn(`[CodeReview] Retry ${attempt}/${MAX_REVIEW_RETRIES} — previous attempt did not return valid JSON`);
         }
-      } catch (err) {
-        console.error("[CodeReview] AI generation failed, using fallback:", (err as Error).message);
+        try {
+          const response = await aiClient.chat({
+            messages: [
+              { role: "system", content: REVIEW_SYSTEM_PROMPT },
+              { role: "user", content: diffSummary },
+            ],
+            temperature: 0.3,
+            maxTokens: 16384,
+          });
+          const content = response.content.trim();
+          const jsonMatch = content.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            try {
+              parsed = JSON.parse(jsonMatch[0]);
+              aiSucceeded = true;
+            } catch {
+              // JSON.parse threw — model returned markdown/prose with curly-brace fragments
+              console.warn(`[CodeReview] Attempt ${attempt}: JSON.parse failed (model returned non-JSON). First 200 chars:`, content.slice(0, 200));
+            }
+          } else {
+            // No closing brace — response is truncated; escalate immediately (no retry)
+            console.warn(`[CodeReview] Attempt ${attempt}: response contained no JSON object — likely truncated. Length: ${content.length}, last 200 chars:`, content.slice(-200));
+            parsed = {
+              riskLevel: "high" as const,
+              recommendation: "needs_changes" as const,
+              whatChanged: changeSet.title,
+              mustFix: ["AI review response was truncated — manual review required"],
+              shouldFix: ["The AI review could not complete. Review the changes manually."],
+              testGaps: [],
+              securityConcerns: ["AI review was unavailable — security review could not be completed"],
+              observabilityConcerns: [],
+              migrationRisks: [],
+            };
+            aiSucceeded = true;
+            break;
+          }
+        } catch (err) {
+          console.error(`[CodeReview] Attempt ${attempt} AI call failed:`, (err as Error).message);
+        }
+      }
+
+      // All retries exhausted (JSON.parse kept throwing or AI kept throwing) — escalate
+      if (!aiSucceeded) {
+        console.warn("[CodeReview] All retries exhausted — escalating to needs_changes");
+        parsed = {
+          riskLevel: "high" as const,
+          recommendation: "needs_changes" as const,
+          whatChanged: changeSet.title,
+          mustFix: ["AI review was unavailable after retries — manual review required"],
+          shouldFix: ["Review the changes manually. The AI could not complete its assessment."],
+          testGaps: [],
+          securityConcerns: ["AI review was unavailable — security review could not be completed"],
+          observabilityConcerns: [],
+          migrationRisks: [],
+        };
+        aiSucceeded = true;
       }
     }
 
@@ -719,59 +749,88 @@ class ReviewAssistant {
     let aiSucceeded = false;
 
     if (aiClient.isConfigured()) {
-      try {
-        onProgress?.({ type: "progress", message: "Running AI code review..." });
+      for (let attempt = 1; attempt <= MAX_REVIEW_RETRIES && !aiSucceeded; attempt++) {
+        if (attempt > 1) {
+          console.warn(`[CodeReview] Stream retry ${attempt}/${MAX_REVIEW_RETRIES} — previous attempt did not return valid JSON`);
+        }
+        try {
+          onProgress?.({ type: "progress", message: "Running AI code review..." });
 
-        let fullContent = "";
-        let lastStreamTime = Date.now();
+          let fullContent = "";
+          let lastStreamTime = Date.now();
 
-        for await (const chunk of aiClient.chatStream({
-          messages: [
-            { role: "system", content: REVIEW_SYSTEM_PROMPT },
-            { role: "user", content: diffSummary },
-          ],
-          temperature: 0.3,
-          maxTokens: 4096,
-        })) {
-          fullContent += chunk;
+          for await (const chunk of aiClient.chatStream({
+            messages: [
+              { role: "system", content: REVIEW_SYSTEM_PROMPT },
+              { role: "user", content: diffSummary },
+            ],
+            temperature: 0.3,
+            maxTokens: 16384,
+          })) {
+            fullContent += chunk;
 
-          // Throttle stream events to avoid flooding — emit every 500ms or 200 chars
-          const now = Date.now();
-          if (now - lastStreamTime > 500 || fullContent.length % 200 < chunk.length) {
-            const preview = fullContent.length > 150
-              ? fullContent.slice(-150)
-              : fullContent;
-            onProgress?.({ type: "stream", chunk: preview });
-            lastStreamTime = now;
+            // Throttle stream events to avoid flooding — emit every 500ms or 200 chars
+            const now = Date.now();
+            if (now - lastStreamTime > 500 || fullContent.length % 200 < chunk.length) {
+              const preview = fullContent.length > 150
+                ? fullContent.slice(-150)
+                : fullContent;
+              onProgress?.({ type: "stream", chunk: preview });
+              lastStreamTime = now;
+            }
           }
-        }
 
-        onProgress?.({ type: "progress", message: "AI review complete — parsing results..." });
+          onProgress?.({ type: "progress", message: "AI review complete — parsing results..." });
 
-        const content = fullContent.trim();
-        const jsonMatch = content.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          parsed = JSON.parse(jsonMatch[0]);
-          aiSucceeded = true;
-        } else {
-          console.warn("[CodeReview] AI stream response did not contain valid JSON — response may be truncated");
-          console.warn("[CodeReview] Stream length:", content.length, "last 200 chars:", content.slice(-200));
-          onProgress?.({ type: "progress", message: "AI review response truncated — escalating to needs_changes" });
-          parsed = {
-            riskLevel: "high" as const,
-            recommendation: "needs_changes" as const,
-            whatChanged: changeSet.title,
-            mustFix: ["AI review response was truncated — manual review required"],
-            shouldFix: ["The AI review could not complete. Review the changes manually."],
-            testGaps: [],
-            securityConcerns: ["AI review was unavailable — security review could not be completed"],
-            observabilityConcerns: [],
-            migrationRisks: [],
-          };
-          aiSucceeded = true; // Use truncation escalation, not heuristic fallback
+          const content = fullContent.trim();
+          const jsonMatch = content.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            try {
+              parsed = JSON.parse(jsonMatch[0]);
+              aiSucceeded = true;
+            } catch {
+              // JSON.parse threw — model returned markdown/prose with curly-brace fragments
+              console.warn(`[CodeReview] Stream attempt ${attempt}: JSON.parse failed (model returned non-JSON). First 200 chars:`, content.slice(0, 200));
+            }
+          } else {
+            // No closing brace found — response is truncated; escalate immediately (no retry)
+            console.warn("[CodeReview] AI stream response did not contain valid JSON — response may be truncated");
+            console.warn("[CodeReview] Stream length:", content.length, "last 200 chars:", content.slice(-200));
+            onProgress?.({ type: "progress", message: "AI review response truncated — escalating to needs_changes" });
+            parsed = {
+              riskLevel: "high" as const,
+              recommendation: "needs_changes" as const,
+              whatChanged: changeSet.title,
+              mustFix: ["AI review response was truncated — manual review required"],
+              shouldFix: ["The AI review could not complete. Review the changes manually."],
+              testGaps: [],
+              securityConcerns: ["AI review was unavailable — security review could not be completed"],
+              observabilityConcerns: [],
+              migrationRisks: [],
+            };
+            aiSucceeded = true;
+            break;
+          }
+        } catch (err) {
+          console.error(`[CodeReview] Stream attempt ${attempt} failed:`, (err as Error).message);
         }
-      } catch (err) {
-        console.error("[CodeReview] AI streaming failed, using fallback:", (err as Error).message);
+      }
+
+      if (!aiSucceeded) {
+        console.warn("[CodeReview] All stream retries exhausted — escalating to needs_changes");
+        onProgress?.({ type: "progress", message: "AI review failed after retries — escalating to needs_changes" });
+        parsed = {
+          riskLevel: "high" as const,
+          recommendation: "needs_changes" as const,
+          whatChanged: changeSet.title,
+          mustFix: ["AI review was unavailable after retries — manual review required"],
+          shouldFix: ["Review the changes manually. The AI could not complete its assessment."],
+          testGaps: [],
+          securityConcerns: ["AI review was unavailable — security review could not be completed"],
+          observabilityConcerns: [],
+          migrationRisks: [],
+        };
+        aiSucceeded = true;
       }
     }
 
