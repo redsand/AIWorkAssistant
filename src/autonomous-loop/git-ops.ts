@@ -263,12 +263,59 @@ export function stageAndCommit(
   return true;
 }
 
+/**
+ * Ensure `origin` remote exists before pushing. Tools like `git filter-repo`
+ * strip all remotes as a safety measure — this restores the remote from env
+ * vars so subsequent pushes succeed without manual intervention.
+ */
+function ensureOriginRemote(workspace: string, logger: PipelineLogger): boolean {
+  const check = spawnSync("git", ["remote", "get-url", "origin"], {
+    cwd: workspace,
+    stdio: "pipe",
+    encoding: "utf-8",
+  });
+  if (check.status === 0) return true; // origin already present
+
+  // Build remote URL from environment
+  const baseUrl = (process.env.GITLAB_BASE_URL || "").replace(/\/$/, "");
+  const token = process.env.GITLAB_TOKEN || "";
+  const project = process.env.GITLAB_DEFAULT_PROJECT || "";
+
+  // Try to infer project from existing git config (remote was removed but log may have it)
+  if (!baseUrl || !project) {
+    logger.logError("origin remote missing and GITLAB_BASE_URL/GITLAB_DEFAULT_PROJECT not set — cannot restore remote");
+    return false;
+  }
+
+  const host = baseUrl.replace(/^https?:\/\//, "");
+  const remoteUrl = token
+    ? `https://oauth2:${token}@${host}/${project}.git`
+    : `${baseUrl}/${project}.git`;
+
+  // Use set-url if origin exists (wrong URL), add if it doesn't exist at all
+  const exists = spawnSync("git", ["remote", "get-url", "origin"], { cwd: workspace, stdio: "pipe" }).status === 0;
+  const subCmd = exists ? "set-url" : "add";
+  logger.logGit(`origin remote ${exists ? "has wrong URL" : "missing"} — restoring from env`);
+  const add = spawnSync("git", ["remote", subCmd, "origin", remoteUrl], {
+    cwd: workspace,
+    stdio: "pipe",
+    encoding: "utf-8",
+  });
+  if (add.status !== 0) {
+    logger.logError(`Failed to restore origin remote: ${add.stderr}`);
+    return false;
+  }
+  logger.logGit("origin remote restored");
+  return true;
+}
+
 export function pushBranch(
   branchName: string,
   workspace: string,
   logger: PipelineLogger = noop,
   force = false,
 ): boolean {
+  ensureOriginRemote(workspace, logger);
   const args = force
     ? ["push", "--force", "origin", branchName]
     : ["push", "origin", branchName];

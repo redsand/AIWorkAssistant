@@ -348,26 +348,33 @@ async function publishBranch(cfg: ServerConfig, branchName: string): Promise<voi
     process.exit(EXIT_SUCCESS);
   }
 
-  // 3. Push branch to origin
-  runLogger.logGit(`Pushing branch to origin: ${branchName}`);
-  if (!gitRun(["push", "origin", branchName], WORKSPACE)) {
-    // Try with --force-with-lease if regular push fails (branch may already exist)
-    if (!gitRun(["push", "--force-with-lease", "origin", branchName], WORKSPACE)) {
-      runLogger.logError(`Cannot push branch ${branchName} to origin`);
-      process.exit(1);
+  // 3. Force-push branch to origin — AI branches are always authoritative
+  if (!pushBranch(branchName, WORKSPACE, runLogger, true)) {
+    runLogger.logError(`Cannot push branch ${branchName} to origin`);
+    process.exit(1);
+  }
+
+  // 4. Resolve issue key: --issue flag overrides branch-name extraction
+  let issueKey: string | null = TARGET_ISSUE_KEY || extractIssueKeyFromBranchName(branchName);
+
+  // If only a bare number was extracted and source is Jira, try to reconstruct
+  // the full key (e.g. "110" → "IR-110") using the JIRA_PROJECT env var
+  if (issueKey && /^\d+$/.test(issueKey) && SOURCE === "jira") {
+    const project = process.env.JIRA_PROJECT || process.env.JIRA_DEFAULT_PROJECT || "";
+    if (project) {
+      issueKey = `${project.toUpperCase()}-${issueKey}`;
+      runLogger.logWork(`Reconstructed Jira key: ${issueKey}`);
     }
   }
 
-  // 3. Extract issue key from branch name
-  const issueKey = extractIssueKeyFromBranchName(branchName);
   if (!issueKey) {
     runLogger.logError(`Cannot extract issue key from branch name: ${branchName}`);
-    runLogger.logError("Expected pattern: ai/issue-<key>-<slug> (e.g. ai/issue-ir-82-fix-thing or ai/issue-51-fix-thing)");
+    runLogger.logError("Pass --issue IR-110 to specify it explicitly.");
     process.exit(1);
   }
   runLogger.logWork(`Extracted issue key: ${issueKey}`);
 
-  // 4. Look up the issue
+  // 5. Look up the issue
   const isJira = /^[A-Z]+-\d+$/.test(issueKey);
   let item: WorkItem | null = null;
 
@@ -446,8 +453,13 @@ async function publishBranch(cfg: ServerConfig, branchName: string): Promise<voi
         const mrUrl = resp.data.url ?? "";
         runLogger.logPR(`Created MR !${resp.data.mrIid ?? ""}: ${mrUrl}`);
       } else {
-        runLogger.logError(`GitLab MR creation failed: ${resp.data.error ?? "unknown error"}`);
-        process.exit(1);
+        const errMsg = resp.data.error ?? "unknown error";
+        if (/already exists/i.test(errMsg)) {
+          runLogger.logWork(`MR already exists for this branch — branch pushed successfully, reviewer will pick it up`);
+        } else {
+          runLogger.logError(`GitLab MR creation failed: ${errMsg}`);
+          process.exit(1);
+        }
       }
     } catch (err) {
       runLogger.logError(`GitLab MR creation failed: ${(err as Error).message}`);
@@ -3371,9 +3383,9 @@ if (DISCARD_RUN) {
 }
 
 // Check for interrupted run state and resume if appropriate
-// Skip auto-resume when --watch is specified — watch handles its own entry into the review loop
+// Skip auto-resume when --watch or --publish is specified — these are explicit one-shot commands
 const existingRunState = loadRunState();
-if (existingRunState && !DISCARD_RUN && !WATCH_ISSUE) {
+if (existingRunState && !DISCARD_RUN && !WATCH_ISSUE && !PUBLISH_BRANCH) {
   const stateAge = Date.now() - new Date(existingRunState.updatedAt).getTime();
   const STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -3398,7 +3410,7 @@ if (existingRunState && !DISCARD_RUN && !WATCH_ISSUE) {
 }
 
 // Only enter normal operating modes if we're not resuming from a checkpoint
-if (!existingRunState || DISCARD_RUN || WATCH_ISSUE) {
+if (!existingRunState || DISCARD_RUN || WATCH_ISSUE || PUBLISH_BRANCH) {
   // --watch: Enter the review loop for an existing PR/MR without running the agent
   if (WATCH_ISSUE) {
     // Clear any saved run state — watch is explicit control, don't auto-resume

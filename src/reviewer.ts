@@ -65,6 +65,8 @@ Options:
   --owner <name>        GitHub owner (overrides GITHUB_DEFAULT_OWNER)
   --gitlab-project <id> GitLab project path or ID (overrides GITLAB_DEFAULT_PROJECT)
   --poll-ms <ms>        Poll interval in milliseconds (default: 30000); use 0 for one-shot (run once and exit)
+  --review-mr <n>       Force a fresh review of MR/PR number n and exit
+  --merge-mr <n>        Force-merge MR/PR number n, close the linked issue, and exit
   --help                 Show this help
 
 Remote config (fetches everything else from AIWorkAssistant):
@@ -418,7 +420,10 @@ class GitlabJiraVcsClient implements VcsClient {
 
   extractLinkedIssueKey(mrBody: string | null): string | null {
     const body = mrBody || "";
-    // Match Jira keys after closes/fixes/resolves (e.g. "Closes IR-82")
+    // Match Jira browse URL (e.g. "Closes https://company.atlassian.net/browse/IR-82")
+    const urlMatch = body.match(/\/browse\/([A-Z]+-\d+)/);
+    if (urlMatch) return urlMatch[1];
+    // Match bare Jira keys after closes/fixes/resolves (e.g. "Closes IR-82")
     const jiraMatch = body.match(/(?:closes|fixes|resolves)\s+([A-Z]+-\d+)/i);
     if (jiraMatch) return jiraMatch[1];
     // Match "Issue: IR-82" line added by aicoder
@@ -803,8 +808,10 @@ async function pollMergeRequests(
         reviewedMRShas.delete(mrKey);
         reviewedMRs.delete(mrKey);
         saveReviewerState();
-      } else if (result.findings.every((f) => f.severity === "medium" || f.severity === "low")) {
-        // Only medium/low findings — approve with comments and create a tracking issue
+      } else if (result.findings.every((f) => f.severity === "medium" || f.severity === "low") &&
+                 !result.findings.some((f) => f.severity === "medium" && f.category === "qa")) {
+        // Only medium/low non-test-gap findings — approve with comments and create a tracking issue.
+        // Test gaps (medium/qa) are blocking: the agent must write the tests first.
         log.clean(`MR !${mr.number} passed review with comments — no critical/high findings, merging`);
         const mergeResult = await mergeWithSummary(vcs, target.name, mr, {
           ...result,
@@ -1155,8 +1162,19 @@ async function postReworkPrompt(
     return;
   }
 
-  // Determine if this is a Jira key (e.g. IR-63) or a numeric issue (e.g. #42)
-  const isJiraKey = /^[A-Z]+-\d+$/.test(issueKey);
+  // Determine if this is a Jira key (e.g. IR-63) or a numeric issue (e.g. #42).
+  // Branch names like ai/issue-106-... extract as plain numbers. When Jira is
+  // configured, reconstruct the full key using JIRA_PROJECT so the label lands
+  // on the right Jira ticket instead of going to the no-op GitLab path.
+  let isJiraKey = /^[A-Z]+-\d+$/.test(issueKey);
+  if (!isJiraKey && /^\d+$/.test(issueKey) && jiraClient.isConfigured()) {
+    const jiraProject = process.env.JIRA_PROJECT || process.env.JIRA_DEFAULT_PROJECT || "";
+    if (jiraProject) {
+      issueKey = `${jiraProject}-${issueKey}`;
+      isJiraKey = true;
+      log.config(`Reconstructed Jira key from numeric branch: ${issueKey}`);
+    }
+  }
 
   if (isJiraKey) {
     await addCommentToJiraIssue(issueKey, buildReworkPrompt(result));
@@ -1182,12 +1200,27 @@ function formatReviewFindings(result: ReviewResult): string {
 }
 
 function buildReworkPrompt(result: ReviewResult): string {
-  const tasks = result.findings
+  // Test gaps (medium/qa) are listed first — they are the most commonly skipped
+  // because the agent prioritizes code fixes. Putting them first ensures they
+  // are addressed before the agent runs out of turns.
+  const testGapTasks = result.findings
+    .filter((f) => f.severity === "medium" && f.category === "qa")
+    .map((f) => `- Write tests for ${f.file}${f.line ? `:${f.line}` : ""}: ${f.message}`);
+
+  const blockingTasks = result.findings
     .filter((f) => f.severity === "critical" || f.severity === "high")
     .map(
       (f) =>
         `- Fix [${f.severity}] ${f.category} issue in ${f.file}${f.line ? `:${f.line}` : ""}: ${f.message}`,
     );
+
+  const testSection = testGapTasks.length > 0
+    ? `### Required Tests (do these first)\n\n${testGapTasks.join("\n")}\n\n`
+    : "";
+
+  const fixSection = blockingTasks.length > 0
+    ? `### Required Fixes\n\n${blockingTasks.join("\n")}\n`
+    : "";
 
   // Include the AI-generated review comment as the primary guidance — it contains
   // specific, actionable suggestions that the structured findings list cannot carry.
@@ -1195,7 +1228,7 @@ function buildReworkPrompt(result: ReviewResult): string {
     ? `\n### Reviewer Notes\n\n${result.summary}\n`
     : "";
 
-  return `## Coding Prompt\n\n### Rework from PR Review\n\nThe following issues must be fixed before merge:\n\n${tasks.join("\n")}\n${reviewGuidance}\n### Reasoning\nThese findings were identified by the security, QA, and code quality review agents. All critical and high severity issues must be resolved. Re-run the full implementation addressing each finding.`;
+  return `## Coding Prompt\n\n### Rework from PR Review\n\nThe following must be completed before merge:\n\n${testSection}${fixSection}${reviewGuidance}\n### Reasoning\nThese findings were identified by the security, QA, and code quality review agents. All critical and high severity issues must be resolved and all test gaps must be filled. Re-run the full implementation addressing each item.`;
 }
 
 async function postSuggestionsWithTracking(
@@ -1267,7 +1300,113 @@ function buildSuggestionIssueBody(
   return `## Non-blocking Review Suggestions for MR !${mr.number}\n\nOrigin: ${mr.title}\n\n${items.join("\n")}\n\nThese suggestions were identified during code review but are not blocking.`;
 }
 
+/**
+ * Search all configured targets for the given MR number.
+ * Returns the first match along with its target and VCS client.
+ * For GitLab, also tries the repo's own name as the project ID since
+ * parseRepoTargets may assign the wrong defaultGitlabProject.
+ */
+async function findMrAcrossTargets(
+  config: ReviewerConfig,
+  mrNumber: number,
+): Promise<{ mr: MergeRequest; target: RepoTarget; vcs: VcsClient } | null> {
+  const targets = parseRepoTargets(config.reviewRepos, config.source, config.gitlabProject);
+
+  // Prefer GitLab targets; for each, try both the configured gitlabProject and the
+  // repo name itself (which may be the actual project path, e.g. siem/hawk-soar-cloud-v3)
+  for (const target of targets) {
+    const candidateProjects = new Set<string>();
+    if (target.gitlabProject) candidateProjects.add(target.gitlabProject);
+    if (target.source === "gitlab" && target.name.includes("/")) candidateProjects.add(target.name);
+
+    for (const project of candidateProjects) {
+      const syntheticTarget: RepoTarget = { ...target, gitlabProject: project };
+      const vcs = getVcsClient(syntheticTarget, config);
+      try {
+        const mrs = await vcs.listOpenMergeRequests(syntheticTarget.name);
+        const mr = mrs.find((m) => m.number === mrNumber);
+        if (mr) return { mr, target: syntheticTarget, vcs };
+      } catch {
+        // try next candidate
+      }
+    }
+  }
+  return null;
+}
+
+async function forceReviewMr(mrNumber: number): Promise<void> {
+  loadReviewerState();
+  const config = await loadConfig();
+
+  const found = await findMrAcrossTargets(config, mrNumber);
+  if (!found) {
+    log.error(`MR !${mrNumber} not found in any configured target — it may be already merged or closed`);
+    process.exit(1);
+  }
+  const { mr, target, vcs } = found;
+  log.config(`Found MR !${mrNumber} in ${target.source}:${target.gitlabProject || target.name}`);
+
+  const mrKey = `${target.source}:${target.gitlabProject || target.name}/${mrNumber}`;
+  reviewedMRs.delete(mrKey);
+  reviewedMRShas.delete(mrKey);
+  mrSkipCounts.delete(mrKey);
+  saveReviewerState();
+  log.config(`Cleared cached state for MR !${mrNumber}`);
+
+  const diff = await vcs.getDiff(target.name, mrNumber);
+  if (!diff || diff.trim().length === 0) {
+    log.warn(`MR !${mrNumber} has no diff — nothing to review`);
+    process.exit(0);
+  }
+
+  log.review(`Running review for MR !${mrNumber} in ${target.source}:${target.gitlabProject || target.name}`);
+  const result = await runMultiAgentReview(config, target, mrNumber, diff);
+
+  const currentSha = await vcs.getLatestCommitSha(target.name, mrNumber).catch(() => undefined);
+  if (currentSha) reviewedMRShas.set(mrKey, currentSha);
+  reviewedMRs.add(mrKey);
+  saveReviewerState();
+
+  if (result.clean || (result.findings.every((f) => f.severity === "medium" || f.severity === "low") &&
+      !result.findings.some((f) => f.severity === "medium" && f.category === "qa"))) {
+    log.clean(`MR !${mrNumber} is clean — merging`);
+    await mergeWithSummary(vcs, target.name, mr, result);
+  } else {
+    log.rework(`MR !${mrNumber} has ${result.findings.length} findings — posting rework`);
+    for (const f of result.findings) {
+      log.finding(`  [${f.severity}] ${f.category} ${f.file}: ${f.message.slice(0, 100)}`);
+    }
+    await postReworkPrompt(vcs, target.name, mr, result);
+  }
+}
+
+async function forceMergeMr(mrNumber: number): Promise<void> {
+  loadReviewerState();
+  const config = await loadConfig();
+
+  const found = await findMrAcrossTargets(config, mrNumber);
+  if (!found) {
+    log.error(`MR !${mrNumber} not found in any configured target — it may be already merged or closed`);
+    process.exit(1);
+  }
+  const { mr, target, vcs } = found;
+  log.config(`Force-merging MR !${mrNumber}: ${mr.title}`);
+  await mergeWithSummary(vcs, target.name, mr, {
+    clean: true,
+    findings: [],
+    summary: "Force-merged via `reviewer --merge-mr`",
+    recommendation: "approve",
+  });
+  log.clean(`MR !${mrNumber} merged`);
+}
+
 async function main(): Promise<void> {
+  // One-shot commands — handle and exit before entering the poll loop
+  const reviewMr = ARGV["review-mr"] ? parseInt(ARGV["review-mr"], 10) : null;
+  const mergeMr = ARGV["merge-mr"] ? parseInt(ARGV["merge-mr"], 10) : null;
+  if (reviewMr !== null) { await forceReviewMr(reviewMr); process.exit(0); }
+  if (mergeMr !== null) { await forceMergeMr(mergeMr); process.exit(0); }
+
   log.start("AIWorkAssistant review agent started");
   loadReviewerState();
   const config = await loadConfig();
