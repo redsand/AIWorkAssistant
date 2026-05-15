@@ -93,6 +93,20 @@ describe("getPlatformForToolName", () => {
     expect(getPlatformForToolName("discover_tools")).toBe("cross-platform");
   });
 
+  it("maps musician.* to cross-platform", () => {
+    expect(getPlatformForToolName("musician.explain_theory")).toBe("cross-platform");
+    expect(getPlatformForToolName("musician.compose")).toBe("cross-platform");
+    expect(getPlatformForToolName("musician.generate_sample")).toBe("cross-platform");
+    expect(getPlatformForToolName("musician.analyze_audio")).toBe("cross-platform");
+    expect(getPlatformForToolName("musician.transcribe_audio")).toBe("cross-platform");
+    expect(getPlatformForToolName("musician.practice_plan")).toBe("cross-platform");
+  });
+
+  it("maps audio.* to cross-platform", () => {
+    expect(getPlatformForToolName("audio.analyze")).toBe("cross-platform");
+    expect(getPlatformForToolName("audio.generate")).toBe("cross-platform");
+  });
+
   it("maps unknown prefixes to cross-platform", () => {
     expect(getPlatformForToolName("foobar.something")).toBe("cross-platform");
   });
@@ -105,6 +119,40 @@ describe("engineering tool registration", () => {
     expect(tool?.riskLevel).toBe("low");
     expect(tool?.actionType).toBe("engineering.ticket_to_task");
     expect(tool?.params.issueNumber.required).toBe(true);
+  });
+});
+
+describe("musician tool registration", () => {
+  it("registers all musician tools in musician mode", () => {
+    const expected = [
+      ["musician.explain_theory", "low", "musician.theory.explain"],
+      ["musician.compose", "low", "musician.composition.create"],
+      ["musician.generate_sample", "medium", "musician.sample.generate"],
+      ["musician.analyze_audio", "low", "musician.audio.analyze"],
+      ["musician.transcribe_audio", "low", "musician.audio.transcribe"],
+      ["musician.practice_plan", "low", "musician.practice.plan"],
+    ] as const;
+
+    for (const [name, riskLevel, actionType] of expected) {
+      const tool = getToolByName(name, "musician");
+      expect(tool).toBeDefined();
+      expect(tool?.riskLevel).toBe(riskLevel);
+      expect(tool?.actionType).toBe(actionType);
+    }
+  });
+
+  it("musician.explain_theory has correct parameters", () => {
+    const tool = getToolByName("musician.explain_theory", "musician");
+    expect(tool).toBeDefined();
+    expect(tool?.params.topic.required).toBe(true);
+    expect(tool?.params.skillLevel.required).toBe(false);
+    expect(tool?.params.includeExercises?.type).toBe("boolean");
+  });
+
+  it("musician.generate_sample allows dry-run mode", () => {
+    const tool = getToolByName("musician.generate_sample", "musician");
+    expect(tool).toBeDefined();
+    expect(tool?.params.dryRun?.type).toBe("boolean");
   });
 });
 

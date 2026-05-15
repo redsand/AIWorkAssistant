@@ -52,6 +52,7 @@ import { lspManager } from "../integrations/lsp/index.js";
 import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
 import { reviewAssistant } from "../code-review/review-assistant";
 import { ticketBridge } from "../integrations/ticket-bridge/ticket-bridge";
+import { musicianService } from "../musician/service";
 import { agentRunDatabase } from "../agent-runs/database";
 import type { AgentRun } from "../agent-runs/types";
 import {
@@ -3145,6 +3146,193 @@ async function handleTicketBridgeGeneratePrompt(
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// Musician Tool Handlers
+// ─────────────────────────────────────────────────────────────
+
+async function handleMusicianExplainTheory(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const topic = params.topic as string;
+    if (!topic) return { success: false, error: "topic is required" };
+
+    const request = {
+      topic,
+      skillLevel: params.skillLevel as string | undefined,
+      instrument: params.instrument as string | undefined,
+      style: params.style as string | undefined,
+      includeExercises: params.includeExercises as boolean | undefined,
+      includeExamples: params.includeExamples as boolean | undefined,
+    };
+
+    const result = await musicianService.explainTheory(request);
+    return { success: true, data: result };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleMusicianCompose(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const goal = params.goal as string;
+    if (!goal) return { success: false, error: "goal is required" };
+
+    const request = {
+      goal,
+      genre: params.genre as string | undefined,
+      mood: params.mood as string | undefined,
+      instrumentation: (params.instrumentation as string[] | undefined)?.map(
+        (inst) => inst as string
+      ),
+      structure: params.structure as string | undefined,
+      reference: params.reference as string | undefined,
+    };
+
+    const result = await musicianService.compose(request);
+    return { success: true, data: result };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleMusicianGenerateSample(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const prompt = params.prompt as string;
+    if (!prompt) return { success: false, error: "prompt is required" };
+
+    // Check if generation is enabled
+    const isGenerationEnabled =
+      process.env.MUSICIAN_GENERATION_ENABLED === "true";
+    const dryRun =
+      (params.dryRun as boolean | undefined) ??
+      (!isGenerationEnabled ? true : undefined);
+
+    const request = {
+      prompt,
+      durationSeconds: (params.durationSeconds as number | undefined) ?? 15,
+      dryRun,
+      genre: params.genre as string | undefined,
+      mood: params.mood as string | undefined,
+    };
+
+    const result = await musicianService.generateSample(request);
+    return { success: true, data: result, dryRun };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleMusicianAnalyzeAudio(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const filePath = params.fileId as string;
+    if (!filePath) return { success: false, error: "fileId is required" };
+
+    // Convert fileId to actual path (in production, this would look up the actual path)
+    const actualPath = filePath.startsWith("/")
+      ? filePath
+      : `./audio-files/${filePath}`;
+
+    const request = {
+      filePath: actualPath,
+      analyzeTechnical: params.analyzeTechnical as boolean | undefined,
+      analyzeHarmonic: params.analyzeHarmonic as boolean | undefined,
+      analyzeRhythm: params.analyzeRhythm as boolean | undefined,
+      generateReport: params.generateReport as boolean | undefined,
+    };
+
+    const result = await musicianService.analyzeAudio(request);
+    return { success: true, data: result };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleMusicianTranscribeAudio(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const fileId = params.fileId as string;
+    if (!fileId) return { success: false, error: "fileId is required" };
+
+    const filePath = fileId.startsWith("/")
+      ? fileId
+      : `./audio-files/${fileId}`;
+
+    const outputDir = process.env.BASIC_PITCH_OUTPUT_DIR || "./transcriptions";
+    const result = await musicianService.transcribeAudio(filePath, outputDir);
+    return { success: true, data: result };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleMusicianPracticePlan(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const instrument = params.instrument as string;
+    if (!instrument) return { success: false, error: "instrument is required" };
+    const goal = params.goal as string;
+    if (!goal) return { success: false, error: "goal is required" };
+    const skillLevel = params.skillLevel as
+      | "beginner"
+      | "intermediate"
+      | "advanced"
+      | "expert";
+    if (!skillLevel) {
+      return {
+        success: false,
+        error:
+          "skillLevel is required (beginner, intermediate, advanced, expert)",
+      };
+    }
+    const minutesPerDay = params.minutesPerDay as number;
+    if (!minutesPerDay || minutesPerDay <= 0) {
+      return { success: false, error: "minutesPerDay must be a positive number" };
+    }
+    const days = params.days as number;
+    if (!days || days <= 0) {
+      return { success: false, error: "days must be a positive number" };
+    }
+
+    const result = await musicianService.createPracticePlan({
+      instrument,
+      goal,
+      skillLevel,
+      minutesPerDay,
+      days,
+    });
+    return { success: true, data: result };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
 async function handleCodexRun(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -6161,6 +6349,14 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "engineering.jira_tickets": handleEngineeringJiraTickets,
   "engineering.ticket_to_task": handleEngineeringTicketToTask,
   "ticket_bridge.generate_prompt": handleTicketBridgeGeneratePrompt,
+
+  // Musician Tools
+  "musician.explain_theory": handleMusicianExplainTheory,
+  "musician.compose": handleMusicianCompose,
+  "musician.generate_sample": handleMusicianGenerateSample,
+  "musician.analyze_audio": handleMusicianAnalyzeAudio,
+  "musician.transcribe_audio": handleMusicianTranscribeAudio,
+  "musician.practice_plan": handleMusicianPracticePlan,
 
   "system.approve_action": handleApproveAction,
   "system.reject_action": handleRejectAction,

@@ -37,6 +37,7 @@ import { reviewerConfigRoutes } from "./routes/reviewer-config";
 import { autonomousLoopRoutes } from "./routes/autonomous-loop";
 import { projectAssessmentRoutes } from "./routes/project-assessment";
 import { digestRoutes } from "./routes/digests";
+import { musicianRoutes } from "./routes/musician";
 import {
   authMiddleware,
   isAuthConfigured,
@@ -111,6 +112,7 @@ export async function buildServer() {
   await server.register(autonomousLoopRoutes, { prefix: "/api/autonomous-loop" });
   await server.register(projectAssessmentRoutes, { prefix: "/api/project-assessment" });
   await server.register(digestRoutes, { prefix: "/api/digests" });
+  await server.register(musicianRoutes, { prefix: "/api/musician" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 
@@ -247,6 +249,12 @@ async function start() {
 ║     POST   /engineering/scaffolding-plan                   ║
 ║     POST   /engineering/jira-tickets                       ║
 ║     POST   /engineering/jira-tickets/create                 ║
+║     POST   /api/musician/theory                              ║
+║     POST   /api/musician/compose                             ║
+║     POST   /api/musician/practice-plan                      ║
+║     POST   /api/musician/analyze-audio                      ║
+║     POST   /api/musician/generate-sample                    ║
+║     POST   /api/musician/transcribe-audio                   ║
 ║     GET    /api/agent-runs                                  ║
 ║     GET    /api/agent-runs/stats                            ║
 ║     GET    /api/agent-runs/aicoder                          ║

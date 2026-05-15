@@ -263,6 +263,39 @@ const envSchema = z.object({
   SECURITY_AGENT_CMD: z.string().default("review-agent --category security"),
   QA_AGENT_CMD: z.string().default("review-agent --category qa"),
   QUALITY_AGENT_CMD: z.string().default("review-agent --category quality"),
+
+  // Musician Assistant (MVP)
+  MUSICIAN_ASSISTANT_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
+  MUSICIAN_AUDIO_UPLOAD_DIR: z.string().default("data/audio/uploads"),
+  MUSICIAN_AUDIO_ANALYSIS_DIR: z.string().default("data/audio/analysis"),
+  MUSICIAN_GENERATED_AUDIO_DIR: z.string().default("data/audio/generated"),
+  MUSICIAN_GENERATION_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
+  MUSICIAN_GENERATION_PROVIDER: z
+    .enum(["mock", "local", "huggingface", "external"])
+    .default("mock"),
+  MUSICIAN_MAX_UPLOAD_MB: z.coerce.number().default(100),
+  MUSICIAN_MAX_GENERATION_SECONDS: z.coerce.number().default(30),
+  MUSICIAN_DEFAULT_SAMPLE_RATE: z.coerce.number().default(44100),
+  MUSICIAN_ENABLE_BASIC_PITCH: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
+  MUSICIAN_ENABLE_ESSENTIA: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
+  MUSICIAN_ENABLE_MUSICGEN: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
+  MUSICIAN_PYTHON_WORKER_URL: z.string().default(""),
+  HUGGINGFACE_API_TOKEN: z.string().default(""),
 });
 
 export type Env = z.infer<typeof envSchema>;

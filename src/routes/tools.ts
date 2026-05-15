@@ -209,6 +209,24 @@ const AGENT_CAPABILITIES: AgentCapability[] = [
     toolCategories: ["productivity", "hawk_ir", "calendar", "jira"],
   },
   {
+    id: "musician",
+    name: "Musician Assistant",
+    type: "specialized_api",
+    endpoint: "/api/musician",
+    description:
+      "Musician assistant for music theory, composition, practice planning, and audio analysis. Supports music generation and audio transcription.",
+    features: [
+      "Music theory explanation and education",
+      "Composition generation with genre/mood guidance",
+      "Practice plan generation with personalized schedule",
+      "Audio analysis (technical, harmonic, rhythm metrics)",
+      "Music generation from text prompts",
+      "Audio transcription to MIDI/notes/chords",
+      "Mix and mastering feedback reports",
+    ],
+    toolCategories: ["musician", "audio", "composition", "analysis"],
+  },
+  {
     id: "agent_runner",
     name: "Agent Runner",
     type: "specialized_api",

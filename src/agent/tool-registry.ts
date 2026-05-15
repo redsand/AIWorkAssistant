@@ -46,6 +46,8 @@ const PLATFORM_PREFIX_MAP: Record<string, Platform> = {
   discover: "cross-platform",
   code_review: "cross-platform",
   ticket_bridge: "cross-platform",
+  musician: "cross-platform",
+  audio: "cross-platform",
 };
 
 export function getPlatformForToolName(toolName: string): Platform {
@@ -5847,6 +5849,271 @@ const ENGINEERING_TOOLS: Tool[] = [
 ];
 
 /**
+ * Tools available in Musician Assistant Mode
+ */
+const MUSICIAN_TOOLS: Tool[] = [
+  {
+    name: "musician.explain_theory",
+    description:
+      "Explain a music theory concept with examples and optional exercises. Covers scales, chords, harmony, rhythm, form, and more.",
+    params: {
+      topic: {
+        type: "string",
+        description: "The specific music theory topic to explain (e.g., 'dominant seventh chords', 'circle of fifths', 'voice leading')",
+        required: true,
+      },
+      skillLevel: {
+        type: "string",
+        description: "User's skill level for tailoring the explanation",
+        required: false,
+      },
+      instrument: {
+        type: "string",
+        description: "Target instrument for instrument-specific examples",
+        required: false,
+      },
+      style: {
+        type: "string",
+        description: "Music style/genre context for examples",
+        required: false,
+      },
+      includeExercises: {
+        type: "boolean",
+        description: "Include interactive exercises in the response",
+        required: false,
+      },
+      includeExamples: {
+        type: "boolean",
+        description: "Include musical examples in the response",
+        required: false,
+      },
+    },
+    actionType: "musician.theory.explain",
+    riskLevel: "low",
+  },
+  {
+    name: "musician.compose",
+    description:
+      "Generate composition guidance, chord progressions, arrangement plans, lead sheets, or songwriting ideas. Helps with writing lyrics, melodies, and structures.",
+    params: {
+      goal: {
+        type: "string",
+        description: "The primary goal (e.g., 'write a chorus', 'create a bridge', 'write a complete song')",
+        required: true,
+      },
+      genre: {
+        type: "string",
+        description: "Target genre (e.g., 'pop', 'rock', 'jazz', 'electronic', 'classical')",
+        required: false,
+      },
+      mood: {
+        type: "string",
+        description: "Mood or emotional tone (e.g., 'uplifting', 'melancholic', 'tense', 'relaxed')",
+        required: false,
+      },
+      tempo: {
+        type: "number",
+        description: "Target tempo in BPM",
+        required: false,
+      },
+      key: {
+        type: "string",
+        description: "Target key (e.g., 'C major', 'Am', 'D dorian')",
+        required: false,
+      },
+      timeSignature: {
+        type: "string",
+        description: "Target time signature (e.g., '4/4', '3/4', '6/8')",
+        required: false,
+      },
+      instruments: {
+        type: "array",
+        description: "List of instruments to use",
+        required: false,
+      },
+      constraints: {
+        type: "string",
+        description: "Constraints or boundaries (e.g., 'under 2 minutes', 'only diatonic chords', 'no percussion')",
+        required: false,
+      },
+      outputFormat: {
+        type: "string",
+        description: "Desired output format (markdown, lead_sheet, chord_chart, arrangement_plan, midi_plan)",
+        required: false,
+      },
+    },
+    actionType: "musician.composition.create",
+    riskLevel: "low",
+  },
+  {
+    name: "musician.generate_sample",
+    description:
+      "Generate a short music sample from a text description using AI music generation models. Supports multiple models including local and external APIs.",
+    params: {
+      prompt: {
+        type: "string",
+        description: "Text description of the desired music (genre, mood, instruments, etc.)",
+        required: true,
+      },
+      durationSeconds: {
+        type: "number",
+        description: "Duration of the generated audio in seconds",
+        required: false,
+      },
+      genre: {
+        type: "string",
+        description: "Target genre",
+        required: false,
+      },
+      mood: {
+        type: "string",
+        description: "Target mood or emotion",
+        required: false,
+      },
+      tempo: {
+        type: "number",
+        description: "Target tempo in BPM",
+        required: false,
+      },
+      key: {
+        type: "string",
+        description: "Target key or tonal center",
+        required: false,
+      },
+      seed: {
+        type: "number",
+        description: "Random seed for reproducible generation",
+        required: false,
+      },
+      modelPreference: {
+        type: "string",
+        description: "Preferred generation model (local_musicgen, huggingface, external_api, mock)",
+        required: false,
+      },
+      dryRun: {
+        type: "boolean",
+        description: "Preview without generating actual audio",
+        required: false,
+      },
+    },
+    actionType: "musician.sample.generate",
+    riskLevel: "medium",
+  },
+  {
+    name: "musician.analyze_audio",
+    description:
+      "Analyze uploaded audio and produce music, mix, mastering, composition, or performance feedback. Detects key, tempo, structure, and provides actionable suggestions.",
+    params: {
+      fileId: {
+        type: "string",
+        description: "Uploaded audio file ID to analyze",
+        required: true,
+      },
+      analysisType: {
+        type: "string",
+        description: "Type of analysis (mixdown, mastering, composition, arrangement, performance, transcription, all)",
+        required: true,
+      },
+      genre: {
+        type: "string",
+        description: "Genre for context-aware analysis",
+        required: false,
+      },
+      targetReferences: {
+        type: "array",
+        description: "Reference tracks for comparison",
+        required: false,
+      },
+      listeningContext: {
+        type: "string",
+        description: "Listening context (earbuds, car, club, streaming, broadcast, live)",
+        required: false,
+      },
+      includeTechnicalMetrics: {
+        type: "boolean",
+        description: "Include detailed technical measurements",
+        required: false,
+      },
+      includeActionPlan: {
+        type: "boolean",
+        description: "Include actionable improvement steps",
+        required: false,
+      },
+    },
+    actionType: "musician.audio.analyze",
+    riskLevel: "low",
+  },
+  {
+    name: "musician.transcribe_audio",
+    description:
+      "Convert monophonic or simple polyphonic audio into note/chord/MIDI-style transcription. Identifies melody, harmony, and rhythm.",
+    params: {
+      fileId: {
+        type: "string",
+        description: "Audio file ID to transcribe",
+        required: true,
+      },
+      mode: {
+        type: "string",
+        description: "Transcription mode (melody, chords, full, drum)",
+        required: false,
+      },
+      instrument: {
+        type: "string",
+        description: "Target instrument for transcription",
+        required: false,
+      },
+      outputFormat: {
+        type: "string",
+        description: "Output format (notes, chords, midi, staff)",
+        required: false,
+      },
+    },
+    actionType: "musician.audio.transcribe",
+    riskLevel: "low",
+  },
+  {
+    name: "musician.practice_plan",
+    description:
+      "Generate a structured practice plan for an instrument, genre, skill, or song. Includes exercises, milestones, and progress tracking.",
+    params: {
+      instrument: {
+        type: "string",
+        description: "Instrument to practice",
+        required: true,
+      },
+      goal: {
+        type: "string",
+        description: "Practice goal (e.g., 'improve fingerpicking', 'learn a song', 'master minor scales')",
+        required: true,
+      },
+      skillLevel: {
+        type: "string",
+        description: "Current skill level (beginner, intermediate, advanced, pro)",
+        required: false,
+      },
+      minutesPerDay: {
+        type: "number",
+        description: "Available practice time per day in minutes",
+        required: false,
+      },
+      days: {
+        type: "number",
+        description: "Number of days in the practice plan",
+        required: false,
+      },
+      constraints: {
+        type: "string",
+        description: "Any constraints or preferences for the plan",
+        required: false,
+      },
+    },
+    actionType: "musician.practice.plan",
+    riskLevel: "low",
+  },
+];
+
+/**
  * Core productivity tools — the most commonly used subset sent to the model.
  * Extended tools (full GitLab/GitHub/Jira) are available via discover_tools.
  */
@@ -6093,6 +6360,12 @@ export function getTools(mode: string): Tool[] {
         ...CORE_PRODUCTIVITY_TOOLS,
         DISCOVER_TOOL_META,
       ];
+    case AGENT_MODES.MUSICIAN:
+      return [
+        ...AGENT_RUN_TOOLS,
+        ...MUSICIAN_TOOLS,
+        DISCOVER_TOOL_META,
+      ];
     default:
       return [];
   }
@@ -6120,6 +6393,7 @@ export function getToolInventorySummary(mode: string): string {
     { name: "Jira", prefix: "jira", writeActions: ["advanced fields"] },
     { name: "Jitbit", prefix: "jitbit", writeActions: ["ticket comments", "ticket lifecycle", "asset management", "tags", "time tracking", "custom fields", "automation"] },
     { name: "Code Review", prefix: "code_review", writeActions: ["create work item from review"] },
+    { name: "Musician", prefix: "musician", writeActions: ["music theory, composition, audio analysis, generation, practice planning"] },
   ];
 
   for (const platform of platformCategories) {
@@ -6167,6 +6441,7 @@ export function getToolInventory(mode: string): string {
     { name: "Jira", prefix: "jira", writeActions: ["advanced fields"] },
     { name: "Jitbit", prefix: "jitbit", writeActions: ["ticket comments", "ticket lifecycle", "asset management", "tags", "time tracking", "custom fields", "automation"] },
     { name: "Code Review", prefix: "code_review", writeActions: ["create work item from review"] },
+    { name: "Musician", prefix: "musician", writeActions: ["music theory, composition, audio analysis, generation, practice planning"] },
   ];
 
   for (const platform of platformCategories) {
@@ -6203,6 +6478,8 @@ export function getAllToolsForMode(mode: string): Tool[] {
       return [...AGENT_RUN_TOOLS, ...PRODUCTIVITY_TOOLS];
     case AGENT_MODES.ENGINEERING:
       return [...AGENT_RUN_TOOLS, ...ENGINEERING_TOOLS, ...PRODUCTIVITY_TOOLS];
+    case AGENT_MODES.MUSICIAN:
+      return [...AGENT_RUN_TOOLS, ...MUSICIAN_TOOLS];
     default:
       return [];
   }
