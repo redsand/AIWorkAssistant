@@ -16,6 +16,13 @@ export interface ChangedFile {
   patch?: string;
 }
 
+export interface CommitSummary {
+  sha: string;
+  shortSha: string;
+  message: string;
+  filesChanged: string[];
+}
+
 export interface ChangeSet {
   platform: "github" | "gitlab";
   title: string;
@@ -30,6 +37,9 @@ export interface ChangeSet {
   ciStatus: "success" | "failed" | "pending" | "unknown";
   existingComments: string[];
   issueDescription?: string;
+  commitHistory?: CommitSummary[];
+  /** Absolute path to the checked-out repository, if available for tool-assisted review. */
+  workspacePath?: string;
   hasMigration: boolean;
   hasTests: boolean;
   hasConfigChange: boolean;
@@ -49,6 +59,7 @@ export interface CodeReview {
   securityConcerns: string[];
   observabilityConcerns: string[];
   migrationRisks: string[];
+  operationalItems: string[];
   rollbackConsiderations: string[];
   suggestedReviewComment: string;
   filesChanged: number;
@@ -83,6 +94,8 @@ export interface GitHubPRReviewInput {
 export interface GitLabMRReviewInput {
   projectId: string | number;
   mrIid: number;
+  /** Resolved local checkout path for this repo — enables tool-assisted review. */
+  workspacePath?: string;
 }
 
 export interface ReleaseReadinessInput {

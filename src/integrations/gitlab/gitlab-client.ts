@@ -1018,6 +1018,22 @@ export class GitlabClient {
     }
   }
 
+  async listMergeRequestCommits(
+    projectId: number | string | undefined,
+    mrIid: number,
+  ): Promise<Array<{ id: string; short_id: string; title: string; message: string }>> {
+    if (!this.isConfigured()) return [];
+    const resolvedId = this.resolveProjectId(projectId);
+    try {
+      const response = await this.client.get(
+        `/api/v4/projects/${resolvedId}/merge_requests/${mrIid}/commits`,
+      );
+      return response.data || [];
+    } catch {
+      return [];
+    }
+  }
+
   async listMergeRequestNotes(
     projectId: number | string | undefined,
     mrIid: number,

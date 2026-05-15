@@ -65,6 +65,9 @@ Options:
   --owner <name>        GitHub owner (overrides GITHUB_DEFAULT_OWNER)
   --gitlab-project <id> GitLab project path or ID (overrides GITLAB_DEFAULT_PROJECT)
   --poll-ms <ms>        Poll interval in milliseconds (default: 30000); use 0 for one-shot (run once and exit)
+  --workspace-path <path> Base directory containing local clones of all repos (e.g. ../ or /home/user/repos).
+                          The reviewer resolves each MR's workspace as <workspace-path>/<repo-name>.
+                          Enables file/git tool access during review. Also set via REVIEW_WORKSPACE_PATH env var.
   --review-mr <n>       Force a fresh review of MR/PR number n and exit
   --merge-mr <n>        Force-merge MR/PR number n, close the linked issue, and exit
   --help                 Show this help
@@ -122,6 +125,8 @@ interface ReviewerConfig {
   qaAgentCmd: string;
   qualityAgentCmd: string;
   gitlabProject: string;
+  /** Base directory containing local repo clones — reviewer resolves <workspacePath>/<repo-name> per MR. */
+  workspacePath?: string;
 }
 
 /** Parse repo entries like "github:AIWorkAssistant" or "gitlab:siem/octorepl" or plain "my-repo" */
@@ -180,7 +185,8 @@ async function loadConfig(): Promise<ReviewerConfig> {
     if (ARGV["poll-ms"]) cfg.pollIntervalMs = parseInt(ARGV["poll-ms"], 10);
     cfg.source = (ARGV.source || process.env.REVIEW_SOURCE || cfg.source || "github") as SourceType;
     cfg.gitlabProject = ARGV["gitlab-project"] || process.env.GITLAB_DEFAULT_PROJECT || cfg.gitlabProject || "";
-    log.config(`Remote config loaded (source: ${cfg.source}, repos: ${cfg.reviewRepos.join(", ") || "none"})`);
+    cfg.workspacePath = ARGV["workspace-path"] || process.env.REVIEW_WORKSPACE_PATH || undefined;
+    log.config(`Remote config loaded (source: ${cfg.source}, repos: ${cfg.reviewRepos.join(", ") || "none"}${cfg.workspacePath ? `, workspace: ${cfg.workspacePath}` : ""})`);
     return cfg;
   }
 
@@ -195,6 +201,7 @@ async function loadConfig(): Promise<ReviewerConfig> {
     qaAgentCmd: process.env.QA_AGENT_CMD || "review-agent --category qa",
     qualityAgentCmd: process.env.QUALITY_AGENT_CMD || "review-agent --category quality",
     gitlabProject: ARGV["gitlab-project"] || process.env.GITLAB_DEFAULT_PROJECT || "",
+    workspacePath: ARGV["workspace-path"] || process.env.REVIEW_WORKSPACE_PATH || undefined,
   };
 }
 
@@ -479,6 +486,12 @@ async function addLabelToJiraIssue(key: string, label: string): Promise<void> {
   }
 }
 
+/** Extract the linked Jira/issue key from an MR and format it for log output. */
+function mrIssueTag(vcs: VcsClient, mr: { body: string | null; sourceBranch?: string }): string {
+  const key = vcs.extractLinkedIssueKey(mr.body) || vcs.extractIssueKeyFromBranch(mr.sourceBranch);
+  return key ? ` [${key}]` : "";
+}
+
 // ---------------------------------------------------------------------------
 // Review logic
 // ---------------------------------------------------------------------------
@@ -709,8 +722,9 @@ async function pollMergeRequests(
         const lastSha = reviewedMRShas.get(mrKey);
         if (lastSha) {
           const currentSha = await vcs.getLatestCommitSha(target.name, mr.number).catch(() => undefined);
+          const issueTag = mrIssueTag(vcs, mr);
           if (currentSha && currentSha !== lastSha) {
-            log.review(`MR !${mr.number} has new commits (SHA: ${lastSha.slice(0,8)} → ${currentSha.slice(0,8)}) — re-reviewing`);
+            log.review(`MR !${mr.number}${issueTag} has new commits (SHA: ${lastSha.slice(0,8)} → ${currentSha.slice(0,8)}) — re-reviewing`);
             reviewedMRs.delete(mrKey);
             mrSkipCounts.delete(mrKey);
             // SHA changed → reset backoff
@@ -719,11 +733,11 @@ async function pollMergeRequests(
             // SHA unchanged — increment skip counter
             const skipCount = (mrSkipCounts.get(mrKey) ?? 0) + 1;
             mrSkipCounts.set(mrKey, skipCount);
-            log.skip(`MR !${mr.number} already reviewed (SHA unchanged) — waiting for rework [skip ${skipCount}/${MAX_CONSECUTIVE_SKIPS}]`);
+            log.skip(`MR !${mr.number}${issueTag} already reviewed (SHA unchanged) — waiting for rework [skip ${skipCount}/${MAX_CONSECUTIVE_SKIPS}]`);
 
             if (skipCount >= MAX_CONSECUTIVE_SKIPS) {
               // Too many consecutive skips — stop polling this MR and report to Jira
-              log.warn(`MR !${mr.number} skipped ${skipCount} times with no rework — posting convergence report`);
+              log.warn(`MR !${mr.number}${issueTag} skipped ${skipCount} times with no rework — posting convergence report`);
 
               const convergenceState = recordRoundFindings(initConvergenceState(), [], false);
               const convergence = checkConvergence(convergenceState, DEFAULT_CONVERGENCE_CONFIG);
@@ -756,12 +770,12 @@ async function pollMergeRequests(
             continue;
           }
         } else {
-          log.skip(`MR !${mr.number} already reviewed — waiting for rework`);
+          log.skip(`MR !${mr.number}${mrIssueTag(vcs, mr)} already reviewed — waiting for rework`);
           continue;
         }
       }
 
-      log.review(`Found AI MR !${mr.number} in ${target.source}:${target.name}: ${mr.title}`);
+      log.review(`Found AI MR !${mr.number}${mrIssueTag(vcs, mr)} in ${target.source}:${target.name}: ${mr.title}`);
       log.step("Fetching diff and running review...");
 
       // Check for empty MR — skip review and DO NOT merge empty diffs
@@ -793,8 +807,9 @@ async function pollMergeRequests(
       reviewedMRs.add(mrKey);
       saveReviewerState();
 
+      const tag = mrIssueTag(vcs, mr);
       if (result.clean) {
-        log.clean(`MR !${mr.number} passed review — merging`);
+        log.clean(`MR !${mr.number}${tag} passed review — merging`);
         const mergeStatus = await mergeWithSummary(vcs, target.name, mr, result);
         if (mergeStatus === "conflict") {
           // Remove from reviewed so the reviewer re-evaluates after aicoder rebases
@@ -802,7 +817,7 @@ async function pollMergeRequests(
           saveReviewerState();
         }
       } else if (isServiceUnavailable(result)) {
-        log.warn(`MR !${mr.number} review service unavailable — postponing`);
+        log.warn(`MR !${mr.number}${tag} review service unavailable — postponing`);
         await postPostponed(vcs, target.name, mr, result);
         // Remove SHA so we don't skip on retry — the review didn't actually complete
         reviewedMRShas.delete(mrKey);
@@ -812,7 +827,7 @@ async function pollMergeRequests(
                  !result.findings.some((f) => f.severity === "medium" && f.category === "qa")) {
         // Only medium/low non-test-gap findings — approve with comments and create a tracking issue.
         // Test gaps (medium/qa) are blocking: the agent must write the tests first.
-        log.clean(`MR !${mr.number} passed review with comments — no critical/high findings, merging`);
+        log.clean(`MR !${mr.number}${tag} passed review with comments — no critical/high findings, merging`);
         const mergeResult = await mergeWithSummary(vcs, target.name, mr, {
           ...result,
           clean: true,
@@ -826,10 +841,10 @@ async function pollMergeRequests(
         await postSuggestionsWithTracking(target, vcs, target.name, mr, result);
       } else if (result.recommendation === "ready_for_human_review") {
         // Review recommends human review — don't merge, don't rework, just flag for human
-        log.warn(`MR !${mr.number} flagged for human review — not merging or triggering rework`);
+        log.warn(`MR !${mr.number}${tag} flagged for human review — not merging or triggering rework`);
         await vcs.addComment(target.name, mr.number, `## 🟡 ${REVIEW_HUMAN_REVIEW_MARKER}\n\n${result.summary}\n\nThis MR has been reviewed and requires human judgment before merging. No automatic rework will be performed.\n\n${formatAgentStatus(result.agentStatus)}`);
       } else {
-        log.rework(`MR !${mr.number} needs rework — ${result.findings.length} findings (${result.summary})`);
+        log.rework(`MR !${mr.number}${tag} needs rework — ${result.findings.length} findings (${result.summary})`);
         for (const f of result.findings) {
           log.finding(`[${f.severity}] ${f.category} ${f.file}${f.line ? `:${f.line}` : ""}: ${f.message.slice(0, 100)}`);
         }
@@ -854,6 +869,25 @@ import { findingFromText as _findingFromText, codeReviewToFindings as _codeRevie
 
 function codeReviewToFindings(review: { mustFix?: string[]; securityConcerns?: string[]; migrationRisks?: string[]; shouldFix?: string[]; testGaps?: string[]; observabilityConcerns?: string[] }): ReviewFinding[] {
   return _codeReviewToFindings(review) as ReviewFinding[];
+}
+
+/**
+ * Resolve the local checkout path for a given target.
+ * workspacePath is a base directory (e.g. "../" or "/home/user/repos").
+ * The repo name is the last segment of the project path:
+ *   siem/hawk-soar-cloud-v3  →  hawk-soar-cloud-v3
+ *   AIWorkAssistant          →  AIWorkAssistant
+ */
+function resolveRepoWorkspace(config: ReviewerConfig, target: RepoTarget): string | undefined {
+  if (!config.workspacePath) return undefined;
+  const projectPath = target.gitlabProject || target.name;
+  const repoName = projectPath.split("/").pop() || projectPath;
+  const resolved = path.resolve(config.workspacePath, repoName);
+  if (!fs.existsSync(resolved)) {
+    log.warn(`Workspace path ${resolved} does not exist — skipping tool-assisted review for ${repoName}`);
+    return undefined;
+  }
+  return resolved;
 }
 
 async function runMultiAgentReview(
@@ -889,10 +923,13 @@ async function runLocalStreamingReview(
   log.review(`Fetching diff for ${target.source}:${target.name} MR !${mrNumber} (${diff.length} chars)`);
   log.step("Running AI code review with streaming output...");
 
+  const repoWorkspace = resolveRepoWorkspace(config, target);
+  if (repoWorkspace) log.config(`Using workspace: ${repoWorkspace}`);
+
   try {
     const review = await reviewAssistant.reviewWithStreaming(
       target.source === "gitlab"
-        ? { projectId: target.gitlabProject || config.gitlabProject, mrIid: mrNumber }
+        ? { projectId: target.gitlabProject || config.gitlabProject, mrIid: mrNumber, workspacePath: repoWorkspace }
         : { owner: config.owner, repo: target.name, prNumber: mrNumber },
       (event: ReviewStreamEvent) => {
         if (event.type === "progress") {
@@ -1090,7 +1127,30 @@ async function mergeWithSummary(
       mr.number,
       `## ✅ Review Passed — Merging\n\n${result.summary}\n\n${agentLine}\n\nMerging now.`,
     );
-    await vcs.merge(project, mr.number, `Merge [AI] ${mr.title}`, result.summary);
+
+    // Retry up to 3 times on 422 — GitLab sometimes returns 422 transiently while
+    // computing mergeability (pipeline checks, branch protection status, etc.).
+    const MAX_MERGE_RETRIES = 3;
+    const RETRY_DELAY_MS = 5000;
+    let lastErr: Error | null = null;
+    for (let attempt = 1; attempt <= MAX_MERGE_RETRIES; attempt++) {
+      try {
+        await vcs.merge(project, mr.number, `Merge [AI] ${mr.title}`, result.summary);
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err instanceof Error ? err : new Error(String(err));
+        const is422 = /status code 422|422/.test(lastErr.message);
+        if (is422 && attempt < MAX_MERGE_RETRIES) {
+          log.warn(`MR !${mr.number} merge returned 422 — retrying in ${RETRY_DELAY_MS / 1000}s (attempt ${attempt}/${MAX_MERGE_RETRIES})`);
+          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        } else {
+          break;
+        }
+      }
+    }
+    if (lastErr) throw lastErr;
+
     log.merge(`MR !${mr.number} merged in ${project}`);
 
     // Close the originating source issue now that the MR is confirmed merged.
@@ -1117,7 +1177,8 @@ async function mergeWithSummary(
     const errMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
     const isConflict = /conflict|cannot_be_merged|rebase failed/i.test(errMsg);
     const isPipelineBlocked = /pipeline.*running|merge_when_pipeline|merge not allowed.*pipeline/i.test(errMsg);
-    log.merge(`Failed to merge MR !${mr.number}: ${errMsg}`);
+    const is422 = /status code 422|422/.test(errMsg);
+    log.error(`Failed to merge MR !${mr.number}: ${errMsg}${is422 ? " (422 — MR may need approval, pipeline must pass, or branch protection applies — retry or merge manually)" : ""}`);
 
     if (isConflict) {
       await vcs.addComment(
@@ -1391,13 +1452,18 @@ async function forceMergeMr(mrNumber: number): Promise<void> {
   }
   const { mr, target, vcs } = found;
   log.config(`Force-merging MR !${mrNumber}: ${mr.title}`);
-  await mergeWithSummary(vcs, target.name, mr, {
+  const status = await mergeWithSummary(vcs, target.name, mr, {
     clean: true,
     findings: [],
     summary: "Force-merged via `reviewer --merge-mr`",
     recommendation: "approve",
   });
-  log.clean(`MR !${mrNumber} merged`);
+  if (status === "merged") {
+    log.clean(`MR !${mrNumber} merged`);
+  } else {
+    log.error(`MR !${mrNumber} merge ${status} — check the MR on GitLab for details`);
+    process.exit(1);
+  }
 }
 
 async function main(): Promise<void> {

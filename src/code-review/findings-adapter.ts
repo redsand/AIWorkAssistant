@@ -72,6 +72,7 @@ export function codeReviewToFindings(review: {
   shouldFix?: string[];
   testGaps?: string[];
   observabilityConcerns?: string[];
+  operationalItems?: string[];
 }): ReviewFinding[] {
   const findings: ReviewFinding[] = [];
 
@@ -87,6 +88,9 @@ export function codeReviewToFindings(review: {
   add(review.shouldFix ?? [], "medium", "quality");
   add(review.testGaps ?? [], "medium", "qa");
   add(review.observabilityConcerns ?? [], "low", "quality");
+  // Operational items (credential rotation, external system changes) are advisory only —
+  // posted as comments but never block merge.
+  add(review.operationalItems ?? [], "low", "quality");
 
   return findings;
 }

@@ -17,7 +17,6 @@ export interface ReviewerConfig {
 }
 
 export type { ReviewFinding } from "../code-review/findings-adapter";
-import type { ReviewFinding } from "../code-review/findings-adapter";
 import { codeReviewToFindings } from "../code-review/findings-adapter";
 
 export async function reviewerConfigRoutes(fastify: FastifyInstance) {

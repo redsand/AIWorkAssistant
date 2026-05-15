@@ -92,6 +92,7 @@ function extractPartialReview(content: string): Partial<CodeReview> | null {
     securityConcerns: arrField("securityConcerns"),
     observabilityConcerns: arrField("observabilityConcerns"),
     migrationRisks: arrField("migrationRisks"),
+    operationalItems: arrField("operationalItems"),
     rollbackConsiderations: arrField("rollbackConsiderations"),
   };
 
@@ -100,7 +101,7 @@ function extractPartialReview(content: string): Partial<CodeReview> | null {
   const anyArray = [
     result.mustFix, result.shouldFix, result.testGaps,
     result.securityConcerns, result.observabilityConcerns,
-    result.migrationRisks, result.rollbackConsiderations,
+    result.migrationRisks, result.operationalItems, result.rollbackConsiderations,
   ].some((a) => a && a.length > 0);
 
   const meaningful = !!result.riskLevel || !!result.recommendation || anyArray;
@@ -116,23 +117,27 @@ You are a senior staff engineer performing a code review. Given a PR/MR changese
 - whatChanged (string): 2-4 sentence plain-English summary of what this PR does
 - riskLevel (string): one of: low, medium, high, critical
 - recommendation (string): one of: ready_for_human_review, needs_changes, low_risk, high_risk_hold
-- mustFix (string[]): blocking issues that must be resolved before merge. Empty array if none.
-- shouldFix (string[]): non-blocking improvements worth fixing. Empty array if none.
+- mustFix (string[]): blocking issues that must be resolved before merge — ONLY things a coding agent can fix directly in this repository. Empty array if none.
+- shouldFix (string[]): non-blocking improvements worth fixing in code. Empty array if none.
 - testGaps (string[]): specific missing tests or coverage gaps. Empty array if none.
-- securityConcerns (string[]): security issues or risks. Empty array if none.
+- securityConcerns (string[]): security issues fixable in code (e.g. vulnerable patterns, missing auth). Empty array if none.
 - observabilityConcerns (string[]): logging, metrics, alerting gaps. Empty array if none.
 - migrationRisks (string[]): schema/data migration risks. Empty array if none.
+- operationalItems (string[]): actions that require human intervention OUTSIDE the codebase — credential rotation, notifying security teams, updating external systems, DNS/infra changes. These are advisory only and never block merge. Empty array if none.
 - rollbackConsiderations (string[]): what is needed to roll back safely. At least one item.
 - suggestedReviewComment (string): a markdown review comment to post on the PR/MR. Keep it under 150 words. One short paragraph summary then bullet points — no sub-bullets, no lengthy explanations.
 
-Consider the original issue/ticket requirements alongside the code changes. If previous review comments exist, assess whether earlier feedback was addressed. The review should be holistic — does the code actually solve the stated problem? Are there gaps between what the issue asked for and what the code delivers?
+Your job is to review the CODE IN THE DIFF — not to audit whether the PR fully closes a ticket. Scope is the developer's responsibility. A PR may intentionally address only part of a larger issue; that is not a finding.
+
+If previous review comments exist, assess whether the specific feedback from those comments was addressed in the diff. Do NOT re-raise issues that are not visible in the current diff.
 
 CRITICAL RULES:
 1. ONLY flag issues you can verify from the code shown in the diff. Do NOT claim code is missing unless you have verified it is not present in ANY file shown.
-2. Each finding MUST include the specific file name and line reference. Use format: "filename.ext:line_number — description". Never use "unknown" as a filename.
+2. Each finding MUST include the specific file name and line reference. Use format: "filename.ext:line_number — description". Never use "unknown" as a filename. If you cannot provide a file and line, do not raise it as a finding — put it in suggestedReviewComment as a note instead.
 3. If a diff is truncated, do NOT assume the truncated portion is missing or broken. Truncated code exists — you just can't see all of it.
 4. For new/added files (status: "added"), the entire file content is the diff — you can see the full implementation. Do not claim an added file is empty or missing content you can see in the diff.
-5. When checking if requirements from the issue are met, verify against the ACTUAL code shown, not assumptions about what might be missing.
+5. Do NOT flag ticket requirements as unmet. You cannot see the full branch history — only the diff. Fixes from earlier commits are invisible to you and may already be in the codebase.
+6. Credential rotation, key revocation, and notifying security teams are OPERATIONAL tasks — put them in operationalItems, NEVER in mustFix or securityConcerns. A coding agent cannot rotate credentials.
 
 Respond with ONLY the JSON object. No markdown fences. No text after the closing brace.`;
 
@@ -193,11 +198,28 @@ class ReviewAssistant {
       lines.push("Original Issue:", changeSet.issueDescription.trim().slice(0, 1500), "");
     }
 
+    if (changeSet.commitHistory && changeSet.commitHistory.length > 0) {
+      lines.push("Branch commit history (all commits on this branch — use this to understand what was addressed in earlier commits):");
+      for (const commit of changeSet.commitHistory) {
+        lines.push(`  ${commit.shortSha} — ${commit.message.split("\n")[0].slice(0, 120)}`);
+        if (commit.filesChanged.length > 0) {
+          lines.push(`    Files: ${commit.filesChanged.slice(0, 8).join(", ")}${commit.filesChanged.length > 8 ? ` (+${commit.filesChanged.length - 8} more)` : ""}`);
+        }
+      }
+      lines.push("");
+    }
+
     if (changeSet.existingComments.length > 0) {
       lines.push("Previous review comments:");
       for (const c of changeSet.existingComments.slice(0, 20)) {
         lines.push(`  - ${c.slice(0, 500)}`);
       }
+      lines.push("");
+    }
+
+    if (changeSet.workspacePath) {
+      lines.push(`Repository workspace: ${changeSet.workspacePath}`);
+      lines.push("You have access to read files and run git commands in this workspace to verify fixes beyond what is visible in the diff.");
       lines.push("");
     }
 
@@ -397,10 +419,13 @@ class ReviewAssistant {
     onProgress?: (event: ReviewStreamEvent) => void,
   ): Promise<CodeReview> {
     if ("projectId" in input) {
-      const mr = await gitlabClient.getMergeRequest(input.projectId, input.mrIid);
-      const changes = await gitlabClient.getMergeRequestChanges(input.projectId, input.mrIid);
-      const pipelines = await gitlabClient.listPipelines(input.projectId, undefined).catch(() => []);
-      const notesRaw = await gitlabClient.listMergeRequestNotes(input.projectId, input.mrIid).catch(() => []);
+      const [mr, changes, pipelines, notesRaw, commitsRaw] = await Promise.all([
+        gitlabClient.getMergeRequest(input.projectId, input.mrIid),
+        gitlabClient.getMergeRequestChanges(input.projectId, input.mrIid),
+        gitlabClient.listPipelines(input.projectId, undefined).catch(() => []),
+        gitlabClient.listMergeRequestNotes(input.projectId, input.mrIid).catch(() => []),
+        gitlabClient.listMergeRequestCommits(input.projectId, input.mrIid).catch(() => []),
+      ]);
 
       const files: ChangedFile[] = (changes.changes || []).map((c: any) => ({
         filename: c.new_path || c.old_path,
@@ -420,7 +445,10 @@ class ReviewAssistant {
         : latestPipeline ? "pending"
         : "unknown";
 
-      const issueDescription = await this.fetchLinkedIssueDescription(mr.description || "", mr.source_branch || "", "gitlab");
+      const [issueDescription, commitHistory] = await Promise.all([
+        this.fetchLinkedIssueDescription(mr.description || "", mr.source_branch || "", "gitlab"),
+        this.buildCommitHistory(input.projectId, commitsRaw),
+      ]);
 
       const changeSet: ChangeSet = {
         platform: "gitlab",
@@ -436,6 +464,8 @@ class ReviewAssistant {
         ciStatus,
         existingComments: (notesRaw || []).filter((n: any) => !n.system).map((n: any) => n.body).filter(Boolean).slice(0, 10),
         issueDescription,
+        commitHistory,
+        workspacePath: ("workspacePath" in input ? input.workspacePath : undefined) ?? process.env.REVIEW_WORKSPACE_PATH,
         hasMigration: files.some((f) => MIGRATION_PATTERNS.some((p) => p.test(f.filename))),
         hasTests: files.some((f) => TEST_PATTERNS.some((p) => p.test(f.filename))),
         hasConfigChange: files.some((f) => CONFIG_PATTERNS.some((p) => p.test(f.filename))),
@@ -496,11 +526,12 @@ class ReviewAssistant {
   }
 
   async reviewGitLabMergeRequest(input: GitLabMRReviewInput): Promise<CodeReview> {
-    const [mr, changes, pipelines, notesRaw] = await Promise.all([
+    const [mr, changes, pipelines, notesRaw, commitsRaw] = await Promise.all([
       gitlabClient.getMergeRequest(input.projectId, input.mrIid),
       gitlabClient.getMergeRequestChanges(input.projectId, input.mrIid),
       gitlabClient.listPipelines(input.projectId, undefined).catch(() => []),
       gitlabClient.listMergeRequestNotes(input.projectId, input.mrIid).catch(() => []),
+      gitlabClient.listMergeRequestCommits(input.projectId, input.mrIid).catch(() => []),
     ]);
 
     const files: ChangedFile[] = (changes.changes || []).map((c: any) => ({
@@ -526,7 +557,10 @@ class ReviewAssistant {
         ? "pending"
         : "unknown";
 
-    const issueDescription = await this.fetchLinkedIssueDescription(mr.description || "", mr.source_branch || "", "gitlab");
+    const [issueDescription, commitHistory] = await Promise.all([
+      this.fetchLinkedIssueDescription(mr.description || "", mr.source_branch || "", "gitlab"),
+      this.buildCommitHistory(input.projectId, commitsRaw),
+    ]);
 
     const changeSet: ChangeSet = {
       platform: "gitlab",
@@ -542,6 +576,8 @@ class ReviewAssistant {
       ciStatus,
       existingComments: (notesRaw || []).filter((n: any) => !n.system).map((n: any) => n.body).filter(Boolean).slice(0, 10),
       issueDescription,
+      commitHistory,
+      workspacePath: input.workspacePath ?? process.env.REVIEW_WORKSPACE_PATH,
       hasMigration: files.some((f) => MIGRATION_PATTERNS.some((p) => p.test(f.filename))),
       hasTests: files.some((f) => TEST_PATTERNS.some((p) => p.test(f.filename))),
       hasConfigChange: files.some((f) => CONFIG_PATTERNS.some((p) => p.test(f.filename))),
@@ -646,6 +682,39 @@ class ReviewAssistant {
     };
   }
 
+  /**
+   * Build a commit history summary for the MR from the raw commits list.
+   * For each commit, also fetches which files it changed (up to 10 files).
+   */
+  private async buildCommitHistory(
+    projectId: string | number | undefined,
+    commitsRaw: Array<{ id: string; short_id: string; title: string; message: string }>,
+  ): Promise<import("./types").CommitSummary[]> {
+    if (!commitsRaw || commitsRaw.length === 0) return [];
+    // Fetch file lists for each commit in parallel (capped to 20 commits)
+    const recent = commitsRaw.slice(0, 20);
+    const results = await Promise.all(
+      recent.map(async (c) => {
+        let filesChanged: string[] = [];
+        try {
+          const resp = await gitlabClient["client"]?.get(
+            `/api/v4/projects/${gitlabClient["resolveProjectId"](projectId)}/repository/commits/${c.id}/diff`,
+          ).catch(() => null);
+          if (resp?.data) {
+            filesChanged = (resp.data as any[]).map((f: any) => f.new_path || f.old_path).filter(Boolean);
+          }
+        } catch { /* best-effort */ }
+        return {
+          sha: c.id,
+          shortSha: c.short_id,
+          message: c.message || c.title,
+          filesChanged,
+        };
+      }),
+    );
+    return results;
+  }
+
   private async fetchLinkedIssueDescription(
     mrBody: string,
     branchName: string,
@@ -689,7 +758,126 @@ class ReviewAssistant {
     return match ? match[1].toUpperCase() : null;
   }
 
+  /**
+   * Tool-assisted review — spawns a Claude Code CLI session in the repo workspace.
+   * Claude can use Bash (git log, git show, grep), Read (file contents), and Grep
+   * to actively verify fixes rather than guessing from the diff alone.
+   *
+   * Falls back to the standard AI review if the workspace is unavailable or Claude
+   * Code is not installed.
+   */
+  private async buildReviewWithTools(
+    changeSet: ChangeSet,
+    onProgress?: (event: ReviewStreamEvent) => void,
+  ): Promise<CodeReview> {
+    const { spawn } = await import("child_process");
+
+    const diffSummary = this.summarizeDiff(changeSet);
+    const toolPrompt = [
+      diffSummary,
+      "",
+      "## Review Instructions",
+      "",
+      "Use your tools to actively verify the changes before producing the review:",
+      "- Run `git log --oneline` to see the full branch history",
+      "- Run `git diff <base>..<branch> -- <file>` to inspect specific file changes",
+      "- Use Read or Bash/grep to check if security fixes are present in the current code",
+      "- Run the test suite if relevant (`npm test`, `jest`, etc.) to verify test coverage",
+      "- Do NOT rely solely on the diff above — use tools to confirm what is actually in the codebase",
+      "",
+      `After your investigation, output ONLY the following JSON object as your final message (no markdown fences, no other text):`,
+      "",
+      REVIEW_SYSTEM_PROMPT,
+    ].join("\n");
+
+    return new Promise<CodeReview>((resolve) => {
+      onProgress?.({ type: "progress", message: `Tool-assisted review in ${changeSet.workspacePath}` });
+
+      let outputBuf = "";
+      let timedOut = false;
+
+      const child = spawn(
+        "claude",
+        ["-p", "--print", "--output-format", "text", "--dangerously-skip-permissions"],
+        { cwd: changeSet.workspacePath, stdio: ["pipe", "pipe", "pipe"], shell: process.platform === "win32" },
+      );
+
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+        onProgress?.({ type: "progress", message: "Tool-assisted review timed out — falling back to standard review" });
+        this.buildReviewStreaming(changeSet, onProgress).then(resolve);
+      }, 5 * 60 * 1000); // 5 min max
+
+      child.stdin?.write(toolPrompt);
+      child.stdin?.end();
+
+      child.stdout?.on("data", (chunk: Buffer) => {
+        const text = chunk.toString();
+        outputBuf += text;
+        onProgress?.({ type: "stream", chunk: text.slice(0, 200) });
+      });
+
+      child.on("close", (code) => {
+        clearTimeout(timeout);
+        if (timedOut) return;
+
+        // Extract the JSON review object from the final output
+        const jsonMatch = outputBuf.match(/\{[\s\S]*"riskLevel"[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            const parsed = JSON.parse(jsonMatch[0]) as Partial<CodeReview>;
+            const riskLevel = this.assessRisk(changeSet);
+            const review: CodeReview = {
+              prUrl: changeSet.url,
+              title: changeSet.title,
+              author: changeSet.author,
+              platform: changeSet.platform,
+              riskLevel: (parsed.riskLevel as ReviewRiskLevel) || riskLevel,
+              recommendation: (parsed.recommendation as ReviewRecommendation) || this.fallbackRecommendation(riskLevel),
+              whatChanged: parsed.whatChanged || changeSet.title,
+              mustFix: parsed.mustFix || [],
+              shouldFix: parsed.shouldFix || [],
+              testGaps: parsed.testGaps || [],
+              securityConcerns: parsed.securityConcerns || [],
+              observabilityConcerns: parsed.observabilityConcerns || [],
+              migrationRisks: parsed.migrationRisks || [],
+              operationalItems: parsed.operationalItems || [],
+              rollbackConsiderations: parsed.rollbackConsiderations || ["Revert PR and redeploy previous build"],
+              suggestedReviewComment: parsed.suggestedReviewComment || "",
+              filesChanged: changeSet.files.length,
+              linesAdded: changeSet.linesAdded,
+              linesRemoved: changeSet.linesRemoved,
+              ciStatus: changeSet.ciStatus,
+              generatedAt: new Date().toISOString(),
+            };
+            if (!review.suggestedReviewComment) review.suggestedReviewComment = this.compactFallbackComment(review);
+            onProgress?.({ type: "progress", message: `Tool-assisted review complete (exit ${code})` });
+            resolve(review);
+            return;
+          } catch {
+            onProgress?.({ type: "progress", message: "Could not parse tool-assisted review JSON — falling back" });
+          }
+        } else {
+          onProgress?.({ type: "progress", message: "Tool-assisted review produced no parseable JSON — falling back" });
+        }
+
+        // Fall back to standard review
+        this.buildReviewStreaming(changeSet, onProgress).then(resolve);
+      });
+
+      child.on("error", () => {
+        clearTimeout(timeout);
+        if (!timedOut) {
+          onProgress?.({ type: "progress", message: "Claude Code not available — falling back to standard review" });
+          this.buildReviewStreaming(changeSet, onProgress).then(resolve);
+        }
+      });
+    });
+  }
+
   private async buildReview(changeSet: ChangeSet): Promise<CodeReview> {
+    if (changeSet.workspacePath) return this.buildReviewWithTools(changeSet);
     const riskLevel = this.assessRisk(changeSet);
     const diffSummary = this.summarizeDiff(changeSet);
 
@@ -762,7 +950,7 @@ class ReviewAssistant {
     }
 
     if (!aiSucceeded) {
-      parsed = this.fallbackReview(changeSet, riskLevel);
+      parsed = this.fallbackReview(changeSet);
     }
 
     const review: CodeReview = {
@@ -779,6 +967,7 @@ class ReviewAssistant {
       securityConcerns: parsed.securityConcerns || [],
       observabilityConcerns: parsed.observabilityConcerns || [],
       migrationRisks: parsed.migrationRisks || (changeSet.hasMigration ? ["This PR contains migration files — review rollback strategy"] : []),
+      operationalItems: parsed.operationalItems || [],
       rollbackConsiderations: parsed.rollbackConsiderations || ["Review migration scripts before merge", "Ensure database backups are current"],
       suggestedReviewComment: parsed.suggestedReviewComment || "",
       filesChanged: changeSet.files.length,
@@ -803,6 +992,8 @@ class ReviewAssistant {
     changeSet: ChangeSet,
     onProgress?: (event: ReviewStreamEvent) => void,
   ): Promise<CodeReview> {
+    if (changeSet.workspacePath) return this.buildReviewWithTools(changeSet, onProgress);
+
     const riskLevel = this.assessRisk(changeSet);
     const diffSummary = this.summarizeDiff(changeSet);
 
@@ -907,7 +1098,7 @@ class ReviewAssistant {
 
     if (!aiSucceeded) {
       onProgress?.({ type: "progress", message: "AI review unavailable — using heuristic fallback" });
-      parsed = this.fallbackReview(changeSet, riskLevel);
+      parsed = this.fallbackReview(changeSet);
     }
 
     const review: CodeReview = {
@@ -924,6 +1115,7 @@ class ReviewAssistant {
       securityConcerns: parsed.securityConcerns || [],
       observabilityConcerns: parsed.observabilityConcerns || [],
       migrationRisks: parsed.migrationRisks || (changeSet.hasMigration ? ["This PR contains migration files — review rollback strategy"] : []),
+      operationalItems: parsed.operationalItems || [],
       rollbackConsiderations: parsed.rollbackConsiderations || ["Review migration scripts before merge", "Ensure database backups are current"],
       suggestedReviewComment: parsed.suggestedReviewComment || "",
       filesChanged: changeSet.files.length,
@@ -1012,7 +1204,7 @@ class ReviewAssistant {
     };
   }
 
-  private fallbackReview(changeSet: ChangeSet, riskLevel: ReviewRiskLevel): Partial<CodeReview> {
+  private fallbackReview(changeSet: ChangeSet): Partial<CodeReview> {
     const mustFix: string[] = [];
     if (changeSet.files.length === 0 || changeSet.linesAdded + changeSet.linesRemoved === 0) {
       mustFix.push("Empty MR — no changes to review. Do not merge without substantive changes.");
