@@ -9,7 +9,6 @@ import {
   analyzeWithEssentia,
   getAudioMetadata,
   transcribeWithBasicPitch,
-  generateWithMusicGen,
 } from "../integrations/audio";
 import {
   MusicalTheoryRequest,
@@ -20,7 +19,6 @@ import {
   AudioTechnicalMetrics,
 } from "./analysis-types";
 import { TranscriptionResult } from "../integrations/audio/types";
-import { buildMusicianPrompt } from "./prompts";
 
 /**
  * Musician Assistant Service
@@ -57,8 +55,6 @@ export class MusicianService implements MusicianService {
     context += `Include exercises: ${includeExercises ?? true}\n`;
     context += `Include examples: ${includeExamples ?? true}\n`;
 
-    const prompt = buildMusicianPrompt(context);
-
     // For MVP, return a structured theory response
     // In production, this would call an LLM with the musician mode
     let markdown = `# ${topic}\n\n## Overview\n\nThis section covers ${topic} for ${instrument || "music"}.\n\n## Concepts\n\nKey concepts about ${topic}:\n\n1. **Fundamental Understanding**\n   - Core principles of ${topic}\n   - Common patterns and variations\n\n2. **Practical Application**\n   - How to apply ${topic} in practice\n   - Common mistakes to avoid\n\n3. **Further Study**\n   - Recommended resources\n   - Related topics to explore\n`;
@@ -79,8 +75,6 @@ export class MusicianService implements MusicianService {
     if (mood) context += `Mood: ${mood}\n`;
     if (tempo) context += `Tempo: ${tempo} BPM\n`;
 
-    const prompt = buildMusicianPrompt(context);
-
     // For MVP, return a structured composition response
     const markdown = `# Composition Guidance\n\n## Goal Assessment\n\nPrimary Goal: ${goal}\n\n## Composition Plan\n\n### Chord Progressions\n- Suggested progressions based on ${genre || "the style"}\n- Function analysis for each progression\n\n### Melodic Contour\n- Recommended melodic patterns\n- Voice leading suggestions\n\n### Arrangement\n- Instrumentation breakdown\n- Dynamic structure\n\n### Lyric Ideas (if applicable)\n- Thematic directions\n- Rhyme scheme suggestions\n`;
 
@@ -92,7 +86,7 @@ export class MusicianService implements MusicianService {
     report?: string;
     warnings: string[];
   }> {
-    const { fileId, filePath, analysisType, genre } = request;
+    const { fileId, filePath, analysisType } = request;
     const warnings: string[] = [];
     const metrics: Partial<AudioTechnicalMetrics> = {};
 
@@ -123,7 +117,9 @@ export class MusicianService implements MusicianService {
       if (analysisType === "all" || analysisType === "mixdown" || analysisType === "mastering") {
         // Use Essentia for detailed analysis if available
         const essentiaResult = await analyzeWithEssentia(actualPath);
-        warnings.push(...essentiaResult.warnings);
+        if (essentiaResult.warnings) {
+          warnings.push(...essentiaResult.warnings);
+        }
 
         if (essentiaResult.tempo) {
           metrics.tempoBpm = essentiaResult.tempo;

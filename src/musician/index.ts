@@ -22,17 +22,9 @@ export type {
   AssistantResponse,
   SessionContext,
   UserFeedback,
-  // Asset types
-  AudioAsset,
-  GeneratedAudioAsset,
-  ListAssetsOptions,
-  ListAssetsResult,
-  UploadResult,
-  PathTraversalError,
-  SizeLimitError,
 } from "./analysis-types";
 
-// Re-export types from types.ts
+// Re-export types from types.ts (new asset types)
 export type {
   AudioAsset,
   GeneratedAudioAsset,

@@ -3159,7 +3159,7 @@ async function handleMusicianExplainTheory(
 
     const request = {
       topic,
-      skillLevel: params.skillLevel as string | undefined,
+      skillLevel: params.skillLevel as "beginner" | "intermediate" | "advanced" | "pro",
       instrument: params.instrument as string | undefined,
       style: params.style as string | undefined,
       includeExercises: params.includeExercises as boolean | undefined,
@@ -3192,6 +3192,7 @@ async function handleMusicianCompose(
       ),
       structure: params.structure as string | undefined,
       reference: params.reference as string | undefined,
+      outputFormat: params.outputFormat as "markdown" | "lead_sheet" | "chord_chart" | "arrangement_plan" | "midi_plan",
     };
 
     const result = await musicianService.compose(request);
@@ -3250,10 +3251,7 @@ async function handleMusicianAnalyzeAudio(
 
     const request = {
       filePath: actualPath,
-      analyzeTechnical: params.analyzeTechnical as boolean | undefined,
-      analyzeHarmonic: params.analyzeHarmonic as boolean | undefined,
-      analyzeRhythm: params.analyzeRhythm as boolean | undefined,
-      generateReport: params.generateReport as boolean | undefined,
+      analysisType: params.analysisType as "mixdown" | "mastering" | "composition" | "arrangement" | "performance" | "transcription" | "all",
     };
 
     const result = await musicianService.analyzeAudio(request);
@@ -3300,12 +3298,12 @@ async function handleMusicianPracticePlan(
       | "beginner"
       | "intermediate"
       | "advanced"
-      | "expert";
+      | "pro";
     if (!skillLevel) {
       return {
         success: false,
         error:
-          "skillLevel is required (beginner, intermediate, advanced, expert)",
+          "skillLevel is required (beginner, intermediate, advanced, pro)",
       };
     }
     const minutesPerDay = params.minutesPerDay as number;

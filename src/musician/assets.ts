@@ -28,7 +28,6 @@ const AUDIO_ANALYSIS_DIR = env.MUSICIAN_AUDIO_ANALYSIS_DIR;
 const GENERATED_AUDIO_DIR = env.MUSICIAN_GENERATED_AUDIO_DIR;
 const MAX_UPLOAD_SIZE = env.MUSICIAN_MAX_UPLOAD_MB * 1024 * 1024; // Convert MB to bytes
 const MAX_GENERATION_SECONDS = env.MUSICIAN_MAX_GENERATION_SECONDS;
-const DEFAULT_SAMPLE_RATE = env.MUSICIAN_DEFAULT_SAMPLE_RATE;
 
 // Metadata file for upload assets
 const UPLOADS_METADATA_FILE = path.join(AUDIO_UPLOAD_DIR, "metadata.jsonl");
@@ -50,19 +49,6 @@ function ensureDirectory(dirPath: string): void {
       throw new Error(`Failed to create directory ${dirPath}: ${error}`);
     }
   }
-}
-
-/**
- * Validate that a path doesn't contain path traversal sequences.
- */
-function sanitizePath(input: string): string {
-  // Normalize the path
-  const normalized = path.normalize(input);
-  // Check if it's still within allowed base
-  if (normalized.startsWith("..") || normalized.startsWith("/")) {
-    throw new Error("Path traversal detected");
-  }
-  return normalized;
 }
 
 /**
@@ -200,7 +186,7 @@ export async function saveUploadedAudio(
   try {
     // Attempt to get metadata from ffprobe
     const { getAudioMetadata } = await import(
-      "../integrations/audio/metadata"
+      "../integrations/audio/metadata.js"
     );
     const metadataResult = await getAudioMetadata(filePath);
     if (metadataResult.metrics) {
@@ -479,3 +465,6 @@ export function initializeMusicianStorage(): void {
   ensureDirectory(AUDIO_ANALYSIS_DIR);
   ensureDirectory(GENERATED_AUDIO_DIR);
 }
+
+// Re-export types for convenience
+export type { AudioAsset, GeneratedAudioAsset, ListAssetsOptions, ListAssetsResult, UploadResult } from "./types";

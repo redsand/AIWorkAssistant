@@ -10,7 +10,6 @@ import {
   MusicGenerationRequest,
   AudioTechnicalMetrics,
 } from "../musician/analysis-types";
-import type { AudioAsset } from "../musician/types";
 import {
   saveUploadedAudio,
   listMusicianAssets,
