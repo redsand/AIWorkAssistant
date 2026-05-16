@@ -1,783 +1,1365 @@
 /**
- * Mixdown Feedback Engine
+ * Mix Feedback Engine
  *
- * Analyzes AudioTechnicalMetrics and AudioAnalysisRequest to produce
- * a comprehensive MixFeedbackReport with actionable recommendations.
- *
- * Uses deterministic rules based on audio measurements plus
- * LLM-ready narrative fields for enhanced context.
+ * Genre-aware deterministic feedback for mixdown analysis.
+ * Provides structured, actionable feedback based on technical metrics
+ * with genre-specific thresholds and expectations.
  */
 
 import {
   AudioTechnicalMetrics,
   AudioAnalysisRequest,
   MixFeedbackReport,
-  AudioAnalysisRequest as MixAnalysisRequest,
 } from "./analysis-types";
 
 // =============================================================================
-// Configuration Thresholds
+// Genre Profiles
 // =============================================================================
 
-const THRESHOLDS = {
-  // Clipping and distortion
-  CLIPPING_THRESHOLD: true,
+interface GenreProfile {
+  name: string;
+  targetLufsMin: number;
+  targetLufsMax: number;
+  minDynamicRange: number; // Minimum acceptable DR
+  maxDynamicRange: number; // Maximum typical DR
+  expectedCompression: "none" | "light" | "moderate" | "heavy" | "brick-walled";
+  lowEndEmphasis: "minimal" | "moderate" | "heavy" | "extreme"; // Sub/bass importance
+  stereoWidthExpectation: "narrow" | "moderate" | "wide" | "very-wide";
+  phaseCorrelationMin: number; // Minimum safe phase correlation
+  truePeakLimit: number; // dBTP limit
+  frequencyBalance: {
+    // Expected relative levels (-10 to +10)
+    sub: number;
+    bass: number;
+    lowMid: number;
+    mid: number;
+    highMid: number;
+    high: number;
+  };
+}
 
-  // Peak levels
-  TRUE_PEAK_WARNING: -1.0, // Warning if above this
-  TRUE_PEAK_CRITICAL: -0.5,
+const GENRE_PROFILES: Record<string, GenreProfile> = {
+  "drum-and-bass": {
+    name: "Drum and Bass",
+    targetLufsMin: -7,
+    targetLufsMax: -5,
+    minDynamicRange: 4,
+    maxDynamicRange: 8,
+    expectedCompression: "heavy",
+    lowEndEmphasis: "extreme",
+    stereoWidthExpectation: "wide",
+    phaseCorrelationMin: 0.7,
+    truePeakLimit: -0.3,
+    frequencyBalance: {
+      sub: 8, // Very strong sub
+      bass: 6,
+      lowMid: 0,
+      mid: 2,
+      highMid: 4,
+      high: 5,
+    },
+  },
+  dnb: {
+    // Alias
+    name: "Drum and Bass",
+    targetLufsMin: -7,
+    targetLufsMax: -5,
+    minDynamicRange: 4,
+    maxDynamicRange: 8,
+    expectedCompression: "heavy",
+    lowEndEmphasis: "extreme",
+    stereoWidthExpectation: "wide",
+    phaseCorrelationMin: 0.7,
+    truePeakLimit: -0.3,
+    frequencyBalance: {
+      sub: 8,
+      bass: 6,
+      lowMid: 0,
+      mid: 2,
+      highMid: 4,
+      high: 5,
+    },
+  },
+  edm: {
+    name: "EDM/Electronic",
+    targetLufsMin: -8,
+    targetLufsMax: -4,
+    minDynamicRange: 4,
+    maxDynamicRange: 7,
+    expectedCompression: "brick-walled",
+    lowEndEmphasis: "extreme",
+    stereoWidthExpectation: "very-wide",
+    phaseCorrelationMin: 0.65,
+    truePeakLimit: -0.1,
+    frequencyBalance: {
+      sub: 7,
+      bass: 6,
+      lowMid: -2,
+      mid: 0,
+      highMid: 3,
+      high: 5,
+    },
+  },
+  electronic: {
+    name: "Electronic",
+    targetLufsMin: -10,
+    targetLufsMax: -6,
+    minDynamicRange: 5,
+    maxDynamicRange: 9,
+    expectedCompression: "heavy",
+    lowEndEmphasis: "heavy",
+    stereoWidthExpectation: "wide",
+    phaseCorrelationMin: 0.7,
+    truePeakLimit: -0.5,
+    frequencyBalance: {
+      sub: 5,
+      bass: 4,
+      lowMid: -1,
+      mid: 0,
+      highMid: 2,
+      high: 4,
+    },
+  },
+  pop: {
+    name: "Pop",
+    targetLufsMin: -9,
+    targetLufsMax: -7,
+    minDynamicRange: 6,
+    maxDynamicRange: 10,
+    expectedCompression: "moderate",
+    lowEndEmphasis: "moderate",
+    stereoWidthExpectation: "wide",
+    phaseCorrelationMin: 0.75,
+    truePeakLimit: -1.0,
+    frequencyBalance: {
+      sub: 2,
+      bass: 3,
+      lowMid: 0,
+      mid: 2,
+      highMid: 3,
+      high: 4,
+    },
+  },
+  rock: {
+    name: "Rock",
+    targetLufsMin: -9,
+    targetLufsMax: -6,
+    minDynamicRange: 7,
+    maxDynamicRange: 12,
+    expectedCompression: "moderate",
+    lowEndEmphasis: "moderate",
+    stereoWidthExpectation: "wide",
+    phaseCorrelationMin: 0.75,
+    truePeakLimit: -1.0,
+    frequencyBalance: {
+      sub: 0,
+      bass: 3,
+      lowMid: 2,
+      mid: 3,
+      highMid: 4,
+      high: 3,
+    },
+  },
+  metal: {
+    name: "Metal",
+    targetLufsMin: -8,
+    targetLufsMax: -5,
+    minDynamicRange: 5,
+    maxDynamicRange: 9,
+    expectedCompression: "heavy",
+    lowEndEmphasis: "heavy",
+    stereoWidthExpectation: "wide",
+    phaseCorrelationMin: 0.7,
+    truePeakLimit: -0.5,
+    frequencyBalance: {
+      sub: 1,
+      bass: 5,
+      lowMid: 2,
+      mid: 0,
+      highMid: 5,
+      high: 6,
+    },
+  },
+  "hip-hop": {
+    name: "Hip Hop",
+    targetLufsMin: -9,
+    targetLufsMax: -6,
+    minDynamicRange: 6,
+    maxDynamicRange: 10,
+    expectedCompression: "moderate",
+    lowEndEmphasis: "extreme",
+    stereoWidthExpectation: "moderate",
+    phaseCorrelationMin: 0.8,
+    truePeakLimit: -1.0,
+    frequencyBalance: {
+      sub: 7,
+      bass: 6,
+      lowMid: 0,
+      mid: 2,
+      highMid: 3,
+      high: 2,
+    },
+  },
+  hiphop: {
+    // Alias
+    name: "Hip Hop",
+    targetLufsMin: -9,
+    targetLufsMax: -6,
+    minDynamicRange: 6,
+    maxDynamicRange: 10,
+    expectedCompression: "moderate",
+    lowEndEmphasis: "extreme",
+    stereoWidthExpectation: "moderate",
+    phaseCorrelationMin: 0.8,
+    truePeakLimit: -1.0,
+    frequencyBalance: {
+      sub: 7,
+      bass: 6,
+      lowMid: 0,
+      mid: 2,
+      highMid: 3,
+      high: 2,
+    },
+  },
+  rap: {
+    // Alias
+    name: "Hip Hop",
+    targetLufsMin: -9,
+    targetLufsMax: -6,
+    minDynamicRange: 6,
+    maxDynamicRange: 10,
+    expectedCompression: "moderate",
+    lowEndEmphasis: "extreme",
+    stereoWidthExpectation: "moderate",
+    phaseCorrelationMin: 0.8,
+    truePeakLimit: -1.0,
+    frequencyBalance: {
+      sub: 7,
+      bass: 6,
+      lowMid: 0,
+      mid: 2,
+      highMid: 3,
+      high: 2,
+    },
+  },
+  jazz: {
+    name: "Jazz",
+    targetLufsMin: -18,
+    targetLufsMax: -14,
+    minDynamicRange: 12,
+    maxDynamicRange: 20,
+    expectedCompression: "light",
+    lowEndEmphasis: "moderate",
+    stereoWidthExpectation: "moderate",
+    phaseCorrelationMin: 0.85,
+    truePeakLimit: -2.0,
+    frequencyBalance: {
+      sub: -2,
+      bass: 1,
+      lowMid: 2,
+      mid: 3,
+      highMid: 2,
+      high: 3,
+    },
+  },
+  classical: {
+    name: "Classical",
+    targetLufsMin: -23,
+    targetLufsMax: -18,
+    minDynamicRange: 15,
+    maxDynamicRange: 25,
+    expectedCompression: "none",
+    lowEndEmphasis: "minimal",
+    stereoWidthExpectation: "moderate",
+    phaseCorrelationMin: 0.9,
+    truePeakLimit: -3.0,
+    frequencyBalance: {
+      sub: -3,
+      bass: 0,
+      lowMid: 1,
+      mid: 2,
+      highMid: 2,
+      high: 3,
+    },
+  },
+  acoustic: {
+    name: "Acoustic/Folk",
+    targetLufsMin: -16,
+    targetLufsMax: -12,
+    minDynamicRange: 10,
+    maxDynamicRange: 16,
+    expectedCompression: "light",
+    lowEndEmphasis: "minimal",
+    stereoWidthExpectation: "moderate",
+    phaseCorrelationMin: 0.85,
+    truePeakLimit: -1.5,
+    frequencyBalance: {
+      sub: -2,
+      bass: 1,
+      lowMid: 2,
+      mid: 3,
+      highMid: 3,
+      high: 4,
+    },
+  },
+  folk: {
+    // Alias
+    name: "Acoustic/Folk",
+    targetLufsMin: -16,
+    targetLufsMax: -12,
+    minDynamicRange: 10,
+    maxDynamicRange: 16,
+    expectedCompression: "light",
+    lowEndEmphasis: "minimal",
+    stereoWidthExpectation: "moderate",
+    phaseCorrelationMin: 0.85,
+    truePeakLimit: -1.5,
+    frequencyBalance: {
+      sub: -2,
+      bass: 1,
+      lowMid: 2,
+      mid: 3,
+      highMid: 3,
+      high: 4,
+    },
+  },
+  country: {
+    name: "Country",
+    targetLufsMin: -12,
+    targetLufsMax: -8,
+    minDynamicRange: 8,
+    maxDynamicRange: 14,
+    expectedCompression: "moderate",
+    lowEndEmphasis: "moderate",
+    stereoWidthExpectation: "wide",
+    phaseCorrelationMin: 0.8,
+    truePeakLimit: -1.0,
+    frequencyBalance: {
+      sub: -1,
+      bass: 2,
+      lowMid: 2,
+      mid: 3,
+      highMid: 4,
+      high: 4,
+    },
+  },
+  indie: {
+    name: "Indie",
+    targetLufsMin: -12,
+    targetLufsMax: -8,
+    minDynamicRange: 8,
+    maxDynamicRange: 14,
+    expectedCompression: "light",
+    lowEndEmphasis: "moderate",
+    stereoWidthExpectation: "wide",
+    phaseCorrelationMin: 0.8,
+    truePeakLimit: -1.5,
+    frequencyBalance: {
+      sub: 0,
+      bass: 2,
+      lowMid: 1,
+      mid: 2,
+      highMid: 3,
+      high: 4,
+    },
+  },
+  reggae: {
+    name: "Reggae",
+    targetLufsMin: -10,
+    targetLufsMax: -7,
+    minDynamicRange: 8,
+    maxDynamicRange: 12,
+    expectedCompression: "moderate",
+    lowEndEmphasis: "heavy",
+    stereoWidthExpectation: "moderate",
+    phaseCorrelationMin: 0.85,
+    truePeakLimit: -1.0,
+    frequencyBalance: {
+      sub: 6,
+      bass: 5,
+      lowMid: 0,
+      mid: 1,
+      highMid: 2,
+      high: 3,
+    },
+  },
+  dubstep: {
+    name: "Dubstep",
+    targetLufsMin: -8,
+    targetLufsMax: -5,
+    minDynamicRange: 5,
+    maxDynamicRange: 9,
+    expectedCompression: "heavy",
+    lowEndEmphasis: "extreme",
+    stereoWidthExpectation: "very-wide",
+    phaseCorrelationMin: 0.65,
+    truePeakLimit: -0.3,
+    frequencyBalance: {
+      sub: 9,
+      bass: 7,
+      lowMid: -2,
+      mid: 0,
+      highMid: 4,
+      high: 5,
+    },
+  },
+  house: {
+    name: "House",
+    targetLufsMin: -9,
+    targetLufsMax: -6,
+    minDynamicRange: 5,
+    maxDynamicRange: 9,
+    expectedCompression: "heavy",
+    lowEndEmphasis: "heavy",
+    stereoWidthExpectation: "wide",
+    phaseCorrelationMin: 0.75,
+    truePeakLimit: -0.5,
+    frequencyBalance: {
+      sub: 6,
+      bass: 5,
+      lowMid: -1,
+      mid: 1,
+      highMid: 3,
+      high: 4,
+    },
+  },
+  techno: {
+    name: "Techno",
+    targetLufsMin: -9,
+    targetLufsMax: -6,
+    minDynamicRange: 5,
+    maxDynamicRange: 9,
+    expectedCompression: "heavy",
+    lowEndEmphasis: "heavy",
+    stereoWidthExpectation: "wide",
+    phaseCorrelationMin: 0.75,
+    truePeakLimit: -0.5,
+    frequencyBalance: {
+      sub: 6,
+      bass: 5,
+      lowMid: -1,
+      mid: 0,
+      highMid: 2,
+      high: 3,
+    },
+  },
+  trance: {
+    name: "Trance",
+    targetLufsMin: -9,
+    targetLufsMax: -6,
+    minDynamicRange: 6,
+    maxDynamicRange: 10,
+    expectedCompression: "heavy",
+    lowEndEmphasis: "heavy",
+    stereoWidthExpectation: "very-wide",
+    phaseCorrelationMin: 0.7,
+    truePeakLimit: -0.5,
+    frequencyBalance: {
+      sub: 5,
+      bass: 5,
+      lowMid: 0,
+      mid: 1,
+      highMid: 4,
+      high: 5,
+    },
+  },
+};
 
-  // Loudness targets
-  LUFS_TARGET_STREAMING: -14,
-  LUFS_TARGET_BROADCAST: -23,
-  LUFS_TARGET_YOUTUBE: -14,
-
-  // Dynamic range
-  DYNAMIC_RANGE_LOW: 6, // Compressed
-  DYNAMIC_RANGE_MEDIUM: 10, // Moderate
-  DYNAMIC_RANGE_HIGH: 14, // Dynamic
-
-  // Phase correlation
-  PHASE_CORRELATION_LOW: 0.3, // Warning threshold
-  PHASE_CORRELATION_MONO: 0, // Mono compatibility issue
-
-  // Stereo width
-  STEREO_WIDTH_NARROW: 20,
-  STEREO_WIDTH_WIDE: 80,
-
-  // Spectral balance ratios (relative to mid)
-  BASS_EXCESSIVE_RATIO: 4.0, // bass/mid ratio
-  HIGH_EXCESSIVE_RATIO: 2.5, // high/mid ratio
-  SILENCE_THRESHOLD: 10, // Percentage threshold
-
-  // DC offset
-  DC_OFFSET_WARNING: 0.01,
-} as const;
+// Default profile for unknown genres
+const DEFAULT_PROFILE: GenreProfile = {
+  name: "Generic",
+  targetLufsMin: -14,
+  targetLufsMax: -10,
+  minDynamicRange: 8,
+  maxDynamicRange: 14,
+  expectedCompression: "moderate",
+  lowEndEmphasis: "moderate",
+  stereoWidthExpectation: "moderate",
+  phaseCorrelationMin: 0.75,
+  truePeakLimit: -1.0,
+  frequencyBalance: {
+    sub: 0,
+    bass: 2,
+    lowMid: 1,
+    mid: 2,
+    highMid: 2,
+    high: 3,
+  },
+};
 
 // =============================================================================
 // Helper Functions
 // =============================================================================
 
-/**
- * Safe number getter with default fallback.
- */
-function safeNumber(value: number | undefined, defaultValue: number): number {
-  return value !== undefined && value !== null ? value : defaultValue;
+function getGenreProfile(genre?: string): GenreProfile {
+  if (!genre) return DEFAULT_PROFILE;
+
+  const normalized = genre.toLowerCase().trim().replace(/\s+/g, "-");
+  return GENRE_PROFILES[normalized] || DEFAULT_PROFILE;
 }
 
-/**
- * Get frequency balance assessment based on spectral balance ratios.
- */
-function assessFrequencyBalance(metrics: AudioTechnicalMetrics): {
-  overall: MixFeedbackReport["frequencyBalance"]["overallAssessment"];
-  bass: MixFeedbackReport["frequencyBalance"]["bassEnergy"];
-  mid: MixFeedbackReport["frequencyBalance"]["midClarity"];
-  high: MixFeedbackReport["frequencyBalance"]["highExtension"];
-  gauge: MixFeedbackReport["frequencyBalance"]["frequencyGauge"];
-} {
-  const balance = metrics.spectralBalance;
+function formatLufs(lufs: number): string {
+  return `${lufs.toFixed(1)} LUFS`;
+}
 
-  // If no spectral balance data, return neutral assessment
-  if (!balance) {
+function formatDbtp(dbtp: number): string {
+  return `${dbtp.toFixed(1)} dBTP`;
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(value)}%`;
+}
+
+// =============================================================================
+// Analysis Functions
+// =============================================================================
+
+interface AnalysisContext {
+  metrics: Partial<AudioTechnicalMetrics>;
+  request: AudioAnalysisRequest;
+  profile: GenreProfile;
+}
+
+function analyzeClipping(ctx: AnalysisContext): {
+  hasCriticalIssue: boolean;
+  message: string;
+} {
+  if (ctx.metrics.clippingDetected === true) {
     return {
-      overall: "balanced",
-      bass: "present",
-      mid: "clear",
-      high: "air",
-      gauge: { sub: 0, bass: 0, lowMid: 0, mid: 0, highMid: 0, high: 0 },
+      hasCriticalIssue: true,
+      message: "Digital clipping detected - immediate fix required before any other processing",
+    };
+  }
+  return { hasCriticalIssue: false, message: "" };
+}
+
+function analyzeTruePeak(ctx: AnalysisContext): {
+  hasIssue: boolean;
+  severity: "critical" | "high" | "medium" | "low" | "none";
+  message: string;
+} {
+  const { truePeakDbtp } = ctx.metrics;
+  if (truePeakDbtp === undefined) {
+    return { hasIssue: false, severity: "none", message: "" };
+  }
+
+  const limit = ctx.profile.truePeakLimit;
+
+  if (truePeakDbtp > -0.1) {
+    return {
+      hasIssue: true,
+      severity: "critical",
+      message: `True peak at ${formatDbtp(truePeakDbtp)} exceeds safe limits - intersample peaks will cause clipping on DACs and streaming codecs`,
     };
   }
 
-  // Calculate ratios relative to mid
-  const bassRatio = balance.mid > 0 ? balance.bass / balance.mid : 1;
-  const highRatio = balance.mid > 0 ? balance.high / balance.mid : 1;
-
-  // Determine bass energy
-  let bass: MixFeedbackReport["frequencyBalance"]["bassEnergy"] = "present";
-  if (bassRatio < 0.5) {
-    bass = "weak";
-  } else if (bassRatio > THRESHOLDS.BASS_EXCESSIVE_RATIO) {
-    bass = "excessive";
+  if (truePeakDbtp > limit) {
+    return {
+      hasIssue: true,
+      severity: "high",
+      message: `True peak at ${formatDbtp(truePeakDbtp)} exceeds ${ctx.profile.name} target of ${formatDbtp(limit)} - risk of distortion on some playback systems`,
+    };
   }
 
-  // Determine mid clarity
-  let mid: MixFeedbackReport["frequencyBalance"]["midClarity"] = "clear";
-  if (balance.lowMid > balance.mid * 1.5) {
-    mid = "muffled";
-  } else if (balance.lowMid < balance.mid * 0.5) {
-    mid = "thin";
-  }
-
-  // Determine high extension
-  let high: MixFeedbackReport["frequencyBalance"]["highExtension"] = "sparkle";
-  if (highRatio < 0.5) {
-    high = "dull";
-  } else if (highRatio > THRESHOLDS.HIGH_EXCESSIVE_RATIO) {
-    high = "harsh";
-  }
-
-  // Overall assessment
-  let overall: MixFeedbackReport["frequencyBalance"]["overallAssessment"] = "balanced";
-  if (bass === "excessive" || mid === "muffled") {
-    overall = "muddy";
-  } else if (bass === "excessive") {
-    overall = "boomy";
-  } else if (bass === "weak") {
-    overall = "thin";
-  } else if (high === "harsh") {
-    overall = "harsh";
-  } else if (high === "dull") {
-    overall = "dull";
-  }
-
-  // Build frequency gauge (relative to mid = 0)
-  const gauge = {
-    sub: Math.max(-10, Math.min(10, Math.round((balance.sub - balance.mid) / 2))),
-    bass: Math.max(-10, Math.min(10, Math.round((balance.bass - balance.mid)))),
-    lowMid: Math.max(-10, Math.min(10, Math.round((balance.lowMid - balance.mid)))),
-    mid: 0,
-    highMid: Math.max(-10, Math.min(10, Math.round((balance.highMid - balance.mid)))),
-    high: Math.max(-10, Math.min(10, Math.round((balance.high - balance.mid)))),
-  };
-
-  return { overall, bass, mid, high, gauge };
+  return { hasIssue: false, severity: "none", message: "" };
 }
 
-/**
- * Analyze dynamics characteristics.
- */
-function analyzeDynamics(
-  metrics: AudioTechnicalMetrics
-): Pick<MixFeedbackReport["dynamics"], "overallAssessment" | "compressionAmount" | "punch" | "sustain"> {
-  const dr = safeNumber(metrics.dynamicRange, THRESHOLDS.DYNAMIC_RANGE_MEDIUM);
-  const crest = safeNumber(metrics.crestFactor, 10);
-  const clipping = metrics.clippingDetected || false;
-
-  // Overall assessment based on dynamic range
-  let overallAssessment: MixFeedbackReport["dynamics"]["overallAssessment"] = "dynamic";
-  let compressionAmount: MixFeedbackReport["dynamics"]["compressionAmount"] = "none";
-  let punch: MixFeedbackReport["dynamics"]["punch"] = "preserved";
-
-  if (dr < THRESHOLDS.DYNAMIC_RANGE_LOW || clipping) {
-    overallAssessment = "crushed";
-    compressionAmount = "heavy";
-    punch = "killed";
-  } else if (dr < THRESHOLDS.DYNAMIC_RANGE_MEDIUM) {
-    overallAssessment = "moderate";
-    compressionAmount = "moderate";
-    punch = "reduced";
-  } else if (dr < THRESHOLDS.DYNAMIC_RANGE_HIGH) {
-    overallAssessment = "moderate";
-    compressionAmount = "light";
-    punch = "preserved";
-  } else {
-    overallAssessment = "dynamic";
-    compressionAmount = "none";
-    punch = "preserved";
-  }
-
-  // Adjust punch based on crest factor
-  if (crest < 8) {
-    punch = "killed";
-  } else if (crest < 12) {
-    punch = "reduced";
-  }
-
-  // Sustain assessment
-  const sustain: MixFeedbackReport["dynamics"]["sustain"] =
-    overallAssessment === "crushed" ? "sustained" : "natural";
-
-  return { overallAssessment, compressionAmount, punch, sustain };
-}
-
-/**
- * Analyze stereo and phase characteristics.
- */
-function analyzeStereoImage(metrics: AudioTechnicalMetrics): {
-  stereoImage: MixFeedbackReport["stereoImage"];
-  phaseAnalysis: { monoCompatibility: string; phaseIssues: boolean };
+function analyzeLoudness(ctx: AnalysisContext): {
+  assessment: string;
+  issues: string[];
+  strengths: string[];
 } {
-  const stereoWidth = safeNumber(metrics.stereoWidth, 50);
-  const phaseCorrelation = safeNumber(metrics.phaseCorrelation, 0.7);
-  const isStereo = safeNumber(metrics.channels, 2) > 1;
+  const { integratedLufs } = ctx.metrics;
+  const issues: string[] = [];
+  const strengths: string[] = [];
 
-  // Stereo width assessment
-  let stereoOverall: MixFeedbackReport["stereoImage"]["overallAssessment"] = "moderate";
-  let stereoWidthDisplay = stereoWidth;
+  if (integratedLufs === undefined) {
+    return {
+      assessment: "Loudness could not be measured",
+      issues: ["Integrated LUFS measurement unavailable"],
+      strengths: [],
+    };
+  }
 
-  if (stereoWidth < THRESHOLDS.STEREO_WIDTH_NARROW) {
-    stereoOverall = "narrow";
-  } else if (stereoWidth > THRESHOLDS.STEREO_WIDTH_WIDE) {
-    stereoOverall = "wide";
+  const { targetLufsMin, targetLufsMax, name } = ctx.profile;
+  const lufsStr = formatLufs(integratedLufs);
+
+  if (integratedLufs < targetLufsMin) {
+    const deficit = targetLufsMin - integratedLufs;
+    issues.push(
+      `Mix is ${deficit.toFixed(1)}dB quieter than ${name} target range (${formatLufs(targetLufsMin)} to ${formatLufs(targetLufsMax)}) - needs more gain/limiting`
+    );
+    return {
+      assessment: `Quieter than typical ${name} mixes`,
+      issues,
+      strengths,
+    };
+  }
+
+  if (integratedLufs > targetLufsMax) {
+    const excess = integratedLufs - targetLufsMax;
+    issues.push(
+      `Mix is ${excess.toFixed(1)}dB louder than ${name} target range (${formatLufs(targetLufsMin)} to ${formatLufs(targetLufsMax)}) - may be over-limited`
+    );
+    return {
+      assessment: `Louder than typical ${name} mixes`,
+      issues,
+      strengths,
+    };
+  }
+
+  strengths.push(
+    `Loudness at ${lufsStr} is within ${name} target range (${formatLufs(targetLufsMin)} to ${formatLufs(targetLufsMax)})`
+  );
+  return {
+    assessment: `Appropriate loudness for ${name}`,
+    issues,
+    strengths,
+  };
+}
+
+function analyzeDynamics(ctx: AnalysisContext): {
+  assessment: string;
+  issues: string[];
+  strengths: string[];
+} {
+  const { dynamicRange } = ctx.metrics;
+  const issues: string[] = [];
+  const strengths: string[] = [];
+
+  if (dynamicRange === undefined) {
+    return {
+      assessment: "Dynamic range could not be measured",
+      issues: ["DR measurement unavailable"],
+      strengths: [],
+    };
+  }
+
+  const { minDynamicRange, maxDynamicRange, name, expectedCompression } = ctx.profile;
+
+  if (dynamicRange < minDynamicRange) {
+    const deficit = minDynamicRange - dynamicRange;
+    issues.push(
+      `Dynamic range of ${dynamicRange.toFixed(1)}dB is ${deficit.toFixed(1)}dB below ${name} minimum (${minDynamicRange}dB) - over-compressed or brick-walled`
+    );
+    return {
+      assessment: "Over-compressed",
+      issues,
+      strengths,
+    };
+  }
+
+  if (dynamicRange > maxDynamicRange) {
+    const excess = dynamicRange - maxDynamicRange;
+    // This is only an issue for loud genres
+    if (expectedCompression === "heavy" || expectedCompression === "brick-walled") {
+      issues.push(
+        `Dynamic range of ${dynamicRange.toFixed(1)}dB exceeds typical ${name} range (${maxDynamicRange}dB) - may lack punch or impact`
+      );
+    } else {
+      strengths.push(
+        `Healthy dynamic range of ${dynamicRange.toFixed(1)}dB preserves musical expression`
+      );
+    }
   } else {
-    stereoOverall = "moderate";
+    strengths.push(
+      `Dynamic range of ${dynamicRange.toFixed(1)}dB is appropriate for ${name} (${minDynamicRange}-${maxDynamicRange}dB)`
+    );
   }
 
-  // Center image stability
-  const centerImage: MixFeedbackReport["stereoImage"]["centerImageStability"] =
-    stereoWidth < 10 ? "stable" : "wandering";
+  return {
+    assessment: `Dynamic range: ${dynamicRange.toFixed(1)}dB`,
+    issues,
+    strengths,
+  };
+}
 
-  // Panning balance (default to balanced without specific panning data)
-  const panning: MixFeedbackReport["stereoImage"]["panningBalance"] = "balanced";
+function analyzePhaseCorrelation(ctx: AnalysisContext): {
+  assessment: string;
+  issues: string[];
+  warnings: string[];
+} {
+  const { phaseCorrelation } = ctx.metrics;
+  const issues: string[] = [];
+  const warnings: string[] = [];
 
-  // Stereo tools (placeholder - would need actual processing detection)
-  const stereoTools: string[] = [];
+  if (phaseCorrelation === undefined) {
+    return {
+      assessment: "Phase correlation not measured",
+      issues: [],
+      warnings: [],
+    };
+  }
 
-  // Phase analysis
-  let phaseIssues = false;
-  let monoCompatibility = "good";
+  const { phaseCorrelationMin, name } = ctx.profile;
 
-  if (!isStereo) {
-    monoCompatibility = "n/a (mono track)";
-  } else if (phaseCorrelation < THRESHOLDS.PHASE_CORRELATION_LOW) {
-    monoCompatibility = "poor - will collapse to thin mono";
-    phaseIssues = true;
-  } else if (phaseCorrelation < 0) {
-    monoCompatibility = "concerning - phase cancellation likely";
-    phaseIssues = true;
-  } else if (phaseCorrelation > 0.95) {
-    monoCompatibility = "excellent - very mono compatible";
+  if (phaseCorrelation < 0) {
+    issues.push(
+      `Phase correlation at ${phaseCorrelation.toFixed(2)} indicates out-of-phase content - will collapse or cancel in mono playback`
+    );
+    return {
+      assessment: "Severe phase issues",
+      issues,
+      warnings,
+    };
+  }
+
+  if (phaseCorrelation < phaseCorrelationMin) {
+    warnings.push(
+      `Phase correlation at ${phaseCorrelation.toFixed(2)} is below ${name} minimum (${phaseCorrelationMin.toFixed(2)}) - poor mono compatibility`
+    );
+    return {
+      assessment: "Phase compatibility issues",
+      issues,
+      warnings,
+    };
+  }
+
+  return {
+    assessment: `Phase correlation at ${phaseCorrelation.toFixed(2)} is healthy`,
+    issues,
+    warnings,
+  };
+}
+
+function analyzeStereoWidth(ctx: AnalysisContext): {
+  assessment: string;
+  issues: string[];
+  warnings: string[];
+} {
+  const { stereoWidth } = ctx.metrics;
+  const issues: string[] = [];
+  const warnings: string[] = [];
+
+  if (stereoWidth === undefined) {
+    return {
+      assessment: "Stereo width not measured",
+      issues: [],
+      warnings: [],
+    };
+  }
+
+  const { stereoWidthExpectation, name } = ctx.profile;
+
+  // Define width ranges
+  const ranges = {
+    narrow: { min: 0, max: 40 },
+    moderate: { min: 40, max: 70 },
+    wide: { min: 60, max: 90 },
+    "very-wide": { min: 80, max: 100 },
+  };
+
+  const expected = ranges[stereoWidthExpectation];
+
+  if (stereoWidth < expected.min) {
+    warnings.push(
+      `Stereo width at ${formatPercent(stereoWidth)} is narrower than typical ${name} mixes (${formatPercent(expected.min)}-${formatPercent(expected.max)}) - may lack spaciousness`
+    );
+  } else if (stereoWidth > expected.max && stereoWidth > 90) {
+    warnings.push(
+      `Stereo width at ${formatPercent(stereoWidth)} is extremely wide - may cause phase issues or poor mono translation`
+    );
+  }
+
+  return {
+    assessment: `Stereo width: ${formatPercent(stereoWidth)}`,
+    issues,
+    warnings,
+  };
+}
+
+function analyzeFrequencyBalance(ctx: AnalysisContext): {
+  assessment: string;
+  issues: string[];
+  warnings: string[];
+  details: string;
+} {
+  const { spectralBalance } = ctx.metrics;
+  const issues: string[] = [];
+  const warnings: string[] = [];
+
+  if (!spectralBalance) {
+    return {
+      assessment: "Frequency balance not measured",
+      issues: [],
+      warnings: [],
+      details: "Spectral analysis unavailable",
+    };
+  }
+
+  const { frequencyBalance: expected, name, lowEndEmphasis } = ctx.profile;
+
+  // Calculate deviations from expected profile
+  const deviations = {
+    sub: spectralBalance.low - expected.sub,
+    bass: spectralBalance.sub - expected.bass,
+    lowMid: spectralBalance.lowMid - expected.lowMid,
+    mid: spectralBalance.mid - expected.mid,
+    highMid: spectralBalance.highMid - expected.highMid,
+    high: spectralBalance.high - expected.high,
+  };
+
+  // Check for problematic imbalances
+  if (deviations.sub > 5) {
+    issues.push(
+      `Sub-bass is ${deviations.sub.toFixed(1)}dB above ${name} target - may sound muddy or boomy`
+    );
+  } else if (deviations.sub < -5 && lowEndEmphasis === "extreme") {
+    warnings.push(
+      `Sub-bass is ${Math.abs(deviations.sub).toFixed(1)}dB below ${name} expectations - lacks low-end weight`
+    );
+  }
+
+  if (deviations.bass > 5) {
+    issues.push(
+      `Bass is ${deviations.bass.toFixed(1)}dB above target - low end may be bloated or mask midrange`
+    );
+  }
+
+  if (deviations.lowMid > 5) {
+    issues.push(
+      `Low-mids are ${deviations.lowMid.toFixed(1)}dB excessive - mix may sound boxy or muddy`
+    );
+  }
+
+  if (deviations.mid < -5) {
+    warnings.push(
+      `Midrange is ${Math.abs(deviations.mid).toFixed(1)}dB weak - vocals/leads may lack presence`
+    );
+  }
+
+  if (deviations.highMid > 5) {
+    warnings.push(
+      `High-mids are ${deviations.highMid.toFixed(1)}dB excessive - may cause listening fatigue or harshness`
+    );
+  }
+
+  if (deviations.high > 6) {
+    warnings.push(
+      `Highs are ${deviations.high.toFixed(1)}dB excessive - may sound harsh, brittle, or sibilant`
+    );
+  } else if (deviations.high < -5) {
+    warnings.push(
+      `Highs are ${Math.abs(deviations.high).toFixed(1)}dB weak - mix may sound dull or muffled`
+    );
+  }
+
+  const details = `Sub: ${spectralBalance.low.toFixed(1)}dB, Bass: ${spectralBalance.sub.toFixed(1)}dB, Low-mid: ${spectralBalance.lowMid.toFixed(1)}dB, Mid: ${spectralBalance.mid.toFixed(1)}dB, High-mid: ${spectralBalance.highMid.toFixed(1)}dB, High: ${spectralBalance.high.toFixed(1)}dB`;
+
+  return {
+    assessment: issues.length > 0 ? "Frequency imbalances detected" : "Frequency balance acceptable",
+    issues,
+    warnings,
+    details,
+  };
+}
+
+function analyzeSilence(ctx: AnalysisContext): string[] {
+  const { silencePercent } = ctx.metrics;
+  const warnings: string[] = [];
+
+  if (silencePercent !== undefined && silencePercent > 10) {
+    warnings.push(
+      `${formatPercent(silencePercent)} of track is silence - check for unnecessary gaps at beginning/end, consider trim or fade adjustments`
+    );
+  }
+
+  return warnings;
+}
+
+function generateTranslationRisks(ctx: AnalysisContext): string[] {
+  const risks: string[] = [];
+
+  // Phase issues
+  if (ctx.metrics.phaseCorrelation !== undefined && ctx.metrics.phaseCorrelation < 0.7) {
+    risks.push("Mono compatibility - phase correlation below 0.7 may cause cancellation on mono speakers");
+  }
+
+  // Extreme stereo width
+  if (ctx.metrics.stereoWidth !== undefined && ctx.metrics.stereoWidth > 85) {
+    risks.push("Extreme stereo width may collapse poorly to mono (phones, clubs, broadcasts)");
+  }
+
+  // Over-compression
+  if (ctx.metrics.dynamicRange !== undefined && ctx.metrics.dynamicRange < 5) {
+    risks.push("Heavy compression may sound fatiguing on quality systems or at high volumes");
+  }
+
+  // Low-end issues for bass-heavy genres
+  if (ctx.profile.lowEndEmphasis === "extreme" || ctx.profile.lowEndEmphasis === "heavy") {
+    if (ctx.metrics.spectralBalance) {
+      const subLevel = ctx.metrics.spectralBalance.low;
+      if (subLevel > 8) {
+        risks.push("Sub-bass may be inaudible on small speakers (laptops, phones) while overwhelming on club systems");
+      }
+    }
+  }
+
+  // True peak issues
+  if (ctx.metrics.truePeakDbtp !== undefined && ctx.metrics.truePeakDbtp > -0.5) {
+    risks.push("High true peak may cause distortion when transcoded to lossy formats (MP3, AAC, Ogg)");
+  }
+
+  return risks;
+}
+
+function generatePrioritizedFixes(ctx: AnalysisContext): MixFeedbackReport["prioritizedFixes"] {
+  const fixes: MixFeedbackReport["prioritizedFixes"] = [];
+
+  // Critical: Clipping
+  if (ctx.metrics.clippingDetected) {
+    fixes.push({
+      priority: "critical",
+      issue: "Digital clipping detected",
+      recommendation: "Reduce master fader or individual track levels before any limiting. Remove or reduce any hard clipping plugins.",
+      estimatedImpact: "Essential - clipping creates harsh distortion that cannot be fixed later",
+    });
+  }
+
+  // Critical: True peak over 0
+  if (ctx.metrics.truePeakDbtp !== undefined && ctx.metrics.truePeakDbtp > -0.1) {
+    fixes.push({
+      priority: "critical",
+      issue: `True peak at ${formatDbtp(ctx.metrics.truePeakDbtp)} exceeds safe limits`,
+      recommendation: "Apply true peak limiting to keep peaks below -0.3 dBTP. Use a brickwall limiter with inter-sample peak detection.",
+      estimatedImpact: "Essential - prevents distortion on DACs and streaming codecs",
+    });
+  }
+
+  // High: Phase issues
+  if (ctx.metrics.phaseCorrelation !== undefined && ctx.metrics.phaseCorrelation < ctx.profile.phaseCorrelationMin) {
+    fixes.push({
+      priority: "high",
+      issue: `Phase correlation at ${ctx.metrics.phaseCorrelation.toFixed(2)} indicates mono compatibility issues`,
+      recommendation: "Check stereo widening plugins, verify bass is mono below 100Hz, examine phase relationships between multi-miked sources.",
+      estimatedImpact: "High - will sound poor on mono systems (clubs, phones, some broadcasts)",
+    });
+  }
+
+  // High: Over-compression
+  if (ctx.metrics.dynamicRange !== undefined && ctx.metrics.dynamicRange < ctx.profile.minDynamicRange) {
+    fixes.push({
+      priority: "high",
+      issue: `Dynamic range of ${ctx.metrics.dynamicRange.toFixed(1)}dB is below ${ctx.profile.name} minimum`,
+      recommendation: "Reduce compression ratios, raise thresholds, or use parallel compression. Preserve transients and dynamics.",
+      estimatedImpact: "High - restores musical dynamics and reduces listening fatigue",
+    });
+  }
+
+  // Medium: Loudness
+  if (ctx.metrics.integratedLufs !== undefined) {
+    if (ctx.metrics.integratedLufs < ctx.profile.targetLufsMin - 2) {
+      fixes.push({
+        priority: "medium",
+        issue: `Mix at ${formatLufs(ctx.metrics.integratedLufs)} is quieter than ${ctx.profile.name} target`,
+        recommendation: "Apply gain/limiting to reach target range, or verify this is intentional for the project.",
+        estimatedImpact: "Medium - ensures mix competes with commercial releases in the genre",
+      });
+    } else if (ctx.metrics.integratedLufs > ctx.profile.targetLufsMax + 1) {
+      fixes.push({
+        priority: "medium",
+        issue: `Mix at ${formatLufs(ctx.metrics.integratedLufs)} is louder than ${ctx.profile.name} target`,
+        recommendation: "Reduce limiting or overall gain. Consider whether excessive loudness is compromising dynamics.",
+        estimatedImpact: "Medium - may improve dynamic expression and reduce fatigue",
+      });
+    }
+  }
+
+  // Medium: Frequency balance
+  if (ctx.metrics.spectralBalance) {
+    const { spectralBalance } = ctx.metrics;
+    const expected = ctx.profile.frequencyBalance;
+
+    if (spectralBalance.low - expected.sub > 5) {
+      fixes.push({
+        priority: "medium",
+        issue: "Excessive sub-bass energy",
+        recommendation: "Apply high-pass filtering below 30Hz, reduce sub-bass levels, or use multiband compression on low end.",
+        estimatedImpact: "Medium - improves clarity and prevents system overload",
+      });
+    }
+
+    if (spectralBalance.highMid - expected.highMid > 5) {
+      fixes.push({
+        priority: "medium",
+        issue: "Excessive high-mid energy causing potential harshness",
+        recommendation: "Apply gentle EQ cuts in 2-4kHz range, reduce vocal or cymbal brightness, or use de-esser on harsh sources.",
+        estimatedImpact: "Medium - reduces listening fatigue",
+      });
+    }
+  }
+
+  // Low: Silence
+  if (ctx.metrics.silencePercent !== undefined && ctx.metrics.silencePercent > 10) {
+    fixes.push({
+      priority: "low",
+      issue: `${formatPercent(ctx.metrics.silencePercent)} of track is silence`,
+      recommendation: "Trim silence from beginning and end, or add appropriate fades.",
+      estimatedImpact: "Low - cleaner presentation, better file size",
+    });
+  }
+
+  return fixes;
+}
+
+function generateExecutiveSummary(
+  ctx: AnalysisContext,
+  fixes: MixFeedbackReport["prioritizedFixes"]
+): string {
+  const { metrics, profile } = ctx;
+  const lines: string[] = [];
+
+  lines.push(`## Mix Analysis: ${profile.name}`);
+  lines.push("");
+
+  // Critical issues
+  const criticalIssues = fixes.filter((f) => f.priority === "critical");
+  if (criticalIssues.length > 0) {
+    lines.push("**⚠️ CRITICAL ISSUES REQUIRE IMMEDIATE ATTENTION**");
+    lines.push("");
+  }
+
+  // Overall status
+  if (criticalIssues.length === 0) {
+    const highIssues = fixes.filter((f) => f.priority === "high");
+    if (highIssues.length === 0) {
+      lines.push("Mix is in good technical shape with no critical issues.");
+    } else {
+      lines.push("Mix has no critical issues but requires attention to high-priority items.");
+    }
   } else {
-    monoCompatibility = "good";
+    lines.push("Mix requires critical fixes before further processing.");
   }
 
-  return {
-    stereoImage: {
-      overallAssessment: stereoOverall,
-      width: stereoWidthDisplay,
-      centerImageStability: centerImage,
-      panningBalance: panning,
-      stereoToolsUsed: stereoTools,
-    },
-    phaseAnalysis: { monoCompatibility, phaseIssues },
-  };
+  lines.push("");
+
+  // Key metrics
+  if (metrics.integratedLufs !== undefined) {
+    lines.push(`- Loudness: ${formatLufs(metrics.integratedLufs)} (${profile.name} target: ${formatLufs(profile.targetLufsMin)}-${formatLufs(profile.targetLufsMax)})`);
+  }
+
+  if (metrics.dynamicRange !== undefined) {
+    lines.push(`- Dynamic Range: ${metrics.dynamicRange.toFixed(1)}dB (${profile.name} target: ${profile.minDynamicRange}-${profile.maxDynamicRange}dB)`);
+  }
+
+  if (metrics.truePeakDbtp !== undefined) {
+    lines.push(`- True Peak: ${formatDbtp(metrics.truePeakDbtp)} (limit: ${formatDbtp(profile.truePeakLimit)})`);
+  }
+
+  if (metrics.phaseCorrelation !== undefined) {
+    lines.push(`- Phase Correlation: ${metrics.phaseCorrelation.toFixed(2)} (minimum: ${profile.phaseCorrelationMin.toFixed(2)})`);
+  }
+
+  return lines.join("\n");
 }
 
-/**
- * Analyze low end characteristics.
- */
-function analyzeLowEnd(metrics: AudioTechnicalMetrics): MixFeedbackReport["lowEnd"] {
-  const balance = metrics.spectralBalance;
+function generateSuggestedNextPass(
+  ctx: AnalysisContext,
+  fixes: MixFeedbackReport["prioritizedFixes"]
+): string {
+  const lines: string[] = [];
 
-  // Default values if no spectral data
-  let subBass: MixFeedbackReport["lowEnd"]["subBass"] = "controlled";
-  let bassClarity: MixFeedbackReport["lowEnd"]["bassClarity"] = "defined";
-  let overall: MixFeedbackReport["lowEnd"]["overallAssessment"] = "clean";
-  let kickDrum: MixFeedbackReport["lowEnd"]["kickDrum"] = "tight";
-  let phaseIssues = false;
+  lines.push("## Suggested Mix Pass Workflow");
+  lines.push("");
 
-  if (balance) {
-    const bassRatio = balance.mid > 0 ? balance.bass / balance.mid : 1;
-    const subRatio = balance.mid > 0 ? balance.sub / balance.mid : 1;
+  const criticalFixes = fixes.filter((f) => f.priority === "critical");
+  const highFixes = fixes.filter((f) => f.priority === "high");
 
-    // Bass clarity
-    if (bassRatio > THRESHOLDS.BASS_EXCESSIVE_RATIO) {
-      bassClarity = "muddy";
-      overall = "muddy";
-    } else if (bassRatio < 0.5) {
-      bassClarity = "indistinct";
-      overall = "weak";
-    }
-
-    // Sub bass control
-    if (subRatio > 3) {
-      subBass = "uncontrolled";
-      overall = "boomy";
-    } else if (subRatio < 0.3) {
-      subBass = "absent";
-      overall = "weak";
-    }
-
-    // Kick drum estimation
-    if (metrics.clippingDetected) {
-      kickDrum = "crushed";
-    } else if (bassRatio > 2) {
-      kickDrum = "loose";
-    }
+  if (criticalFixes.length > 0) {
+    lines.push("### 1. Address Critical Issues First");
+    criticalFixes.forEach((fix) => {
+      lines.push(`- ${fix.recommendation}`);
+    });
+    lines.push("");
   }
 
-  // Check for phase issues in low end
-  if (metrics.phaseCorrelation !== undefined && metrics.phaseCorrelation < 0.2) {
-    phaseIssues = true;
-    overall = "boomy+weak";
+  if (highFixes.length > 0) {
+    lines.push(`### ${criticalFixes.length > 0 ? "2" : "1"}. Address High-Priority Items`);
+    highFixes.forEach((fix) => {
+      lines.push(`- ${fix.recommendation}`);
+    });
+    lines.push("");
   }
 
-  return {
-    overallAssessment: overall,
-    subBass,
-    kickDrum,
-    bassClarity,
-    phaseIssues,
-  };
+  const nextStep = criticalFixes.length > 0 ? criticalFixes.length + highFixes.length + 1 : highFixes.length + 1;
+  lines.push(`### ${nextStep}. Re-analyze`);
+  lines.push("- Export a new mix after addressing the above items");
+  lines.push("- Run analysis again to verify improvements");
+  lines.push("- Check mix on multiple playback systems");
+  lines.push("");
+
+  return lines.join("\n");
 }
 
-/**
- * Analyze transient response.
- */
-function analyzeTransients(metrics: AudioTechnicalMetrics): MixFeedbackReport["transients"] {
-  const dr = safeNumber(metrics.dynamicRange, 10);
-  const clipping = metrics.clippingDetected || false;
-  const density = safeNumber(metrics.onsetDensity, 5);
+function generateQuestionsForUser(ctx: AnalysisContext): string[] {
+  const questions: string[] = [];
 
-  let overall: MixFeedbackReport["transients"]["overallAssessment"] = "punchy";
-  let kickAttack: MixFeedbackReport["transients"]["kickAttack"] = "present";
-  let snareAttack: MixFeedbackReport["transients"]["snareAttack"] = "present";
-  let percussiveElements: MixFeedbackReport["transients"]["percussiveElements"] = "preserved";
-
-  if (clipping) {
-    overall = "crushed";
-    kickAttack = "reduced";
-    snareAttack = "absent";
-    percussiveElements = "compressed";
-  } else if (dr < THRESHOLDS.DYNAMIC_RANGE_LOW) {
-    overall = "controlled";
-    kickAttack = "reduced";
-    snareAttack = "reduced";
-    percussiveElements = "compressed";
-  } else if (density > 15) {
-    // Very dense rhythmic content
-    overall = "controlled";
-    percussiveElements = "compressed";
+  // Genre-specific questions
+  if (ctx.profile.name === "Generic") {
+    questions.push("What genre or style are you targeting? This will help provide more specific feedback.");
   }
 
-  // Transient shaping tools
-  const transientShaping: string[] = [];
-  if (overall === "punchy") {
-    transientShaping.push("fast attack/release compression");
-  } else if (overall === "controlled") {
-    transientShaping.push("slower attack compression");
+  // Dynamic range questions
+  if (ctx.metrics.dynamicRange !== undefined) {
+    if (ctx.metrics.dynamicRange < ctx.profile.minDynamicRange) {
+      questions.push("Is the heavy compression intentional for this track, or would you like help restoring dynamics?");
+    }
   }
 
-  return {
-    overallAssessment: overall,
-    kickAttack,
-    snareAttack,
-    percussiveElements,
-    transientShaping,
-  };
-}
-
-/**
- * Analyze noise and artifacts.
- */
-function analyzeNoiseArtifacts(
-  metrics: AudioTechnicalMetrics
-): MixFeedbackReport["noiseArtifacts"] {
-  const dcOffset = safeNumber(metrics.dcOffset, 0);
-
-  let hasNoise = false;
-  let noiseType: MixFeedbackReport["noiseArtifacts"]["noiseType"] = "none";
-  let noiseLevel: MixFeedbackReport["noiseArtifacts"]["noiseLevel"] = "inaudible";
-  let quantizationIssues = false;
-  let ditheringApplied = false;
-
-  // DC offset check
-  if (Math.abs(dcOffset) > THRESHOLDS.DC_OFFSET_WARNING) {
-    hasNoise = true;
-    noiseType = "circuit noise";
-    noiseLevel = "moderate";
+  // Loudness questions
+  if (ctx.metrics.integratedLufs !== undefined) {
+    if (ctx.metrics.integratedLufs < ctx.profile.targetLufsMin - 3) {
+      questions.push("Are you planning to master this track later, or should it be louder at the mix stage?");
+    }
   }
 
-  return {
-    hasNoise,
-    noiseType,
-    noiseLevel,
-    quantizationIssues,
-    ditheringApplied,
-  };
+  // Reference questions
+  if (!ctx.request.targetReferences || ctx.request.targetReferences.length === 0) {
+    questions.push("Do you have reference tracks you're trying to match? Comparing to references can help identify specific areas for improvement.");
+  }
+
+  // Listening context
+  if (!ctx.request.listeningContext) {
+    questions.push("What's your primary listening environment for this project? (earbuds, studio monitors, car, club, etc.)");
+  }
+
+  // User concerns
+  if (!ctx.request.userQuestions || ctx.request.userQuestions.length === 0) {
+    questions.push("Are there specific aspects of the mix you're concerned about or want feedback on?");
+  }
+
+  return questions;
 }
 
 // =============================================================================
-// Main Analysis Function
+// Main Export: generateMixFeedback
 // =============================================================================
 
 /**
- * Generate a comprehensive mixdown feedback report.
- *
- * @param metrics - Audio technical measurements from analysis
- * @param request - Original analysis request for context
- * @returns MixFeedbackReport with actionable recommendations
+ * Generate mix feedback report from technical metrics.
+ * Pure function suitable for unit testing.
  */
-export function generateMixFeedbackReport(
-  metrics: AudioTechnicalMetrics,
+export function generateMixFeedback(
+  metrics: Partial<AudioTechnicalMetrics>,
   request: AudioAnalysisRequest
 ): MixFeedbackReport {
-  // Assess various characteristics
-  const freqBalance = assessFrequencyBalance(metrics);
-  const dynamics = analyzeDynamics(metrics);
-  const { stereoImage, phaseAnalysis } = analyzeStereoImage(metrics);
-  const lowEnd = analyzeLowEnd(metrics);
-  const transients = analyzeTransients(metrics);
-  const noise = analyzeNoiseArtifacts(metrics);
+  const profile = getGenreProfile(request.genre);
+  const ctx: AnalysisContext = { metrics, request, profile };
 
-  // Extract loudness data
-  const lufs = metrics.integratedLufs;
-  const truePeak = metrics.truePeakDbtp;
-  const peak = metrics.peakDbfs;
+  // Run all analyses
+  const clippingAnalysis = analyzeClipping(ctx);
+  const truePeakAnalysis = analyzeTruePeak(ctx);
+  const loudnessAnalysis = analyzeLoudness(ctx);
+  const dynamicsAnalysis = analyzeDynamics(ctx);
+  const phaseAnalysis = analyzePhaseCorrelation(ctx);
+  const stereoWidthAnalysis = analyzeStereoWidth(ctx);
+  const frequencyAnalysis = analyzeFrequencyBalance(ctx);
+  const silenceWarnings = analyzeSilence(ctx);
+  const translationRisks = generateTranslationRisks(ctx);
+  const prioritizedFixes = generatePrioritizedFixes(ctx);
 
-  // Determine loudness status
-  const loudnessStatus = lufs !== undefined ? "measured" : "unknown";
-  const loudnessLufs = lufs ?? -18; // Default estimate
-  const targetLufs = request.analysisType === "mastering" ? -14 : -23;
+  // Collect all issues and strengths
+  const allIssues: string[] = [];
+  const allStrengths: string[] = [];
 
-  // Build strengths list
-  const strengths: string[] = [];
-  if (dynamics.overallAssessment === "dynamic") {
-    strengths.push("Good dynamic range preserved");
-  }
-  if (freqBalance.overall === "balanced") {
-    strengths.push("Frequency balance is neutral");
-  }
-  if (phaseAnalysis.monoCompatibility === "good" || phaseAnalysis.monoCompatibility === "excellent") {
-    strengths.push("Mono compatibility is strong");
-  }
-  if (transients.overallAssessment === "punchy") {
-    strengths.push("Transients are well-preserved");
-  }
-  if (lufs !== undefined && Math.abs(lufs - targetLufs) < 3) {
-    strengths.push("Loudness is within acceptable range");
+  if (clippingAnalysis.hasCriticalIssue) {
+    allIssues.push(clippingAnalysis.message);
   }
 
-  // Build issues list with priorities
-  const issues: string[] = [];
-  const prioritizedFixes: MixFeedbackReport["prioritizedFixes"] = [];
-
-  // Priority 1: Clipping detection
-  if (metrics.clippingDetected) {
-    issues.push("Clipping/distortion detected in the audio");
-    prioritizedFixes.push({
-      priority: "critical",
-      issue: "Clipping detected",
-      recommendation: "Reduce overall gain by 1-3 dB and check peak levels",
-      estimatedImpact: "Prevent digital distortion and improve transparancy",
-    });
+  if (truePeakAnalysis.hasIssue) {
+    allIssues.push(truePeakAnalysis.message);
   }
 
-  // Priority 2: True peak issues
-  if (truePeak !== undefined && truePeak > THRESHOLDS.TRUE_PEAK_CRITICAL) {
-    issues.push(`True peak at ${truePeak.toFixed(1)} dBTP exceeds critical threshold`);
-    prioritizedFixes.push({
-      priority: "critical",
-      issue: "True peak too high",
-      recommendation: `Reduce gain by ${((truePeak - THRESHOLDS.TRUE_PEAK_WARNING) + 0.5).toFixed(1)} dB to achieve safe -1 dBTP`,
-      estimatedImpact: "Prevent inter-sample clipping in streaming/delivery",
-    });
-  } else if (truePeak !== undefined && truePeak > THRESHOLDS.TRUE_PEAK_WARNING) {
-    issues.push(`True peak at ${truePeak.toFixed(1)} dBTP may cause streaming issues`);
-    prioritizedFixes.push({
-      priority: "high",
-      issue: "True peak approaching limit",
-      recommendation: `Reduce gain by ${(truePeak - THRESHOLDS.TRUE_PEAK_WARNING + 0.3).toFixed(1)} dB`,
-      estimatedImpact: "Ensure compatibility with all streaming platforms",
-    });
-  }
+  allIssues.push(...loudnessAnalysis.issues);
+  allStrengths.push(...loudnessAnalysis.strengths);
 
-  // Priority 3: Loudness issues
-  if (lufs === undefined) {
-    issues.push("Loudness could not be measured - integrate LUFS measurement");
-    prioritizedFixes.push({
-      priority: "high",
-      issue: "Missing loudness measurement",
-      recommendation: "Use a true RMS meter or LUFS meter to measure integrated loudness",
-      estimatedImpact: "Enable proper loudness normalization during delivery",
-    });
-  } else if (Math.abs(lufs - targetLufs) > 5) {
-    const diff = Math.abs(lufs - targetLufs);
-    issues.push(`Loudness is ${lufs.toFixed(1)} LUFS, target is ${targetLufs} LUFS`);
-    prioritizedFixes.push({
-      priority: "medium",
-      issue: "Loudness mismatch",
-      recommendation: `Adjust gain by ${lufs > targetLufs ? "-" : "+"}${diff.toFixed(1)} dB`,
-      estimatedImpact: "Match loudness standards for target platform",
-    });
-  }
+  allIssues.push(...dynamicsAnalysis.issues);
+  allStrengths.push(...dynamicsAnalysis.strengths);
 
-  // Priority 4: Phase issues
-  if (phaseAnalysis.phaseIssues) {
-    issues.push("Phase correlation issues detected - may collapse poorly to mono");
-    prioritizedFixes.push({
-      priority: "high",
-      issue: "Phase issues in stereo image",
-      recommendation: "Check for phase cancellation, try mono compatibility check",
-      estimatedImpact: "Ensure mix translates correctly to mono playback systems",
-    });
-  }
+  allIssues.push(...phaseAnalysis.issues);
+  allIssues.push(...phaseAnalysis.warnings);
 
-  // Priority 5: Low end issues
-  if (lowEnd.overallAssessment === "muddy") {
-    issues.push("Muddy low end - excessive bass/mid confusion");
-    prioritizedFixes.push({
-      priority: "medium",
-      issue: "Muddy low end",
-      recommendation: "Apply high-pass filter below 80-100 Hz and carve 150-250 Hz range",
-      estimatedImpact: "Improve clarity and prevent masking of mid instruments",
-    });
-  } else if (lowEnd.overallAssessment === "boomy") {
-    issues.push("Boomy low end - excessive sub/bass energy");
-    prioritizedFixes.push({
-      priority: "medium",
-      issue: "Boomy low end",
-      recommendation: "Apply low-shelf cut at 100-150 Hz and check sub bass levels",
-      estimatedImpact: "Clean up bottom end and improve translation",
-    });
-  }
+  allIssues.push(...stereoWidthAnalysis.issues);
+  allIssues.push(...stereoWidthAnalysis.warnings);
 
-  // Priority 6: Stereo width issues
-  if (stereoImage.overallAssessment === "narrow") {
-    issues.push("Stereo width is too narrow - lacks spatial engagement");
-    prioritizedFixes.push({
-      priority: "low",
-      issue: "Narrow stereo image",
-      recommendation: "Apply stereo Widener or Mid-side EQ to enhance width",
-      estimatedImpact: "More immersive listening experience",
-    });
-  } else if (stereoImage.overallAssessment === "wide") {
-    issues.push("Stereo width may be excessive - check translation");
-    prioritizedFixes.push({
-      priority: "low",
-      issue: "Excessive stereo width",
-      recommendation: "Check mono compatibility, consider reducing high-frequency width",
-      estimatedImpact: "Better translation to mono and small speakers",
-    });
-  }
+  allIssues.push(...frequencyAnalysis.issues);
+  allIssues.push(...frequencyAnalysis.warnings);
 
-  // Priority 7: High frequency issues
-  if (freqBalance.high === "harsh") {
-    issues.push("High frequencies appear excessive - may cause listener fatigue");
-    prioritizedFixes.push({
-      priority: "medium",
-      issue: "Harsh high frequencies",
-      recommendation: "Apply gentle cut at 5-8 kHz or use de-essing",
-      estimatedImpact: "Smoother listening experience",
-    });
-  }
+  allIssues.push(...silenceWarnings);
 
-  // Priority 8: Dynamic range issues
-  if (dynamics.overallAssessment === "crushed") {
-    issues.push("Dynamic range is very low - over-compressed");
-    prioritizedFixes.push({
-      priority: "high",
-      issue: "Over-compression",
-      recommendation: "Reduce compression ratio, increase threshold, or use parallel compression",
-      estimatedImpact: "More natural dynamics and punch",
-    });
-  }
-
-  // Priority 9: Silence at start/end
-  if (metrics.silencePercent !== undefined && metrics.silencePercent > THRESHOLDS.SILENCE_THRESHOLD) {
-    issues.push(`High silence percentage (${metrics.silencePercent.toFixed(0)}%) detected`);
-    prioritizedFixes.push({
-      priority: "low",
-      issue: "Silence at start/end",
-      recommendation: "Check for unnecessary silence - trim or apply fade in/out",
-      estimatedImpact: "Professional presentation",
-    });
-  }
+  // Generate narrative sections
+  const executiveSummary = generateExecutiveSummary(ctx, prioritizedFixes);
+  const suggestedNextPass = generateSuggestedNextPass(ctx, prioritizedFixes);
+  const questionsForUser = generateQuestionsForUser(ctx);
 
   // Build frequency balance section
-  const frequencyBalance = {
-    overallAssessment: freqBalance.overall,
-    bassEnergy: freqBalance.bass,
-    midClarity: freqBalance.mid,
-    highExtension: freqBalance.high,
-    frequencyGauge: freqBalance.gauge,
-  };
+  const frequencyGauge = metrics.spectralBalance
+    ? {
+        sub: metrics.spectralBalance.low - profile.frequencyBalance.sub,
+        bass: metrics.spectralBalance.sub - profile.frequencyBalance.bass,
+        lowMid: metrics.spectralBalance.lowMid - profile.frequencyBalance.lowMid,
+        mid: metrics.spectralBalance.mid - profile.frequencyBalance.mid,
+        highMid: metrics.spectralBalance.highMid - profile.frequencyBalance.highMid,
+        high: metrics.spectralBalance.high - profile.frequencyBalance.high,
+      }
+    : { sub: 0, bass: 0, lowMid: 0, mid: 0, highMid: 0, high: 0 };
 
-  // Build dynamics section
-  const dynamicsSection: MixFeedbackReport["dynamics"] = {
-    overallAssessment: dynamics.overallAssessment,
-    compressionAmount: dynamics.compressionAmount,
-    punch: dynamics.punch,
-    sustain: dynamics.sustain,
-    loudnessLufs: loudnessLufs,
-  };
-
-  // Build stereo image section
-  const stereoImageSection = stereoImage;
-
-  // Build depth and space section
-  const depthAndSpace: MixFeedbackReport["depthAndSpace"] = {
-    overallAssessment: lufs !== undefined && lufs < -18 ? "moderate" : "shallow",
-    frontElements: ["vocals", "lead instruments"],
-    middleElements: [],
-    backElements: ["ambient elements", "reverb tails"],
-    reverbAmount: "moderate",
-    senseOfSpace: "Controlled stereo width suggests intentional space management",
-  };
-
-  // Build vocal/lead presence section
-  const vocalOrLeadPresence: MixFeedbackReport["vocalOrLeadPresence"] = {
-    overallAssessment: dynamics.overallAssessment === "crushed" ? "overwhelming" : "present",
-    intelligibility: freqBalance.mid === "clear" ? "good" : "fair",
-    emotionPreservation: "preserved",
-    processingApplied: [],
-  };
-
-  // Build low end section
-  const lowEndSection = lowEnd;
-
-  // Build transients section
-  const transientsSection = transients;
-
-  // Build noise artifacts section
-  const noiseArtifacts = noise;
-
-  // Build translation risks
-  const translationRisks: string[] = [];
-  if (stereoImage.overallAssessment === "narrow") {
-    translationRisks.push("May sound thin on mono playback");
-  }
-  if (stereoImage.overallAssessment === "wide") {
-    translationRisks.push("May collapse or sound phased on mono systems");
-  }
-  if (phaseAnalysis.monoCompatibility === "poor") {
-    translationRisks.push("Phase issues will cause significant mono collapse");
-  }
-  if (lowEnd.overallAssessment === "boomy") {
-    translationRisks.push("Low end may sound different on various systems");
-  }
-  if (translationRisks.length === 0) {
-    translationRisks.push("No major translation concerns detected");
+  // Determine assessments
+  let frequencyOverallAssessment: MixFeedbackReport["frequencyBalance"]["overallAssessment"] = "balanced";
+  if (frequencyGauge.sub > 5 || frequencyGauge.bass > 5) {
+    frequencyOverallAssessment = "boomy";
+  } else if (frequencyGauge.lowMid > 5) {
+    frequencyOverallAssessment = "muddy";
+  } else if (frequencyGauge.high > 5 || frequencyGauge.highMid > 5) {
+    frequencyOverallAssessment = "harsh";
+  } else if (frequencyGauge.high < -5) {
+    frequencyOverallAssessment = "dull";
+  } else if (frequencyGauge.bass < -5 && frequencyGauge.sub < -5) {
+    frequencyOverallAssessment = "thin";
   }
 
-  // Build suggested plugins
-  const suggestedPluginsOrProcesses: MixFeedbackReport["suggestedPluginsOrProcesses"] = [];
-
-  // Add EQ suggestions based on analysis
-  if (freqBalance.bass === "excessive" || lowEndSection.overallAssessment === "boomy") {
-    suggestedPluginsOrProcesses.push({
-      purpose: "Low-shelf cut to reduce boominess",
-      type: "eq_shelving",
-      suggestedChain: ["Low-shelf cut at 120 Hz, Q 0.7, -3dB"],
-    });
-  }
-  if (freqBalance.high === "harsh") {
-    suggestedPluginsOrProcesses.push({
-      purpose: "De-essing and high-frequency smoothing",
-      type: "eq_parametric",
-      suggestedChain: ["Peaking cut at 6 kHz, Q 1.5, -2dB", "Then gentle high-shelf at 10 kHz, -1dB"],
-    });
-  }
-  if (transients.punch === "reduced" || dynamics.overallAssessment === "moderate") {
-    suggestedPluginsOrProcesses.push({
-      purpose: "Transient enhancement",
-      type: "envelope_attack",
-      suggestedChain: ["Fast attack compression (10ms) for control", "Parallel compression (2:1 ratio) for punch"],
-    });
-  }
-  if (stereoImageSection.overallAssessment === "narrow") {
-    suggestedPluginsOrProcesses.push({
-      purpose: "Stereo widening",
-      type: "stereo_width",
-      suggestedChain: ["Mid-side EQ to reduce mono content in low end", "Stereo imager on highs only"],
-    });
+  let dynamicsOverallAssessment: MixFeedbackReport["dynamics"]["overallAssessment"] = "moderate";
+  if (metrics.dynamicRange !== undefined) {
+    if (metrics.dynamicRange < 5) {
+      dynamicsOverallAssessment = "crushed";
+    } else if (metrics.dynamicRange < 7) {
+      dynamicsOverallAssessment = "flat";
+    } else if (metrics.dynamicRange > 14) {
+      dynamicsOverallAssessment = "dynamic";
+    }
   }
 
-  // Add generic EQ chain if frequency balance issues
-  if (frequencyBalance.overallAssessment !== "balanced") {
-    suggestedPluginsOrProcesses.push({
-      purpose: "Overall frequency balancing",
-      type: "eq_graphic",
-      suggestedChain: [
-        "Sub 80 Hz: High-pass filter",
-        "150-250 Hz: Reduce if muddy",
-        "2-5 kHz: Attenuate if harsh",
-        "8-12 kHz: Boost if dull",
-      ],
-    });
+  let stereoOverallAssessment: MixFeedbackReport["stereoImage"]["overallAssessment"] = "moderate";
+  if (metrics.stereoWidth !== undefined) {
+    if (metrics.stereoWidth < 40) {
+      stereoOverallAssessment = "narrow";
+    } else if (metrics.stereoWidth > 85) {
+      stereoOverallAssessment = "wide";
+    }
+  }
+  if (metrics.phaseCorrelation !== undefined && metrics.phaseCorrelation < 0.7) {
+    stereoOverallAssessment = "phased";
   }
 
-  // Build confidence score based on available metrics
+  // Calculate confidence
   let confidence = 0.5;
-  const metricCount = Object.keys(metrics).filter((k) => (metrics as any)[k] !== undefined).length;
-  const totalPotentialMetrics = 25; // Approximate count of measurable metrics
-  confidence = Math.min(0.95, 0.4 + (metricCount / totalPotentialMetrics) * 0.5);
+  const availableMetrics = [
+    metrics.integratedLufs,
+    metrics.truePeakDbtp,
+    metrics.dynamicRange,
+    metrics.phaseCorrelation,
+    metrics.stereoWidth,
+    metrics.spectralBalance,
+  ].filter((m) => m !== undefined).length;
+  confidence = Math.min(0.95, 0.3 + availableMetrics * 0.1);
 
-  // Generate executive summary
-  const summary = generateExecutiveSummary(
-    metrics,
-    frequencyBalance,
-    dynamicsSection,
-    stereoImageSection,
-    phaseAnalysis,
-    loudnessStatus,
-    translationRisks
-  );
+  // Build the full report
+  const report: MixFeedbackReport = {
+    summary: executiveSummary,
+    strengths: allStrengths,
+    issues: allIssues,
 
-  return {
-    summary,
-    strengths,
-    issues,
-    frequencyBalance,
-    dynamics: dynamicsSection,
-    stereoImage: stereoImageSection,
-    depthAndSpace,
-    vocalOrLeadPresence,
-    lowEnd: lowEndSection,
-    transients: transientsSection,
-    noiseArtifacts,
+    frequencyBalance: {
+      overallAssessment: frequencyOverallAssessment,
+      bassEnergy: frequencyGauge.bass > 5 ? "excessive" : frequencyGauge.bass < -5 ? "weak" : "present",
+      midClarity: frequencyGauge.mid < -5 ? "muffled" : frequencyGauge.lowMid > 5 ? "boxy" : "clear",
+      highExtension: frequencyGauge.high > 5 ? "harsh" : frequencyGauge.high < -5 ? "dull" : "sparkle",
+      frequencyGauge,
+    },
+
+    dynamics: {
+      overallAssessment: dynamicsOverallAssessment,
+      compressionAmount:
+        metrics.dynamicRange === undefined
+          ? "none"
+          : metrics.dynamicRange < 5
+            ? "brick-walled"
+            : metrics.dynamicRange < 7
+              ? "heavy"
+              : metrics.dynamicRange < 10
+                ? "moderate"
+                : "light",
+      punch: metrics.dynamicRange !== undefined && metrics.dynamicRange < 6 ? "killed" : "preserved",
+      sustain: "natural",
+      loudnessLufs: metrics.integratedLufs || 0,
+    },
+
+    stereoImage: {
+      overallAssessment: stereoOverallAssessment,
+      width: metrics.stereoWidth || 50,
+      centerImageStability: "stable",
+      panningBalance: "balanced",
+      stereoToolsUsed: [],
+    },
+
+    depthAndSpace: {
+      overallAssessment: "moderate",
+      frontElements: [],
+      middleElements: [],
+      backElements: [],
+      reverbAmount: "moderate",
+      senseOfSpace: "Mix depth analysis requires spectral and transient analysis",
+    },
+
+    vocalOrLeadPresence: {
+      overallAssessment: "moderate",
+      intelligibility: "fair",
+      emotionPreservation: "preserved",
+      processingApplied: [],
+    },
+
+    lowEnd: {
+      overallAssessment:
+        frequencyGauge.sub > 5 || frequencyGauge.bass > 5
+          ? "boomy"
+          : frequencyGauge.bass < -5
+            ? "weak"
+            : "clean",
+      subBass:
+        frequencyGauge.sub > 5 ? "uncontrolled" : frequencyGauge.sub < -5 ? "absent" : "controlled",
+      kickDrum: "tight",
+      bassClarity: frequencyGauge.lowMid > 5 ? "muddy" : "defined",
+      phaseIssues: metrics.phaseCorrelation !== undefined && metrics.phaseCorrelation < 0.7,
+    },
+
+    transients: {
+      overallAssessment: metrics.dynamicRange !== undefined && metrics.dynamicRange < 6 ? "crushed" : "punchy",
+      kickAttack: "present",
+      snareAttack: "present",
+      percussiveElements: metrics.dynamicRange !== undefined && metrics.dynamicRange < 6 ? "compressed" : "preserved",
+      transientShaping: [],
+    },
+
+    noiseArtifacts: {
+      hasNoise: false,
+      noiseType: "none",
+      noiseLevel: "inaudible",
+      quantizationIssues: false,
+      ditheringApplied: false,
+    },
+
     translationRisks,
     prioritizedFixes,
-    suggestedPluginsOrProcesses,
-    referenceComparison: undefined,
-    confidence: Math.round(confidence * 100) / 100,
+
+    suggestedPluginsOrProcesses: [], // Could be expanded in future
+
+    confidence,
   };
+
+  return report;
 }
 
 /**
- * Generate the executive summary based on analysis results.
+ * Get list of supported genres
  */
-function generateExecutiveSummary(
-  metrics: AudioTechnicalMetrics,
-  freqBalance: MixFeedbackReport["frequencyBalance"],
-  dynamics: MixFeedbackReport["dynamics"],
-  stereoImage: MixFeedbackReport["stereoImage"],
-  phaseAnalysis: { monoCompatibility: string; phaseIssues: boolean },
-  loudnessStatus: string,
-  translationRisks: string[]
-): string {
-  const parts: string[] = [];
+export function getSupportedGenres(): string[] {
+  return Object.keys(GENRE_PROFILES).sort();
+}
 
-  // Overall impression
-  const qualityRating =
-    dynamics.overallAssessment === "crushed" ||
-    freqBalance.overallAssessment === "muddy" ||
-    stereoImage.overallAssessment === "narrow"
-      ? "needs work"
-      : "meets professional standards";
-
-  parts.push(`Overall Assessment: This mix ${qualityRating} with ${freqBalance.overallAssessment} frequency balance and ${dynamics.overallAssessment} dynamics.`);
-
-  // Loudness
-  if (loudnessStatus === "measured") {
-    const lufs = metrics.integratedLufs;
-    if (lufs !== undefined) {
-      parts.push(`Loudness measures ${lufs.toFixed(1)} LUFS. ${lufs > -12 ? "Loudness war characteristics detected." : "Loudness is within acceptable range."}`);
-    }
-  } else {
-    parts.push("Loudness could not be measured automatically.");
-  }
-
-  // Phase and mono compatibility
-  if (phaseAnalysis.phaseIssues) {
-    parts.push(`Mono compatibility: ${phaseAnalysis.monoCompatibility}. Warning: phase issues detected.`);
-  } else if (stereoImage.overallAssessment === "wide") {
-    parts.push(`Stereo width: ${stereoImage.width.toFixed(0)}%. Wider stereo image detected.`);
-  } else {
-    parts.push(`Mono compatibility: ${phaseAnalysis.monoCompatibility}.`);
-  }
-
-  // Translation risks
-  if (translationRisks.length > 0) {
-    const riskSummary = translationRisks.slice(0, 3).join(" | ");
-    parts.push(`Translation risks: ${riskSummary}`);
-  }
-
-  // Key strengths
-  const strengthCount = 3;
-  if (freqBalance.overallAssessment === "balanced") {
-    parts.push("Strength: Good frequency balance throughout the spectrum.");
-  }
-
-  return parts.join(" ");
+/**
+ * Get genre profile details
+ */
+export function getGenreProfileDetails(genre: string): GenreProfile | null {
+  const normalized = genre.toLowerCase().trim().replace(/\s+/g, "-");
+  return GENRE_PROFILES[normalized] || null;
 }
