@@ -1,5 +1,7 @@
 import axios, { AxiosInstance } from "axios";
 
+const DEBUG = process.env.AICODER_DEBUG === "true";
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
@@ -155,7 +157,7 @@ export abstract class AIProvider {
     const toolTokens = request.tools
       ? this.estimateTokens([], request.tools)
       : 0;
-    console.log(
+    if (DEBUG) console.log(
       `[${this.name}] Request payload estimate: ${msgTokens + toolTokens} tokens (messages: ${msgTokens}, tools: ${toolTokens}, messages: ${messages.length}, tools: ${request.tools?.length || 0}, calibration: ${this.tokenCalibrationFactor.toFixed(2)})`,
     );
 
@@ -401,7 +403,7 @@ export abstract class AIProvider {
       const alpha = 0.5;
       const blended = alpha * measuredRatio + (1 - alpha) * this.tokenCalibrationFactor;
       this.tokenCalibrationFactor = Math.max(this.tokenCalibrationFactor, blended);
-      console.log(
+      if (DEBUG) console.log(
         `[${this.name}] Token calibration updated: ratio=${measuredRatio.toFixed(2)}, factor=${this.tokenCalibrationFactor.toFixed(2)}, raw=${rawEstimate}, actual=${actualPromptTokens}`,
       );
     }

@@ -11,6 +11,7 @@ import type { ReviewStreamEvent } from "./code-review/review-assistant";
 import { parseReviewFindings } from "./autonomous-loop/review-findings-parser";
 import { recordGateFindings } from "./autonomous-loop/review-gate-state";
 import { formatConvergenceReport, initConvergenceState, recordRoundFindings, checkConvergence, DEFAULT_CONVERGENCE_CONFIG } from "./autonomous-loop/convergence";
+import { loadConvergenceState } from "./autonomous-loop/convergence-state";
 import { closeSourceIssue } from "./autonomous-loop/close-source-issue";
 
 // ── ANSI color helpers ──────────────────────────────────────────────────────
@@ -452,7 +453,8 @@ class GitlabJiraVcsClient implements VcsClient {
   }
 
   async getLatestCommitSha(_project: string, mrNumber: number): Promise<string | undefined> {
-    const mr = await gitlabClient.getMergeRequest(this.projectId, mrNumber);
+    const mr = await gitlabClient.getMergeRequest(this.projectId, mrNumber).catch(() => null);
+    if (!mr || mr.state === "merged" || mr.state === "closed") return undefined;
     return mr.sha;
   }
 }
@@ -632,7 +634,12 @@ async function verifyReviewerState(config: ReviewerConfig): Promise<void> {
 
     const vcs = getVcsClient(target, config);
     const currentSha = await vcs.getLatestCommitSha(target.name, mrNumber).catch(() => undefined);
-    if (currentSha && currentSha !== savedSha) {
+
+    if (!currentSha) {
+      // MR not found or already merged/closed — remove from state so it's never re-checked
+      log.config(`MR !${mrNumber} no longer open (merged or closed) — removing from reviewer state`);
+      keysToReReview.push(mrKey);
+    } else if (currentSha !== savedSha) {
       log.review(`MR !${mrNumber} SHA changed (${savedSha.slice(0, 8)} → ${currentSha.slice(0, 8)}) — scheduling re-review`);
       keysToReReview.push(mrKey);
     }
@@ -899,12 +906,20 @@ async function runMultiAgentReview(
   const remoteUrl = process.env.AIWORKASSISTANT_URL?.replace(/\/$/, "");
   const remoteKey = process.env.AIWORKASSISTANT_API_KEY;
 
-  // For remote review, delegate to the server with streaming
+  // When a workspace path is configured, always use the local tool-assisted path.
+  // The remote server cannot access the local filesystem, so delegating to it would
+  // bypass tool use entirely.
+  const repoWorkspace = resolveRepoWorkspace(config, target);
+  if (repoWorkspace) {
+    log.config(`Workspace configured — using local tool-assisted review (bypassing remote)`);
+    return runLocalStreamingReview(config, target, mrNumber, preFetchedDiff);
+  }
+
+  // No workspace: delegate to remote server if configured, otherwise review locally
   if (remoteUrl && remoteKey) {
     return runAiReviewStreaming(remoteUrl, remoteKey, target, config, mrNumber);
   }
 
-  // Local review: use pre-fetched diff or fetch it
   return runLocalStreamingReview(config, target, mrNumber, preFetchedDiff);
 }
 
@@ -1237,7 +1252,22 @@ async function postReworkPrompt(
     }
   }
 
+  // Convergence guard: if aicoder already exhausted its retry budget for this issue,
+  // do not re-add the ready-for-agent label — that would restart the loop indefinitely.
+  // Post the findings as a comment only, and flag for human review.
   if (isJiraKey) {
+    const convState = loadConvergenceState(issueKey);
+    if (convState.roundNumber > 0) {
+      const convCheck = checkConvergence(convState, DEFAULT_CONVERGENCE_CONFIG);
+      if (convCheck.shouldStop) {
+        log.warn(`Convergence already fired for ${issueKey} (${convCheck.reason}, round ${convState.roundNumber}) — posting findings as comment only, NOT re-labeling ready-for-agent`);
+        await addCommentToJiraIssue(
+          issueKey,
+          `## ⚠️ Review Findings — Human Review Required\n\nThe autonomous agent has exhausted its retry budget for this issue (${convCheck.reason} after ${convState.roundNumber} rounds). The following findings were identified but could not be automatically resolved:\n\n${buildReworkPrompt(result)}\n\n**Please review manually.**`,
+        );
+        return;
+      }
+    }
     await addCommentToJiraIssue(issueKey, buildReworkPrompt(result));
     await addLabelToJiraIssue(issueKey, "ready-for-agent");
     log.rework(`Posted rework prompt on Jira ${issueKey} for MR !${mr.number}`);

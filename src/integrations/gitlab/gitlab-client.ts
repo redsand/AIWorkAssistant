@@ -429,6 +429,28 @@ export class GitlabClient {
     }
   }
 
+  async closeMergeRequest(
+    projectId: number | string | undefined,
+    mrIid: number,
+  ): Promise<GitlabMergeRequest> {
+    if (!this.isConfigured()) {
+      throw new Error("GitLab client not configured");
+    }
+    const resolvedId = this.resolveProjectId(projectId);
+    try {
+      const response = await this.client.put(
+        `/api/v4/projects/${resolvedId}/merge_requests/${mrIid}`,
+        { state_event: "close" },
+      );
+      console.log(`[GitLab] MR !${mrIid} closed`);
+      return response.data;
+    } catch (error) {
+      throw new Error(
+        `Failed to close MR !${mrIid}: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
   async acceptMergeRequest(
     projectId: number | string | undefined,
     mrIid: number,

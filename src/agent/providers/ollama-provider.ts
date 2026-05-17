@@ -1,4 +1,6 @@
 import axios, { AxiosError } from "axios";
+
+const DEBUG = process.env.AICODER_DEBUG === "true";
 import { randomUUID } from "crypto";
 import {
   AIProvider,
@@ -34,7 +36,7 @@ export class OllamaProvider extends AIProvider {
         const requestBody = this.buildRequestBody(request);
         const attemptTimeout = this.getAttemptTimeout(attempt);
 
-        console.log("[Ollama API] Sending request:", {
+        if (DEBUG) console.log("[Ollama API] Sending request:", {
           model: requestBody.model,
           messageCount: (requestBody.messages as any[]).length,
           hasTools: !!request.tools,
@@ -67,7 +69,7 @@ export class OllamaProvider extends AIProvider {
           done: true,
         };
 
-        console.log("[Ollama API] Response received:", {
+        if (DEBUG) console.log("[Ollama API] Response received:", {
           contentLength: result.content.length,
           thinkingLength: result.thinking?.length || 0,
           toolCallCount: result.toolCalls?.length || 0,
@@ -120,9 +122,7 @@ export class OllamaProvider extends AIProvider {
                   request.tools,
                   targetMax,
                 );
-                console.warn(
-                  `[Ollama API] Retrying with aggressive pruning: ${request.messages.length} → ${prunedMessages.length} messages (target: ${targetMax} tokens)`,
-                );
+                if (DEBUG) console.warn(`[Ollama API] Retrying with aggressive pruning: ${request.messages.length} → ${prunedMessages.length} messages (target: ${targetMax} tokens)`);
                 this.isContextOverflowRetry = true;
                 try {
                   const retryResult = await this.chat({
@@ -156,9 +156,7 @@ export class OllamaProvider extends AIProvider {
           }
 
           if (status === 500 && request.tools && attempt === 1) {
-            console.warn(
-              "[Ollama API] Server error with tools, will retry with tools on next attempt",
-            );
+            if (DEBUG) console.warn("[Ollama API] Server error with tools, will retry with tools on next attempt");
             if (attempt >= maxAttempts) break;
             const delay = this.getRetryDelay(attempt);
             await this.sleep(delay);
@@ -180,9 +178,7 @@ export class OllamaProvider extends AIProvider {
           if (status === 429) {
             if (attempt >= maxAttempts) break;
             const delay = this.getRateLimitDelay(error, attempt);
-            console.warn(
-              `[Ollama API] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`,
-            );
+            if (DEBUG) console.warn(`[Ollama API] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
             await this.sleep(delay);
             continue;
           }
@@ -197,9 +193,7 @@ export class OllamaProvider extends AIProvider {
             );
             if (attempt >= maxAttempts) break;
             const delay = this.getRetryDelay(attempt);
-            console.warn(
-              `[Ollama API] Server error (${status}), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`,
-            );
+            if (DEBUG) console.warn(`[Ollama API] Server error (${status}), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
             await this.sleep(delay);
             continue;
           }
@@ -217,9 +211,7 @@ export class OllamaProvider extends AIProvider {
 
         if (attempt < maxAttempts) {
           const delay = this.getRetryDelay(attempt);
-          console.warn(
-            `[Ollama API] Network error, waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`,
-          );
+          if (DEBUG) console.warn(`[Ollama API] Network error, waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
           await this.sleep(delay);
           continue;
         }
@@ -241,7 +233,7 @@ export class OllamaProvider extends AIProvider {
     try {
       const requestBody = this.buildRequestBody({ ...request, stream: true });
 
-      console.log("[Ollama API] Starting stream request");
+      if (DEBUG) console.log("[Ollama API] Starting stream request");
 
       const response = await this.client.post(
         "/v1/chat/completions",
@@ -281,7 +273,7 @@ export class OllamaProvider extends AIProvider {
         }
       }
 
-      console.log("[Ollama API] Stream completed");
+      if (DEBUG) console.log("[Ollama API] Stream completed");
     } catch (error) {
       console.error("[Ollama API] Stream error:", error);
       throw new Error(
@@ -307,9 +299,7 @@ export class OllamaProvider extends AIProvider {
       }
 
       if (axios.isAxiosError(error) && error.response?.status === 404) {
-        console.log(
-          "[Ollama API] /api/tags not found (cloud endpoint), assuming valid",
-        );
+        if (DEBUG) console.log("[Ollama API] /api/tags not found (cloud endpoint), assuming valid");
         return true;
       }
 

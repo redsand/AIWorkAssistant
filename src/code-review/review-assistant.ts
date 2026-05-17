@@ -766,114 +766,218 @@ class ReviewAssistant {
    * Falls back to the standard AI review if the workspace is unavailable or Claude
    * Code is not installed.
    */
+  /**
+   * Tool-assisted review using the AI API's native function-calling support.
+   * Defines read_file, run_command, and grep_files as tools, then runs an
+   * agentic loop: LLM calls a tool → we execute it in the workspace → feed
+   * the result back → repeat until the LLM produces the final JSON review.
+   * Falls back to standard review if the AI client is not configured or tool
+   * use is not supported.
+   */
   private async buildReviewWithTools(
     changeSet: ChangeSet,
     onProgress?: (event: ReviewStreamEvent) => void,
   ): Promise<CodeReview> {
-    const { spawn } = await import("child_process");
+    if (!aiClient.isConfigured()) {
+      return this.buildReviewStreaming({ ...changeSet, workspacePath: undefined }, onProgress);
+    }
+
+    const { execSync } = await import("child_process");
+    const { readFileSync } = await import("fs");
+    const workspace = changeSet.workspacePath!;
+    const sourceBranch = changeSet.sourceBranch || "";
+    const targetBranch = changeSet.targetBranch || "master";
+
+    // Fetch remote refs so origin/<sourceBranch> and origin/<targetBranch> are current
+    try {
+      execSync("git fetch origin", { cwd: workspace, encoding: "utf-8", timeout: 30000, stdio: "pipe" });
+    } catch {
+      // Non-fatal — offline or fetch failed; continue with stale refs
+    }
+
+    // ── Tool definitions ────────────────────────────────────────────────────
+    const REVIEW_TOOLS: import("../agent/providers/types").Tool[] = [
+      {
+        type: "function",
+        function: {
+          name: "read_file",
+          description: `Read the full contents of a file as it exists on the SOURCE BRANCH (${sourceBranch || "source branch"}). Internally runs: git show origin/${sourceBranch || targetBranch}:<path>. Use this to see the current state of the file being reviewed — not the master state.`,
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "File path relative to the repository root" },
+            },
+            required: ["path"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "run_command",
+          description: "Run a git or shell command in the repository root. Use for git log, git show, git diff, test runs, etc. Keep commands read-only.",
+          parameters: {
+            type: "object",
+            properties: {
+              command: { type: "string", description: "The shell command to run" },
+            },
+            required: ["command"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "grep_files",
+          description: "Search for a pattern across files in the repository. Returns matching lines with file and line number.",
+          parameters: {
+            type: "object",
+            properties: {
+              pattern: { type: "string", description: "The text or regex pattern to search for" },
+              path: { type: "string", description: "Directory or file path to search in (default: repository root)" },
+            },
+            required: ["pattern"],
+          },
+        },
+      },
+    ];
+
+    // ── Tool executor ───────────────────────────────────────────────────────
+    const executeTool = (name: string, args: Record<string, string>): string => {
+      try {
+        if (name === "read_file") {
+          // Read from the source branch so the reviewer sees branch-accurate content,
+          // not master. Falls back to filesystem read if git show fails (e.g. new files).
+          const ref = sourceBranch ? `origin/${sourceBranch}` : "HEAD";
+          try {
+            const content = execSync(`git show ${ref}:"${args.path}"`, {
+              cwd: workspace, encoding: "utf-8", timeout: 15000, stdio: ["pipe", "pipe", "pipe"],
+            });
+            return content.slice(0, 8000);
+          } catch {
+            const content = readFileSync(`${workspace}/${args.path}`, "utf-8");
+            return content.slice(0, 8000);
+          }
+        }
+        if (name === "run_command") {
+          const result = execSync(args.command, {
+            cwd: workspace,
+            encoding: "utf-8",
+            timeout: 30000,
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+          return (result || "").slice(0, 4000);
+        }
+        if (name === "grep_files") {
+          const searchPath = args.path || ".";
+          const result = execSync(
+            `grep -rn --include="*.js" --include="*.ts" --include="*.py" -m 50 "${args.pattern.replace(/"/g, '\\"')}" "${searchPath}"`,
+            { cwd: workspace, encoding: "utf-8", timeout: 15000, stdio: ["pipe", "pipe", "pipe"] },
+          );
+          return (result || "").slice(0, 4000);
+        }
+        return `Unknown tool: ${name}`;
+      } catch (err: unknown) {
+        return `Error: ${err instanceof Error ? err.message : String(err)}`.slice(0, 1000);
+      }
+    };
+
+    // ── Agentic tool-use loop ───────────────────────────────────────────────
+    onProgress?.({ type: "progress", message: `Tool-assisted review — workspace: ${workspace}` });
 
     const diffSummary = this.summarizeDiff(changeSet);
-    const toolPrompt = [
-      diffSummary,
-      "",
-      "## Review Instructions",
-      "",
-      "Use your tools to actively verify the changes before producing the review:",
-      "- Run `git log --oneline` to see the full branch history",
-      "- Run `git diff <base>..<branch> -- <file>` to inspect specific file changes",
-      "- Use Read or Bash/grep to check if security fixes are present in the current code",
-      "- Run the test suite if relevant (`npm test`, `jest`, etc.) to verify test coverage",
-      "- Do NOT rely solely on the diff above — use tools to confirm what is actually in the codebase",
-      "",
-      `After your investigation, output ONLY the following JSON object as your final message (no markdown fences, no other text):`,
-      "",
-      REVIEW_SYSTEM_PROMPT,
-    ].join("\n");
+    const messages: import("../agent/providers/types").ChatMessage[] = [
+      { role: "system", content: REVIEW_SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: [
+          diffSummary,
+          "",
+          `Reviewing branch: origin/${sourceBranch} → origin/${targetBranch}`,
+          "",
+          "Use your tools to actively verify the changes:",
+          `- run_command: \`git diff origin/${targetBranch}..origin/${sourceBranch} -- <file>\` to see what this branch actually adds vs CURRENT ${targetBranch}`,
+          `- read_file: reads the file from origin/${sourceBranch} (the branch being reviewed) — use to see current branch state`,
+          "- run_command: `git log --oneline origin/" + targetBranch + "..origin/" + sourceBranch + "` to see branch-only commits",
+          "- grep_files: searches across files as they exist on the checked-out workspace",
+          "- run_command: `npm test 2>&1 | tail -30` to check test results if relevant",
+          "",
+          `IMPORTANT: Only flag issues that exist on origin/${sourceBranch}. If an issue appears in the diff context but is already fixed on origin/${targetBranch}, do NOT flag it — verify with git diff first.`,
+          "",
+          "After investigating, output ONLY the JSON review object.",
+        ].join("\n"),
+      },
+    ];
 
-    return new Promise<CodeReview>((resolve) => {
-      onProgress?.({ type: "progress", message: `Tool-assisted review in ${changeSet.workspacePath}` });
+    const MAX_TOOL_ROUNDS = 10;
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      let response: import("../agent/providers/types").ChatResponse;
+      try {
+        response = await aiClient.chat({ messages, tools: REVIEW_TOOLS, maxTokens: 4096 });
+      } catch (err) {
+        onProgress?.({ type: "progress", message: "Tool-assisted review API error — falling back" });
+        return this.buildReviewStreaming({ ...changeSet, workspacePath: undefined }, onProgress);
+      }
 
-      let outputBuf = "";
-      let timedOut = false;
+      // If the model called tools, execute them and continue
+      if (response.toolCalls && response.toolCalls.length > 0) {
+        // Add assistant message with tool calls
+        messages.push({ role: "assistant", content: response.content || "", tool_calls: response.toolCalls });
 
-      const child = spawn(
-        "claude",
-        ["-p", "--print", "--output-format", "text", "--dangerously-skip-permissions"],
-        { cwd: changeSet.workspacePath, stdio: ["pipe", "pipe", "pipe"], shell: process.platform === "win32" },
-      );
-
-      const timeout = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGTERM");
-        onProgress?.({ type: "progress", message: "Tool-assisted review timed out — falling back to standard review" });
-        this.buildReviewStreaming(changeSet, onProgress).then(resolve);
-      }, 5 * 60 * 1000); // 5 min max
-
-      child.stdin?.write(toolPrompt);
-      child.stdin?.end();
-
-      child.stdout?.on("data", (chunk: Buffer) => {
-        const text = chunk.toString();
-        outputBuf += text;
-        onProgress?.({ type: "stream", chunk: text.slice(0, 200) });
-      });
-
-      child.on("close", (code) => {
-        clearTimeout(timeout);
-        if (timedOut) return;
-
-        // Extract the JSON review object from the final output
-        const jsonMatch = outputBuf.match(/\{[\s\S]*"riskLevel"[\s\S]*\}/);
-        if (jsonMatch) {
-          try {
-            const parsed = JSON.parse(jsonMatch[0]) as Partial<CodeReview>;
-            const riskLevel = this.assessRisk(changeSet);
-            const review: CodeReview = {
-              prUrl: changeSet.url,
-              title: changeSet.title,
-              author: changeSet.author,
-              platform: changeSet.platform,
-              riskLevel: (parsed.riskLevel as ReviewRiskLevel) || riskLevel,
-              recommendation: (parsed.recommendation as ReviewRecommendation) || this.fallbackRecommendation(riskLevel),
-              whatChanged: parsed.whatChanged || changeSet.title,
-              mustFix: parsed.mustFix || [],
-              shouldFix: parsed.shouldFix || [],
-              testGaps: parsed.testGaps || [],
-              securityConcerns: parsed.securityConcerns || [],
-              observabilityConcerns: parsed.observabilityConcerns || [],
-              migrationRisks: parsed.migrationRisks || [],
-              operationalItems: parsed.operationalItems || [],
-              rollbackConsiderations: parsed.rollbackConsiderations || ["Revert PR and redeploy previous build"],
-              suggestedReviewComment: parsed.suggestedReviewComment || "",
-              filesChanged: changeSet.files.length,
-              linesAdded: changeSet.linesAdded,
-              linesRemoved: changeSet.linesRemoved,
-              ciStatus: changeSet.ciStatus,
-              generatedAt: new Date().toISOString(),
-            };
-            if (!review.suggestedReviewComment) review.suggestedReviewComment = this.compactFallbackComment(review);
-            onProgress?.({ type: "progress", message: `Tool-assisted review complete (exit ${code})` });
-            resolve(review);
-            return;
-          } catch {
-            onProgress?.({ type: "progress", message: "Could not parse tool-assisted review JSON — falling back" });
-          }
-        } else {
-          onProgress?.({ type: "progress", message: "Tool-assisted review produced no parseable JSON — falling back" });
+        for (const tc of response.toolCalls) {
+          let args: Record<string, string> = {};
+          try { args = JSON.parse(tc.function.arguments); } catch { /* leave empty */ }
+          onProgress?.({ type: "progress", message: `Tool: ${tc.function.name}(${JSON.stringify(args).slice(0, 80)})` });
+          const result = executeTool(tc.function.name, args);
+          messages.push({ role: "tool", content: result, tool_call_id: tc.id });
         }
+        continue;
+      }
 
-        // Fall back to standard review
-        this.buildReviewStreaming(changeSet, onProgress).then(resolve);
-      });
+      // No tool calls — model produced its final response
+      const content = response.content || "";
+      onProgress?.({ type: "stream", chunk: content.slice(0, 200) });
 
-      child.on("error", () => {
-        clearTimeout(timeout);
-        if (!timedOut) {
-          onProgress?.({ type: "progress", message: "Claude Code not available — falling back to standard review" });
-          this.buildReviewStreaming(changeSet, onProgress).then(resolve);
-        }
-      });
-    });
+      const jsonMatch = content.match(/\{[\s\S]*"riskLevel"[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[0]) as Partial<CodeReview>;
+          const riskLevel = this.assessRisk(changeSet);
+          const review: CodeReview = {
+            prUrl: changeSet.url,
+            title: changeSet.title,
+            author: changeSet.author,
+            platform: changeSet.platform,
+            riskLevel: (parsed.riskLevel as ReviewRiskLevel) || riskLevel,
+            recommendation: (parsed.recommendation as ReviewRecommendation) || this.fallbackRecommendation(riskLevel),
+            whatChanged: parsed.whatChanged || changeSet.title,
+            mustFix: parsed.mustFix || [],
+            shouldFix: parsed.shouldFix || [],
+            testGaps: parsed.testGaps || [],
+            securityConcerns: parsed.securityConcerns || [],
+            observabilityConcerns: parsed.observabilityConcerns || [],
+            migrationRisks: parsed.migrationRisks || [],
+            operationalItems: parsed.operationalItems || [],
+            rollbackConsiderations: parsed.rollbackConsiderations || ["Revert PR and redeploy previous build"],
+            suggestedReviewComment: parsed.suggestedReviewComment || "",
+            filesChanged: changeSet.files.length,
+            linesAdded: changeSet.linesAdded,
+            linesRemoved: changeSet.linesRemoved,
+            ciStatus: changeSet.ciStatus,
+            generatedAt: new Date().toISOString(),
+          };
+          if (!review.suggestedReviewComment) review.suggestedReviewComment = this.compactFallbackComment(review);
+          onProgress?.({ type: "progress", message: `Tool-assisted review complete (${round + 1} rounds)` });
+          return review;
+        } catch { /* fall through to fallback */ }
+      }
+
+      // Model responded without a parseable JSON review — fall back
+      onProgress?.({ type: "progress", message: "Tool-assisted review produced no parseable JSON — falling back" });
+      break;
+    }
+
+    return this.buildReviewStreaming({ ...changeSet, workspacePath: undefined }, onProgress);
   }
 
   private async buildReview(changeSet: ChangeSet): Promise<CodeReview> {

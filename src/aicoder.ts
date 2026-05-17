@@ -10,7 +10,7 @@ import { prioritizeItems } from "./integrations/ollama-launcher/priority-sorter"
 import { type TicketSourceType, SourceResolver } from "./integrations/source-resolver";
 import { jiraClient } from "./integrations/jira/jira-client";
 import { gitlabClient } from "./integrations/gitlab/gitlab-client";
-import { githubClient } from "./integrations/github/github-client";
+// githubClient imported dynamically where needed via github-client module
 import { agentRunDatabase } from "./agent-runs/database";
 import { createAgentRunsClient } from "./agent-runs/client";
 import type { AgentRunStepCreate } from "./agent-runs/types";
@@ -1780,6 +1780,25 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   if (processedIssues.has(issueKey) && !FORCE_REPROCESS) {
     runLogger.logSkip(`Issue ${issueKey} already processed (use --force to re-process)`);
     return null;
+  }
+
+  // Convergence pre-check: if a previous run already determined this issue is stuck
+  // (no progress across multiple rounds), refuse to re-run even if the reviewer
+  // re-added the ready-for-agent label. Use --force to override.
+  if (!FORCE_REPROCESS) {
+    const existingConvergence = loadConvergenceState(issueKey);
+    if (existingConvergence.roundNumber > 0) {
+      const convergenceCheck = checkConvergence(existingConvergence, DEFAULT_CONVERGENCE_CONFIG);
+      if (convergenceCheck.shouldStop) {
+        runLogger.logError(
+          `Skipping ${issueKey} — convergence already fired (${convergenceCheck.reason}). ` +
+          `Round ${existingConvergence.roundNumber}, no-progress count: ${existingConvergence.noProgressCount}. ` +
+          `Use --force to override.`,
+        );
+        saveProcessedIssue(issueKey);
+        return null;
+      }
+    }
   }
 
   // Track consecutive failures — after MAX_FAILED_ATTEMPTS, mark as processed to stop the loop

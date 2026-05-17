@@ -31,10 +31,10 @@ export interface ConvergenceConfig {
 }
 
 export const DEFAULT_CONVERGENCE_CONFIG: ConvergenceConfig = {
-  maxRounds: 5,
-  maxIdenticalFindings: 2,
+  maxRounds: 10,
+  maxIdenticalFindings: 3,
   maxEmptyPRs: 2,
-  maxNoProgressRounds: 3,
+  maxNoProgressRounds: 4,
 };
 
 export interface ConvergenceState {
