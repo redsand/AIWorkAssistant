@@ -130,6 +130,11 @@ export async function buildServer() {
     return reply.sendFile("capabilities.html");
   });
 
+  // Serve the musician assistant page at /musician (no .html extension)
+  server.get("/musician", async (_request, reply) => {
+    return reply.sendFile("musician.html");
+  });
+
   // Force no-cache on static assets so Cloudflare doesn't cache them
   server.addHook("onSend", async (_request, reply) => {
     const route = reply.request.url;
