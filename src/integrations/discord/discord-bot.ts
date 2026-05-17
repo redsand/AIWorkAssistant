@@ -31,7 +31,7 @@ interface ConversationSession {
   userId: string;
   channelId: string;
   sessionId: string;
-  mode: "productivity" | "engineering";
+  mode: "productivity" | "engineering" | "musician";
   lastActivity: Date;
 }
 
@@ -118,6 +118,7 @@ class DiscordAgentBot {
             .addChoices(
               { name: "productivity", value: "productivity" },
               { name: "engineering", value: "engineering" },
+              { name: "musician", value: "musician" },
             )
             .setRequired(false),
         ),
@@ -170,6 +171,115 @@ class DiscordAgentBot {
       new SlashCommandBuilder()
         .setName("help")
         .setDescription("Show help and available commands"),
+      // Musician Assistant Commands
+      new SlashCommandBuilder()
+        .setName("music-theory")
+        .setDescription("Learn music theory concepts")
+        .addStringOption((option) =>
+          option
+            .setName("topic")
+            .setDescription("Music theory topic (e.g., chord progressions, scales)")
+            .setRequired(true),
+        )
+        .addStringOption((option) =>
+          option
+            .setName("level")
+            .setDescription("Skill level")
+            .addChoices(
+              { name: "Beginner", value: "beginner" },
+              { name: "Intermediate", value: "intermediate" },
+              { name: "Advanced", value: "advanced" },
+              { name: "Professional", value: "pro" },
+            )
+            .setRequired(false),
+        )
+        .addStringOption((option) =>
+          option
+            .setName("instrument")
+            .setDescription("Instrument (e.g., piano, guitar)")
+            .setRequired(false),
+        ),
+      new SlashCommandBuilder()
+        .setName("compose")
+        .setDescription("Get composition assistance")
+        .addStringOption((option) =>
+          option
+            .setName("goal")
+            .setDescription("Composition goal (e.g., write a chorus)")
+            .setRequired(true),
+        )
+        .addStringOption((option) =>
+          option
+            .setName("genre")
+            .setDescription("Genre (e.g., pop, rock, jazz)")
+            .setRequired(false),
+        )
+        .addStringOption((option) =>
+          option
+            .setName("mood")
+            .setDescription("Mood (e.g., uplifting, melancholic)")
+            .setRequired(false),
+        )
+        .addStringOption((option) =>
+          option
+            .setName("key")
+            .setDescription("Key (e.g., C major, Am)")
+            .setRequired(false),
+        ),
+      new SlashCommandBuilder()
+        .setName("generate-music")
+        .setDescription("Generate music from text description")
+        .addStringOption((option) =>
+          option
+            .setName("prompt")
+            .setDescription("Music description (avoid specific artist names)")
+            .setRequired(true),
+        )
+        .addIntegerOption((option) =>
+          option
+            .setName("duration")
+            .setDescription("Duration in seconds (5-60)")
+            .setMinValue(5)
+            .setMaxValue(60)
+            .setRequired(false),
+        )
+        .addBooleanOption((option) =>
+          option
+            .setName("dryrun")
+            .setDescription("Preview only (no actual generation)")
+            .setRequired(false),
+        ),
+      new SlashCommandBuilder()
+        .setName("practice-plan")
+        .setDescription("Generate a personalized practice plan")
+        .addStringOption((option) =>
+          option
+            .setName("instrument")
+            .setDescription("Instrument to practice")
+            .setRequired(true),
+        )
+        .addStringOption((option) =>
+          option
+            .setName("goal")
+            .setDescription("Practice goal")
+            .setRequired(true),
+        )
+        .addIntegerOption((option) =>
+          option
+            .setName("minutes")
+            .setDescription("Minutes per day")
+            .setMinValue(10)
+            .setMaxValue(480)
+            .setRequired(false),
+        )
+        .addIntegerOption((option) =>
+          option
+            .setName("days")
+            .setDescription("Days per week")
+            .setMinValue(1)
+            .setMaxValue(7)
+            .setRequired(false),
+        ),
     ];
 
     try {
@@ -291,6 +401,18 @@ class DiscordAgentBot {
         case "help":
           await this.handleHelpCommand(interaction);
           break;
+        case "music-theory":
+          await this.handleMusicTheoryCommand(interaction);
+          break;
+        case "compose":
+          await this.handleComposeCommand(interaction);
+          break;
+        case "generate-music":
+          await this.handleGenerateMusicCommand(interaction);
+          break;
+        case "practice-plan":
+          await this.handlePracticePlanCommand(interaction);
+          break;
         default:
           await interaction.reply({
             content: "Unknown command",
@@ -316,7 +438,8 @@ class DiscordAgentBot {
     const mode =
       (interaction.options.getString("mode") as
         | "productivity"
-        | "engineering") || "productivity";
+        | "engineering"
+        | "musician") || "productivity";
 
     const response = await this.sendToAgent(message, interaction.user.id, mode);
 
@@ -526,6 +649,12 @@ class DiscordAgentBot {
 • \`/memory [query]\` - Search your memory
 • \`/help\` - Show this help message
 
+**Musician Assistant:**
+🎵 \`/music-theory [topic]\` - Learn music theory
+🎼 \`/compose [goal]\` - Get composition help
+🎹 \`/generate-music [prompt]\` - Generate music samples
+📝 \`/practice-plan [instrument]\` - Create practice plans
+
 **How to Use:**
 1. Mention the bot in any message: \`@AIAssistant your message\`
 2. Use slash commands for structured interactions
@@ -534,6 +663,7 @@ class DiscordAgentBot {
 **Modes:**
 • **Productivity**: Planning, scheduling, organization
 • **Engineering**: Technical design, code, architecture
+• **Musician**: Music theory, composition, analysis
 
 **Features:**
 ✅ Conversation memory across sessions
@@ -541,11 +671,157 @@ class DiscordAgentBot {
 ✅ Jira & GitLab integration
 ✅ Project planning
 ✅ Daily scheduling
+✅ Music theory tutoring
+✅ Composition assistance
+✅ Text-to-music generation
 
 Just start chatting with me! 🚀
     `;
 
     await interaction.reply(helpText);
+  }
+
+  /**
+   * Handle /music-theory command
+   */
+  private async handleMusicTheoryCommand(interaction: any): Promise<void> {
+    await interaction.deferReply();
+
+    const topic = interaction.options.getString("topic");
+    const level = interaction.options.getString("level") || "intermediate";
+    const instrument = interaction.options.getString("instrument");
+
+    try {
+      const response = await axios.post(
+        `${this.apiBaseUrl}/api/musician/theory`,
+        {
+          topic,
+          skillLevel: level,
+          instrument,
+          includeExamples: true,
+        },
+        { headers: this.getAuthHeaders() },
+      );
+
+      const content = response.data.content || response.data.explanation || "No response";
+      await this.sendLongReply(interaction, `🎵 **Music Theory: ${topic}**\n\n${content}`);
+    } catch (error) {
+      console.error("[DiscordBot] Error in music-theory command:", error);
+      await interaction.editReply("❌ Failed to generate theory explanation. Please try again.");
+    }
+  }
+
+  /**
+   * Handle /compose command
+   */
+  private async handleComposeCommand(interaction: any): Promise<void> {
+    await interaction.deferReply();
+
+    const goal = interaction.options.getString("goal");
+    const genre = interaction.options.getString("genre");
+    const mood = interaction.options.getString("mood");
+    const key = interaction.options.getString("key");
+
+    try {
+      const response = await axios.post(
+        `${this.apiBaseUrl}/api/musician/composition`,
+        {
+          goal,
+          genre,
+          mood,
+          key,
+          outputFormat: "markdown",
+        },
+        { headers: this.getAuthHeaders() },
+      );
+
+      const content = response.data.content || response.data.plan || "No response";
+      await this.sendLongReply(interaction, `🎼 **Composition Plan**\n\n${content}`);
+    } catch (error) {
+      console.error("[DiscordBot] Error in compose command:", error);
+      await interaction.editReply("❌ Failed to generate composition plan. Please try again.");
+    }
+  }
+
+  /**
+   * Handle /generate-music command
+   */
+  private async handleGenerateMusicCommand(interaction: any): Promise<void> {
+    await interaction.deferReply();
+
+    const prompt = interaction.options.getString("prompt");
+    const duration = interaction.options.getInteger("duration") || 15;
+    const dryRun = interaction.options.getBoolean("dryrun") || false;
+
+    try {
+      const response = await axios.post(
+        `${this.apiBaseUrl}/api/musician/generate`,
+        {
+          prompt,
+          durationSeconds: duration,
+          dryRun,
+        },
+        { headers: this.getAuthHeaders() },
+      );
+
+      const result = response.data;
+      let replyText = `🎹 **Music Generation**\n\n`;
+      replyText += `**Prompt**: ${prompt}\n`;
+      replyText += `**Duration**: ${duration}s\n`;
+      replyText += `**Model**: ${result.model}\n`;
+
+      if (dryRun) {
+        replyText += `\n✅ Dry run complete - no audio generated`;
+      } else {
+        replyText += `\n✅ Generation complete!`;
+        replyText += `\n**Asset ID**: ${result.assetId}`;
+      }
+
+      if (result.warnings && result.warnings.length > 0) {
+        replyText += `\n\n⚠️ **Warnings**:\n${result.warnings.map((w: string) => `• ${w}`).join("\n")}`;
+      }
+
+      await this.sendLongReply(interaction, replyText);
+    } catch (error: any) {
+      console.error("[DiscordBot] Error in generate-music command:", error);
+      const errorMsg = error.response?.data?.error || "Failed to generate music";
+      await interaction.editReply(`❌ ${errorMsg}`);
+    }
+  }
+
+  /**
+   * Handle /practice-plan command
+   */
+  private async handlePracticePlanCommand(interaction: any): Promise<void> {
+    await interaction.deferReply();
+
+    const instrument = interaction.options.getString("instrument");
+    const goal = interaction.options.getString("goal");
+    const minutes = interaction.options.getInteger("minutes") || 30;
+    const days = interaction.options.getInteger("days") || 5;
+
+    try {
+      const response = await axios.post(
+        `${this.apiBaseUrl}/api/musician/practice-plan`,
+        {
+          instrument,
+          goal,
+          minutesPerDay: minutes,
+          daysPerWeek: days,
+          skillLevel: "intermediate",
+        },
+        { headers: this.getAuthHeaders() },
+      );
+
+      const content = response.data.content || response.data.plan || "No response";
+      await this.sendLongReply(
+        interaction,
+        `📝 **Practice Plan for ${instrument}**\n\n${content}`,
+      );
+    } catch (error) {
+      console.error("[DiscordBot] Error in practice-plan command:", error);
+      await interaction.editReply("❌ Failed to generate practice plan. Please try again.");
+    }
   }
 
   /**
@@ -596,7 +872,7 @@ Just start chatting with me! 🚀
   private async sendToAgent(
     message: string,
     userId: string,
-    mode: "productivity" | "engineering",
+    mode: "productivity" | "engineering" | "musician",
   ): Promise<string> {
     try {
       const response = await axios.post(
