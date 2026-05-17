@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Musician Assistant — AI Work Assistant</title>
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#1a1a2e" />
+    <link rel="stylesheet" href="/css/musician.css" />
+  </head>
+  <body>
+    <div class="page">
+
+      <!-- Header -->
+      <div class="header">
+        <div class="header-left">
+          <a href="/" class="back-link">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 18 9 12 15 6"/>
+            </svg>
+            Back to Assistant
+          </a>
+          <div>
+            <div class="page-title">🎵 Musician Assistant</div>
+            <div class="page-subtitle">Music theory, composition, audio analysis, and sample generation</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Error Banner -->
+      <div id="error-banner" class="error-msg" style="display:none"></div>
+
+      <!-- Tab Navigation -->
+      <div class="tab-nav">
+        <button class="tab-btn active" data-tab="theory">Theory Tutor</button>
+        <button class="tab-btn" data-tab="composition">Composition</button>
+        <button class="tab-btn" data-tab="audio">Audio Feedback</button>
+        <button class="tab-btn" data-tab="generation">Text-to-Music</button>
+        <button class="tab-btn" data-tab="practice">Practice Plan</button>
+      </div>
+
+      <!-- Tab Content -->
+      <div class="tab-content">
+
+        <!-- 1. Theory Tutor Tab -->
+        <div id="theory-tab" class="tab-pane active">
+          <div class="section">
+            <h2 class="section-title">Music Theory Tutor</h2>
+            <p class="section-desc">Learn music theory concepts with interactive examples and exercises.</p>
+
+            <form id="theory-form" class="form">
+              <div class="form-group">
+                <label for="theory-topic">Topic *</label>
+                <input
+                  type="text"
+                  id="theory-topic"
+                  placeholder="e.g., dominant seventh chords, circle of fifths, voice leading"
+                  required
+                />
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="theory-skill">Skill Level *</label>
+                  <select id="theory-skill" required>
+                    <option value="beginner">Beginner</option>
+                    <option value="intermediate" selected>Intermediate</option>
+                    <option value="advanced">Advanced</option>
+                    <option value="pro">Professional</option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label for="theory-instrument">Instrument (optional)</label>
+                  <input
+                    type="text"
+                    id="theory-instrument"
+                    placeholder="e.g., piano, guitar, bass"
+                  />
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="theory-style">Music Style (optional)</label>
+                <input
+                  type="text"
+                  id="theory-style"
+                  placeholder="e.g., jazz, rock, classical, pop"
+                />
+              </div>
+
+              <div class="form-group">
+                <label class="checkbox-label">
+                  <input type="checkbox" id="theory-exercises" />
+                  Include interactive exercises
+                </label>
+                <label class="checkbox-label">
+                  <input type="checkbox" id="theory-examples" checked />
+                  Include musical examples
+                </label>
+              </div>
+
+              <button type="submit" class="btn-primary">
+                <span class="btn-text">Generate Explanation</span>
+                <span class="btn-loading" style="display:none">Generating...</span>
+              </button>
+            </form>
+
+            <div id="theory-result" class="result-area" style="display:none"></div>
+          </div>
+        </div>
+
+        <!-- 2. Composition Assistant Tab -->
+        <div id="composition-tab" class="tab-pane">
+          <div class="section">
+            <h2 class="section-title">Composition Assistant</h2>
+            <p class="section-desc">Get help with songwriting, chord progressions, and arrangement.</p>
+
+            <form id="composition-form" class="form">
+              <div class="form-group">
+                <label for="comp-goal">Goal *</label>
+                <input
+                  type="text"
+                  id="comp-goal"
+                  placeholder="e.g., write a chorus, create a bridge, write a complete song"
+                  required
+                />
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="comp-genre">Genre</label>
+                  <input
+                    type="text"
+                    id="comp-genre"
+                    placeholder="e.g., pop, rock, jazz, electronic"
+                  />
+                </div>
+
+                <div class="form-group">
+                  <label for="comp-mood">Mood</label>
+                  <input
+                    type="text"
+                    id="comp-mood"
+                    placeholder="e.g., uplifting, melancholic, tense"
+                  />
+                </div>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="comp-key">Key</label>
+                  <input
+                    type="text"
+                    id="comp-key"
+                    placeholder="e.g., C major, Am, D dorian"
+                  />
+                </div>
+
+                <div class="form-group">
+                  <label for="comp-tempo">Tempo (BPM)</label>
+                  <input
+                    type="number"
+                    id="comp-tempo"
+                    placeholder="e.g., 120"
+                    min="40"
+                    max="240"
+                  />
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="comp-output">Output Format *</label>
+                <select id="comp-output" required>
+                  <option value="markdown">Markdown</option>
+                  <option value="lead_sheet">Lead Sheet</option>
+                  <option value="chord_chart">Chord Chart</option>
+                  <option value="arrangement_plan">Arrangement Plan</option>
+                </select>
+              </div>
+
+              <button type="submit" class="btn-primary">
+                <span class="btn-text">Generate Composition Plan</span>
+                <span class="btn-loading" style="display:none">Generating...</span>
+              </button>
+            </form>
+
+            <div id="composition-result" class="result-area" style="display:none"></div>
+          </div>
+        </div>
+
+        <!-- 3. Audio Feedback Tab -->
+        <div id="audio-tab" class="tab-pane">
+          <div class="section">
+            <h2 class="section-title">Audio Feedback</h2>
+            <p class="section-desc">Upload audio for detailed mix, master, or composition analysis.</p>
+
+            <form id="audio-form" class="form">
+              <div class="form-group">
+                <label for="audio-file">Audio File *</label>
+                <div class="file-input-wrapper">
+                  <input
+                    type="file"
+                    id="audio-file"
+                    accept="audio/*"
+                    required
+                  />
+                  <div id="audio-file-name" class="file-name"></div>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="audio-analysis-type">Analysis Type *</label>
+                  <select id="audio-analysis-type" required>
+                    <option value="mixdown">Mixdown Analysis</option>
+                    <option value="mastering">Mastering Analysis</option>
+                    <option value="composition">Composition Analysis</option>
+                    <option value="arrangement">Arrangement Analysis</option>
+                    <option value="performance">Performance Analysis</option>
+                    <option value="transcription">Transcription</option>
+                    <option value="all">Complete Analysis</option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label for="audio-genre">Genre (optional)</label>
+                  <input
+                    type="text"
+                    id="audio-genre"
+                    placeholder="e.g., electronic, rock, jazz"
+                  />
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="audio-notes">Reference Notes (optional)</label>
+                <textarea
+                  id="audio-notes"
+                  rows="3"
+                  placeholder="Any specific concerns or reference tracks to compare against..."
+                ></textarea>
+              </div>
+
+              <button type="submit" class="btn-primary">
+                <span class="btn-text">Run Analysis</span>
+                <span class="btn-loading" style="display:none">Analyzing...</span>
+              </button>
+            </form>
+
+            <div id="audio-result" class="result-area" style="display:none"></div>
+          </div>
+        </div>
+
+        <!-- 4. Text-to-Music Sample Tab -->
+        <div id="generation-tab" class="tab-pane">
+          <div class="section">
+            <h2 class="section-title">Text-to-Music Sample Generation</h2>
+            <p class="section-desc">Generate music samples from text descriptions.</p>
+
+            <form id="generation-form" class="form">
+              <div class="form-group">
+                <label for="gen-prompt">Prompt *</label>
+                <textarea
+                  id="gen-prompt"
+                  rows="3"
+                  placeholder="e.g., upbeat electronic dance music with synth leads and driving bassline"
+                  required
+                ></textarea>
+                <small class="form-hint">
+                  Describe genre, mood, instruments, and any specific musical elements.
+                  Avoid requesting soundalikes of specific artists.
+                </small>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="gen-duration">Duration (seconds) *</label>
+                  <input
+                    type="number"
+                    id="gen-duration"
+                    value="15"
+                    min="5"
+                    max="60"
+                    required
+                  />
+                  <small class="form-hint">Maximum: 60 seconds</small>
+                </div>
+
+                <div class="form-group">
+                  <label for="gen-tempo">Tempo (BPM)</label>
+                  <input
+                    type="number"
+                    id="gen-tempo"
+                    placeholder="e.g., 120"
+                    min="40"
+                    max="240"
+                  />
+                </div>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="gen-key">Key</label>
+                  <input
+                    type="text"
+                    id="gen-key"
+                    placeholder="e.g., C major, Am"
+                  />
+                </div>
+
+                <div class="form-group">
+                  <label for="gen-genre">Genre</label>
+                  <input
+                    type="text"
+                    id="gen-genre"
+                    placeholder="e.g., electronic, rock"
+                  />
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label class="checkbox-label">
+                  <input type="checkbox" id="gen-dryrun" />
+                  Dry run (preview without generating audio)
+                </label>
+              </div>
+
+              <button type="submit" class="btn-primary">
+                <span class="btn-text">Generate Sample</span>
+                <span class="btn-loading" style="display:none">Generating...</span>
+              </button>
+            </form>
+
+            <div id="generation-result" class="result-area" style="display:none"></div>
+          </div>
+        </div>
+
+        <!-- 5. Practice Plan Tab -->
+        <div id="practice-tab" class="tab-pane">
+          <div class="section">
+            <h2 class="section-title">Practice Plan Generator</h2>
+            <p class="section-desc">Create personalized practice routines with clear goals.</p>
+
+            <form id="practice-form" class="form">
+              <div class="form-group">
+                <label for="practice-instrument">Instrument *</label>
+                <input
+                  type="text"
+                  id="practice-instrument"
+                  placeholder="e.g., guitar, piano, drums, voice"
+                  required
+                />
+              </div>
+
+              <div class="form-group">
+                <label for="practice-goal">Practice Goal *</label>
+                <textarea
+                  id="practice-goal"
+                  rows="3"
+                  placeholder="e.g., improve fingerpicking technique, learn jazz voicings, build endurance"
+                  required
+                ></textarea>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="practice-minutes">Minutes per Day *</label>
+                  <input
+                    type="number"
+                    id="practice-minutes"
+                    value="30"
+                    min="10"
+                    max="480"
+                    required
+                  />
+                </div>
+
+                <div class="form-group">
+                  <label for="practice-days">Days per Week *</label>
+                  <input
+                    type="number"
+                    id="practice-days"
+                    value="5"
+                    min="1"
+                    max="7"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="practice-level">Current Skill Level *</label>
+                <select id="practice-level" required>
+                  <option value="beginner">Beginner</option>
+                  <option value="intermediate" selected>Intermediate</option>
+                  <option value="advanced">Advanced</option>
+                  <option value="pro">Professional</option>
+                </select>
+              </div>
+
+              <button type="submit" class="btn-primary">
+                <span class="btn-text">Generate Practice Plan</span>
+                <span class="btn-loading" style="display:none">Generating...</span>
+              </button>
+            </form>
+
+            <div id="practice-result" class="result-area" style="display:none"></div>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+
+    <script src="/js/musician.js"></script>
+  </body>
+</html>

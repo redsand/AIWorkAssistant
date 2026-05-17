@@ -32,6 +32,32 @@ body {
   gap: 14px;
 }
 
+.cap-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.feature-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #667eea;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 10px;
+  background: #f5f3ff;
+  border: 1px solid #e9d5ff;
+  transition: all .15s;
+}
+.feature-link:hover {
+  background: #ede9fe;
+  border-color: #c4b5fd;
+  transform: translateY(-1px);
+}
+
 .back-link {
   display: flex;
   align-items: center;
