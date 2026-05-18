@@ -55,3 +55,9 @@ temp/
 .pytest_tmp/
 packaging-test-*/
 *.egg-info/
+
+generated-audio/
+memory/
+musicgen-service/__pycache__/
+musicgen-service/venv/
+
