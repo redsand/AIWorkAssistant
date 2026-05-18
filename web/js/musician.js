@@ -3,6 +3,15 @@
  * Handles UI interactions and API calls for the musician assistant features.
  */
 
+function authHeaders(extra = {}) {
+  const token = localStorage.getItem('authToken');
+  return {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...extra,
+  };
+}
+
 // =============================================================================
 // Tab Navigation
 // =============================================================================
@@ -94,7 +103,7 @@ async function handleTheorySubmit(e) {
 
     const response = await fetch('/api/musician/theory', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify(request),
     });
 
@@ -138,9 +147,9 @@ async function handleCompositionSubmit(e) {
     hideError();
     resultDiv.style.display = 'none';
 
-    const response = await fetch('/api/musician/composition', {
+    const response = await fetch('/api/musician/compose', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify(request),
     });
 
@@ -182,13 +191,18 @@ async function handleAudioSubmit(e) {
     hideError();
     resultDiv.style.display = 'none';
 
-    // Step 1: Upload the file
-    const formData = new FormData();
-    formData.append('audio', file);
+    // Step 1: Upload the file as base64 JSON (route expects { fileData, filename, mimeType })
+    const fileData = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
 
-    const uploadResponse = await fetch('/api/musician/upload', {
+    const uploadResponse = await fetch('/api/musician/audio/upload', {
       method: 'POST',
-      body: formData,
+      headers: authHeaders(),
+      body: JSON.stringify({ fileData, filename: file.name, mimeType: file.type }),
     });
 
     if (!uploadResponse.ok) {
@@ -211,9 +225,9 @@ async function handleAudioSubmit(e) {
       includeActionPlan: true,
     };
 
-    const analysisResponse = await fetch('/api/musician/analyze', {
+    const analysisResponse = await fetch('/api/musician/analyze-audio', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify(analysisRequest),
     });
 
@@ -365,6 +379,7 @@ async function handleGenerationSubmit(e) {
     tempo: parseInt(document.getElementById('gen-tempo').value) || undefined,
     key: document.getElementById('gen-key').value || undefined,
     genre: document.getElementById('gen-genre').value || undefined,
+    model: document.getElementById('gen-model').value || undefined,
     dryRun: document.getElementById('gen-dryrun').checked,
   };
 
@@ -373,9 +388,9 @@ async function handleGenerationSubmit(e) {
     hideError();
     resultDiv.style.display = 'none';
 
-    const response = await fetch('/api/musician/generate', {
+    const response = await fetch('/api/musician/generate-sample', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify(request),
     });
 
@@ -384,7 +399,23 @@ async function handleGenerationSubmit(e) {
       throw new Error(error.error || 'Failed to generate music');
     }
 
-    const result = await response.json();
+    const { jobId, pollUrl } = await response.json();
+
+    // Poll until complete — generation can take 1-3 minutes
+    const loadingSpan = document.querySelector('#generation-form .btn-loading');
+    let result;
+    while (true) {
+      await new Promise(r => setTimeout(r, 3000));
+      const pollRes = await fetch(pollUrl, { headers: authHeaders() });
+      const pollData = await pollRes.json();
+
+      if (pollData.status === 'error') throw new Error(pollData.error || 'Generation failed');
+      if (pollData.status === 'complete') { result = pollData; break; }
+
+      // Update loading text so user knows it's working
+      if (loadingSpan) loadingSpan.textContent = 'Generating... (this takes 1-3 min)';
+    }
+
     displayGenerationResult(resultDiv, result);
   } catch (error) {
     showError(error.message);
@@ -405,8 +436,9 @@ function displayGenerationResult(container, result) {
   title.textContent = 'Generation Results';
   container.appendChild(title);
 
-  // Warnings
-  if (result.warnings && result.warnings.length > 0) {
+  // Warnings (skip mock/dry-run noise if real audio was produced)
+  const isReal = result.assetId && !result.warnings?.some(w => w.includes('Mock mode') || w.includes('dryRun'));
+  if (!isReal && result.warnings && result.warnings.length > 0) {
     const warningsDiv = document.createElement('div');
     warningsDiv.className = 'warnings';
     warningsDiv.innerHTML = '<strong>⚠️ Warnings:</strong><ul>' +
@@ -415,20 +447,34 @@ function displayGenerationResult(container, result) {
     container.appendChild(warningsDiv);
   }
 
-  // Generation info
-  const infoDiv = document.createElement('div');
-  infoDiv.className = 'generation-info';
-  infoDiv.innerHTML = `
-    <p><strong>Asset ID:</strong> ${escapeHtml(result.assetId)}</p>
-    <p><strong>Model:</strong> ${escapeHtml(result.model)}</p>
-    <p><strong>Duration:</strong> ${result.durationSeconds}s</p>
-    <p><strong>Prompt:</strong> ${escapeHtml(result.prompt)}</p>
-  `;
-
-  if (result.filePath && !result.filePath.includes('metadata.json')) {
-    infoDiv.innerHTML += `<p><strong>File:</strong> ${escapeHtml(result.filePath)}</p>`;
+  // Audio player — derive filename from assetId
+  if (isReal && result.assetId) {
+    const filename = `${result.assetId}.wav`;
+    const audioUrl = `/api/musician/audio/download/${filename}`;
+    const playerDiv = document.createElement('div');
+    playerDiv.className = 'audio-player';
+    playerDiv.innerHTML = `
+      <audio controls style="width:100%;margin:12px 0">
+        <source src="${audioUrl}" type="audio/wav">
+      </audio>
+      <a href="${audioUrl}" download="${filename}" class="btn-secondary" style="display:inline-block;margin-top:4px;font-size:12px">
+        Download WAV
+      </a>
+    `;
+    container.appendChild(playerDiv);
   }
 
+  // Meta info
+  const infoDiv = document.createElement('div');
+  infoDiv.className = 'generation-info';
+  infoDiv.style.fontSize = '12px';
+  infoDiv.style.color = '#888';
+  infoDiv.style.marginTop = '8px';
+  infoDiv.innerHTML = [
+    result.model ? `Model: ${escapeHtml(result.model)}` : '',
+    result.duration ? `Duration: ${result.duration}s` : '',
+    result.prompt ? `Prompt: ${escapeHtml(result.prompt)}` : '',
+  ].filter(Boolean).join(' &nbsp;·&nbsp; ');
   container.appendChild(infoDiv);
 }
 
@@ -459,7 +505,7 @@ async function handlePracticeSubmit(e) {
 
     const response = await fetch('/api/musician/practice-plan', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify(request),
     });
 

@@ -1,0 +1,5 @@
+audiocraft
+fastapi
+uvicorn[standard]
+torch
+torchaudio

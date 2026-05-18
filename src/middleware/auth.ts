@@ -14,6 +14,7 @@ const PUBLIC_PATHS = new Set([
   "/calendar/export/ics",
   "/calendar/subscribe",
   "/capabilities",
+  "/musician",
   "/api/tools",
   "/api/tools/categories",
   "/api/agents",

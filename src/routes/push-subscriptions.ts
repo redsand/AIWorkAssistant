@@ -1,5 +1,6 @@
 import { FastifyInstance } from "fastify";
 import { env } from "../config/env";
+import { sendPushNotification } from "../push/dispatcher";
 
 interface PushSubscriptionData {
   endpoint: string;
@@ -69,6 +70,29 @@ export async function pushSubscriptionRoutes(server: FastifyInstance) {
 
   server.get("/push-subscriptions", async () => {
     return Array.from(subscriptions.values());
+  });
+
+  server.post("/push-subscriptions/test", async (request, reply) => {
+    const all = Array.from(subscriptions.values());
+    if (all.length === 0) {
+      return reply.status(404).send({ error: "No subscriptions registered" });
+    }
+
+    const body = (request.body as { title?: string; message?: string }) || {};
+    const results = await Promise.all(
+      all.map((entry) =>
+        sendPushNotification(entry.subscription, {
+          title: body.title || "Test Notification",
+          body: body.message || "Push notifications are working.",
+          url: "/",
+          severity: "info",
+          tag: "test",
+        }).then((ok) => ({ id: entry.id, ok }))
+      )
+    );
+
+    const sent = results.filter((r) => r.ok).length;
+    return { sent, total: all.length, results };
   });
 }
 

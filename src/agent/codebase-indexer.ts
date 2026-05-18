@@ -85,30 +85,29 @@ class CodebaseIndexer {
       ".turbo",
       "__pycache__",
       ".venv",
+      "venv",           // python virtualenvs without dot prefix
+      "env",
       "target",
       "build",
       "data",
       "logs",
+      "ssl",
+      "backups",
+      "monitoring",
+      "generated-audio",
+      "site-packages",  // catch any stray python lib dirs
     ]);
 
-    const SKIP_EXTENSIONS = new Set([
-      ".png",
-      ".jpg",
-      ".jpeg",
-      ".gif",
-      ".ico",
-      ".svg",
-      ".woff",
-      ".woff2",
-      ".ttf",
-      ".eot",
-      ".mp3",
-      ".mp4",
-      ".zip",
-      ".tar",
-      ".gz",
-      ".db",
-      ".sqlite",
+    // Allowlist — only index actual source files
+    const ALLOW_EXTENSIONS = new Set([
+      ".ts", ".tsx", ".js", ".jsx",
+      ".py", ".rs", ".go", ".java", ".kt", ".rb", ".php",
+      ".cs", ".cpp", ".c", ".h", ".hpp", ".swift",
+      ".sql", ".graphql", ".proto",
+      ".json", ".yaml", ".yml", ".toml",
+      ".md", ".html", ".css", ".scss",
+      ".sh", ".bash", ".zsh", ".ps1",
+      ".env.example",
     ]);
 
     const files: string[] = [];
@@ -131,7 +130,9 @@ class CodebaseIndexer {
           walkDir(fullPath);
         } else if (entry.isFile()) {
           const ext = path.extname(entry.name).toLowerCase();
-          if (SKIP_EXTENSIONS.has(ext)) continue;
+          const isAllowed = ALLOW_EXTENSIONS.has(ext) ||
+            (ext === "" && entry.name === ".env.example");
+          if (!isAllowed) continue;
 
           try {
             const stat = fs.statSync(fullPath);

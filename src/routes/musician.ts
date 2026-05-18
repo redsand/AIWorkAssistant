@@ -1,5 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
+import fs from "fs";
+import path from "path";
 import {
   analyzeWithEssentia,
   getAudioMetadata,
@@ -78,6 +80,10 @@ const generateSampleSchema = z.object({
     }),
   dryRun: z.boolean().optional(),
   style: z.string().max(100).optional(),
+  genre: z.string().max(100).optional(),
+  key: z.string().max(20).optional(),
+  tempo: z.number().int().min(40).max(300).optional(),
+  model: z.string().max(100).optional(),
 });
 
 // Analysis request schema
@@ -287,55 +293,78 @@ export async function musicianRoutes(server: FastifyInstance) {
     }
   });
 
-  // POST /api/musician/generate-sample
+  // In-memory job store for async generation
+  const generationJobs = new Map<string, {
+    status: "pending" | "complete" | "error";
+    result?: any;
+    error?: string;
+    createdAt: string;
+  }>();
+
+  // POST /api/musician/generate-sample — returns immediately with jobId
   server.post("/generate-sample", async (request, reply) => {
-    // Check if generation is enabled globally
     if (!isGenerationEnabled()) {
       return reply.status(403).send({
         error: "Music generation is disabled",
-        message:
-          "Set MUSICIAN_GENERATION_ENABLED=true to enable music generation",
+        message: "Set MUSICIAN_GENERATION_ENABLED=true to enable music generation",
       });
     }
 
     const parsed = generateSampleSchema.safeParse(request.body);
     if (!parsed.success) {
-      return reply.status(400).send({
-        error: "Validation failed",
-        details: parsed.error.issues,
-      });
+      return reply.status(400).send({ error: "Validation failed", details: parsed.error.issues });
     }
 
-    const { prompt, durationSeconds, dryRun, style } = parsed.data;
+    const { prompt, durationSeconds, dryRun, style, genre, key, tempo, model } = parsed.data;
+    const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-    try {
-      // Get output directory (ensure it exists)
-      const outputDir = process.env.MUSICGEN_OUTPUT_DIR || "./generated-audio";
-      const fs = require("fs");
-      if (!fs.existsSync(outputDir)) {
-        fs.mkdirSync(outputDir, { recursive: true });
+    generationJobs.set(jobId, { status: "pending", createdAt: new Date().toISOString() });
+
+    // Run generation in background — do not await
+    (async () => {
+      try {
+        const outputDir = process.env.MUSICGEN_OUTPUT_DIR || "./generated-audio";
+        if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+
+        const result = await generateWithMusicGen({
+          prompt,
+          durationSeconds: durationSeconds ?? limits.defaultDuration,
+          dryRun: dryRun ?? false,
+          genre: genre || style,
+          key,
+          tempo,
+          modelPreference: model,
+        }, outputDir);
+
+        generationJobs.set(jobId, {
+          status: "complete",
+          result: { ...result, createdAt: new Date().toISOString() },
+          createdAt: generationJobs.get(jobId)!.createdAt,
+        });
+      } catch (err) {
+        generationJobs.set(jobId, {
+          status: "error",
+          error: (err as Error).message,
+          createdAt: generationJobs.get(jobId)!.createdAt,
+        });
       }
+    })();
 
-      const requestObj: MusicGenerationRequest = {
-        prompt,
-        durationSeconds: durationSeconds ?? limits.defaultDuration,
-        dryRun: dryRun ?? false,
-        genre: style,
-      };
+    return reply.status(202).send({ jobId, status: "pending", pollUrl: `/api/musician/jobs/${jobId}` });
+  });
 
-      const result = await generateWithMusicGen(requestObj, outputDir);
+  // GET /api/musician/jobs/:jobId — poll for generation result
+  server.get("/jobs/:jobId", async (request, reply) => {
+    const { jobId } = request.params as { jobId: string };
+    const job = generationJobs.get(jobId);
+    if (!job) return reply.status(404).send({ error: "Job not found" });
 
-      return reply.status(200).send({
-        ...result,
-        createdAt: new Date().toISOString(),
-      });
-    } catch (err) {
-      server.log.error(err);
-      return reply.status(500).send({
-        error: "Internal server error",
-        message: (err as Error).message,
-      });
-    }
+    if (job.status === "pending") return reply.status(202).send({ jobId, status: "pending" });
+    if (job.status === "error") return reply.status(500).send({ jobId, status: "error", error: job.error });
+
+    // Clean up after delivering result
+    generationJobs.delete(jobId);
+    return reply.status(200).send({ jobId, status: "complete", ...job.result });
   });
 
   // POST /api/musician/transcribe-audio
@@ -383,6 +412,31 @@ export async function musicianRoutes(server: FastifyInstance) {
     }
   });
 
+  // GET /api/musician/models - proxy model list from Python service
+  server.get("/models", async (_request, reply) => {
+    const apiUrl = process.env.MUSICGEN_API_URL;
+    if (!apiUrl) {
+      return reply.status(200).send({
+        allowed: ["facebook/musicgen-small", "facebook/musicgen-medium", "facebook/musicgen-large", "facebook/musicgen-melody"],
+        loaded: [],
+        default: "facebook/musicgen-small",
+        serviceAvailable: false,
+      });
+    }
+    try {
+      const res = await fetch(`${apiUrl}/models`, { signal: AbortSignal.timeout(5000) });
+      const data = await res.json();
+      return reply.status(200).send({ ...data, serviceAvailable: true });
+    } catch {
+      return reply.status(200).send({
+        allowed: ["facebook/musicgen-small", "facebook/musicgen-medium", "facebook/musicgen-large", "facebook/musicgen-melody"],
+        loaded: [],
+        default: "facebook/musicgen-small",
+        serviceAvailable: false,
+      });
+    }
+  });
+
   // GET /api/musician/capabilities - return musician-specific capabilities
   server.get("/capabilities", async (_request, reply) => {
     const isGenerationEnabledFlag = isGenerationEnabled();
@@ -416,6 +470,35 @@ export async function musicianRoutes(server: FastifyInstance) {
       supportedOutputFormats: ["wav", "mp3", "flac", "mid", "midi"],
       createdAt: new Date().toISOString(),
     });
+  });
+
+  // GET /api/musician/audio/download/:filename - Stream a generated audio file
+  server.get("/audio/download/:filename", async (request, reply) => {
+    const { filename } = request.params as { filename: string };
+
+    // Prevent path traversal
+    const safe = path.basename(filename);
+    if (!/^[\w\-]+\.(wav|mp3|flac)$/.test(safe)) {
+      return reply.status(400).send({ error: "Invalid filename" });
+    }
+
+    const outputDir = process.env.MUSICGEN_OUTPUT_DIR || "./generated-audio";
+    const filePath = path.join(outputDir, safe);
+
+    if (!fs.existsSync(filePath)) {
+      return reply.status(404).send({ error: "File not found" });
+    }
+
+    const ext = path.extname(safe).slice(1);
+    const mimeTypes: Record<string, string> = {
+      wav: "audio/wav",
+      mp3: "audio/mpeg",
+      flac: "audio/flac",
+    };
+
+    reply.header("Content-Type", mimeTypes[ext] || "audio/wav");
+    reply.header("Content-Disposition", `inline; filename="${safe}"`);
+    return reply.send(fs.createReadStream(filePath));
   });
 
   // Initialize musician storage on route registration

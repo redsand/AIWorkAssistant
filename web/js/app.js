@@ -136,6 +136,16 @@ document.addEventListener("click", function (e) {
 document.addEventListener("DOMContentLoaded", async () => {
   await checkAuth();
 
+  // Collapse noisy sections by default on mobile so conversations are visible
+  if (window.innerWidth <= 768) {
+    ["quickActions", "roadmaps"].forEach((id) => {
+      const panel = document.getElementById(`${id}Panel`);
+      const arrow = document.getElementById(`${id}Arrow`);
+      if (panel) panel.style.display = "none";
+      if (arrow) arrow.style.transform = "rotate(0deg)";
+    });
+  }
+
   const workItemsSection = document.getElementById("workItemsSection");
   if (workItemsSection && authHeaders()) {
     workItemsSection.style.display = "block";

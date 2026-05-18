@@ -277,7 +277,7 @@ async function generateWithMusicGenHF(
 }
 
 /**
- * Generates audio using an external API endpoint.
+ * Generates audio by calling the local MusicGen Python service.
  */
 async function generateWithMusicGenExternal(
   request: MusicGenerationRequest,
@@ -285,24 +285,63 @@ async function generateWithMusicGenExternal(
   config: MusicGenConfig
 ): Promise<MusicGenGenerationResult> {
   const warnings: string[] = [];
-  const result: MusicGenGenerationResult = {
-    assetId: `gen_${Date.now()}`,
-    filePath: join(outputDir, `generated-${Date.now()}.wav`),
-    duration: request.durationSeconds || 15,
-    mode: "external",
-    prompt: request.prompt,
-    warnings,
-  };
 
   const apiUrl = config.apiUrl;
   if (!apiUrl) {
-    warnings.push("External API URL not configured");
-    result.warnings = warnings;
-    return result;
+    return {
+      assetId: `gen_${Date.now()}`,
+      filePath: "",
+      duration: request.durationSeconds || 15,
+      mode: "external",
+      prompt: request.prompt,
+      warnings: ["MUSICGEN_API_URL not set — cannot reach MusicGen service"],
+    };
   }
 
-  // In a full implementation, this would make an API call to the external service
-  warnings.push("External API generation: API call would be made here");
-  result.warnings = warnings;
-  return result;
+  const response = await fetch(`${apiUrl}/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      prompt: request.prompt,
+      duration_seconds: request.durationSeconds || 15,
+      genre: request.genre,
+      key: request.key,
+      tempo: request.tempo,
+      model: request.modelPreference,
+    }),
+    signal: AbortSignal.timeout(300_000), // 5 min — large models are slow
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => response.statusText);
+    throw new Error(`MusicGen service error ${response.status}: ${text}`);
+  }
+
+  const data = await response.json() as {
+    asset_id: string;
+    file_path: string;
+    audio_base64: string;
+    sample_rate: number;
+    duration: number;
+    model: string;
+    warnings: string[];
+  };
+
+  // Save the base64 audio locally so the Node server can serve it
+  const { writeFileSync, mkdirSync, existsSync } = await import("fs");
+  if (!existsSync(outputDir)) mkdirSync(outputDir, { recursive: true });
+
+  const filename = `${data.asset_id}.wav`;
+  const filePath = join(outputDir, filename);
+  writeFileSync(filePath, Buffer.from(data.audio_base64, "base64"));
+
+  return {
+    assetId: data.asset_id,
+    filePath,
+    duration: data.duration,
+    mode: "external",
+    model: data.model,
+    prompt: request.prompt,
+    warnings: [...warnings, ...data.warnings],
+  };
 }

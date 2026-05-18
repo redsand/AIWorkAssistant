@@ -18,7 +18,7 @@
     <link rel="stylesheet" href="/css/tool-progress.css?v=4" />
     <link rel="stylesheet" href="/css/confirm.css?v=4" />
     <link rel="stylesheet" href="/css/processing.css?v=4" />
-    <link rel="stylesheet" href="/css/mobile.css?v=4" />
+    <link rel="stylesheet" href="/css/mobile.css?v=6" />
     <link rel="stylesheet" href="/css/agent-runs.css?v=4" />
     <link rel="stylesheet" href="/css/work-items.css?v=4" />
     <link rel="stylesheet" href="/css/cto-daily.css?v=1" />
@@ -130,6 +130,7 @@
             </svg>
           </button>
           <button
+            id="pagerAlertsBtn"
             class="header-icon-btn"
             onclick="enablePagerAlerts()"
             title="Enable Pager Alerts"
@@ -383,18 +384,20 @@
             </div>
           </div>
 
-          <div
-            class="section-header collapsible-section-header"
-            style="margin-top: 16px;"
-            onclick="toggleSection('conversations')"
-          >
-            <span>Conversations</span>
-            <span id="conversationsArrow" class="collapsible-section-arrow" style="transform:rotate(90deg)">&#9654;</span>
-          </div>
-          <div id="conversationsPanel">
-            <button class="new-chat-btn" onclick="newChat()">+ New Chat</button>
-            <div class="conversation-list" id="conversationList">
-              <div style="padding: 12px; color: #666">No conversations yet</div>
+          <div class="conversations-block">
+            <div
+              class="section-header collapsible-section-header"
+              style="margin-top: 16px;"
+              onclick="toggleSection('conversations')"
+            >
+              <span>Conversations</span>
+              <span id="conversationsArrow" class="collapsible-section-arrow" style="transform:rotate(90deg)">&#9654;</span>
+            </div>
+            <div id="conversationsPanel">
+              <button class="new-chat-btn" onclick="newChat()">+ New Chat</button>
+              <div class="conversation-list" id="conversationList">
+                <div style="padding: 12px; color: #666">No conversations yet</div>
+              </div>
             </div>
           </div>
 
@@ -681,6 +684,6 @@
     <script type="module" src="/js/work-items.js?v=4"></script>
     <script type="module" src="/js/cto-daily.js?v=1"></script>
     <script type="module" src="/js/app.js?v=5"></script>
-    <script type="module" src="/js/push-subscription.js?v=1"></script>
+    <script type="module" src="/js/push-subscription.js?v=4"></script>
   </body>
 </html>

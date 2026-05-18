@@ -36,6 +36,35 @@ function urlBase64ToUint8Array(base64String) {
   return Uint8Array.from([...rawData].map((char) => char.charCodeAt(0)));
 }
 
+function setPagerAlertsBtnVisible(visible) {
+  const btn = document.getElementById("pagerAlertsBtn");
+  if (btn) btn.style.display = visible ? "" : "none";
+}
+
+async function checkExistingSubscription() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (!subscription) return;
+
+    setPagerAlertsBtnVisible(false);
+
+    // Re-register with the server — the server's in-memory store is wiped on restart
+    const token = localStorage.getItem("authToken");
+    await fetch("/api/push-subscriptions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ subscription: subscription.toJSON() }),
+    });
+  } catch {
+    // ignore — button stays visible, user can re-enable manually
+  }
+}
+
 async function enablePagerAlerts() {
   if (!vapidPublicKey) {
     alert("Push notifications are not configured. Ask your admin to set VAPID_PUBLIC_KEY in .env");
@@ -54,16 +83,21 @@ async function enablePagerAlerts() {
     applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
   });
 
+  const token = localStorage.getItem("authToken");
   const response = await fetch("/api/push-subscriptions", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(subscription.toJSON()),
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ subscription: subscription.toJSON() }),
   });
 
   if (!response.ok) {
     throw new Error(`Push subscription failed: ${response.status}`);
   }
 
+  setPagerAlertsBtnVisible(false);
   return subscription;
 }
 
@@ -72,11 +106,16 @@ async function disablePagerAlerts() {
   const subscription = await registration.pushManager.getSubscription();
   if (subscription) {
     await subscription.unsubscribe();
+    const token = localStorage.getItem("authToken");
     await fetch("/api/push-subscriptions", {
       method: "DELETE",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       body: JSON.stringify({ endpoint: subscription.endpoint }),
     });
+    setPagerAlertsBtnVisible(true);
   }
 }
 
@@ -85,5 +124,5 @@ window.enablePagerAlerts = enablePagerAlerts;
 window.disablePagerAlerts = disablePagerAlerts;
 
 // Auto-register service worker and fetch VAPID key on page load
-registerServiceWorker();
+registerServiceWorker().then(() => checkExistingSubscription());
 fetchVapidKey();

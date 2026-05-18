@@ -872,6 +872,12 @@ export interface MusicGenerationRequest {
    * Used for checking prompt validity and cost estimation.
    */
   dryRun?: boolean;
+
+  /** Target key, e.g. "Am", "C major" */
+  key?: string;
+
+  /** Target tempo in BPM */
+  tempo?: number;
 }
 
 /**
