@@ -7,7 +7,7 @@ export class RunLogger {
   private logDir: string;
 
   constructor(workspace: string) {
-    this.logDir = path.join(workspace, ".aicoder", "logs");
+    this.logDir = path.join(path.resolve(workspace), ".aicoder", "logs");
     fs.mkdirSync(this.logDir, { recursive: true });
   }
 
@@ -76,6 +76,10 @@ export class RunLogger {
 
   private write(line: string): void {
     if (this.logFile) {
+      const dir = path.dirname(this.logFile);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
       fs.appendFileSync(this.logFile, line + "\n", "utf-8");
     }
   }
