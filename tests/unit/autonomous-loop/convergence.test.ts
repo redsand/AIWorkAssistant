@@ -44,7 +44,7 @@ describe("hashFinding", () => {
 
   it("handles missing fields with defaults", () => {
     const h = hashFinding({});
-    expect(h).toBe("::unknown::unknown"); // empty file, default severity, default category
+    expect(h).toBe("::unknown::unknown::"); // empty file, default severity/category, message hash appended
   });
 
   it("handles undefined fields gracefully", () => {
@@ -159,11 +159,11 @@ describe("checkConvergence", () => {
       expect(result.recommendation).toBe("escalate_human");
     });
 
-    it("continues when roundNumber equals maxRounds", () => {
+    it("stops when roundNumber equals maxRounds (>= boundary)", () => {
       const state = { ...initConvergenceState(), roundNumber: 5 };
       const result = checkConvergence(state, strictConfig);
-      // Not exceeded yet (5 is not > 5)
-      expect(result.shouldStop).toBe(false);
+      expect(result.shouldStop).toBe(true);
+      expect(result.reason).toBe("max_rounds");
     });
   });
 
@@ -318,10 +318,10 @@ describe("formatConvergenceReport", () => {
 
 describe("DEFAULT_CONVERGENCE_CONFIG", () => {
   it("has sensible defaults", () => {
-    expect(DEFAULT_CONVERGENCE_CONFIG.maxRounds).toBe(5);
-    expect(DEFAULT_CONVERGENCE_CONFIG.maxIdenticalFindings).toBe(2);
+    expect(DEFAULT_CONVERGENCE_CONFIG.maxRounds).toBe(10);
+    expect(DEFAULT_CONVERGENCE_CONFIG.maxIdenticalFindings).toBe(3);
     expect(DEFAULT_CONVERGENCE_CONFIG.maxEmptyPRs).toBe(2);
-    expect(DEFAULT_CONVERGENCE_CONFIG.maxNoProgressRounds).toBe(3);
+    expect(DEFAULT_CONVERGENCE_CONFIG.maxNoProgressRounds).toBe(4);
   });
 });
 

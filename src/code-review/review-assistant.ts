@@ -913,7 +913,7 @@ class ReviewAssistant {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       let response: import("../agent/providers/types").ChatResponse;
       try {
-        response = await aiClient.chat({ messages, tools: REVIEW_TOOLS, maxTokens: 4096 });
+        response = await aiClient.chat({ messages, tools: REVIEW_TOOLS, maxTokens: 65536 });
       } catch (err) {
         onProgress?.({ type: "progress", message: "Tool-assisted review API error — falling back" });
         return this.buildReviewStreaming({ ...changeSet, workspacePath: undefined }, onProgress);
@@ -1000,7 +1000,7 @@ class ReviewAssistant {
               { role: "user", content: diffSummary },
             ],
             temperature: 0.3,
-            maxTokens: 4096,
+            maxTokens: 65536,
             jsonMode: true,
           });
           const content = response.content.trim();
@@ -1125,7 +1125,7 @@ class ReviewAssistant {
               { role: "user", content: diffSummary },
             ],
             temperature: 0.3,
-            maxTokens: 4096,
+            maxTokens: 65536,
             jsonMode: true,
           })) {
             fullContent += chunk;

@@ -26,7 +26,14 @@ import {
   recordRoundFindings,
   checkConvergence,
   DEFAULT_CONVERGENCE_CONFIG,
+  type ConvergenceConfig,
 } from "../../src/autonomous-loop/convergence";
+
+/** Config with stricter identical-findings threshold for integration tests */
+const CONVERGENCE_STRICT: ConvergenceConfig = {
+  ...DEFAULT_CONVERGENCE_CONFIG,
+  maxIdenticalFindings: 2,
+};
 
 import { reviewGate, type ReviewGateFinding } from "../../src/autonomous-loop/review-gate";
 
@@ -216,7 +223,7 @@ describe("convergence detection — identical findings stop the loop", () => {
     state = recordRoundFindings(state, [finding], true);
     state = recordRoundFindings(state, [finding], true);
     state = recordRoundFindings(state, [finding], true);
-    const result = checkConvergence(state, DEFAULT_CONVERGENCE_CONFIG);
+    const result = checkConvergence(state, CONVERGENCE_STRICT);
     expect(result.shouldStop).toBe(true);
     expect(result.reason).toBe("identical_findings");
     expect(result.recommendation).toBe("escalate_human");
@@ -472,7 +479,7 @@ describe("Pipeline integration — end-to-end gate flow", () => {
     let state = initConvergenceState();
     for (let round = 1; round <= 3; round++) {
       state = recordRoundFindings(state, [criticalFinding], true);
-      const check = checkConvergence(state, DEFAULT_CONVERGENCE_CONFIG);
+      const check = checkConvergence(state, CONVERGENCE_STRICT);
       if (round < 3) {
         expect(check.shouldStop).toBe(false);
       } else {
@@ -507,7 +514,7 @@ describe("Pipeline integration — end-to-end gate flow", () => {
     for (let i = 0; i < 3; i++) {
       state = recordRoundFindings(state, [finding], true);
     }
-    const convergence = checkConvergence(state, DEFAULT_CONVERGENCE_CONFIG);
+    const convergence = checkConvergence(state, CONVERGENCE_STRICT);
     expect(convergence.shouldStop).toBe(true);
     expect(convergence.reason).toBe("identical_findings");
   });
@@ -577,7 +584,7 @@ describe("Pipeline integration — end-to-end gate flow", () => {
       expect(gate.canMarkDone).toBe(false);
       expect(gate.highCount).toBe(1);
 
-      const convergence = checkConvergence(state, DEFAULT_CONVERGENCE_CONFIG);
+      const convergence = checkConvergence(state, CONVERGENCE_STRICT);
       if (round < 3) {
         // Rounds 1–2: keep going
         expect(convergence.shouldStop).toBe(false);
@@ -624,7 +631,7 @@ describe("Pipeline integration — end-to-end gate flow", () => {
       let state = initConvergenceState();
       state = recordRoundFindings(state, [finding], true);
       saveConvergenceState(state);
-      expect(checkConvergence(state, DEFAULT_CONVERGENCE_CONFIG).shouldStop).toBe(false);
+      expect(checkConvergence(state, CONVERGENCE_STRICT).shouldStop).toBe(false);
 
       // Run 2: aicoder restarts, loads state, agent reworks, reviewer posts same finding
       _resetCache();
@@ -632,14 +639,14 @@ describe("Pipeline integration — end-to-end gate flow", () => {
       expect(state.roundNumber).toBe(1);
       state = recordRoundFindings(state, [finding], true);
       saveConvergenceState(state);
-      expect(checkConvergence(state, DEFAULT_CONVERGENCE_CONFIG).shouldStop).toBe(false);
+      expect(checkConvergence(state, CONVERGENCE_STRICT).shouldStop).toBe(false);
 
       // Run 3: aicoder restarts again, loads state, reviewer posts same finding again
       _resetCache();
       state = loadConvergenceState();
       expect(state.roundNumber).toBe(2);
       state = recordRoundFindings(state, [finding], true);
-      const result = checkConvergence(state, DEFAULT_CONVERGENCE_CONFIG);
+      const result = checkConvergence(state, CONVERGENCE_STRICT);
 
       // After 3 identical rounds the convergence check must stop the loop
       expect(result.shouldStop).toBe(true);
