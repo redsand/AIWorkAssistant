@@ -1004,4 +1004,5 @@
   // ─── Initial load ──────────────────────────────────────────────────────────
 
   loadRepos();
+  setInterval(updateLastUpdatedDisplay, 60000);
 })();

@@ -19,6 +19,7 @@ const MAX_ISSUES = 200;
 
 const issueCache = new Map<string, { data: DashboardIssue[]; fetchedAt: number }>();
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_CACHE_SIZE = 100;
 
 export function invalidateIssueCache(platform: string, repo: string): void {
   issueCache.delete(`${platform}:${repo}`);
@@ -699,8 +700,10 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
     try {
       const cached = issueCache.get(cacheKey);
       if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+        request.log.debug({ cacheKey }, "issue cache hit");
         issues = cached.data;
       } else {
+        request.log.debug({ cacheKey }, "issue cache miss");
         switch (platform) {
           case "github":
             issues = await fetchGitHubIssues(repo);
@@ -716,6 +719,10 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
               repo as import("../work-items/types").WorkItemSource,
             );
             break;
+        }
+        if (issueCache.size >= MAX_CACHE_SIZE) {
+          const oldestKey = issueCache.keys().next().value;
+          if (oldestKey !== undefined) issueCache.delete(oldestKey);
         }
         issueCache.set(cacheKey, { data: issues, fetchedAt: Date.now() });
       }
