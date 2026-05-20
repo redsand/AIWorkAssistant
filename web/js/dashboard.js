@@ -35,6 +35,7 @@
   const tableSearch = document.getElementById("table-search");
   const tableStatusFilter = document.getElementById("table-status-filter");
   const tablePriorityFilter = document.getElementById("table-priority-filter");
+  const refreshBtn = document.getElementById("refresh-btn");
 
   // ─── State ─────────────────────────────────────────────────────────────────
 
@@ -334,6 +335,34 @@
   tableSearch.addEventListener("input", renderTable);
   tableStatusFilter.addEventListener("change", renderTable);
   tablePriorityFilter.addEventListener("change", renderTable);
+
+  // ─── Refresh ────────────────────────────────────────────────────────────────
+
+  function refreshDashboard() {
+    var val = repoSelect.value;
+    if (!val) return;
+
+    var colon = val.indexOf(":");
+    var platform = val.slice(0, colon);
+    var repoKey = val.slice(colon + 1);
+
+    // Destroy existing instances
+    Object.keys(chartInstances).forEach(function (k) { destroyChart(k); });
+    destroyNetwork();
+
+    loadDashboard(platform, repoKey);
+  }
+
+  refreshBtn.addEventListener("click", function () {
+    if (!repoSelect.value) return;
+    refreshBtn.style.pointerEvents = "none";
+    refreshBtn.style.opacity = "0.7";
+    refreshDashboard();
+    setTimeout(function () {
+      refreshBtn.style.pointerEvents = "";
+      refreshBtn.style.opacity = "";
+    }, 1000);
+  });
 
   // ─── Load data ─────────────────────────────────────────────────────────────
 

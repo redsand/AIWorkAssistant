@@ -63,6 +63,34 @@ body {
 
 .repo-select:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 2px rgba(102,126,234,0.25); }
 
+.refresh-btn {
+  width: 36px;
+  height: 36px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: white;
+  color: #667eea;
+  font-size: 20px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transition: all 0.2s;
+}
+
+.refresh-btn:hover { background: #667eea; color: white; border-color: #667eea; }
+
+.refresh-btn:active { transform: scale(0.95); }
+
+.refresh-btn.spinning {
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+.refresh-btn.spinning .refresh-icon { animation: spin 0.7s linear infinite; }
+
 /* ─── Error banner ─────────────────────────────────────────────────────────── */
 
 .error-banner {

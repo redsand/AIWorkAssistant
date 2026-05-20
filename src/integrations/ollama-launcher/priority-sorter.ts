@@ -98,8 +98,8 @@ function comparePriority(a: PrioritizableItem, b: PrioritizableItem): number {
   const sb = extractTrackingNumber(b.title);
   if (sa !== sb) return sa - sb;
 
-  // 3. Stable
-  return 0;
+  // 3. Oldest first (lowest issue number) when all priorities equal
+  return a.number - b.number;
 }
 
 /**

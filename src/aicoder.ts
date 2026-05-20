@@ -894,6 +894,19 @@ async function rebaseAndResolveConflicts(branchName: string): Promise<boolean> {
 }
 
 
+/** Check if a remote branch exists and pull latest commits into the local branch.
+ *  Only one aicoder runs per repo, so force-sync is safe — no concurrent push risk. */
+function syncRemoteBranch(branchName: string): boolean {
+  const result = spawnSync("git", ["ls-remote", "--heads", "origin", branchName], {
+    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
+  });
+  if (result.status !== 0 || !result.stdout.trim()) return false;
+  runLogger.logGit("Fetching remote branch", branchName);
+  if (!gitRun(["fetch", "origin", branchName], WORKSPACE)) return false;
+  runLogger.logGit("Resetting to remote", `origin/${branchName}`);
+  return gitRun(["reset", "--hard", `origin/${branchName}`], WORKSPACE);
+}
+
 async function checkoutBranch(branchName: string, fromBranch?: string): Promise<boolean> {
   // Recover from any stuck rebase state before doing anything
   if (isRebaseInProgress(WORKSPACE)) {
@@ -904,12 +917,17 @@ async function checkoutBranch(branchName: string, fromBranch?: string): Promise<
     }
   }
 
-  // Already on the target branch — stage any pending changes, then rebase onto base
+  // Already on the target branch — stage any pending changes, sync with remote,
+  // then rebase onto base
   const current = getCurrentBranch();
   if (current === branchName) {
     runLogger.logGit("Already on branch", branchName);
     // Stage any leftover changes from a prior interrupted run
     stageAndCommit(`[AI] resume: staged pending changes`);
+    // Sync with remote branch from prior PR/MR push (only 1 aicoder per repo, no conflicts)
+    if (syncRemoteBranch(branchName)) {
+      runLogger.logGit("Synced with remote branch", branchName);
+    }
     // Pull latest base, then rebase this branch onto it
     if (!pullAndUpdateBase()) {
       runLogger.logGit("WARN", `Could not pull latest ${getBaseBranch()} before rebase`);
@@ -959,7 +977,7 @@ async function checkoutBranch(branchName: string, fromBranch?: string): Promise<
   runLogger.logGit("Creating branch", branchName);
   const create = gitRun(["checkout", "-b", branchName], WORKSPACE);
   if (!create) {
-    // Branch already exists — checkout and rebase onto latest base
+    // Branch already exists — checkout, sync with remote, then rebase onto base
     runLogger.logGit("Switching to existing branch", branchName);
     if (!forceCheckout(branchName, WORKSPACE)) {
       // Checkout failed even with force — try stash with untracked files included
@@ -970,7 +988,8 @@ async function checkoutBranch(branchName: string, fromBranch?: string): Promise<
         safeStashPop(WORKSPACE);
         return false;
       }
-      // Stage any changes on the target branch before rebasing
+      // Sync with remote branch from prior PR/MR push, then stage any changes
+      syncRemoteBranch(branchName);
       stageAndCommit(`[AI] resume: staged pending changes on ${branchName}`);
       runLogger.logGit("Rebasing existing branch onto latest", getBaseBranch());
       gitRun(["rebase", getBaseBranch()], WORKSPACE);
@@ -980,7 +999,8 @@ async function checkoutBranch(branchName: string, fromBranch?: string): Promise<
       }
       safeStashPop(WORKSPACE);
     } else {
-      // Successfully checked out — stage any dirty changes, then rebase
+      // Successfully checked out — sync with remote, stage any dirty changes, then rebase
+      syncRemoteBranch(branchName);
       stageAndCommit(`[AI] resume: staged pending changes on ${branchName}`);
       runLogger.logGit("Rebasing existing branch onto latest", getBaseBranch());
       gitRun(["rebase", getBaseBranch()], WORKSPACE);
@@ -1175,6 +1195,35 @@ ${truncatedOutput}
 Focus ONLY on fixing the failing tests. Do not implement new features or make unrelated changes.`;
 }
 
+/** Detect which package manager to use in the workspace. */
+function detectPackageManager(): "npm" | "pnpm" | "yarn" {
+  if (fs.existsSync(path.join(WORKSPACE, "pnpm-lock.yaml"))) return "pnpm";
+  if (fs.existsSync(path.join(WORKSPACE, "yarn.lock"))) return "yarn";
+  return "npm";
+}
+
+/** Run `npm/pnpm/yarn install` in the workspace. */
+function runPackageInstall(pm: "npm" | "pnpm" | "yarn"): { success: boolean; command: string; exitCode: number | null } {
+  const cmd = `${pm} install`;
+  runLogger.logWork(`Running ${cmd} in workspace...`);
+  const result = spawnSync(pm, ["install"], {
+    cwd: WORKSPACE,
+    stdio: "pipe",
+    encoding: "utf-8",
+    timeout: 120_000,
+  });
+  if (result.error) {
+    runLogger.logError(`${cmd} spawn error: ${result.error.message}`);
+    return { success: false, command: cmd, exitCode: -1 };
+  }
+  if (result.status !== 0) {
+    const tail = result.stderr?.split("\n").slice(-5).join("\n") || "";
+    runLogger.logError(`${cmd} failed (exit ${result.status}): ${tail}`);
+    return { success: false, command: cmd, exitCode: result.status };
+  }
+  return { success: true, command: cmd, exitCode: 0 };
+}
+
 async function fixBaselineTests(_cfg: ServerConfig, item: WorkItem): Promise<boolean> {
   const cfg = getProjectConfig();
 
@@ -1203,6 +1252,35 @@ async function fixBaselineTests(_cfg: ServerConfig, item: WorkItem): Promise<boo
   }
 
   runLogger.logError("Baseline tests FAILED — attempting to fix");
+
+  // Check for missing packages before invoking the agent — no reason to
+  // burn agent cycles on something `npm install` can fix trivially.
+  const MISSING_PACKAGE_RE = /Cannot find (?:package|module)\s+['"]((?:@[^/'"\s]+\/)?[^/'"\s]+)['"]/gi;
+  const missingPackages = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = MISSING_PACKAGE_RE.exec(baseline.output)) !== null) {
+    missingPackages.add(match[1]);
+  }
+  MISSING_PACKAGE_RE.lastIndex = 0;
+
+  if (missingPackages.size > 0) {
+    const pkgs = [...missingPackages].join(", ");
+    runLogger.logWork(`Missing packages detected: ${pkgs} — installing`);
+
+    const pm = detectPackageManager();
+    const installResult = runPackageInstall(pm);
+    if (installResult.success) {
+      runLogger.logConfig(`Ran ${installResult.command} — re-running baseline tests`);
+      const retest = runTestSuite("all");
+      if (retest.passed) {
+        runLogger.logConfig("Baseline tests pass after package install — proceeding");
+        return true;
+      }
+      runLogger.logWork("Baseline tests still failing after package install — trying agent fix");
+    } else {
+      runLogger.logWork(`Package install failed (exit ${installResult.exitCode}) — falling through to agent fix`);
+    }
+  }
 
   let attempts = 0;
   const maxAttempts = Math.min(BASELINE_MAX_FIX_ATTEMPTS, MAX_REWORK);
@@ -1903,7 +1981,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
         { headers: authHeaders(cfg) },
       );
       if (currentResp.data?.status === "active") {
-        runLogger.logWork(`${item.id} already active — skipping status update`);
+        runLogger.logWork(`${item.id} already active — keeping status`);
         trackStep(run.id, "note", `${item.id} already active`);
       } else {
         await axios.patch(
@@ -1923,8 +2001,8 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
       const currentIssue = await jiraClient.getIssue(item.id);
       const currentStatus = currentIssue.fields.status?.name?.toLowerCase() ?? "";
       if (currentStatus === "in progress") {
-        runLogger.logWork(`${item.id} already In Progress — skipping transition`);
-        trackStep(run.id, "note", `${item.id} already In Progress`);
+        runLogger.logWork(`${item.id} already In Progress — keeping status`);
+        trackStep(run.id, "note", `${item.id} already In Progress on Jira`);
       } else {
         const transitions = await jiraClient.getTransitions(item.id);
         const inProgress = transitions.find((t: any) =>
@@ -1951,7 +2029,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
         const rawLabels: string | string[] = issue?.labels || [];
         const labelArray: string[] = typeof rawLabels === "string" ? rawLabels.split(",").map((l: string) => l.trim()) : Array.isArray(rawLabels) ? rawLabels.map((l: any) => (typeof l === "string" ? l.trim() : String(l))) : [];
         if (labelArray.some((l: string) => l.toLowerCase() === "in progress" || l.toLowerCase() === "doing")) {
-          runLogger.logWork(`${item.id} already has In Progress label — skipping`);
+          runLogger.logWork(`${item.id} already has In Progress label — keeping label`);
           trackStep(run.id, "note", `${item.id} already In Progress on GitLab`);
         } else {
           const newLabels = [...labelArray, "In Progress"].join(",");
@@ -1973,7 +2051,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
         const issueResp = await axios.get(`https://api.github.com/repos/${owner}/${repo}/issues/${item.number}`, { headers });
         const currentLabels: string[] = (issueResp.data?.labels || []).map((l: any) => typeof l === "string" ? l : l.name);
         if (currentLabels.some((l: string) => l.toLowerCase() === "in progress")) {
-          runLogger.logWork(`${item.id} already has "In Progress" label — skipping`);
+          runLogger.logWork(`${item.id} already has "In Progress" label — keeping label`);
           trackStep(run.id, "note", `${item.id} already In Progress on GitHub`);
         } else {
           await axios.patch(`https://api.github.com/repos/${owner}/${repo}/issues/${item.number}`, {
