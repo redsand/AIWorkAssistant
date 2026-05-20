@@ -14,9 +14,11 @@
     "ready-for-agent"
   ],
   "source": "github",
-  "checkpoint": "issue_transitioned",
+  "checkpoint": "agent_complete",
   "apiUrl": "http://localhost:3050",
   "apiKey": "ai-loop-key-2026-GcArYGIlbgbFT83XntreWn",
   "startedAt": "2026-05-20T01:53:53.763Z",
-  "updatedAt": "2026-05-20T01:53:54.573Z"
+  "updatedAt": "2026-05-20T02:04:37.216Z",
+  "sessionId": "b927f36b-d5ee-43ea-9f52-8837fd0d73ab",
+  "agentRanTests": true
 }
