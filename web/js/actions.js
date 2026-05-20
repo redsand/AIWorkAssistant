@@ -6,7 +6,7 @@ import {
   setActiveStreamController,
 } from "./state.js";
 import { authHeaders } from "./auth.js";
-import { addMessage, showTyping, finalizeToolProgress } from "./messages.js";
+import { addMessage, showTyping, finalizeToolProgress, markStreamingMessageInterrupted } from "./messages.js";
 
 export function openToolsModal() {
   const modal = document.getElementById("toolsModal");
@@ -30,6 +30,7 @@ async function loadToolsModal() {
 export function stopGeneration() {
   const sessionId = currentSessionId;
   if (activeStreamController) {
+    markStreamingMessageInterrupted();
     activeStreamController?.abort();
     setActiveStreamController(null);
   }
@@ -68,8 +69,6 @@ export function stopGeneration() {
       toggle.classList.remove("expanded");
     }
   });
-
-  addMessage("Generation stopped by user.", "assistant");
 }
 
 export function exportChat() {
