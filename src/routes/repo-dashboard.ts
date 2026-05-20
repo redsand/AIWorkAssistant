@@ -19,7 +19,7 @@ const MAX_ISSUES = 200;
 
 // ─── Platform repo types ─────────────────────────────────────────────────────
 
-interface RepoInfo {
+export interface RepoInfo {
   platform: "github" | "gitlab" | "jira" | "work_items";
   repoKey: string;
   repoName: string;
@@ -27,7 +27,7 @@ interface RepoInfo {
   openCount: number;
 }
 
-interface DashboardIssue {
+export interface DashboardIssue {
   id: string;
   externalId: string;
   title: string;
@@ -46,7 +46,7 @@ interface DashboardIssue {
 
 // ─── Sprint types ────────────────────────────────────────────────────────────
 
-interface DashboardSprint {
+export interface DashboardSprint {
   id: string;
   name: string;
   state: string;
@@ -58,13 +58,13 @@ interface DashboardSprint {
   repo: string;
 }
 
-interface BurndownData {
+export interface BurndownData {
   labels: string[];
   ideal: number[];
   actual: number[];
 }
 
-interface DependencyGraph {
+export interface DependencyGraph {
   nodes: Array<{
     id: string;
     label: string;
@@ -85,7 +85,7 @@ interface DependencyGraph {
 const DEP_RE =
   /\b(?:depends\s+on|blocked\s+by|requires|prerequisite\s*:\s*)\s*#(\d+)/gi;
 
-function parseDependencies(body: string): Array<{ id: string; label: string }> {
+export function parseDependencies(body: string): Array<{ id: string; label: string }> {
   if (!body) return [];
   const seen = new Set<string>();
   const result: Array<{ id: string; label: string }> = [];
@@ -101,7 +101,7 @@ function parseDependencies(body: string): Array<{ id: string; label: string }> {
   return result;
 }
 
-function normalizeStatus(
+export function normalizeStatus(
   raw: string | null | undefined,
   platform: string,
 ): string {
@@ -137,7 +137,7 @@ function normalizeStatus(
   return "unknown";
 }
 
-function normalizePriority(
+export function normalizePriority(
   raw: string | null | undefined,
   labels: string[],
 ): string {
@@ -614,7 +614,7 @@ async function fetchJiraSprints(
   }
 }
 
-function calculateBurndown(
+export function calculateBurndown(
   sprint: DashboardSprint,
   issues: DashboardIssue[],
 ): BurndownData {

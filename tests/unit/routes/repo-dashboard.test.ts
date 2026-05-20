@@ -1,412 +1,354 @@
 /**
  * Unit tests for repo-dashboard sprint & burndown endpoints.
- *
- * Tests the /sprints and /burndown API routes, sprint data normalization,
- * and burndown calculation logic.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import Fastify, { FastifyInstance } from "fastify";
+import {
+  parseDependencies,
+  normalizeStatus,
+  normalizePriority,
+  calculateBurndown,
+  repoDashboardRoutes,
+} from "../../../src/routes/repo-dashboard";
+import type {
+  DashboardSprint,
+  DashboardIssue,
+} from "../../../src/routes/repo-dashboard";
 
-// ─── Types ──────────────────────────────────────────────────────────────────
+vi.mock("../../../src/integrations/github/github-client", () => ({
+  githubClient: { listRepositories: vi.fn(), listIssues: vi.fn(), listMilestones: vi.fn() },
+}));
+vi.mock("../../../src/integrations/gitlab/gitlab-client", () => ({
+  gitlabClient: { getProjects: vi.fn(), listIssues: vi.fn() },
+}));
+vi.mock("../../../src/integrations/jira/jira-client", () => ({
+  jiraClient: { getProjects: vi.fn(), searchIssues: vi.fn(), getSprints: vi.fn(), getSprintIssues: vi.fn() },
+}));
+vi.mock("../../../src/work-items/database", () => ({
+  workItemDatabase: { listWorkItems: vi.fn() },
+}));
+vi.mock("../../../src/config/env", () => ({
+  env: { GITHUB_TOKEN: "gh-test-token", GITHUB_DEFAULT_OWNER: "test-org", GITHUB_DEFAULT_REPO: "test-repo", GITLAB_TOKEN: "gl-test-token", JIRA_BASE_URL: "https://test.atlassian.net", JIRA_API_TOKEN: "jira-test-token" },
+}));
 
-interface DashboardSprint {
-  id: string;
-  name: string;
-  state: string;
-  startDate: string;
-  endDate: string;
-  totalPoints: number;
-  completedPoints: number;
-  platform: string;
-  repo: string;
-}
+import { githubClient } from "../../../src/integrations/github/github-client";
+import { gitlabClient } from "../../../src/integrations/gitlab/gitlab-client";
+import { jiraClient } from "../../../src/integrations/jira/jira-client";
+import { workItemDatabase } from "../../../src/work-items/database";
 
-interface DashboardIssue {
-  id: string;
-  externalId: string;
-  title: string;
-  url: string;
-  status: string;
-  priority: string;
-  assignee: string | null;
-  labels: string[];
-  platform: string;
-  repo: string;
-  createdAt: string;
-  updatedAt: string;
-  dependencies: Array<{ id: string; label: string }>;
-  sprint?: string;
-}
+describe("parseDependencies", () => {
+  it("should return empty array for empty body", () => { expect(parseDependencies("")).toEqual([]); });
+  it("should return empty array for null", () => { expect(parseDependencies(null as any)).toEqual([]); });
+  it("should parse depends on", () => { expect(parseDependencies("depends on #123")).toEqual([{ id: "123", label: "depends on #123" }]); });
+  it("should parse blocked by", () => { expect(parseDependencies("blocked by #456")).toEqual([{ id: "456", label: "blocked by #456" }]); });
+  it("should parse requires", () => { expect(parseDependencies("Requires #789")).toEqual([{ id: "789", label: "Requires #789" }]); });
+  it("should parse prerequisite", () => { expect(parseDependencies("prerequisite: #321")).toEqual([{ id: "321", label: "prerequisite: #321" }]); });
+  it("should deduplicate same id", () => { expect(parseDependencies("depends on #100 and depends on #100")).toEqual([{ id: "100", label: "depends on #100" }]); });
+  it("should parse multiple deps", () => { const r = parseDependencies("depends on #1 and blocked by #2"); expect(r).toHaveLength(2); });
+  it("should be case insensitive", () => { expect(parseDependencies("DEPENDS ON #5")).toEqual([{ id: "5", label: "DEPENDS ON #5" }]); });
+  it("should return empty for no match", () => { expect(parseDependencies("Just a task")).toEqual([]); });
+});
 
-interface BurndownData {
-  labels: string[];
-  ideal: number[];
-  actual: number[];
-}
+describe("normalizeStatus", () => {
+  it("null -> unknown", () => { expect(normalizeStatus(null, "github")).toBe("unknown"); });
+  it("undefined -> unknown", () => { expect(normalizeStatus(undefined, "github")).toBe("unknown"); });
+  it("empty -> unknown", () => { expect(normalizeStatus("", "github")).toBe("unknown"); });
+  it("github open", () => { expect(normalizeStatus("open", "github")).toBe("open"); });
+  it("github closed -> done", () => { expect(normalizeStatus("closed", "github")).toBe("done"); });
+  it("github unknown", () => { expect(normalizeStatus("pending", "github")).toBe("unknown"); });
+  it("gitlab opened -> open", () => { expect(normalizeStatus("opened", "gitlab")).toBe("open"); });
+  it("gitlab closed -> done", () => { expect(normalizeStatus("closed", "gitlab")).toBe("done"); });
+  it("gitlab unknown", () => { expect(normalizeStatus("pending", "gitlab")).toBe("unknown"); });
+  it("jira to do -> open", () => { expect(normalizeStatus("to do", "jira")).toBe("open"); });
+  it("jira backlog -> open", () => { expect(normalizeStatus("backlog", "jira")).toBe("open"); });
+  it("jira in progress", () => { expect(normalizeStatus("in progress", "jira")).toBe("in_progress"); });
+  it("jira in review", () => { expect(normalizeStatus("in review", "jira")).toBe("in_progress"); });
+  it("jira done", () => { expect(normalizeStatus("done", "jira")).toBe("done"); });
+  it("jira resolved -> done", () => { expect(normalizeStatus("resolved", "jira")).toBe("done"); });
+  it("jira blocked", () => { expect(normalizeStatus("blocked", "jira")).toBe("blocked"); });
+  it("jira on hold -> blocked", () => { expect(normalizeStatus("on hold", "jira")).toBe("blocked"); });
+  it("jira unknown -> open", () => { expect(normalizeStatus("something-else", "jira")).toBe("open"); });
+  it("work_items proposed -> open", () => { expect(normalizeStatus("proposed", "work_items")).toBe("open"); });
+  it("work_items active -> in_progress", () => { expect(normalizeStatus("active", "work_items")).toBe("in_progress"); });
+  it("work_items done", () => { expect(normalizeStatus("done", "work_items")).toBe("done"); });
+  it("work_items archived -> done", () => { expect(normalizeStatus("archived", "work_items")).toBe("done"); });
+  it("work_items blocked", () => { expect(normalizeStatus("blocked", "work_items")).toBe("blocked"); });
+  it("work_items unknown -> open", () => { expect(normalizeStatus("unknown", "work_items")).toBe("open"); });
+  it("unknown platform -> unknown", () => { expect(normalizeStatus("open", "slack")).toBe("unknown"); });
+  it("case insensitive", () => { expect(normalizeStatus("Open", "github")).toBe("open"); expect(normalizeStatus("CLOSED", "github")).toBe("done"); });
+});
 
-// ─── Burndown calculation (mirrors the implementation) ─────────────────────
+describe("normalizePriority", () => {
+  it("null+empty -> unknown", () => { expect(normalizePriority(null, [])).toBe("unknown"); });
+  it("critical", () => { expect(normalizePriority("critical", [])).toBe("critical"); });
+  it("blocker -> critical", () => { expect(normalizePriority(null, ["blocker"])).toBe("critical"); });
+  it("highest -> critical", () => { expect(normalizePriority("highest", [])).toBe("critical"); });
+  it("crit -> critical", () => { expect(normalizePriority(null, ["crit"])).toBe("critical"); });
+  it("high", () => { expect(normalizePriority("high", [])).toBe("high"); });
+  it("priority: high", () => { expect(normalizePriority(null, ["priority: high"])).toBe("high"); });
+  it("p1 -> high", () => { expect(normalizePriority(null, ["p1"])).toBe("high"); });
+  it("medium", () => { expect(normalizePriority("medium", [])).toBe("medium"); });
+  it("priority: medium", () => { expect(normalizePriority(null, ["priority: medium"])).toBe("medium"); });
+  it("p2 -> medium", () => { expect(normalizePriority(null, ["p2"])).toBe("medium"); });
+  it("normal -> medium", () => { expect(normalizePriority("normal", [])).toBe("medium"); });
+  it("low", () => { expect(normalizePriority("low", [])).toBe("low"); });
+  it("priority: low", () => { expect(normalizePriority(null, ["priority: low"])).toBe("low"); });
+  it("p3 -> low", () => { expect(normalizePriority(null, ["p3"])).toBe("low"); });
+  it("minor -> low", () => { expect(normalizePriority(null, ["minor"])).toBe("low"); });
+  it("trivial -> low", () => { expect(normalizePriority(null, ["trivial"])).toBe("low"); });
+  it("higher wins", () => { expect(normalizePriority("low", ["critical"])).toBe("critical"); });
+  it("unknown", () => { expect(normalizePriority("unknown", [])).toBe("unknown"); });
+});
 
-function calculateBurndown(sprint: DashboardSprint, issues: DashboardIssue[]): BurndownData {
-  const startDate = new Date(sprint.startDate);
-  const endDate = new Date(sprint.endDate);
-  if (isNaN(startDate.getTime()) || isNaN(endDate.getTime()) || endDate <= startDate) {
-    return { labels: [], ideal: [], actual: [] };
-  }
-
-  const totalDays = Math.ceil((endDate.getTime() - startDate.getTime()) / 86400000);
-  const labels: string[] = [];
-  const ideal: number[] = [];
-  const actual: number[] = [];
-
-  const doneStatuses = new Set(["done"]);
-  const sprintIssues = issues.filter((i) => i.sprint === sprint.id);
-  const totalPoints = sprintIssues.length;
-
-  for (let d = 0; d <= totalDays; d++) {
-    const day = new Date(startDate.getTime() + d * 86400000);
-    labels.push(day.toLocaleDateString("en-US", { month: "short", day: "numeric" }));
-    ideal.push(Math.round((totalPoints * (totalDays - d)) / totalDays));
-    const remaining = sprintIssues.filter((issue) => {
-      if (doneStatuses.has(issue.status)) {
-        const completedDate = new Date(issue.updatedAt);
-        return completedDate > day;
-      }
-      return true;
-    }).length;
-    actual.push(remaining);
-  }
-
-  return { labels, ideal, actual };
-}
-
-// ─── Tests ───────────────────────────────────────────────────────────────────
-
-describe("Burndown Calculation", () => {
-  const baseSprint: DashboardSprint = {
-    id: "sprint-1",
-    name: "Sprint 1",
-    state: "active",
-    startDate: "2025-01-01T00:00:00Z",
-    endDate: "2025-01-14T00:00:00Z",
-    totalPoints: 5,
-    completedPoints: 0,
-    platform: "github",
-    repo: "org/repo",
-  };
-
-  it("should return empty data for invalid dates", () => {
-    const invalidSprint = { ...baseSprint, startDate: "", endDate: "" };
-    const result = calculateBurndown(invalidSprint, []);
-    expect(result.labels).toEqual([]);
-    expect(result.ideal).toEqual([]);
-    expect(result.actual).toEqual([]);
-  });
-
-  it("should return empty data when endDate is before startDate", () => {
-    const reversedSprint = { ...baseSprint, startDate: "2025-01-14T00:00:00Z", endDate: "2025-01-01T00:00:00Z" };
-    const result = calculateBurndown(reversedSprint, []);
-    expect(result.labels).toEqual([]);
-  });
-
-  it("should produce ideal burndown line from total to zero", () => {
-    const result = calculateBurndown(baseSprint, []);
-    expect(result.ideal[0]).toBe(0);
-    expect(result.ideal[result.ideal.length - 1]).toBe(0);
-    expect(result.labels.length).toBe(14);
-  });
-
-  it("should count remaining issues correctly for actual line", () => {
+describe("calculateBurndown", () => {
+  const baseSprint: DashboardSprint = { id: "s1", name: "S1", state: "active", startDate: "2025-01-01T00:00:00Z", endDate: "2025-01-14T00:00:00Z", totalPoints: 5, completedPoints: 0, platform: "github", repo: "org/repo" };
+  it("invalid dates -> empty", () => { const r = calculateBurndown({ ...baseSprint, startDate: "", endDate: "" }, []); expect(r.labels).toEqual([]); });
+  it("reversed dates -> empty", () => { expect(calculateBurndown({ ...baseSprint, startDate: "2025-01-14T00:00:00Z", endDate: "2025-01-01T00:00:00Z" }, []).labels).toEqual([]); });
+  it("14 days = 14 labels", () => { expect(calculateBurndown(baseSprint, []).labels.length).toBe(14); });
+  it("remaining issues", () => {
     const issues: DashboardIssue[] = [
-      { id: "1", externalId: "1", title: "Task 1", url: "", status: "done", priority: "medium", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-05T00:00:00Z", dependencies: [], sprint: "sprint-1" },
-      { id: "2", externalId: "2", title: "Task 2", url: "", status: "open", priority: "high", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-01T00:00:00Z", dependencies: [], sprint: "sprint-1" },
-      { id: "3", externalId: "3", title: "Task 3", url: "", status: "done", priority: "low", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-10T00:00:00Z", dependencies: [], sprint: "sprint-1" },
+      { id: "1", externalId: "1", title: "T1", url: "", status: "done", priority: "medium", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-05T00:00:00Z", dependencies: [], sprint: "s1" },
+      { id: "2", externalId: "2", title: "T2", url: "", status: "open", priority: "high", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-01T00:00:00Z", dependencies: [], sprint: "s1" },
+      { id: "3", externalId: "3", title: "T3", url: "", status: "done", priority: "low", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-10T00:00:00Z", dependencies: [], sprint: "s1" },
     ];
-
-    const result = calculateBurndown(baseSprint, issues);
-    expect(result.actual[0]).toBe(3);
-    expect(result.actual.length).toBe(14);
+    expect(calculateBurndown(baseSprint, issues).actual[0]).toBe(3);
   });
-
-  it("should exclude issues not in the sprint", () => {
+  it("only matching sprint", () => {
     const issues: DashboardIssue[] = [
-      { id: "1", externalId: "1", title: "Task 1", url: "", status: "open", priority: "medium", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-01T00:00:00Z", dependencies: [], sprint: "sprint-other" },
+      { id: "1", externalId: "1", title: "T1", url: "", status: "done", priority: "m", assignee: null, labels: [], platform: "github", repo: "", createdAt: "2025-01-01", updatedAt: "2025-01-05", dependencies: [], sprint: "s1" },
+      { id: "2", externalId: "2", title: "T2", url: "", status: "open", priority: "m", assignee: null, labels: [], platform: "github", repo: "", createdAt: "2025-01-01", updatedAt: "2025-01-01", dependencies: [], sprint: "other" },
     ];
-
-    const result = calculateBurndown(baseSprint, issues);
-    expect(result.ideal[0]).toBe(0);
+    expect(calculateBurndown(baseSprint, issues).actual[0]).toBe(1);
   });
-});
-
-describe("Sprint Endpoint Validation", () => {
-  it("should require platform and repo parameters", async () => {
-    // We test the parameter validation logic directly
-    const query = { platform: "", repo: "" };
-    const hasRequired = !!(query.platform && query.repo);
-    expect(hasRequired).toBe(false);
-  });
-
-  it("should accept valid platform and repo parameters", () => {
-    const query = { platform: "github", repo: "org/repo" };
-    const hasRequired = !!(query.platform && query.repo);
-    expect(hasRequired).toBe(true);
-  });
-
-  it("should only support github and jira platforms for sprints", () => {
-    const supportedPlatforms = ["github", "jira"];
-    expect(supportedPlatforms.includes("github")).toBe(true);
-    expect(supportedPlatforms.includes("jira")).toBe(true);
-    expect(supportedPlatforms.includes("gitlab")).toBe(false);
-  });
-});
-
-describe("Sprint Data Normalization", () => {
-  it("should map Jira sprint fields correctly", () => {
-    const jiraSprint = {
-      id: 42,
-      name: "Sprint 12",
-      state: "active",
-      startDate: "2025-01-06T00:00:00.000Z",
-      endDate: "2025-01-17T00:00:00.000Z",
-      originBoardId: 7,
-    };
-
-    const mapped: DashboardSprint = {
-      id: `jira-sprint-${jiraSprint.id}`,
-      name: jiraSprint.name,
-      state: jiraSprint.state,
-      startDate: jiraSprint.startDate || "",
-      endDate: jiraSprint.endDate || "",
-      totalPoints: 0,
-      completedPoints: 0,
-      platform: "jira",
-      repo: "PROJ",
-    };
-
-    expect(mapped.id).toBe("jira-sprint-42");
-    expect(mapped.name).toBe("Sprint 12");
-    expect(mapped.state).toBe("active");
-    expect(mapped.platform).toBe("jira");
-  });
-
-  it("should map GitHub milestone as sprint", () => {
-    const milestone = {
-      number: 5,
-      title: "Sprint 5 - v2.0",
-      state: "open",
-      created_at: "2025-01-01T00:00:00Z",
-      due_on: "2025-01-14T00:00:00Z",
-    };
-
-    const mapped: DashboardSprint = {
-      id: `gh-milestone-${milestone.number}`,
-      name: milestone.title,
-      state: milestone.state === "open" ? "active" : "closed",
-      startDate: milestone.created_at || "",
-      endDate: milestone.due_on || "",
-      totalPoints: 0,
-      completedPoints: 0,
-      platform: "github",
-      repo: "org/repo",
-    };
-
-    expect(mapped.id).toBe("gh-milestone-5");
-    expect(mapped.name).toBe("Sprint 5 - v2.0");
-    expect(mapped.state).toBe("active");
-  });
-
-  it("should calculate sprint points from issue counts", () => {
+  it("done before sprint = 0 remaining", () => {
     const issues: DashboardIssue[] = [
-      { id: "1", externalId: "1", title: "Done 1", url: "", status: "done", priority: "medium", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "", updatedAt: "", dependencies: [], sprint: "sprint-1" },
-      { id: "2", externalId: "2", title: "Open 1", url: "", status: "open", priority: "high", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "", updatedAt: "", dependencies: [], sprint: "sprint-1" },
-      { id: "3", externalId: "3", title: "Done 2", url: "", status: "done", priority: "low", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "", updatedAt: "", dependencies: [], sprint: "sprint-1" },
-      { id: "4", externalId: "4", title: "Other sprint", url: "", status: "done", priority: "medium", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "", updatedAt: "", dependencies: [], sprint: "sprint-2" },
+      { id: "1", externalId: "1", title: "T1", url: "", status: "done", priority: "m", assignee: null, labels: [], platform: "github", repo: "", createdAt: "2024-12-25", updatedAt: "2024-12-30", dependencies: [], sprint: "s1" },
     ];
-
-    const sprintIssues = issues.filter((i) => i.sprint === "sprint-1");
-    const totalPoints = sprintIssues.length;
-    const completedPoints = sprintIssues.filter((i) => i.status === "done").length;
-
-    expect(totalPoints).toBe(3);
-    expect(completedPoints).toBe(2);
+    expect(calculateBurndown(baseSprint, issues).actual[0]).toBe(0);
   });
 });
 
-describe("Empty State Handling", () => {
-  it("should return empty sprints array when no sprints exist", () => {
-    const result = { sprints: [], issues: [] };
-    expect(result.sprints).toEqual([]);
-    expect(result.issues).toEqual([]);
+describe("repoDashboardRoutes", () => {
+  let server: FastifyInstance;
+  beforeEach(async () => {
+    server = Fastify();
+    await server.register(repoDashboardRoutes, { prefix: "/api/repo-dashboard" });
+    await server.ready();
+    vi.clearAllMocks();
+  });
+  afterEach(async () => { await server.close(); });
+
+  describe("GET /repos", () => {
+    it("should return empty when all providers fail", async () => {
+      vi.mocked(githubClient.listRepositories).mockRejectedValue(new Error("down"));
+      vi.mocked(gitlabClient.getProjects).mockRejectedValue(new Error("down"));
+      vi.mocked(jiraClient.getProjects).mockRejectedValue(new Error("down"));
+      vi.mocked(workItemDatabase.listWorkItems).mockReturnValue({ total: 0, items: [] });
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/repos" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().repos).toEqual([]);
+    });
+    it("should return GitHub repos", async () => {
+      vi.mocked(githubClient.listRepositories).mockResolvedValue([{ owner: { login: "org" }, name: "r1", full_name: "org/r1" }]);
+      vi.mocked(githubClient.listIssues).mockResolvedValue([{ number: 1, state: "open", title: "I1", pull_request: null, labels: [], assignee: null, html_url: "", created_at: "", updated_at: "", body: "" }]);
+      vi.mocked(gitlabClient.getProjects).mockRejectedValue(new Error("no"));
+      vi.mocked(jiraClient.getProjects).mockRejectedValue(new Error("no"));
+      vi.mocked(workItemDatabase.listWorkItems).mockReturnValue({ total: 0, items: [] });
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/repos" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().repos.some((r: any) => r.platform === "github")).toBe(true);
+    });
+    it("should return GitLab repos", async () => {
+      vi.mocked(githubClient.listRepositories).mockRejectedValue(new Error("no"));
+      vi.mocked(gitlabClient.getProjects).mockResolvedValue([{ id: 1, path_with_namespace: "org/gl", name_with_namespace: "org/gl", name: "gl" }]);
+      vi.mocked(gitlabClient.listIssues).mockResolvedValue([{ iid: 1, id: 101, state: "opened", title: "GL", labels: [], assignee: null, web_url: "", created_at: "", updated_at: "", description: "" }]);
+      vi.mocked(jiraClient.getProjects).mockRejectedValue(new Error("no"));
+      vi.mocked(workItemDatabase.listWorkItems).mockReturnValue({ total: 0, items: [] });
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/repos" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().repos.some((r: any) => r.platform === "gitlab")).toBe(true);
+    });
+    it("should return Jira repos", async () => {
+      vi.mocked(githubClient.listRepositories).mockRejectedValue(new Error("no"));
+      vi.mocked(gitlabClient.getProjects).mockRejectedValue(new Error("no"));
+      vi.mocked(jiraClient.getProjects).mockResolvedValue([{ key: "PROJ", name: "My Project" }]);
+      vi.mocked(jiraClient.searchIssues).mockResolvedValue([{ key: "PROJ-1", fields: { summary: "J", status: { name: "To Do" }, priority: { name: "Medium" }, assignee: null, labels: [], created: "", updated: "", description: "" } }]);
+      vi.mocked(workItemDatabase.listWorkItems).mockReturnValue({ total: 0, items: [] });
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/repos" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().repos.some((r: any) => r.platform === "jira")).toBe(true);
+    });
   });
 
-  it("should return empty burndown data for invalid sprint", () => {
-    const sprint: DashboardSprint = {
-      id: "sprint-1",
-      name: "Sprint 1",
-      state: "active",
-      startDate: "",
-      endDate: "",
-      totalPoints: 0,
-      completedPoints: 0,
-      platform: "github",
-      repo: "org/repo",
-    };
-
-    const result = calculateBurndown(sprint, []);
-    expect(result.labels).toEqual([]);
-    expect(result.ideal).toEqual([]);
-    expect(result.actual).toEqual([]);
+  describe("GET /issues", () => {
+    it("should return GitHub issues", async () => {
+      vi.mocked(githubClient.listIssues).mockResolvedValue([{ number: 1, state: "open", title: "Bug fix", pull_request: null, labels: [{ name: "bug" }], assignee: { login: "dev" }, html_url: "https://github.com/org/repo/issues/1", created_at: "2025-01-01", updated_at: "2025-01-02", body: "", milestone: null }]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=github&repo=org/repo" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().issues).toHaveLength(1);
+      expect(res.json().issues[0].platform).toBe("github");
+    });
+    it("should return GitLab issues", async () => {
+      vi.mocked(gitlabClient.listIssues).mockResolvedValue([{ iid: 42, id: 142, state: "opened", title: "GL issue", labels: [], assignee: { username: "dev" }, web_url: "", created_at: "", updated_at: "", description: "" }]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=gitlab&repo=org/repo" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().issues).toHaveLength(1);
+    });
+    it("should return Jira issues", async () => {
+      vi.mocked(jiraClient.searchIssues).mockResolvedValue([{ key: "PROJ-1", fields: { summary: "Jira task", status: { name: "In Progress" }, priority: { name: "High" }, assignee: { displayName: "Dev" }, labels: [], created: "", updated: "", description: "" } }]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=jira&repo=PROJ" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().issues).toHaveLength(1);
+    });
+    it("should handle Jira content description", async () => {
+      vi.mocked(jiraClient.searchIssues).mockResolvedValue([{ key: "PROJ-1", fields: { summary: "Task", status: { name: "Done" }, priority: { name: "M" }, assignee: null, labels: [], created: "", updated: "", description: { content: [{ content: [{ text: "blocked by #5" }] }] } } }]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=jira&repo=PROJ" });
+      expect(res.json().issues[0].dependencies).toHaveLength(1);
+    });
+    it("should handle Jira null description", async () => {
+      vi.mocked(jiraClient.searchIssues).mockResolvedValue([{ key: "PROJ-1", fields: { summary: "Task", status: { name: "Done" }, priority: { name: "M" }, assignee: null, labels: [], created: "", updated: "", description: null } }]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=jira&repo=PROJ" });
+      expect(res.json().issues[0].dependencies).toHaveLength(0);
+    });
+    it("should return work items", async () => {
+      vi.mocked(workItemDatabase.listWorkItems).mockReturnValue({ total: 1, items: [{ id: "wi-1", title: "W1", status: "active", priority: "high", owner: "dev", sourceUrl: "", sourceExternalId: "e1", source: "chat", createdAt: "", updatedAt: "", description: "" }] });
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=work_items&repo=chat" });
+      expect(res.json().issues).toHaveLength(1);
+    });
+    it("should respect limit", async () => {
+      const issues = Array.from({ length: 5 }, (_, i) => ({ number: i + 1, state: "open", title: "I" + i, pull_request: null, labels: [], assignee: null, html_url: "", created_at: "", updated_at: "", body: "", milestone: null }));
+      vi.mocked(githubClient.listIssues).mockResolvedValue(issues);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=github&repo=org/repo&limit=3" });
+      expect(res.json().issues).toHaveLength(3);
+      expect(res.json().total).toBe(5);
+    });
+    it("should handle errors", async () => {
+      vi.mocked(githubClient.listIssues).mockRejectedValue(new Error("API error"));
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=github&repo=org/repo" });
+      expect(res.json().error).toBe("API error");
+    });
   });
 
-  it("should handle sprint with no issues gracefully", () => {
-    const sprint: DashboardSprint = {
-      id: "sprint-1",
-      name: "Sprint 1",
-      state: "active",
-      startDate: "2025-01-01T00:00:00Z",
-      endDate: "2025-01-14T00:00:00Z",
-      totalPoints: 0,
-      completedPoints: 0,
-      platform: "github",
-      repo: "org/repo",
-    };
-
-    const result = calculateBurndown(sprint, []);
-    expect(result.labels.length).toBe(14);
-    expect(result.ideal[0]).toBe(0);
-    expect(result.actual[0]).toBe(0);
-  });
-});
-
-describe("GitHub Milestone-to-Sprint Mapping", () => {
-  it("should assign sprint field from milestone number", () => {
-    const rawIssue = {
-      number: 42,
-      title: "Fix login bug",
-      state: "open",
-      html_url: "https://github.com/org/repo/issues/42",
-      assignee: { login: "dev1" },
-      labels: [{ name: "bug" }],
-      created_at: "2025-01-01T00:00:00Z",
-      updated_at: "2025-01-05T00:00:00Z",
-      body: "",
-      milestone: { number: 3, title: "Sprint 3" },
-    };
-
-    const milestone = rawIssue.milestone;
-    const sprint = milestone
-      ? `gh-milestone-${milestone.number}`
-      : "";
-
-    expect(sprint).toBe("gh-milestone-3");
+  describe("GET /dependencies", () => {
+    it("should return dependency graph", async () => {
+      vi.mocked(githubClient.listIssues).mockResolvedValue([
+        { number: 1, state: "open", title: "I1", pull_request: null, labels: [{ name: "bug" }], assignee: null, html_url: "https://github.com/org/repo/issues/1", created_at: "", updated_at: "", body: "depends on #2", milestone: null },
+        { number: 2, state: "closed", title: "I2", pull_request: null, labels: [], assignee: null, html_url: "https://github.com/org/repo/issues/2", created_at: "", updated_at: "", body: "", milestone: null },
+      ]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/dependencies?platform=github&repo=org/repo" });
+      expect(res.json().nodes).toHaveLength(2);
+      expect(res.json().edges).toHaveLength(1);
+    });
+    it("should return empty for unknown platform", async () => {
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/dependencies?platform=unknown&repo=org/repo" });
+      expect(res.json().nodes).toEqual([]);
+    });
+    it("should handle errors", async () => {
+      vi.mocked(githubClient.listIssues).mockRejectedValue(new Error("err"));
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/dependencies?platform=github&repo=org/repo" });
+      expect(res.json().nodes).toEqual([]);
+    });
   });
 
-  it("should assign sprint field from sprint/ label when no milestone", () => {
-    const rawIssue = {
-      number: 43,
-      title: "Add feature X",
-      state: "open",
-      html_url: "https://github.com/org/repo/issues/43",
-      assignee: null,
-      labels: [{ name: "sprint/2025-01" }, { name: "enhancement" }],
-      created_at: "2025-01-01T00:00:00Z",
-      updated_at: "2025-01-05T00:00:00Z",
-      body: "",
-      milestone: null,
-    };
-
-    const sprintLabel = (rawIssue.labels as Array<{ name: string }>)
-      .map((l) => l.name)
-      .find((l) => l.startsWith("sprint/") || l.startsWith("iteration/"));
-    const sprint = rawIssue.milestone
-      ? `gh-milestone-${rawIssue.milestone.number}`
-      : sprintLabel
-        ? `gh-label-${sprintLabel}`
-        : "";
-
-    expect(sprint).toBe("gh-label-sprint/2025-01");
+  describe("GET /sprints", () => {
+    it("should return error when params missing", async () => {
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/sprints" });
+      expect(res.json().error).toBe("platform and repo are required");
+    });
+    it("should return empty for unsupported platform", async () => {
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/sprints?platform=gitlab&repo=org/repo" });
+      expect(res.json().sprints).toEqual([]);
+    });
+    it("should return GitHub sprints", async () => {
+      vi.mocked(githubClient.listMilestones).mockResolvedValue([{ number: 1, title: "Sprint 1", state: "open", created_at: "2025-01-01T00:00:00Z", due_on: "2025-01-14T00:00:00Z" }]);
+      vi.mocked(githubClient.listIssues).mockResolvedValue([
+        { number: 10, state: "open", title: "I10", pull_request: null, labels: [], assignee: null, html_url: "", created_at: "", updated_at: "", body: "", milestone: { number: 1 } },
+        { number: 11, state: "closed", title: "I11", pull_request: null, labels: [], assignee: null, html_url: "", created_at: "", updated_at: "", body: "", milestone: { number: 1 } },
+      ]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/sprints?platform=github&repo=org/repo" });
+      expect(res.json().sprints).toHaveLength(1);
+      expect(res.json().sprints[0].id).toBe("gh-milestone-1");
+      expect(res.json().sprints[0].totalPoints).toBe(2);
+      expect(res.json().sprints[0].completedPoints).toBe(1);
+    });
+    it("should assign sprint from sprint/ label", async () => {
+      vi.mocked(githubClient.listMilestones).mockResolvedValue([{ number: 1, title: "S1", state: "open", created_at: "2025-01-01", due_on: "2025-01-14" }]);
+      vi.mocked(githubClient.listIssues).mockResolvedValue([{ number: 10, state: "open", title: "I", pull_request: null, labels: [{ name: "sprint/2025-01" }], assignee: null, html_url: "", created_at: "", updated_at: "", body: "", milestone: null }]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/sprints?platform=github&repo=org/repo" });
+      expect(res.json().issues[0].sprint).toBe("gh-label-sprint/2025-01");
+    });
+    it("should assign sprint from iteration/ label", async () => {
+      vi.mocked(githubClient.listMilestones).mockResolvedValue([{ number: 1, title: "S1", state: "open", created_at: "2025-01-01", due_on: "2025-01-14" }]);
+      vi.mocked(githubClient.listIssues).mockResolvedValue([{ number: 11, state: "open", title: "I", pull_request: null, labels: [{ name: "iteration/4" }], assignee: null, html_url: "", created_at: "", updated_at: "", body: "", milestone: null }]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/sprints?platform=github&repo=org/repo" });
+      expect(res.json().issues[0].sprint).toBe("gh-label-iteration/4");
+    });
+    it("should set empty sprint with no milestone or label", async () => {
+      vi.mocked(githubClient.listMilestones).mockResolvedValue([{ number: 1, title: "S1", state: "open", created_at: "2025-01-01", due_on: "2025-01-14" }]);
+      vi.mocked(githubClient.listIssues).mockResolvedValue([{ number: 12, state: "open", title: "I", pull_request: null, labels: [{ name: "bug" }], assignee: null, html_url: "", created_at: "", updated_at: "", body: "", milestone: null }]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/sprints?platform=github&repo=org/repo" });
+      expect(res.json().issues[0].sprint).toBe("");
+    });
+    it("should return Jira sprints", async () => {
+      vi.mocked(jiraClient.getSprints).mockResolvedValue([{ id: 5, name: "JS1", state: "active", startDate: "2025-01-01", endDate: "2025-01-14" }]);
+      vi.mocked(jiraClient.getSprintIssues).mockResolvedValue([{ key: "PROJ-1", fields: { summary: "T1", status: { name: "Done" }, priority: { name: "M" }, assignee: null, labels: [], created: "", updated: "", description: "" } }]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/sprints?platform=jira&repo=PROJ" });
+      expect(res.json().sprints[0].id).toBe("jira-sprint-5");
+    });
+    it("should handle Jira sprint content description", async () => {
+      vi.mocked(jiraClient.getSprints).mockResolvedValue([{ id: 5, name: "S5", state: "active", startDate: "2025-01-01", endDate: "2025-01-14" }]);
+      vi.mocked(jiraClient.getSprintIssues).mockResolvedValue([{ key: "P-1", fields: { summary: "T", status: { name: "Done" }, priority: { name: "M" }, assignee: null, labels: [], created: "", updated: "", description: { content: [{ content: [{ text: "requires #10" }] }] } } }]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/sprints?platform=jira&repo=PROJ" });
+      expect(res.json().issues[0].dependencies).toHaveLength(1);
+    });
+    it("should handle GitHub sprint errors", async () => {
+      vi.mocked(githubClient.listMilestones).mockRejectedValue(new Error("err"));
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/sprints?platform=github&repo=org/repo" });
+      expect(res.json().sprints).toEqual([]);
+    });
+    it("should handle Jira sprint errors", async () => {
+      vi.mocked(jiraClient.getSprints).mockRejectedValue(new Error("err"));
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/sprints?platform=jira&repo=PROJ" });
+      expect(res.json().sprints).toEqual([]);
+    });
   });
 
-  it("should assign iteration/ label as sprint when no milestone", () => {
-    const rawIssue = {
-      number: 44,
-      title: "Refactor module Y",
-      state: "open",
-      html_url: "https://github.com/org/repo/issues/44",
-      assignee: null,
-      labels: [{ name: "iteration/4" }],
-      created_at: "2025-01-01T00:00:00Z",
-      updated_at: "2025-01-05T00:00:00Z",
-      body: "",
-      milestone: null,
-    };
-
-    const sprintLabel = (rawIssue.labels as Array<{ name: string }>)
-      .map((l) => l.name)
-      .find((l) => l.startsWith("sprint/") || l.startsWith("iteration/"));
-    const sprint = rawIssue.milestone
-      ? `gh-milestone-${rawIssue.milestone.number}`
-      : sprintLabel
-        ? `gh-label-${sprintLabel}`
-        : "";
-
-    expect(sprint).toBe("gh-label-iteration/4");
-  });
-
-  it("should set empty sprint when no milestone and no sprint label", () => {
-    const rawIssue = {
-      number: 45,
-      title: "General task",
-      state: "open",
-      html_url: "https://github.com/org/repo/issues/45",
-      assignee: null,
-      labels: [{ name: "bug" }],
-      created_at: "2025-01-01T00:00:00Z",
-      updated_at: "2025-01-05T00:00:00Z",
-      body: "",
-      milestone: null,
-    };
-
-    const sprintLabel = (rawIssue.labels as Array<{ name: string }>)
-      .map((l) => l.name)
-      .find((l) => l.startsWith("sprint/") || l.startsWith("iteration/"));
-    const sprint = rawIssue.milestone
-      ? `gh-milestone-${rawIssue.milestone.number}`
-      : sprintLabel
-        ? `gh-label-${sprintLabel}`
-        : "";
-
-    expect(sprint).toBe("");
-  });
-});
-
-describe("Sprint Points Calculation", () => {
-  it("should count total and completed points from sprint issues", () => {
-    const issues: DashboardIssue[] = [
-      { id: "1", externalId: "#1", title: "A", url: "", status: "done", priority: "medium", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "", updatedAt: "", dependencies: [], sprint: "gh-milestone-3" },
-      { id: "2", externalId: "#2", title: "B", url: "", status: "open", priority: "high", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "", updatedAt: "", dependencies: [], sprint: "gh-milestone-3" },
-      { id: "3", externalId: "#3", title: "C", url: "", status: "done", priority: "low", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "", updatedAt: "", dependencies: [], sprint: "gh-milestone-3" },
-      { id: "4", externalId: "#4", title: "D", url: "", status: "in_progress", priority: "critical", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "", updatedAt: "", dependencies: [], sprint: "gh-milestone-3" },
-      { id: "5", externalId: "#5", title: "E", url: "", status: "open", priority: "medium", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "", updatedAt: "", dependencies: [], sprint: "gh-milestone-5" },
-    ];
-
-    const sprintIssues = issues.filter((i) => i.sprint === "gh-milestone-3");
-    expect(sprintIssues.length).toBe(4);
-    expect(sprintIssues.filter((i) => i.status === "done").length).toBe(2);
-  });
-
-  it("should calculate days left in active sprint", () => {
-    const now = new Date();
-    const startDate = new Date(now.getTime() - 7 * 86400000);
-    const endDate = new Date(now.getTime() + 7 * 86400000);
-    const daysLeft = Math.max(0, Math.ceil((endDate.getTime() - now.getTime()) / 86400000));
-    expect(daysLeft).toBeGreaterThanOrEqual(6);
-    expect(daysLeft).toBeLessThanOrEqual(8);
-  });
-
-  it("should return 0 days left for past sprint", () => {
-    const now = new Date();
-    const endDate = new Date(now.getTime() - 3 * 86400000);
-    const daysLeft = Math.max(0, Math.ceil((endDate.getTime() - now.getTime()) / 86400000));
-    expect(daysLeft).toBe(0);
+  describe("GET /burndown", () => {
+    it("should return error when params missing", async () => {
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/burndown?platform=github&repo=org/repo" });
+      expect(res.json().error).toBe("platform, repo, and sprintId are required");
+    });
+    it("should return empty for unsupported platform", async () => {
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/burndown?platform=gitlab&repo=org/repo&sprintId=1" });
+      expect(res.json().labels).toEqual([]);
+    });
+    it("should return burndown data", async () => {
+      vi.mocked(githubClient.listMilestones).mockResolvedValue([{ number: 1, title: "S1", state: "open", created_at: "2025-01-01T00:00:00Z", due_on: "2025-01-14T00:00:00Z" }]);
+      vi.mocked(githubClient.listIssues).mockResolvedValue([
+        { number: 10, state: "open", title: "I10", pull_request: null, labels: [], assignee: null, html_url: "", created_at: "2025-01-01", updated_at: "2025-01-05", body: "", milestone: { number: 1 } },
+        { number: 11, state: "closed", title: "I11", pull_request: null, labels: [], assignee: null, html_url: "", created_at: "2025-01-01", updated_at: "2025-01-10", body: "", milestone: { number: 1 } },
+      ]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/burndown?platform=github&repo=org/repo&sprintId=gh-milestone-1" });
+      expect(res.json().labels).toHaveLength(14);
+      expect(res.json().sprint).toBeDefined();
+    });
+    it("should return error for missing sprint", async () => {
+      vi.mocked(githubClient.listMilestones).mockResolvedValue([{ number: 1, title: "S1", state: "open", created_at: "2025-01-01", due_on: "2025-01-14" }]);
+      vi.mocked(githubClient.listIssues).mockResolvedValue([]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/burndown?platform=github&repo=org/repo&sprintId=gh-milestone-99" });
+      expect(res.json().error).toBe("Sprint not found");
+    });
+    it("should return Jira burndown", async () => {
+      vi.mocked(jiraClient.getSprints).mockResolvedValue([{ id: 5, name: "S5", state: "active", startDate: "2025-01-01", endDate: "2025-01-14" }]);
+      vi.mocked(jiraClient.getSprintIssues).mockResolvedValue([{ key: "P-1", fields: { summary: "T", status: { name: "Done" }, priority: { name: "M" }, assignee: null, labels: [], created: "", updated: "", description: "" } }]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/burndown?platform=jira&repo=PROJ&sprintId=jira-sprint-5" });
+      expect(res.json().labels.length).toBeGreaterThan(0);
+    });
+    it("should handle sprint fetch failure", async () => {
+      vi.mocked(githubClient.listMilestones).mockRejectedValue(new Error("err"));
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/burndown?platform=github&repo=org/repo&sprintId=gh-milestone-1" });
+      expect(res.json().error).toBe("Sprint not found");
+    });
   });
 });
