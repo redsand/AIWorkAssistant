@@ -768,6 +768,19 @@ export class GithubClient {
     return response.data;
   }
 
+  async listMilestones(
+    state: "open" | "closed" | "all" = "open",
+    owner?: string,
+    repo?: string,
+  ): Promise<any[]> {
+    const { owner: o, repo: r } = this.resolveRepo(owner, repo);
+    console.log(`[GitHub] Fetching milestones for ${o}/${r}`);
+    const response = await this.client.get(`/repos/${o}/${r}/milestones`, {
+      params: { state, per_page: 50 },
+    });
+    console.log(`[GitHub] Found ${response.data.length} milestones`);
+    return response.data;
+  }
   async createRelease(
     params: {
       tagName: string;
