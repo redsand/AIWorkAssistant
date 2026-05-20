@@ -20,6 +20,14 @@ vi.mock("../../../src/config/env", () => ({
   },
 }));
 
+// Mock the audio metadata module to avoid spawning ffprobe processes
+vi.mock("../../../src/integrations/audio/metadata", () => ({
+  getAudioMetadata: vi.fn().mockResolvedValue({
+    metrics: { durationSeconds: 1, sampleRate: 44100, channels: 1 },
+    warnings: [],
+  }),
+}));
+
 // Import after mocking
 import {
   saveUploadedAudio,
