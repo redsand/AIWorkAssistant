@@ -432,15 +432,22 @@ function clearDebugLog(workspace: string): void {
 
 // ─── Codex formatter ──────────────────────────────────────────────────────────
 
+interface CodexFileChange {
+  path?: string;
+  kind?: string;
+}
+
 interface CodexItem {
   id?: string;
   type?: string;
+  item_type?: string;
   text?: string;
   command?: string;
   aggregated_output?: string;
   exit_code?: number | null;
   status?: string;
   file_path?: string;
+  changes?: CodexFileChange[];
   [key: string]: unknown;
 }
 
@@ -486,6 +493,14 @@ function createCodexFormatter(
   let activeCommands: Map<string, string> = new Map(); // item_id → command string
   let agentRanTests = false;
 
+  /** Extract file paths from Codex file_change item (changes array or file_path fallback). */
+  function getFilePaths(item: CodexItem): string {
+    if (item.changes && item.changes.length > 0) {
+      return item.changes.map((c) => c.path || "").filter(Boolean).join(", ");
+    }
+    return item.file_path || "";
+  }
+
   function formatCodexLine(rawLine: string): string {
     if (!rawLine) return "";
 
@@ -530,7 +545,7 @@ function createCodexFormatter(
         }
 
         if (item.type === "file_change") {
-          const fp = item.file_path || "";
+          const fp = getFilePaths(item);
           return `  ${yellow("✎")} ${dim(fp)}`;
         }
 
@@ -560,7 +575,7 @@ function createCodexFormatter(
         }
 
         if (item.type === "file_change") {
-          const fp = item.file_path || "";
+          const fp = getFilePaths(item);
           return `  ${success("✓")} ${dim(fp)}`;
         }
 

@@ -21,10 +21,10 @@
   const statBlocked = document.getElementById("stat-blocked");
   const statDone = document.getElementById("stat-done");
 
-  // Charts
-  const statusCtx = document.getElementById("statusChart").getContext("2d");
-  const priorityCtx = document.getElementById("priorityChart").getContext("2d");
-  const assigneeCtx = document.getElementById("assigneeChart").getContext("2d");
+  // Chart canvas element IDs (we re-get context on each render)
+  const STATUS_CANVAS_ID = "statusChart";
+  const PRIORITY_CANVAS_ID = "priorityChart";
+  const ASSIGNEE_CANVAS_ID = "assigneeChart";
 
   // Graph
   const graphContainer = document.getElementById("dependency-graph");
@@ -45,12 +45,15 @@
   const STATUS_COLORS = { open: "#3b82f6", in_progress: "#f59e0b", blocked: "#ef4444", done: "#22c55e", unknown: "#9ca3af" };
   const PRIORITY_COLORS = { critical: "#ef4444", high: "#f97316", medium: "#3b82f6", low: "#9ca3af", unknown: "#d1d5db" };
 
+  const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, unknown: 4 };
+  const STATUS_ORDER = { in_progress: 0, open: 1, blocked: 2, done: 3, unknown: 4 };
+
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
   function showError(msg) {
     errorBanner.textContent = msg;
     errorBanner.style.display = "block";
-    setTimeout(() => { errorBanner.style.display = "none"; }, 8000);
+    setTimeout(function () { errorBanner.style.display = "none"; }, 8000);
   }
 
   function destroyChart(key) {
@@ -67,48 +70,64 @@
     }
   }
 
-  /** Render a single stat chip value */
   function renderStat(el, value) {
     if (el) el.textContent = value;
   }
 
-  /** Format a date string to a short relative format */
   function shortDate(iso) {
     if (!iso) return "—";
-    const d = new Date(iso);
-    const now = new Date();
-    const diff = now - d;
-    const days = Math.floor(diff / 86400000);
+    var d = new Date(iso);
+    var now = new Date();
+    var diff = now - d;
+    var days = Math.floor(diff / 86400000);
     if (days === 0) return "Today";
     if (days === 1) return "Yesterday";
-    if (days < 7) return `${days}d ago`;
-    if (days < 30) return `${Math.floor(days / 7)}w ago`;
+    if (days < 7) return days + "d ago";
+    if (days < 30) return Math.floor(days / 7) + "w ago";
     return d.toLocaleDateString();
   }
 
-  /** Toggle empty state vs chart */
   function showEmpty(key, isEmpty) {
-    const el = document.getElementById(key + "-empty");
+    var el = document.getElementById(key + "-empty");
     if (el) el.style.display = isEmpty ? "block" : "none";
+  }
+
+  /** Get a fresh 2d context from a canvas by ID. */
+  function freshCtx(canvasId) {
+    var canvas = document.getElementById(canvasId);
+    if (!canvas) return null;
+    return canvas.getContext("2d");
+  }
+
+  /** Sort issues by priority then status. */
+  function sortIssues(issues) {
+    return issues.slice().sort(function (a, b) {
+      var pDiff = (PRIORITY_ORDER[a.priority] || 4) - (PRIORITY_ORDER[b.priority] || 4);
+      if (pDiff !== 0) return pDiff;
+      return (STATUS_ORDER[a.status] || 4) - (STATUS_ORDER[b.status] || 4);
+    });
   }
 
   // ─── Chart helpers ─────────────────────────────────────────────────────────
 
-  function makeDoughnut(canvas, data, showEmptyFn) {
-    destroyChart(canvas);
-    const labels = Object.keys(data);
-    const values = Object.values(data);
-    const total = values.reduce((a, b) => a + b, 0);
+  function makeDoughnut(canvasId, data, showEmptyFn) {
+    destroyChart(canvasId);
+    var ctx = freshCtx(canvasId);
+    if (!ctx) return;
+
+    var labels = Object.keys(data);
+    var values = Object.values(data);
+    var total = values.reduce(function (a, b) { return a + b; }, 0);
     if (total === 0) { showEmptyFn(true); return; }
     showEmptyFn(false);
 
-    chartInstances[canvas] = new Chart(canvas, {
+    chartInstances[canvasId] = new Chart(ctx, {
       type: "doughnut",
       data: {
-        labels,
+        labels: labels,
         datasets: [{
           data: values,
-          backgroundColor: labels.map(l => STATUS_COLORS[l] || PRIORITY_COLORS[l] || "#9ca3af"),
+          backgroundColor: labels.map(function (l) { return STATUS_COLORS[l] || PRIORITY_COLORS[l] || "#9ca3af"; }),
           borderWidth: 0,
         }],
       },
@@ -120,18 +139,21 @@
     });
   }
 
-  function makeBar(canvas, labels, values, colorFn, showEmptyFn) {
-    destroyChart(canvas);
+  function makeBar(canvasId, labels, values, colorFn, showEmptyFn) {
+    destroyChart(canvasId);
+    var ctx = freshCtx(canvasId);
+    if (!ctx) return;
+
     if (labels.length === 0) { showEmptyFn(true); return; }
     showEmptyFn(false);
 
-    chartInstances[canvas] = new Chart(canvas, {
+    chartInstances[canvasId] = new Chart(ctx, {
       type: "bar",
       data: {
-        labels,
+        labels: labels,
         datasets: [{
           data: values,
-          backgroundColor: labels.map(l => colorFn(l)),
+          backgroundColor: labels.map(function (l) { return colorFn(l); }),
           borderRadius: 4,
           borderWidth: 0,
         }],
@@ -152,11 +174,14 @@
   // ─── Render ────────────────────────────────────────────────────────────────
 
   function renderStats(issues) {
-    const open = issues.filter(i => i.status === "open").length;
-    const progress = issues.filter(i => i.status === "in_progress").length;
-    const blocked = issues.filter(i => i.status === "blocked").length;
-    const done = issues.filter(i => i.status === "done").length;
-
+    var open = 0, progress = 0, blocked = 0, done = 0;
+    for (var i = 0; i < issues.length; i++) {
+      var s = issues[i].status;
+      if (s === "open") open++;
+      else if (s === "in_progress") progress++;
+      else if (s === "blocked") blocked++;
+      else if (s === "done") done++;
+    }
     renderStat(statTotal, issues.length);
     renderStat(statOpen, open);
     renderStat(statProgress, progress);
@@ -165,66 +190,72 @@
   }
 
   function renderStatusChart(issues) {
-    const counts = { open: 0, in_progress: 0, blocked: 0, done: 0 };
-    for (const i of issues) {
-      if (counts[i.status] !== undefined) counts[i.status]++;
-      else counts[i.status] = 1;
+    var counts = { open: 0, in_progress: 0, blocked: 0, done: 0 };
+    for (var i = 0; i < issues.length; i++) {
+      var s = issues[i].status;
+      if (counts[s] !== undefined) counts[s]++;
+      else counts[s] = 1;
     }
-    makeDoughnut(statusCtx, counts, (empty) => showEmpty("status", empty));
+    makeDoughnut(STATUS_CANVAS_ID, counts, function (empty) { showEmpty("status", empty); });
   }
 
   function renderPriorityChart(issues) {
-    const counts = { critical: 0, high: 0, medium: 0, low: 0 };
-    for (const i of issues) {
-      if (counts[i.priority] !== undefined) counts[i.priority]++;
-      else counts[i.priority] = 1;
+    var counts = { critical: 0, high: 0, medium: 0, low: 0 };
+    for (var i = 0; i < issues.length; i++) {
+      var p = issues[i].priority;
+      if (counts[p] !== undefined) counts[p]++;
+      else counts[p] = 1;
     }
-    makeDoughnut(priorityCtx, counts, (empty) => showEmpty("priority", empty));
+    makeDoughnut(PRIORITY_CANVAS_ID, counts, function (empty) { showEmpty("priority", empty); });
   }
 
   function renderAssigneeChart(issues) {
-    const byAssignee = {};
-    for (const i of issues) {
-      const key = i.assignee || "(unassigned)";
+    var byAssignee = {};
+    for (var i = 0; i < issues.length; i++) {
+      var key = issues[i].assignee || "(unassigned)";
       byAssignee[key] = (byAssignee[key] || 0) + 1;
     }
-    const sorted = Object.entries(byAssignee).sort((a, b) => b[1] - a[1]).slice(0, 15);
-    const labels = sorted.map(e => e[0]);
-    const values = sorted.map(e => e[1]);
-    makeBar(assigneeCtx, labels, values, () => "#667eea", (empty) => showEmpty("assignee", empty));
+    var sorted = Object.entries(byAssignee).sort(function (a, b) { return b[1] - a[1]; }).slice(0, 15);
+    var labels = sorted.map(function (e) { return e[0]; });
+    var values = sorted.map(function (e) { return e[1]; });
+    makeBar(ASSIGNEE_CANVAS_ID, labels, values, function () { return "#667eea"; }, function (empty) { showEmpty("assignee", empty); });
   }
 
   function renderDependencyGraph(nodes, edges) {
     destroyNetwork();
-    if (nodes.length === 0 || edges.length === 0) {
+    if (nodes.length === 0) {
       document.getElementById("graph-empty").style.display = "block";
       return;
     }
     document.getElementById("graph-empty").style.display = "none";
 
-    const visNodes = nodes.map(n => ({
-      id: n.id,
-      label: n.label,
-      title: `<b>${n.label}</b><br>${n.title.replace(/</g, "&lt;").replace(/>/g, "&gt;")}`,
-      color: {
-        background: PRIORITY_COLORS[n.priority] || "#9ca3af",
-        border: STATUS_COLORS[n.status] || "#9ca3af",
-      },
-      shape: n.status === "done" ? "square" : n.status === "in_progress" ? "triangle" : n.status === "blocked" ? "star" : "dot",
-      size: n.priority === "critical" ? 18 : n.priority === "high" ? 14 : 10,
-      font: { size: 11, color: "#1a1a2e" },
-      borderWidth: 2,
-    }));
+    var visNodes = nodes.map(function (n) {
+      return {
+        id: n.id,
+        label: n.label,
+        title: "<b>" + n.label + "</b><br>" + n.title.replace(/</g, "&lt;").replace(/>/g, "&gt;"),
+        color: {
+          background: PRIORITY_COLORS[n.priority] || "#9ca3af",
+          border: STATUS_COLORS[n.status] || "#9ca3af",
+        },
+        shape: n.status === "done" ? "square" : n.status === "in_progress" ? "triangle" : n.status === "blocked" ? "star" : "dot",
+        size: n.priority === "critical" ? 18 : n.priority === "high" ? 14 : 10,
+        font: { size: 11, color: "#1a1a2e" },
+        borderWidth: 2,
+      };
+    });
 
-    const visEdges = edges.map(e => ({
-      from: e.from,
-      to: e.to,
-      arrows: "to",
-      label: e.label,
-      font: { size: 9, color: "#6b7280", align: "middle" },
-      color: { color: "#c4b5fd", hover: "#a78bfa" },
-      smooth: { type: "curvedCW", roundness: 0.2 },
-    }));
+    var visEdges = edges.map(function (e) {
+      return {
+        from: e.from,
+        to: e.to,
+        arrows: "to",
+        label: e.label,
+        font: { size: 9, color: "#6b7280", align: "middle" },
+        color: { color: "#c4b5fd", hover: "#a78bfa" },
+        smooth: { type: "curvedCW", roundness: 0.2 },
+      };
+    });
 
     networkInstance = new vis.Network(graphContainer, { nodes: visNodes, edges: visEdges }, {
       physics: {
@@ -237,22 +268,25 @@
 
     networkInstance.on("click", function (params) {
       if (params.nodes.length > 0) {
-        const nodeId = params.nodes[0];
-        const node = nodes.find(n => n.id === nodeId);
+        var nodeId = params.nodes[0];
+        var node = nodes.find(function (n) { return n.id === nodeId; });
         if (node && node.url) window.open(node.url, "_blank");
       }
     });
   }
 
-  function renderTable(issues) {
-    const search = (tableSearch.value || "").toLowerCase().trim();
-    const statusFilter = tableStatusFilter.value;
-    const priorityFilter = tablePriorityFilter.value;
+  function renderTable() {
+    var search = (tableSearch.value || "").toLowerCase().trim();
+    var statusFilter = tableStatusFilter.value;
+    var priorityFilter = tablePriorityFilter.value;
 
-    let filtered = issues;
-    if (search) filtered = filtered.filter(i => i.title.toLowerCase().includes(search));
-    if (statusFilter) filtered = filtered.filter(i => i.status === statusFilter);
-    if (priorityFilter) filtered = filtered.filter(i => i.priority === priorityFilter);
+    var filtered = allIssues;
+    if (search) filtered = filtered.filter(function (i) { return i.title.toLowerCase().includes(search); });
+    if (statusFilter) filtered = filtered.filter(function (i) { return i.status === statusFilter; });
+    if (priorityFilter) filtered = filtered.filter(function (i) { return i.priority === priorityFilter; });
+
+    // Sort by priority within status groups
+    filtered = sortIssues(filtered);
 
     if (filtered.length === 0) {
       issuesTable.style.display = "none";
@@ -264,29 +298,32 @@
     issuesTable.style.display = "";
     issuesTbody.innerHTML = "";
 
-    const statusBadge = (s) => {
-      const cls = s === "open" ? "open" : s === "in_progress" ? "progress" : s === "blocked" ? "blocked" : s === "done" ? "done" : "";
-      return `<span class="badge badge-${cls}">${s.replace(/_/g, " ")}</span>`;
-    };
+    function statusBadge(s) {
+      var cls = s === "open" ? "open" : s === "in_progress" ? "progress" : s === "blocked" ? "blocked" : s === "done" ? "done" : "";
+      return '<span class="badge badge-' + cls + '">' + s.replace(/_/g, " ") + '</span>';
+    }
 
-    const priorityBadge = (p) => `<span class="badge badge-${p}">${p}</span>`;
+    function priorityBadge(p) {
+      return '<span class="badge badge-' + p + '">' + p + '</span>';
+    }
 
-    const depLinks = (deps) => {
+    function depLinks(deps) {
       if (!deps || deps.length === 0) return "—";
-      return deps.map(d => `<span class="dep-link" title="${d.label}">${d.id}</span>`).join(", ");
-    };
+      return deps.map(function (d) { return '<span class="dep-link" title="' + d.label + '">' + d.id + '</span>'; }).join(", ");
+    }
 
-    for (const i of filtered) {
-      const tr = document.createElement("tr");
+    for (var idx = 0; idx < filtered.length; idx++) {
+      var i = filtered[idx];
+      var tr = document.createElement("tr");
       tr.innerHTML = [
-        `<td><a href="${i.url}" target="_blank" rel="noopener">${i.externalId}</a></td>`,
-        `<td>${i.title.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</td>`,
-        `<td>${statusBadge(i.status)}</td>`,
-        `<td>${priorityBadge(i.priority)}</td>`,
-        `<td>${i.assignee || "—"}</td>`,
-        `<td>${(i.labels || []).map(l => `<span class="badge badge-low">${l.replace(/</g, "&lt;")}</span>`).join(" ")}</td>`,
-        `<td>${depLinks(i.dependencies)}</td>`,
-        `<td>${shortDate(i.updatedAt)}</td>`,
+        '<td><a href="' + i.url + '" target="_blank" rel="noopener">' + i.externalId + '</a></td>',
+        '<td>' + i.title.replace(/</g, "&lt;").replace(/>/g, "&gt;") + '</td>',
+        '<td>' + statusBadge(i.status) + '</td>',
+        '<td>' + priorityBadge(i.priority) + '</td>',
+        '<td>' + (i.assignee || "—") + '</td>',
+        '<td>' + (i.labels || []).map(function (l) { return '<span class="badge badge-low">' + l.replace(/</g, "&lt;") + '</span>'; }).join(" ") + '</td>',
+        '<td>' + depLinks(i.dependencies) + '</td>',
+        '<td>' + shortDate(i.updatedAt) + '</td>',
       ].join("");
       issuesTbody.appendChild(tr);
     }
@@ -294,9 +331,9 @@
 
   // ─── Filter event handlers ─────────────────────────────────────────────────
 
-  tableSearch.addEventListener("input", () => renderTable(allIssues));
-  tableStatusFilter.addEventListener("change", () => renderTable(allIssues));
-  tablePriorityFilter.addEventListener("change", () => renderTable(allIssues));
+  tableSearch.addEventListener("input", renderTable);
+  tableStatusFilter.addEventListener("change", renderTable);
+  tablePriorityFilter.addEventListener("change", renderTable);
 
   // ─── Load data ─────────────────────────────────────────────────────────────
 
@@ -304,9 +341,9 @@
     repoSelect.innerHTML = '<option value="">Loading repositories…</option>';
     repoSelect.disabled = true;
     try {
-      const resp = await fetch("/api/repo-dashboard/repos");
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json();
+      var resp = await fetch("/api/repo-dashboard/repos");
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      var data = await resp.json();
 
       if (data.repos.length === 0) {
         repoSelect.innerHTML = '<option value="">— No repositories available —</option>';
@@ -314,10 +351,11 @@
       }
 
       repoSelect.innerHTML = '<option value="">— Select a repository —</option>';
-      for (const repo of data.repos) {
-        const opt = document.createElement("option");
-        opt.value = `${repo.platform}:${repo.repoKey}`;
-        opt.textContent = `${repo.repoName} (${repo.issueCount} issues)`;
+      for (var ri = 0; ri < data.repos.length; ri++) {
+        var repo = data.repos[ri];
+        var opt = document.createElement("option");
+        opt.value = repo.platform + ":" + repo.repoKey;
+        opt.textContent = repo.repoName + " (" + repo.issueCount + " issues)";
         repoSelect.appendChild(opt);
       }
     } catch (err) {
@@ -331,27 +369,27 @@
   function showDashboardLoading() {
     emptyState.style.display = "none";
     dashboardContent.style.display = "none";
-    const loader = document.getElementById("dashboard-loading");
+    var loader = document.getElementById("dashboard-loading");
     if (loader) loader.style.display = "block";
   }
 
   function hideDashboardLoading() {
-    const loader = document.getElementById("dashboard-loading");
+    var loader = document.getElementById("dashboard-loading");
     if (loader) loader.style.display = "none";
   }
 
   async function loadDashboard(platform, repoKey) {
     showDashboardLoading();
     try {
-      const [issuesResp, depsResp] = await Promise.all([
-        fetch(`/api/repo-dashboard/issues?platform=${encodeURIComponent(platform)}&repo=${encodeURIComponent(repoKey)}&limit=200`),
-        fetch(`/api/repo-dashboard/dependencies?platform=${encodeURIComponent(platform)}&repo=${encodeURIComponent(repoKey)}`),
+      var results = await Promise.all([
+        fetch("/api/repo-dashboard/issues?platform=" + encodeURIComponent(platform) + "&repo=" + encodeURIComponent(repoKey) + "&limit=200"),
+        fetch("/api/repo-dashboard/dependencies?platform=" + encodeURIComponent(platform) + "&repo=" + encodeURIComponent(repoKey)),
       ]);
 
-      if (!issuesResp.ok) throw new Error(`HTTP ${issuesResp.status}`);
+      if (!results[0].ok) throw new Error("HTTP " + results[0].status);
 
-      const issuesData = await issuesResp.json();
-      const depsData = await depsResp.json();
+      var issuesData = await results[0].json();
+      var depsData = await results[1].json();
 
       if (issuesData.error) {
         showError(issuesData.error);
@@ -369,7 +407,12 @@
       renderPriorityChart(allIssues);
       renderAssigneeChart(allIssues);
       renderDependencyGraph(depsData.nodes || [], depsData.edges || []);
-      renderTable(allIssues);
+
+      // Reset table filters to defaults: show in_progress only, sort by priority
+      tableSearch.value = "";
+      tableStatusFilter.value = "in_progress";
+      tablePriorityFilter.value = "";
+      renderTable();
     } catch (err) {
       hideDashboardLoading();
       showError("Failed to load dashboard data: " + err.message);
@@ -377,19 +420,19 @@
   }
 
   repoSelect.addEventListener("change", function () {
-    const val = this.value;
+    var val = this.value;
     if (!val) {
       dashboardContent.style.display = "none";
       emptyState.style.display = "block";
       return;
     }
 
-    const colon = val.indexOf(":");
-    const platform = val.slice(0, colon);
-    const repoKey = val.slice(colon + 1);
+    var colon = val.indexOf(":");
+    var platform = val.slice(0, colon);
+    var repoKey = val.slice(colon + 1);
 
     // Destroy existing instances
-    Object.keys(chartInstances).forEach(k => destroyChart(k));
+    Object.keys(chartInstances).forEach(function (k) { destroyChart(k); });
     destroyNetwork();
 
     loadDashboard(platform, repoKey);
