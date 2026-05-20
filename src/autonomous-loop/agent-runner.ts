@@ -40,16 +40,18 @@ function buildFinRegexes(token: string): { finRegex: RegExp; finLineRegex: RegEx
   };
 }
 
-export function buildAgentArgs(agent: string, resumeSessionId?: string): string[] {
+export function buildAgentArgs(agent: string, resumeSessionId?: string, model?: string): string[] {
   switch (agent) {
-    case "codex":
+    case "codex": {
+      const codexModel = model || process.env.CODEX_MODEL || "gpt-5.5";
       return [
         "exec",
         "--model",
-        process.env.CODEX_MODEL || "gpt-5.5",
+        codexModel,
         "--json",
         "--dangerously-bypass-approvals-and-sandbox",
       ];
+    }
     case "opencode":
       return [];
     case "claude": {
@@ -85,7 +87,7 @@ export async function runAgentDirect(
     const finToken = cfg.finToken ?? (process.env.FIN_SIGNAL || "FIN");
     const { finRegex, finLineRegex } = buildFinRegexes(finToken);
 
-    const agentArgs = buildAgentArgs(cfg.agent, resumeSessionId);
+    const agentArgs = buildAgentArgs(cfg.agent, resumeSessionId, cfg.model);
     const child = spawn(cfg.agent, agentArgs, {
       cwd: cfg.workspace,
       stdio: ["pipe", "pipe", "inherit"],

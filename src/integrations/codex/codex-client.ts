@@ -53,7 +53,7 @@ class CodexClient {
       options.model ||
       process.env.CODEX_MODEL ||
       process.env.OLLAMA_MODEL ||
-      "o4-mini";
+      "gpt-5.5";
     const approvalMode = options.approvalMode || "suggest";
 
     const args: string[] = ["exec", "--model", model, "--json"];

@@ -3581,7 +3581,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       model: {
         type: "string",
         description:
-          'Model to use (e.g., "o4-mini", "gpt-4o"). Defaults to CODEX_MODEL env var or "o4-mini".',
+          'Model to use (e.g., "gpt-5.5", "gpt-4o"). Defaults to CODEX_MODEL env var or "gpt-5.5".',
         required: false,
       },
       approvalMode: {
