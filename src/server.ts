@@ -38,6 +38,10 @@ import { autonomousLoopRoutes } from "./routes/autonomous-loop";
 import { projectAssessmentRoutes } from "./routes/project-assessment";
 import { digestRoutes } from "./routes/digests";
 import { musicianRoutes } from "./routes/musician";
+import { recipeRoutes } from "./routes/recipes";
+import { claimKitAdapter } from "./context-engine/adapters/claimkit-adapter";
+import { comparisonRoutes } from "./comparison-runs/api";
+import { ingestKnowledgeStore, ingestCodebaseStore, ingestGraphStore } from "./context-engine/claimkit-ingestion";
 import {
   authMiddleware,
   isAuthConfigured,
@@ -47,9 +51,6 @@ import { startTunnel } from "./integrations/file/tunnel";
 import { startCalendarScheduler } from "./scheduler/calendar-midnight";
 import { initializeMCP } from "./integrations/mcp";
 import { codebaseIndexer } from "./agent/codebase-indexer";
-import { claimKitAdapter } from "./context-engine/adapters/claimkit-adapter";
-import { comparisonRoutes } from "./comparison-runs/api";
-import { ingestKnowledgeStore, ingestCodebaseStore, ingestGraphStore } from "./context-engine/claimkit-ingestion";
 import path from "path";
 
 export async function buildServer() {
@@ -116,6 +117,7 @@ export async function buildServer() {
   await server.register(projectAssessmentRoutes, { prefix: "/api/project-assessment" });
   await server.register(digestRoutes, { prefix: "/api/digests" });
   await server.register(musicianRoutes, { prefix: "/api/musician" });
+  await server.register(recipeRoutes);
   await server.register(comparisonRoutes, { prefix: "/api/comparison" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
