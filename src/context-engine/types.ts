@@ -115,6 +115,7 @@ export const DEFAULT_SLOT_DEFINITIONS: BudgetSlotDefinition[] = [
   { name: "history", priority: 80, fraction: 0.35, overflowTarget: "documents" },
   { name: "documents", priority: 60, fraction: 0.2, overflowTarget: "graph" },
   { name: "graph", priority: 40, fraction: 0.1, overflowTarget: "health" },
+  { name: "claimkit_evidence", priority: 55, fraction: 0.15, overflowTarget: "documents" },
   { name: "health", priority: 20, fraction: 0.05, overflowTarget: null },
 ];
 

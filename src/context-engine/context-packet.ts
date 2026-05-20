@@ -12,8 +12,10 @@ import type {
   AssembleContextParams,
   ContextPacket,
   ContextSection,
+  ClaimKitContextSection,
   ScoredDocument,
 } from "./types";
+import { claimKitAdapter } from "./adapters/claimkit-adapter";
 import { createBudget, estimateTokens, enforceBudget } from "./budget";
 import { compressDocuments } from "./compressor";
 import { rerank } from "./reranker";
@@ -37,6 +39,8 @@ export async function assembleContextPacket(
   const documentsSlot = budget.slots.find((s) => s.name === "documents")!;
   const graphSlot = budget.slots.find((s) => s.name === "graph")!;
 
+  const claimKitAvailable = await claimKitAdapter.initialize();
+
   const baseSystemPrompt = getSystemPrompt(mode, undefined, "engine");
   const systemTokens = estimateTokens(baseSystemPrompt);
   systemSlot.allocatedTokens = Math.max(systemSlot.allocatedTokens, systemTokens);
@@ -47,6 +51,16 @@ export async function assembleContextPacket(
   const historyTokens = selectedMessages.reduce((sum, s) => sum + s.tokens, 0);
 
   const docs = await retrieveAllStores(query);
+
+  let claimKitResult: Awaited<ReturnType<typeof claimKitAdapter.query>> | null = null;
+  if (claimKitAvailable) {
+    try {
+      claimKitResult = await claimKitAdapter.query(query);
+    } catch (err) {
+      console.warn("[ContextPacket] ClaimKit query failed:", err);
+    }
+  }
+
   const rerankedDocs = rerank(docs, query);
   const compressedDocs = compressDocuments(
     rerankedDocs.slice(0, 10),
@@ -64,6 +78,35 @@ export async function assembleContextPacket(
   const knowledgeSection = formatDocumentsSection(compressedDocs);
   const graphSection = trimmedGraph;
 
+  let claimKitSection: ClaimKitContextSection | null = null;
+  if (claimKitResult) {
+    const evidenceLines: string[] = [];
+    evidenceLines.push("=== VERIFIED EVIDENCE (ClaimKit) ===");
+    evidenceLines.push(`Answerability: ${claimKitResult.answerability}`);
+    evidenceLines.push(`Confidence: ${(claimKitResult.confidence * 100).toFixed(1)}%`);
+    evidenceLines.push(`Claims found: ${claimKitResult.metadata.claimCount}`);
+    evidenceLines.push("");
+    evidenceLines.push("--- Evidence ---");
+    evidenceLines.push(claimKitResult.answer);
+    if (claimKitResult.citations.length > 0) {
+      evidenceLines.push("");
+      evidenceLines.push("--- Citations ---");
+      for (const cite of claimKitResult.citations.slice(0, 10)) {
+        evidenceLines.push(`[${cite.claimId}] ${cite.text.substring(0, 200)}`);
+      }
+    }
+    const content = evidenceLines.join("\n");
+    claimKitSection = {
+      name: "claimkit_evidence",
+      content,
+      tokens: estimateTokens(content),
+      answerability: claimKitResult.answerability,
+      contradictions: claimKitResult.contradictions,
+      claimCount: claimKitResult.metadata.claimCount,
+      confidence: claimKitResult.confidence,
+    };
+  }
+
   const healthText = await buildHealthStatus();
   const healthSection: ContextSection | null = healthText
     ? { name: "health", content: healthText, tokens: estimateTokens(healthText) }
@@ -75,6 +118,10 @@ export async function assembleContextPacket(
     { name: "documents", content: knowledgeSection, tokens: estimateTokens(knowledgeSection), sourceCount: compressedDocs.length },
     { name: "graph", content: graphSection, tokens: estimateTokens(graphSection) },
   ];
+
+  if (claimKitSection) {
+    sections.push(claimKitSection);
+  }
 
   if (healthSection) {
     sections.push(healthSection);
@@ -97,6 +144,14 @@ export async function assembleContextPacket(
     messages.push({
       role: "system",
       content: `=== KNOWLEDGE GRAPH ===\n${enforced[3].content}`,
+    });
+  }
+
+  const claimKitEnforced = enforced.find((s) => s.name === "claimkit_evidence");
+  if (claimKitEnforced && claimKitEnforced.content.trim()) {
+    messages.push({
+      role: "system",
+      content: claimKitEnforced.content,
     });
   }
 
