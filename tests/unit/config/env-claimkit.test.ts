@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
+// Prevent dotenv from loading .env file during tests
+vi.mock("dotenv", () => ({
+  config: vi.fn(),
+}));
+
 const CLAIMKIT_KEYS = [
   "CLAIMKIT_ENABLED",
   "CLAIMKIT_LLM_PROVIDER",

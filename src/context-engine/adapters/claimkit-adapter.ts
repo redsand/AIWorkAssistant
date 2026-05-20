@@ -100,7 +100,7 @@ export class ClaimKitAdapter {
         reason: c.explanation,
       })),
       missingEvidence: [...result.missingEvidence],
-      answerability: result.packet.answerability.status,
+      answerability: result.packet?.answerability?.status ?? "answerable",
       metadata: {
         sourceIds: [...result.metadata.sourceIds],
         claimCount: result.metadata.claimCount,

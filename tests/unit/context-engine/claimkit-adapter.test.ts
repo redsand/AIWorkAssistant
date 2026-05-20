@@ -169,21 +169,22 @@ describe("ClaimKitAdapter", () => {
 
     it("should ingest text and return sourceId", async () => {
       mockClaimKitInstance.ingest.mockResolvedValueOnce({
-        source: { id: "src-123" },
+        ingest: { source: { id: "src-123" } },
       });
       await adapter.initialize();
 
       const result = await adapter.ingest("some text", { key: "value" });
       expect(result).toEqual({ sourceId: "src-123" });
       expect(mockClaimKitInstance.ingest).toHaveBeenCalledWith({
-        text: "some text",
+        title: "source",
+        content: "some text",
         metadata: { key: "value" },
       });
     });
 
     it("should ingest text without metadata", async () => {
       mockClaimKitInstance.ingest.mockResolvedValueOnce({
-        source: { id: "src-456" },
+        ingest: { source: { id: "src-456" } },
       });
       await adapter.initialize();
 
@@ -195,11 +196,11 @@ describe("ClaimKitAdapter", () => {
   describe("query", () => {
     const mockAnswerResult = {
       answer: "The answer is 42.",
-      citations: [{ claimId: "c1", sourceId: "s1", text: "evidence" }],
+      citations: [{ claimId: "c1", sourceId: "s1", evidenceText: "evidence" }],
       confidence: 0.95,
-      contradictions: [{ claimA: "a", claimB: "b", reason: "conflict" }],
+      contradictions: [{ claimText1: "a", claimText2: "b", explanation: "conflict" }],
       missingEvidence: ["missing piece"],
-      verification: { answerability: "answerable" as const },
+      packet: { answerability: { status: "answerable" } },
       metadata: {
         sourceIds: ["s1"],
         claimCount: 5,
@@ -239,10 +240,10 @@ describe("ClaimKitAdapter", () => {
       expect(mockClaimKitInstance.query).toHaveBeenCalledWith("question", options);
     });
 
-    it("should default answerability to 'answerable' when verification is missing", async () => {
+    it("should default answerability to 'answerable' when packet is missing", async () => {
       mockClaimKitInstance.query.mockResolvedValueOnce({
         ...mockAnswerResult,
-        verification: undefined,
+        packet: undefined,
       });
       await adapter.initialize();
 
