@@ -78,7 +78,7 @@ describe("Recipes API", () => {
         url: "/api/recipes/nonexistent",
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(404);
       const body = response.json();
       expect(body.error).toBe("Recipe not found");
     });
@@ -107,7 +107,7 @@ describe("Recipes API", () => {
         payload: {},
       });
 
-      expect(response.statusCode).toBe(500);
+      expect(response.statusCode).toBe(400);
     });
   });
 
@@ -136,7 +136,7 @@ describe("Recipes API", () => {
         url: "/api/recipes/executions/nonexistent",
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(404);
       const body = response.json();
       expect(body.error).toBe("Execution not found");
     });

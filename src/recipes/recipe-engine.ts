@@ -42,6 +42,14 @@ export class RecipeEngine {
       if (v.required && !(v.name in variables)) {
         throw new Error(`Missing required variable: ${v.name}`);
       }
+      if (v.name in variables) {
+        const val = variables[v.name];
+        if (val !== null && val !== undefined && typeof val !== v.type) {
+          throw new Error(
+            `Invalid type for variable ${v.name}: expected ${v.type}, got ${typeof val}`,
+          );
+        }
+      }
     }
 
     const execution: RecipeExecution = {
