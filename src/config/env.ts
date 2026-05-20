@@ -158,7 +158,7 @@ const envSchema = z.object({
   // Codex CLI
   CODEX_CLI_PATH: z.string().default("codex"),
   CODEX_API_KEY: z.string().default(""),
-  CODEX_MODEL: z.string().default("o4-mini"),
+  CODEX_MODEL: z.string().default("gpt-5.5"),
 
   // Ollama Launcher (meta-launcher for AI coding tools)
   OLLAMA_LAUNCHER_DEFAULT_MODEL: z.string().default("glm-5.1:cloud"),

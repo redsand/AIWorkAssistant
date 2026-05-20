@@ -46,7 +46,7 @@ export function buildAgentArgs(agent: string, resumeSessionId?: string): string[
       return [
         "exec",
         "--model",
-        process.env.CODEX_MODEL || "o4-mini",
+        process.env.CODEX_MODEL || "gpt-5.5",
         "--json",
         "--dangerously-bypass-approvals-and-sandbox",
       ];
