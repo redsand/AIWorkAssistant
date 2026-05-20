@@ -817,11 +817,13 @@ async function rebaseAndResolveConflicts(branchName: string): Promise<boolean> {
     const conflictPrompt = buildConflictResolutionPrompt(conflictFileList, branchName);
     const llmResult = await runAgent(conflictPrompt);
     if (llmResult.finDetected || llmResult.exitCode === 0) {
-      // Check if the agent actually resolved all conflicts
+      // Stage any files the LLM resolved (marks them resolved in git index).
+      // The LLM edits files directly but doesn't git-add them, so we must stage
+      // before checking which conflicts remain.
+      gitRun(["add", "--all"], WORKSPACE);
       const remainingConflicts = getConflictFiles();
       if (remainingConflicts.length === 0) {
         // Stage the resolved files and continue the rebase
-        gitRun(["add", "--all"], WORKSPACE);
         const continueResult = spawnSync("git", ["rebase", "--continue"], {
           cwd: WORKSPACE,
           stdio: "pipe",
@@ -1005,21 +1007,45 @@ async function resolveRebaseConflictsInPlace(branchName: string): Promise<boolea
   runLogger.logGit("Rebase has conflicts — resolving in place");
   const branchFiles = getBranchModifiedFiles();
 
-  // Step 1: Dumb resolution (--ours/--theirs)
-  resolveConflictsInWorkingTree(branchFiles, true);
-
-  // Step 2: Check for remaining conflicts and try LLM
-  const remainingConflicts = getConflictFiles();
-  if (remainingConflicts.length > 0) {
-    runLogger.logGit(`Attempting LLM conflict resolution for ${remainingConflicts.length} remaining file(s)`);
-    const conflictPrompt = buildConflictResolutionPrompt(remainingConflicts, branchName);
+  // Step 1: Try LLM-assisted resolution first (intelligent merge)
+  const conflictFileList = getConflictFiles();
+  if (conflictFileList.length > 0) {
+    runLogger.logGit(`Attempting LLM conflict resolution for ${conflictFileList.length} file(s)`);
+    const conflictPrompt = buildConflictResolutionPrompt(conflictFileList, branchName);
     const llmResult = await runAgent(conflictPrompt);
     if (llmResult.finDetected || llmResult.exitCode === 0) {
+      // Stage any files the LLM resolved (marks them resolved in git index).
+      // This is necessary because the LLM edits files directly but doesn't git-add them.
+      gitRun(["add", "--all"], WORKSPACE);
       const afterLlm = getConflictFiles();
       if (afterLlm.length === 0) {
-        gitRun(["add", "--all"], WORKSPACE);
+        runLogger.logGit("LLM resolved all conflicts — continuing rebase");
+        const continueResult = spawnSync("git", ["rebase", "--continue"], {
+          cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
+          env: { ...process.env, GIT_EDITOR: "true" },
+        });
+        if (continueResult.status === 0 || !isRebaseInProgress(WORKSPACE)) {
+          runLogger.logGit("Rebase completed with LLM conflict resolution");
+          return true;
+        }
+        // LLM resolved conflicts but rebase continue had more patches with conflicts
+        if (isRebaseInProgress(WORKSPACE)) {
+          runLogger.logGit("More conflicts after LLM resolution — continuing");
+        } else {
+          return true;
+        }
+      } else {
+        runLogger.logGit(`LLM left ${afterLlm.length} conflict(s) — falling back to dumb resolution for remaining`);
       }
+    } else {
+      runLogger.logGit("LLM failed to resolve conflicts — falling back to dumb resolution");
     }
+  }
+
+  // Step 2: Dumb resolution (--ours/--theirs) for any remaining conflicts
+  const remainingConflicts = getConflictFiles();
+  if (remainingConflicts.length > 0) {
+    resolveConflictsInWorkingTree(branchFiles, true);
   }
 
   // Stage everything and try to continue the rebase

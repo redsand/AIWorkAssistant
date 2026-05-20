@@ -187,7 +187,15 @@ async function loadConfig(): Promise<ReviewerConfig> {
     if (ARGV.repo) cfg.reviewRepos = ARGV.repo.split(",").filter(Boolean);
     if (ARGV.owner) cfg.owner = ARGV.owner;
     if (ARGV["poll-ms"]) cfg.pollIntervalMs = parseInt(ARGV["poll-ms"], 10);
-    cfg.source = (ARGV.source || process.env.REVIEW_SOURCE || cfg.source || "github") as SourceType;
+    // Auto-detect source from repo prefixes when --source not explicitly set
+    let effectiveSource: string | undefined = ARGV.source || process.env.REVIEW_SOURCE;
+    if (!effectiveSource && cfg.reviewRepos.length > 0) {
+      const hasGithubPrefix = cfg.reviewRepos.some((r) => r.trim().startsWith("github:"));
+      const hasGitlabPrefix = cfg.reviewRepos.some((r) => r.trim().startsWith("gitlab:"));
+      if (hasGithubPrefix && !hasGitlabPrefix) effectiveSource = "github";
+      else if (hasGitlabPrefix && !hasGithubPrefix) effectiveSource = "gitlab";
+    }
+    cfg.source = (effectiveSource || cfg.source || "github") as SourceType;
     cfg.gitlabProject = ARGV["gitlab-project"] || process.env.GITLAB_DEFAULT_PROJECT || cfg.gitlabProject || "";
     cfg.workspacePath = ARGV["workspace-path"] || process.env.REVIEW_WORKSPACE_PATH || undefined;
     log.config(`Remote config loaded (source: ${cfg.source}, repos: ${cfg.reviewRepos.join(", ") || "none"}${cfg.workspacePath ? `, workspace: ${cfg.workspacePath}` : ""})`);
