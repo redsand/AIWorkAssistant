@@ -20,6 +20,7 @@ interface NormalizedWorkItem {
   repo: string;
   labels: string[];
   suggestedBranch: string;
+  body?: string;
 }
 
 export async function autonomousLoopRoutes(fastify: FastifyInstance) {
@@ -108,8 +109,17 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
       );
 
       return { success: true, prNumber: pr.number, url: pr.html_url };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
+    } catch (err: any) {
+      // Surface GitHub API error details for 422 and other client errors
+      const ghErrors = err?.response?.data?.errors;
+      const ghMessage = err?.response?.data?.message;
+      let detail = err?.message || "unknown error";
+      if (ghErrors?.length) {
+        detail = ghErrors.map((e: any) => e.message || JSON.stringify(e)).join("; ");
+      } else if (ghMessage) {
+        detail = ghMessage;
+      }
+      return { success: false, error: detail };
     }
   });
 
@@ -298,6 +308,7 @@ async function fetchGitHubWork(
         typeof l === "string" ? l : l.name,
       ),
       suggestedBranch: makeBranchName(issue.number, issue.title),
+      body: issue.body || "",
     }));
 }
 
@@ -352,6 +363,7 @@ async function fetchGitLabWork(
       repo: env.GITLAB_DEFAULT_PROJECT!,
       labels: issue.labels || [],
       suggestedBranch: makeBranchName(issue.iid, issue.title),
+      body: issue.description || "",
     }));
 }
 
@@ -429,6 +441,7 @@ async function fetchJiraWork(
         parseInt(issue.key.split("-").pop() || "0", 10),
         issue.fields?.summary || "",
       ),
+      body: issue.fields?.description ? extractJiraBodyText(issue.fields.description) : "",
     }));
 }
 
@@ -461,6 +474,7 @@ async function fetchJitbitWork(
       repo: "",
       labels: ticket.tags ? ticket.tags.split(",").map((t: string) => t.trim()) : [],
       suggestedBranch: makeBranchName(ticket.ticketID, ticket.subject || ""),
+      body: ticket.body || "",
     }));
 }
 

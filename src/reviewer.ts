@@ -243,8 +243,16 @@ function makeGithubClient(token: string, owner: string) {
       return res.data;
     },
 
-    async addIssueComment(repo: string, issueNumber: number, body: string): Promise<void> {
-      await client.post(`/repos/${owner}/${repo}/issues/${issueNumber}/comments`, { body });
+    async addIssueComment(issueNumber: number, body: string, _owner?: string, _repo?: string): Promise<void> {
+      const o = _owner || owner;
+      const r = _repo || "";
+      await client.post(`/repos/${o}/${r}/issues/${issueNumber}/comments`, { body });
+    },
+
+    async updateIssue(issueNumber: number, params: { state?: string }, _owner?: string, _repo?: string): Promise<void> {
+      const o = _owner || owner;
+      const r = _repo || "";
+      await client.patch(`/repos/${o}/${r}/issues/${issueNumber}`, params);
     },
 
     async addLabel(repo: string, issueNumber: number, label: string): Promise<void> {
@@ -313,7 +321,7 @@ class GithubVcsClient implements VcsClient {
   }
 
   async addComment(repo: string, mrNumber: number, body: string): Promise<void> {
-    return this.gh.addIssueComment(repo, mrNumber, body);
+    return this.gh.addIssueComment(mrNumber, body, undefined, repo);
   }
 
   async listComments(repo: string, mrNumber: number): Promise<Array<{ body: string }>> {
@@ -329,7 +337,7 @@ class GithubVcsClient implements VcsClient {
   }
 
   async addCommentToIssue(repo: string, issueNumber: number, body: string): Promise<void> {
-    return this.gh.addIssueComment(repo, issueNumber, body);
+    return this.gh.addIssueComment(issueNumber, body, undefined, repo);
   }
 
   extractLinkedIssueKey(mrBody: string | null): string | null {
@@ -817,7 +825,7 @@ async function pollMergeRequests(
       const tag = mrIssueTag(vcs, mr);
       if (result.clean) {
         log.clean(`MR !${mr.number}${tag} passed review — merging`);
-        const mergeStatus = await mergeWithSummary(vcs, target.name, mr, result);
+        const mergeStatus = await mergeWithSummary(vcs, target.name, target.source, config.owner, config.githubToken, mr, result);
         if (mergeStatus === "conflict") {
           // Remove from reviewed so the reviewer re-evaluates after aicoder rebases
           reviewedMRs.delete(mrKey);
@@ -835,7 +843,7 @@ async function pollMergeRequests(
         // Only medium/low non-test-gap findings — approve with comments and create a tracking issue.
         // Test gaps (medium/qa) are blocking: the agent must write the tests first.
         log.clean(`MR !${mr.number}${tag} passed review with comments — no critical/high findings, merging`);
-        const mergeResult = await mergeWithSummary(vcs, target.name, mr, {
+        const mergeResult = await mergeWithSummary(vcs, target.name, target.source, config.owner, config.githubToken, mr, {
           ...result,
           clean: true,
           summary: `${result.summary} (approved with suggestions — no blocking findings)`,
@@ -1132,6 +1140,9 @@ function buildSummary(findings: ReviewFinding[]): string {
 async function mergeWithSummary(
   vcs: VcsClient,
   project: string,
+  source: SourceType,
+  owner: string,
+  githubToken: string,
   mr: { number: number; title: string; body?: string | null; sourceBranch?: string },
   result: ReviewResult,
 ): Promise<"merged" | "conflict" | "failed"> {
@@ -1173,15 +1184,20 @@ async function mergeWithSummary(
       || vcs.extractIssueKeyFromBranch(mr.sourceBranch);
     if (issueKey) {
       const isJira = /^[A-Z]+-\d+$/.test(issueKey);
+      const isGithub = source === "github";
       await closeSourceIssue(
         {
-          source: isJira ? "jira" : "gitlab",
-          issueKey: isJira ? issueKey : `${project}#${issueKey}`,
+          source: isJira ? "jira" : isGithub ? "github" : "gitlab",
+          issueKey: isJira
+            ? issueKey
+            : isGithub
+              ? `${owner}/${project}#${issueKey}`
+              : `${project}#${issueKey}`,
           mrIid: mr.number,
         },
         jiraClient,
-        gitlabClient.isConfigured() ? gitlabClient : null,
-        null,
+        !isGithub && gitlabClient.isConfigured() ? gitlabClient : null,
+        isGithub ? (makeGithubClient(githubToken, owner) as any) : null,
       ).catch((err) => {
         log.warn(`Could not close source issue ${issueKey} after merge: ${err instanceof Error ? err.message : err}`);
       });
@@ -1461,7 +1477,7 @@ async function forceReviewMr(mrNumber: number): Promise<void> {
   if (result.clean || (result.findings.every((f) => f.severity === "medium" || f.severity === "low") &&
       !result.findings.some((f) => f.severity === "medium" && f.category === "qa"))) {
     log.clean(`MR !${mrNumber} is clean — merging`);
-    await mergeWithSummary(vcs, target.name, mr, result);
+    await mergeWithSummary(vcs, target.name, target.source, config.owner, config.githubToken, mr, result);
   } else {
     log.rework(`MR !${mrNumber} has ${result.findings.length} findings — posting rework`);
     for (const f of result.findings) {
@@ -1482,7 +1498,7 @@ async function forceMergeMr(mrNumber: number): Promise<void> {
   }
   const { mr, target, vcs } = found;
   log.config(`Force-merging MR !${mrNumber}: ${mr.title}`);
-  const status = await mergeWithSummary(vcs, target.name, mr, {
+  const status = await mergeWithSummary(vcs, target.name, target.source, config.owner, config.githubToken, mr, {
     clean: true,
     findings: [],
     summary: "Force-merged via `reviewer --merge-mr`",

@@ -468,7 +468,7 @@ async function publishBranch(cfg: ServerConfig, branchName: string): Promise<voi
   } else {
     // GitHub PR
     try {
-      const resp = await axios.post<{ success: boolean; prNumber: number; url: string }>(
+      const resp = await axios.post<{ success: boolean; prNumber: number; url: string; error?: string }>(
         `${cfg.apiUrl}/api/autonomous-loop/pr`,
         {
           owner: item.owner || cfg.owner,
@@ -484,7 +484,7 @@ async function publishBranch(cfg: ServerConfig, branchName: string): Promise<voi
       if (resp.data.success) {
         runLogger.logPR(`Created PR #${resp.data.prNumber}: ${resp.data.url}`);
       } else {
-        runLogger.logError("GitHub PR creation failed");
+        runLogger.logError(`GitHub PR creation failed: ${resp.data.error || "unknown error"}`);
         process.exit(1);
       }
     } catch (err) {

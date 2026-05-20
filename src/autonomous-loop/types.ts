@@ -22,6 +22,7 @@ export interface WorkItem {
   repo: string;
   suggestedBranch: string;
   labels?: string[];
+  body?: string;
 }
 
 export interface GeneratedPrompt {

@@ -12,7 +12,9 @@ import { OllamaLauncher } from "../launcher";
 import { RunLogger } from "../run-logger";
 import {
   extractPriority,
+  extractTrackingNumber,
   sortByLabelPriority,
+  enforceDependencyOrder,
   prioritizeItems,
 } from "../priority-sorter";
 import type { LaunchOptions, ProviderType } from "../types";
@@ -398,6 +400,81 @@ describe("sortByLabelPriority", () => {
     ];
     const sorted = sortByLabelPriority(items);
     expect(sorted.map((i) => i.number)).toEqual([1, 2]);
+  });
+
+  it("uses tracking numbers as tiebreaker for equal priorities", () => {
+    // ClaimKit #5 should sort before ClaimKit #8
+    const items = [
+      { number: 87, title: "[ClaimKit #8] Add CLI commands", url: "", labels: [] },
+      { number: 84, title: "[ClaimKit #5] Ingest codebase files", url: "", labels: [] },
+    ];
+    const sorted = sortByLabelPriority(items);
+    expect(sorted.map((i) => i.number)).toEqual([84, 87]);
+  });
+
+  it("tracking numbers only apply within the same priority band", () => {
+    // [ClaimKit #1] with critical priority beats [ClaimKit #5] with no priority
+    const items = [
+      { number: 84, title: "[ClaimKit #5] Stuff", url: "", labels: [] },
+      { number: 90, title: "[ClaimKit #1] Critical fix", url: "", labels: ["critical"] },
+    ];
+    const sorted = sortByLabelPriority(items);
+    expect(sorted.map((i) => i.number)).toEqual([90, 84]);
+  });
+});
+
+describe("extractTrackingNumber", () => {
+  it("extracts sequence number from [ProjectName #N] pattern", () => {
+    expect(extractTrackingNumber("[ClaimKit #5] Ingest codebase")).toBe(5);
+    expect(extractTrackingNumber("[IR #82] Some task")).toBe(82);
+  });
+
+  it("returns Infinity for titles without tracking numbers", () => {
+    expect(extractTrackingNumber("Fix the login bug")).toBe(Infinity);
+    expect(extractTrackingNumber("[P0] Critical fix")).toBe(Infinity);
+  });
+});
+
+describe("enforceDependencyOrder", () => {
+  it("moves dependencies before dependents", () => {
+    const items = [
+      { number: 87, title: "[ClaimKit #8] CLI", url: "", body: "depends on #84" },
+      { number: 88, title: "[Some other task]", url: "", body: "" },
+      { number: 84, title: "[ClaimKit #5] Ingest", url: "", body: "" },
+    ];
+    const sorted = enforceDependencyOrder(items);
+    // #84 is placed before #87 (its dependent); #88 is unchanged
+    const idx84 = sorted.findIndex((i) => i.number === 84);
+    const idx87 = sorted.findIndex((i) => i.number === 87);
+    expect(idx84).toBeLessThan(idx87);
+  });
+
+  it("leaves items without dependencies in original order", () => {
+    const items = [
+      { number: 1, title: "A", url: "" },
+      { number: 2, title: "B", url: "" },
+      { number: 3, title: "C", url: "" },
+    ];
+    const sorted = enforceDependencyOrder(items);
+    expect(sorted.map((i) => i.number)).toEqual([1, 2, 3]);
+  });
+
+  it("handles blocked by and requires keywords", () => {
+    const items = [
+      { number: 10, title: "Task", url: "", body: "blocked by #5" },
+      { number: 5, title: "Blocker", url: "", body: "" },
+    ];
+    const sorted = enforceDependencyOrder(items);
+    expect(sorted.map((i) => i.number)).toEqual([5, 10]);
+  });
+
+  it("handles prerequisite: #N format", () => {
+    const items = [
+      { number: 20, title: "Task", url: "", body: "prerequisite: #10" },
+      { number: 10, title: "Prereq", url: "", body: "" },
+    ];
+    const sorted = enforceDependencyOrder(items);
+    expect(sorted.map((i) => i.number)).toEqual([10, 20]);
   });
 });
 

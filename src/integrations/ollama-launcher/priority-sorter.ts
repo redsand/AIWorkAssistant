@@ -37,6 +37,17 @@ const PRIORITY_MAP: Record<string, number> = {
 };
 
 const TITLE_PRIORITY_RE = /\[(P(\d))\]/i;
+const TRACKING_NUMBER_RE = /\[[^\]]+#(\d+)\]/;
+
+/**
+ * Extract a tracking number from title patterns like [ClaimKit #5] or [IR #82].
+ * Returns the number, or Infinity if no tracking number is found (so unnumbered
+ * items sort last when used as a tiebreaker).
+ */
+export function extractTrackingNumber(title: string): number {
+  const match = title.match(TRACKING_NUMBER_RE);
+  return match ? parseInt(match[1], 10) : Infinity;
+}
 
 /**
  * Extract a numeric priority from a work item.
@@ -66,11 +77,95 @@ export function extractPriority(item: PrioritizableItem): number {
 }
 
 /**
+ * Compare two items for priority ordering.
+ *
+ * Ordering rules (in priority order):
+ * 1. Explicit priority from [P0]–[P4] title prefix or label (lower = first)
+ * 2. Tracking/sequence number from [ProjectName #N] title patterns (lower = first)
+ * 3. Stable by original position
+ *
+ * Dependency ordering ("depends on #X" in body) is applied separately
+ * by enforceDependencyOrder() after the primary sort.
+ */
+function comparePriority(a: PrioritizableItem, b: PrioritizableItem): number {
+  // 1. Explicit priority
+  const pa = extractPriority(a);
+  const pb = extractPriority(b);
+  if (pa !== pb) return pa - pb;
+
+  // 2. Tracking/sequence number tiebreaker
+  const sa = extractTrackingNumber(a.title);
+  const sb = extractTrackingNumber(b.title);
+  if (sa !== sb) return sa - sb;
+
+  // 3. Stable
+  return 0;
+}
+
+/**
  * Sort items by priority using label/title extraction.
- * Lower priority number = processed first.
+ * Lower priority number = processed first. Equal priorities are tiebroken by
+ * tracking numbers ([ClaimKit #5] before [ClaimKit #8]) and dependency declarations.
  */
 export function sortByLabelPriority(items: PrioritizableItem[]): PrioritizableItem[] {
-  return [...items].sort((a, b) => extractPriority(a) - extractPriority(b));
+  return [...items].sort((a, b) => comparePriority(a, b));
+}
+
+/**
+ * Reorder items so that dependencies come before their dependents.
+ * If item A's body contains "depends on #B" and B is also in the list,
+ * B is moved before A. Circular dependencies are left in original order.
+ *
+ * This is called after the primary sort to ensure dependency ordering
+ * is always honored regardless of other priority signals.
+ */
+export function enforceDependencyOrder(items: PrioritizableItem[]): PrioritizableItem[] {
+  const byNumber = new Map(items.map((item) => [item.number, item]));
+  const depOf = new Map<number, number[]>(); // issue → list of issues that depend on it
+
+  const DEP_RE = /\b(?:depends\s+on|blocked\s+by|requires|prerequisite\s*:\s*)\s*#(\d+)/gi;
+
+  for (const item of items) {
+    const body = item.body || "";
+    let match: RegExpExecArray | null;
+    while ((match = DEP_RE.exec(body)) !== null) {
+      const depNum = parseInt(match[1], 10);
+      if (byNumber.has(depNum)) {
+        if (!depOf.has(depNum)) depOf.set(depNum, []);
+        depOf.get(depNum)!.push(item.number);
+      }
+    }
+    DEP_RE.lastIndex = 0; // reset for next item (global regex)
+  }
+
+  if (depOf.size === 0) return items;
+
+  // Topological sort: for each dependency edge (dep → dependent),
+  // ensure dep appears before dependent
+  const result = [...items];
+
+  // Keep reordering until stable (handles transitive deps)
+  let changed = true;
+  let iterations = 0;
+  while (changed && iterations < items.length) {
+    changed = false;
+    iterations++;
+    for (const [depNum, dependents] of depOf) {
+      const depIdx = result.findIndex((i) => i.number === depNum);
+      if (depIdx === -1) continue;
+      for (const depNum2 of dependents) {
+        const depIdx2 = result.findIndex((i) => i.number === depNum2);
+        if (depIdx2 !== -1 && depIdx > depIdx2) {
+          // Move dependency before dependent
+          const [moved] = result.splice(depIdx, 1);
+          result.splice(depIdx2, 0, moved);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -168,8 +263,14 @@ export async function prioritizeItems<T extends PrioritizableItem>(
   apiUrl: string,
   apiKey: string,
 ): Promise<T[]> {
+  let sorted: T[];
   if (mode === "auto") {
-    return sortByAutoPriority(items, apiUrl, apiKey) as Promise<T[]>;
+    sorted = await sortByAutoPriority(items, apiUrl, apiKey) as T[];
+  } else {
+    sorted = sortByLabelPriority(items) as T[];
   }
-  return sortByLabelPriority(items) as T[];
+  // Always enforce dependency ordering as a final pass.
+  // This ensures "depends on #X" declarations in issue bodies
+  // are honored regardless of the primary sort mode.
+  return enforceDependencyOrder(sorted) as T[];
 }
