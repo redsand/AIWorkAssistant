@@ -140,22 +140,46 @@ export function checkCoverage(
   }
 
   logger.logGit("Checking coverage thresholds", config.coverageCommand.join(" "));
-  const result = spawnSync(
-    config.coverageCommand[0],
-    config.coverageCommand.slice(1),
-    { cwd: workspace, stdio: "pipe", encoding: "utf-8", timeout: 300_000 },
-  );
+
+  const useShell = process.platform === "win32";
+  let result = spawnSync(config.coverageCommand[0], config.coverageCommand.slice(1), {
+    cwd: workspace, stdio: "pipe", encoding: "utf-8", timeout: 300_000,
+  });
+
+  if (result.error && useShell && (result.error as any).code === "ENOENT") {
+    logger.logConfig("Direct spawn failed (ENOENT) — retrying with shell");
+    result = spawnSync(config.coverageCommand[0], config.coverageCommand.slice(1), {
+      cwd: workspace, stdio: "pipe", encoding: "utf-8", timeout: 300_000, shell: true,
+    });
+  }
 
   const stdout = (result.stdout || "").trim();
   const stderr = (result.stderr || "").trim();
   const combined = `${stdout}\n${stderr}`;
+  const spawnError = result.error?.message ?? null;
   const passed = result.status === 0;
 
+  let kind: TestSuiteOutcome;
+  if (passed) {
+    kind = "pass";
+  } else if (spawnError) {
+    kind = "spawn_error";
+  } else {
+    kind = "fail";
+  }
+
   if (!passed) {
-    logger.logError(`Coverage check failed (exit code ${result.status}):\n${combined.split("\n").slice(-10).join("\n")}`);
+    const label = kind === "spawn_error"
+      ? `Coverage tool not available (${spawnError})`
+      : `Coverage check failed (exit code ${result.status}):\n${combined.split("\n").slice(-10).join("\n")}`;
+    if (kind === "spawn_error") {
+      logger.logConfig(label);
+    } else {
+      logger.logError(label);
+    }
   } else {
     logger.logConfig("Coverage thresholds met");
   }
 
-  return { passed, kind: passed ? "pass" : "fail", output: combined };
+  return { passed, kind, output: combined };
 }
