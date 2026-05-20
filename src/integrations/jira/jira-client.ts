@@ -204,7 +204,9 @@ export class JiraClient {
             ...Object.entries(errors).map(([k, v]) => `${k}: ${v}`),
             ...errorMessages,
           ].join("; ");
-          throw new Error(`Invalid JQL query: ${details || "Invalid JQL syntax"}`);
+          throw new Error(
+            `Invalid JQL query: ${details || "Invalid JQL syntax"}`,
+          );
         } else if (status === 401) {
           throw new Error(
             "Jira authentication failed. Check your credentials.",
@@ -588,12 +590,19 @@ export class JiraClient {
       issueType: string;
       assignee?: string;
     }>,
-  ): Promise<Array<{ key: string; summary: string; status: string; error?: string }>> {
+  ): Promise<
+    Array<{ key: string; summary: string; status: string; error?: string }>
+  > {
     if (!this.isConfigured()) {
       throw new Error("Jira client not configured");
     }
 
-    const results: Array<{ key: string; summary: string; status: string; error?: string }> = [];
+    const results: Array<{
+      key: string;
+      summary: string;
+      status: string;
+      error?: string;
+    }> = [];
 
     // Try bulk endpoint first
     try {
@@ -820,6 +829,64 @@ export class JiraClient {
   /**
    * Create a new Jira project
    */
+
+  async getSprints(projectKey: string): Promise<JiraSprint[]> {
+    if (!this.isConfigured()) {
+      throw new Error("Jira client not configured");
+    }
+
+    try {
+      const boardsResp = await this.client.get(`/rest/agile/1.0/board`, {
+        params: { projectKeyOrId: projectKey, type: "scrum" },
+      });
+      const boards = boardsResp.data?.values || [];
+      if (boards.length === 0) return [];
+
+      const boardId = boards[0].id;
+      const sprintsResp = await this.client.get(
+        `/rest/agile/1.0/board/${boardId}/sprint`,
+        { params: { state: "active,future" } },
+      );
+      return (sprintsResp.data?.values || []).map((s: any) => ({
+        id: s.id,
+        name: s.name,
+        state: s.state,
+        startDate: s.startDate,
+        endDate: s.endDate,
+        boardId: s.originBoardId,
+      }));
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        if (status === 404) return [];
+      }
+      throw new Error(
+        `Failed to fetch sprints: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
+  async getSprintIssues(sprintId: number): Promise<JiraSprintIssue[]> {
+    if (!this.isConfigured()) {
+      throw new Error("Jira client not configured");
+    }
+
+    try {
+      const response = await this.client.get(
+        `/rest/agile/1.0/sprint/${sprintId}/issue`,
+        { params: { maxResults: 200 } },
+      );
+      return response.data?.issues || [];
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        if (status === 404) return [];
+      }
+      throw new Error(
+        `Failed to fetch sprint issues: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
   async createProject(params: {
     key: string;
     name: string;
@@ -908,3 +975,26 @@ export class JiraClient {
 }
 
 export const jiraClient = new JiraClient();
+
+export interface JiraSprint {
+  id: number;
+  name: string;
+  state: string;
+  startDate?: string;
+  endDate?: string;
+  boardId?: number;
+}
+
+export interface JiraSprintIssue {
+  key: string;
+  fields: {
+    summary: string;
+    status: { name: string };
+    priority: { name: string };
+    assignee?: { displayName: string } | null;
+    labels?: string[];
+    created: string;
+    updated: string;
+    project: { key: string };
+  };
+}

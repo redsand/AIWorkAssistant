@@ -4,6 +4,8 @@
  * GET /api/repo-dashboard/repos — list repos with non-zero issue counts
  * GET /api/repo-dashboard/issues — fetch issues for a repo
  * GET /api/repo-dashboard/dependencies — dependency edges for graph visualization
+ * GET /api/repo-dashboard/sprints — fetch sprints for a repo
+ * GET /api/repo-dashboard/burndown — calculate burndown data for a sprint
  */
 
 import { FastifyInstance } from "fastify";
@@ -17,7 +19,7 @@ const MAX_ISSUES = 200;
 
 // ─── Platform repo types ─────────────────────────────────────────────────────
 
-interface RepoInfo {
+export interface RepoInfo {
   platform: "github" | "gitlab" | "jira" | "work_items";
   repoKey: string;
   repoName: string;
@@ -25,7 +27,7 @@ interface RepoInfo {
   openCount: number;
 }
 
-interface DashboardIssue {
+export interface DashboardIssue {
   id: string;
   externalId: string;
   title: string;
@@ -39,9 +41,30 @@ interface DashboardIssue {
   createdAt: string;
   updatedAt: string;
   dependencies: Array<{ id: string; label: string }>;
+  sprint?: string;
 }
 
-interface DependencyGraph {
+// ─── Sprint types ────────────────────────────────────────────────────────────
+
+export interface DashboardSprint {
+  id: string;
+  name: string;
+  state: string;
+  startDate: string;
+  endDate: string;
+  totalPoints: number;
+  completedPoints: number;
+  platform: string;
+  repo: string;
+}
+
+export interface BurndownData {
+  labels: string[];
+  ideal: number[];
+  actual: number[];
+}
+
+export interface DependencyGraph {
   nodes: Array<{
     id: string;
     label: string;
@@ -59,9 +82,10 @@ interface DependencyGraph {
 
 // ─── Normalization helpers ───────────────────────────────────────────────────
 
-const DEP_RE = /\b(?:depends\s+on|blocked\s+by|requires|prerequisite\s*:\s*)\s*#(\d+)/gi;
+const DEP_RE =
+  /\b(?:depends\s+on|blocked\s+by|requires|prerequisite\s*:\s*)\s*#(\d+)/gi;
 
-function parseDependencies(body: string): Array<{ id: string; label: string }> {
+export function parseDependencies(body: string): Array<{ id: string; label: string }> {
   if (!body) return [];
   const seen = new Set<string>();
   const result: Array<{ id: string; label: string }> = [];
@@ -77,7 +101,10 @@ function parseDependencies(body: string): Array<{ id: string; label: string }> {
   return result;
 }
 
-function normalizeStatus(raw: string | null | undefined, platform: string): string {
+export function normalizeStatus(
+  raw: string | null | undefined,
+  platform: string,
+): string {
   if (!raw) return "unknown";
   const s = raw.toLowerCase().trim();
 
@@ -92,8 +119,10 @@ function normalizeStatus(raw: string | null | undefined, platform: string): stri
     return "unknown";
   }
   if (platform === "jira") {
-    if (["to do", "new", "backlog", "open", "reopened"].includes(s)) return "open";
-    if (["in progress", "in review", "reviewing"].includes(s)) return "in_progress";
+    if (["to do", "new", "backlog", "open", "reopened"].includes(s))
+      return "open";
+    if (["in progress", "in review", "reviewing"].includes(s))
+      return "in_progress";
     if (["done", "resolved", "closed", "complete"].includes(s)) return "done";
     if (["blocked", "on hold"].includes(s)) return "blocked";
     return "open";
@@ -108,13 +137,46 @@ function normalizeStatus(raw: string | null | undefined, platform: string): stri
   return "unknown";
 }
 
-function normalizePriority(raw: string | null | undefined, labels: string[]): string {
-  const sources = [raw, ...labels].filter(Boolean).map((s) => s!.toLowerCase().trim());
+export function normalizePriority(
+  raw: string | null | undefined,
+  labels: string[],
+): string {
+  const sources = [raw, ...labels]
+    .filter(Boolean)
+    .map((s) => s!.toLowerCase().trim());
 
-  if (sources.some((s) => ["highest", "blocker", "critical", "crit"].includes(s))) return "critical";
-  if (sources.some((s) => s === "high" || s.startsWith("priority: high") || s.startsWith("p1"))) return "high";
-  if (sources.some((s) => s === "medium" || s.startsWith("priority: medium") || s.startsWith("p2") || s === "normal")) return "medium";
-  if (sources.some((s) => s === "low" || s.startsWith("priority: low") || s.startsWith("p3") || s === "minor" || s === "trivial")) return "low";
+  if (
+    sources.some((s) => ["highest", "blocker", "critical", "crit"].includes(s))
+  )
+    return "critical";
+  if (
+    sources.some(
+      (s) =>
+        s === "high" || s.startsWith("priority: high") || s.startsWith("p1"),
+    )
+  )
+    return "high";
+  if (
+    sources.some(
+      (s) =>
+        s === "medium" ||
+        s.startsWith("priority: medium") ||
+        s.startsWith("p2") ||
+        s === "normal",
+    )
+  )
+    return "medium";
+  if (
+    sources.some(
+      (s) =>
+        s === "low" ||
+        s.startsWith("priority: low") ||
+        s.startsWith("p3") ||
+        s === "minor" ||
+        s === "trivial",
+    )
+  )
+    return "low";
 
   return "unknown";
 }
@@ -135,7 +197,12 @@ async function getGitHubRepos(): Promise<RepoInfo[]> {
       const key = `${owner}/${name}`;
 
       try {
-        const issues = await githubClient.listIssues("all", undefined, owner, name);
+        const issues = await githubClient.listIssues(
+          "all",
+          undefined,
+          owner,
+          name,
+        );
         const filtered = issues.filter((i: any) => !i.pull_request);
         if (filtered.length > 0) {
           result.push({
@@ -177,7 +244,8 @@ async function getGitLabRepos(): Promise<RepoInfo[]> {
             repoKey: pid,
             repoName: project.name_with_namespace || project.name || pid,
             issueCount: openedIssues.length,
-            openCount: openedIssues.filter((i: any) => i.state === "opened").length,
+            openCount: openedIssues.filter((i: any) => i.state === "opened")
+              .length,
           });
         }
       } catch {
@@ -212,7 +280,10 @@ async function getJiraRepos(): Promise<RepoInfo[]> {
             repoName: project.name || project.key,
             issueCount: issues.length,
             openCount: issues.filter(
-              (i: any) => !["Done", "Resolved", "Closed"].includes(i.fields?.status?.name || ""),
+              (i: any) =>
+                !["Done", "Resolved", "Closed"].includes(
+                  i.fields?.status?.name || "",
+                ),
             ).length,
           });
         }
@@ -232,12 +303,18 @@ async function getJiraRepos(): Promise<RepoInfo[]> {
 async function getWorkItemRepos(): Promise<RepoInfo[]> {
   const result: RepoInfo[] = [];
   try {
-    const { total } = workItemDatabase.listWorkItems({ includeArchived: false, limit: 1 });
+    const { total } = workItemDatabase.listWorkItems({
+      includeArchived: false,
+      limit: 1,
+    });
     if (total === 0) return result;
 
     // Group by source — each external source is displayed as a "repo"
     const bySource = new Map<string, { total: number; open: number }>();
-    const allItems = workItemDatabase.listWorkItems({ includeArchived: false, limit: MAX_ISSUES });
+    const allItems = workItemDatabase.listWorkItems({
+      includeArchived: false,
+      limit: MAX_ISSUES,
+    });
     for (const item of allItems.items) {
       const key = item.source;
       if (!bySource.has(key)) bySource.set(key, { total: 0, open: 0 });
@@ -269,7 +346,12 @@ async function fetchGitHubIssues(repo: string): Promise<DashboardIssue[]> {
   const [owner, repoName] = repo.split("/");
   if (!owner || !repoName) return [];
 
-  const issues = await githubClient.listIssues("all", undefined, owner, repoName);
+  const issues = await githubClient.listIssues(
+    "all",
+    undefined,
+    owner,
+    repoName,
+  );
   return issues
     .filter((i: any) => !i.pull_request)
     .map((i: any) => ({
@@ -278,9 +360,14 @@ async function fetchGitHubIssues(repo: string): Promise<DashboardIssue[]> {
       title: i.title || "",
       url: i.html_url || "",
       status: normalizeStatus(i.state, "github"),
-      priority: normalizePriority(null, (i.labels || []).map((l: any) => (typeof l === "string" ? l : l.name))),
+      priority: normalizePriority(
+        null,
+        (i.labels || []).map((l: any) => (typeof l === "string" ? l : l.name)),
+      ),
       assignee: i.assignee?.login || null,
-      labels: (i.labels || []).map((l: any) => (typeof l === "string" ? l : l.name)).filter(Boolean),
+      labels: (i.labels || [])
+        .map((l: any) => (typeof l === "string" ? l : l.name))
+        .filter(Boolean),
       platform: "github",
       repo,
       createdAt: i.created_at || "",
@@ -339,8 +426,14 @@ async function fetchJiraIssues(projectKey: string): Promise<DashboardIssue[]> {
   }));
 }
 
-async function fetchWorkItemIssues(source: import("../work-items/types").WorkItemSource): Promise<DashboardIssue[]> {
-  const { items } = workItemDatabase.listWorkItems({ source, includeArchived: false, limit: MAX_ISSUES });
+async function fetchWorkItemIssues(
+  source: import("../work-items/types").WorkItemSource,
+): Promise<DashboardIssue[]> {
+  const { items } = workItemDatabase.listWorkItems({
+    source,
+    includeArchived: false,
+    limit: MAX_ISSUES,
+  });
   return items.map((wi) => ({
     id: wi.id,
     externalId: wi.sourceExternalId || wi.id.slice(0, 8),
@@ -356,6 +449,213 @@ async function fetchWorkItemIssues(source: import("../work-items/types").WorkIte
     updatedAt: wi.updatedAt,
     dependencies: parseDependencies(wi.description),
   }));
+}
+
+// ─── Sprint fetchers ────────────────────────────────────────────────────────
+
+async function fetchGitHubSprints(
+  repo: string,
+): Promise<{ sprints: DashboardSprint[]; issues: DashboardIssue[] }> {
+  const parts = repo.split("/");
+  const owner = parts[0] || env.GITHUB_DEFAULT_OWNER;
+  const repoName = parts[1] || env.GITHUB_DEFAULT_REPO;
+
+  try {
+    const milestones = await githubClient.listMilestones(
+      "open",
+      owner,
+      repoName,
+    );
+    const sprints: DashboardSprint[] = milestones
+      .filter((m: any) => m.state === "open")
+      .map((m: any) => {
+        return {
+          id: `gh-milestone-${m.number}`,
+          name: m.title || `Milestone ${m.number}`,
+          state: m.state === "open" ? "active" : "closed",
+          startDate: m.created_at || "",
+          endDate: m.due_on || "",
+          totalPoints: 0,
+          completedPoints: 0,
+          platform: "github",
+          repo,
+        };
+      });
+
+    let issues: DashboardIssue[] = [];
+    try {
+      const rawIssues = await githubClient.listIssues(
+        "all",
+        undefined,
+        owner,
+        repoName,
+      );
+      issues = rawIssues
+        .filter((i: any) => !i.pull_request)
+        .map((i: any) => {
+          const milestone = i.milestone;
+          const sprintLabel = ((i.labels || [])
+            .map((l: any) => (typeof l === "string" ? l : l.name))
+            .filter(Boolean) as string[])
+            .find((l) => l.startsWith("sprint/") || l.startsWith("iteration/"));
+          const sprint: string | undefined = milestone
+            ? `gh-milestone-${milestone.number}`
+            : sprintLabel
+              ? `gh-label-${sprintLabel}`
+              : "";
+          return {
+            id: String(i.number),
+            externalId: `#${i.number}`,
+            title: i.title || "",
+            url: i.html_url || "",
+            status: normalizeStatus(i.state, "github"),
+            priority: normalizePriority(
+              null,
+              (i.labels || []).map((l: any) =>
+                typeof l === "string" ? l : l.name,
+              ),
+            ),
+            assignee: i.assignee?.login || null,
+            labels: (i.labels || [])
+              .map((l: any) => (typeof l === "string" ? l : l.name))
+              .filter(Boolean),
+            platform: "github",
+            repo,
+            createdAt: i.created_at || "",
+            updatedAt: i.updated_at || "",
+            dependencies: parseDependencies(i.body || ""),
+            sprint,
+          };
+        });
+    } catch {
+      /* fall through with empty issues */
+    }
+
+    for (const sprint of sprints) {
+      const sprintIssues = issues.filter((i) => i.sprint === sprint.id);
+      sprint.totalPoints = sprintIssues.length;
+      sprint.completedPoints = sprintIssues.filter((i) =>
+        i.status === "done",
+      ).length;
+    }
+
+    return { sprints, issues };
+  } catch (err: any) {
+    return { sprints: [], issues: [] };
+  }
+}
+
+async function fetchJiraSprints(
+  projectKey: string,
+): Promise<{ sprints: DashboardSprint[]; issues: DashboardIssue[] }> {
+  try {
+    const jiraSprints = await jiraClient.getSprints(projectKey);
+    const sprints: DashboardSprint[] = jiraSprints.map((s) => ({
+      id: `jira-sprint-${s.id}`,
+      name: s.name,
+      state: s.state,
+      startDate: s.startDate || "",
+      endDate: s.endDate || "",
+      totalPoints: 0,
+      completedPoints: 0,
+      platform: "jira",
+      repo: projectKey,
+    }));
+
+    let allIssues: DashboardIssue[] = [];
+    for (const sprint of jiraSprints) {
+      try {
+        const sprintIssues = await jiraClient.getSprintIssues(sprint.id);
+        const mapped: DashboardIssue[] = sprintIssues.map((i: any) => ({
+          id: i.key,
+          externalId: i.key,
+          title: i.fields?.summary || "",
+          url: `${env.JIRA_BASE_URL}/browse/${i.key}`,
+          status: normalizeStatus(i.fields?.status?.name, "jira"),
+          priority: normalizePriority(
+            i.fields?.priority?.name,
+            i.fields?.labels || [],
+          ),
+          assignee: i.fields?.assignee?.displayName || null,
+          labels: i.fields?.labels || [],
+          platform: "jira",
+          repo: projectKey,
+          createdAt: i.fields?.created || "",
+          updatedAt: i.fields?.updated || "",
+          dependencies: parseDependencies(
+            typeof i.fields?.description === "string"
+              ? i.fields.description
+              : i.fields?.description?.content
+                  ?.map((c: any) =>
+                    c.content?.map((cc: any) => cc.text).join(""),
+                  )
+                  .join("\n") || "",
+          ),
+          sprint: `jira-sprint-${sprint.id}`,
+        }));
+        allIssues = allIssues.concat(mapped);
+      } catch {
+        /* skip sprint issues on error */
+      }
+    }
+
+    for (const sprint of sprints) {
+      const sprintIssues = allIssues.filter((i) => i.sprint === sprint.id);
+      const doneStatuses = ["done"];
+      sprint.totalPoints = sprintIssues.length;
+      sprint.completedPoints = sprintIssues.filter((i: any) =>
+        doneStatuses.includes(i.status),
+      ).length;
+    }
+
+    return { sprints, issues: allIssues };
+  } catch (err: any) {
+    return { sprints: [], issues: [] };
+  }
+}
+
+export function calculateBurndown(
+  sprint: DashboardSprint,
+  issues: DashboardIssue[],
+): BurndownData {
+  const startDate = new Date(sprint.startDate);
+  const endDate = new Date(sprint.endDate);
+  if (
+    isNaN(startDate.getTime()) ||
+    isNaN(endDate.getTime()) ||
+    endDate <= startDate
+  ) {
+    return { labels: [], ideal: [], actual: [] };
+  }
+
+  const totalDays = Math.ceil(
+    (endDate.getTime() - startDate.getTime()) / 86400000,
+  );
+  const labels: string[] = [];
+  const ideal: number[] = [];
+  const actual: number[] = [];
+
+  const doneStatuses = new Set(["done"]);
+  const sprintIssues = issues.filter((i) => i.sprint === sprint.id);
+  const totalPoints = sprintIssues.length;
+
+  for (let d = 0; d <= totalDays; d++) {
+    const day = new Date(startDate.getTime() + d * 86400000);
+    labels.push(
+      day.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+    );
+    ideal.push(Math.round((totalPoints * (totalDays - d)) / totalDays));
+    const remaining = sprintIssues.filter((issue) => {
+      if (doneStatuses.has(issue.status)) {
+        const completedDate = new Date(issue.updatedAt);
+        return completedDate > day;
+      }
+      return true;
+    }).length;
+    actual.push(remaining);
+  }
+
+  return { labels, ideal, actual };
 }
 
 // ─── Fastify plugin ──────────────────────────────────────────────────────────
@@ -400,11 +700,17 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
           issues = await fetchJiraIssues(repo);
           break;
         case "work_items":
-          issues = await fetchWorkItemIssues(repo as import("../work-items/types").WorkItemSource);
+          issues = await fetchWorkItemIssues(
+            repo as import("../work-items/types").WorkItemSource,
+          );
           break;
       }
     } catch (err: any) {
-      return { issues: [], total: 0, error: err.message || "Failed to fetch issues" };
+      return {
+        issues: [],
+        total: 0,
+        error: err.message || "Failed to fetch issues",
+      };
     }
 
     return { issues: issues.slice(0, limit), total: issues.length };
@@ -428,7 +734,9 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
           issues = await fetchJiraIssues(repo);
           break;
         case "work_items":
-          issues = await fetchWorkItemIssues(repo as import("../work-items/types").WorkItemSource);
+          issues = await fetchWorkItemIssues(
+            repo as import("../work-items/types").WorkItemSource,
+          );
           break;
         default:
           return { nodes: [], edges: [] };
@@ -461,5 +769,85 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
     }
 
     return { nodes, edges };
+  });
+
+  fastify.get<{
+    Querystring: { platform: string; repo: string };
+  }>("/sprints", async (request) => {
+    const { platform, repo } = request.query;
+    if (!platform || !repo) {
+      return {
+        sprints: [],
+        issues: [],
+        error: "platform and repo are required",
+      };
+    }
+
+    try {
+      switch (platform) {
+        case "github":
+          return await fetchGitHubSprints(repo);
+        case "jira":
+          return await fetchJiraSprints(repo);
+        default:
+          return { sprints: [], issues: [] };
+      }
+    } catch (err: any) {
+      return {
+        sprints: [],
+        issues: [],
+        error: err.message || "Failed to fetch sprints",
+      };
+    }
+  });
+
+  fastify.get<{
+    Querystring: { platform: string; repo: string; sprintId: string };
+  }>("/burndown", async (request) => {
+    const { platform, repo, sprintId } = request.query;
+    if (!platform || !repo || !sprintId) {
+      return {
+        labels: [],
+        ideal: [],
+        actual: [],
+        error: "platform, repo, and sprintId are required",
+      };
+    }
+
+    try {
+      let sprints: DashboardSprint[] = [];
+      let issues: DashboardIssue[] = [];
+
+      switch (platform) {
+        case "github":
+          ({ sprints, issues } = await fetchGitHubSprints(repo));
+          break;
+        case "jira":
+          ({ sprints, issues } = await fetchJiraSprints(repo));
+          break;
+        default:
+          return { labels: [], ideal: [], actual: [] };
+      }
+
+      const sprint = sprints.find((s) => s.id === sprintId);
+      if (!sprint) {
+        return { labels: [], ideal: [], actual: [], error: "Sprint not found" };
+      }
+
+      const burndown = calculateBurndown(sprint, issues);
+      return {
+        sprint,
+        labels: burndown.labels,
+        ideal: burndown.ideal,
+        actual: burndown.actual,
+      };
+    } catch (err: any) {
+      return {
+        labels: [],
+        ideal: [],
+        actual: [],
+        error: err.message || "Failed to calculate burndown",
+      };
+    }
   });
 }

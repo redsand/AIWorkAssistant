@@ -13,19 +13,29 @@
   </head>
   <body>
     <div class="page">
-
       <!-- Header -->
       <div class="dash-header">
         <div class="dash-header-left">
           <a href="/" class="back-link">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="15 18 9 12 15 6"/>
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <polyline points="15 18 9 12 15 6" />
             </svg>
             Back to Assistant
           </a>
           <div>
             <div class="dash-title">Issue Dashboard</div>
-            <div class="dash-subtitle">Kibana-style board — select a repository to visualize its issues</div>
+            <div class="dash-subtitle">
+              Kibana-style board — select a repository to visualize its issues
+            </div>
           </div>
         </div>
         <div class="dash-header-right">
@@ -33,54 +43,136 @@
           <select id="repo-select" class="repo-select">
             <option value="">— Select a repository —</option>
           </select>
-          <button id="refresh-btn" class="refresh-btn" title="Refresh dashboard data">↻</button>
+          <button
+            id="refresh-btn"
+            class="refresh-btn"
+            title="Refresh dashboard data"
+          >
+            ↻
+          </button>
         </div>
       </div>
 
-      <div id="error-banner" class="error-banner" style="display:none"></div>
+      <div id="error-banner" class="error-banner" style="display: none"></div>
 
       <!-- Empty state -->
       <div id="empty-state" class="state-msg">
-        <p>Select a repository above to see its issue dashboard. Only repositories with open issues are shown.</p>
+        <p>
+          Select a repository above to see its issue dashboard. Only
+          repositories with open issues are shown.
+        </p>
       </div>
 
       <!-- Loading state -->
-      <div id="dashboard-loading" class="loading-spinner" style="display:none">
+      <div id="dashboard-loading" class="loading-spinner" style="display: none">
         <div class="spinner"></div>
         <p>Loading dashboard data…</p>
       </div>
 
       <!-- Dashboard content (hidden until repo selected) -->
-      <div id="dashboard-content" style="display:none">
-
+      <div id="dashboard-content" style="display: none">
         <!-- Stats Bar -->
         <div class="stats-bar" id="stats-bar">
-          <div class="stat-chip"><div class="stat-value" id="stat-total">—</div><div class="stat-label">Total Issues</div></div>
-          <div class="stat-chip"><div class="stat-value status-open" id="stat-open">—</div><div class="stat-label">Open</div></div>
-          <div class="stat-chip"><div class="stat-value status-progress" id="stat-progress">—</div><div class="stat-label">In Progress</div></div>
-          <div class="stat-chip"><div class="stat-value status-blocked" id="stat-blocked">—</div><div class="stat-label">Blocked</div></div>
-          <div class="stat-chip"><div class="stat-value status-done" id="stat-done">—</div><div class="stat-label">Done</div></div>
+          <div class="stat-chip">
+            <div class="stat-value" id="stat-total">—</div>
+            <div class="stat-label">Total Issues</div>
+          </div>
+          <div class="stat-chip">
+            <div class="stat-value status-open" id="stat-open">—</div>
+            <div class="stat-label">Open</div>
+          </div>
+          <div class="stat-chip">
+            <div class="stat-value status-progress" id="stat-progress">—</div>
+            <div class="stat-label">In Progress</div>
+          </div>
+          <div class="stat-chip">
+            <div class="stat-value status-blocked" id="stat-blocked">—</div>
+            <div class="stat-label">Blocked</div>
+          </div>
+          <div class="stat-chip">
+            <div class="stat-value status-done" id="stat-done">—</div>
+            <div class="stat-label">Done</div>
+          </div>
         </div>
 
         <!-- Row 1: Status + Priority Charts -->
         <div class="charts-row">
           <div class="section" id="status-section">
             <div class="section-title">Status Distribution</div>
-            <div class="chart-wrap small-chart"><canvas id="statusChart"></canvas></div>
-            <div class="state-msg" id="status-empty" style="display:none"><p>No issues found</p></div>
+            <div class="chart-wrap small-chart">
+              <canvas id="statusChart"></canvas>
+            </div>
+            <div class="state-msg" id="status-empty" style="display: none">
+              <p>No issues found</p>
+            </div>
           </div>
           <div class="section" id="priority-section">
             <div class="section-title">Priority Breakdown</div>
-            <div class="chart-wrap small-chart"><canvas id="priorityChart"></canvas></div>
-            <div class="state-msg" id="priority-empty" style="display:none"><p>No issues found</p></div>
+            <div class="chart-wrap small-chart">
+              <canvas id="priorityChart"></canvas>
+            </div>
+            <div class="state-msg" id="priority-empty" style="display: none">
+              <p>No issues found</p>
+            </div>
           </div>
         </div>
 
         <!-- Row 2: Assignee Workload -->
         <div class="section" id="assignee-section">
           <div class="section-title">Assignee Workload</div>
-          <div class="chart-wrap chart-medium"><canvas id="assigneeChart"></canvas></div>
-          <div class="state-msg" id="assignee-empty" style="display:none"><p>No assignee data available</p></div>
+          <div class="chart-wrap chart-medium">
+            <canvas id="assigneeChart"></canvas>
+          </div>
+          <div class="state-msg" id="assignee-empty" style="display: none">
+            <p>No assignee data available</p>
+          </div>
+        </div>
+
+        <!-- Row: Sprint Planning & Burndown -->
+        <div class="section" id="sprint-section" style="display: none">
+          <div class="sprint-header">
+            <div class="section-title">Sprint Planning &amp; Burndown</div>
+            <div class="sprint-controls">
+              <label class="sprint-label" for="sprint-select">Sprint:</label>
+              <select id="sprint-select" class="sprint-select">
+                <option value="">— Select a sprint —</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Sprint Stats -->
+          <div
+            class="stats-bar sprint-stats"
+            id="sprint-stats"
+            style="display: none"
+          >
+            <div class="stat-chip">
+              <div class="stat-value" id="stat-points-committed">—</div>
+              <div class="stat-label">Points Committed</div>
+            </div>
+            <div class="stat-value stat-chip">
+              <div class="stat-value status-done" id="stat-points-done">—</div>
+              <div class="stat-label">Points Done</div>
+            </div>
+            <div class="stat-chip">
+              <div class="stat-value status-open" id="stat-points-remaining">
+                —
+              </div>
+              <div class="stat-label">Points Remaining</div>
+            </div>
+            <div class="stat-chip">
+              <div class="stat-value" id="stat-days-left">—</div>
+              <div class="stat-label">Days Left</div>
+            </div>
+          </div>
+
+          <!-- Burndown Chart -->
+          <div class="chart-wrap chart-medium">
+            <canvas id="burndownChart"></canvas>
+          </div>
+          <div class="state-msg" id="burndown-empty" style="display: none">
+            <p>No burndown data available</p>
+          </div>
         </div>
 
         <!-- Row 3: Dependency Graph -->
@@ -94,14 +186,21 @@
             <span class="legend-item">&rarr; depends on</span>
           </div>
           <div id="dependency-graph" class="graph-container"></div>
-          <div class="state-msg" id="graph-empty" style="display:none"><p>No dependencies found between issues in this repository</p></div>
+          <div class="state-msg" id="graph-empty" style="display: none">
+            <p>No dependencies found between issues in this repository</p>
+          </div>
         </div>
 
         <!-- Row 4: Issues Table -->
         <div class="section">
           <div class="section-title">All Issues</div>
           <div class="table-toolbar">
-            <input type="text" id="table-search" class="table-search" placeholder="Filter by title…">
+            <input
+              type="text"
+              id="table-search"
+              class="table-search"
+              placeholder="Filter by title…"
+            />
             <select id="table-status-filter" class="table-filter">
               <option value="">All Statuses</option>
               <option value="open">Open</option>
@@ -118,7 +217,7 @@
             </select>
           </div>
           <div id="issues-table-wrap" class="issues-table-wrap">
-            <table class="issues-table" id="issues-table" style="display:none">
+            <table class="issues-table" id="issues-table" style="display: none">
               <thead>
                 <tr>
                   <th>ID</th>
@@ -129,16 +228,17 @@
                   <th>Labels</th>
                   <th>Dependencies</th>
                   <th>Updated</th>
+                  <th>Sprint</th>
                 </tr>
               </thead>
               <tbody id="issues-tbody"></tbody>
             </table>
-            <div class="state-msg" id="issues-empty" style="display:none"><p>No issues found for this repository</p></div>
+            <div class="state-msg" id="issues-empty" style="display: none">
+              <p>No issues found for this repository</p>
+            </div>
           </div>
         </div>
-
       </div>
-
     </div>
   </body>
 </html>
