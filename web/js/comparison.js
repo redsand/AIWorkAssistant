@@ -292,6 +292,52 @@
     });
   }
 
+  var GITHUB_REPO = "redsand/AIWorkAssistant";
+  var repoMeta = document.querySelector("meta[name='github-repo']");
+  if (repoMeta) { GITHUB_REPO = repoMeta.content; }
+
+  function buildIssueUrl(c) {
+    var title = encodeURIComponent("[ClaimKit] RAG won: " + c.query.substring(0, 60));
+    var lines = [];
+    lines.push("## Query");
+    lines.push("");
+    lines.push(c.query);
+    lines.push("");
+    lines.push("## Why RAG Won");
+    lines.push("");
+    lines.push("**Winner reason:** " + (c.winner_reason || "unknown"));
+    if (c.ck_answerability) { lines.push("**Answerability:** " + c.ck_answerability); }
+    if (c.ck_confidence !== null) { lines.push("**Confidence:** " + (c.ck_confidence * 100).toFixed(0) + "%"); }
+    if (c.ck_retrieval_score !== null) { lines.push("**Retrieval score:** " + c.ck_retrieval_score.toFixed(3)); }
+    if (c.ck_source_count !== null) { lines.push("**Sources used:** " + c.ck_source_count); }
+    if (c.ck_missing_evidence) {
+      lines.push("");
+      lines.push("## Missing Evidence");
+      lines.push("");
+      lines.push(c.ck_missing_evidence);
+    }
+    if (c.ck_answer) {
+      lines.push("");
+      lines.push("## ClaimKit Answer");
+      lines.push("");
+      lines.push("> " + c.ck_answer.substring(0, 500));
+    }
+    lines.push("");
+    lines.push("## Metrics");
+    lines.push("");
+    lines.push("| Metric | RAG | ClaimKit |");
+    lines.push("|--------|-----|----------|");
+    lines.push("| Tokens | " + c.rag_tokens + " | — |");
+    lines.push("| Sections | " + c.rag_sections + " | — |");
+    lines.push("| Time (ms) | " + c.rag_time_ms + " | " + (c.ck_time_ms !== null ? c.ck_time_ms : "—") + " |");
+    lines.push("| Claims | — | " + (c.ck_claim_count !== null ? c.ck_claim_count : "—") + " |");
+    lines.push("| Contradictions | — | " + (c.ck_contradictions !== null ? c.ck_contradictions : "—") + " |");
+    lines.push("");
+    lines.push("> Auto-generated from [comparison dashboard](" + window.location.href + ")");
+    var body = encodeURIComponent(lines.join("\n"));
+    return "https://github.com/" + GITHUB_REPO + "/issues/new?title=" + title + "&body=" + body + "&labels=claimkit,bug";
+  }
+
   function loadRunDetail(runId, afterRow) {
     fetchJSON("/api/comparison/runs/" + runId)
       .then(function (run) {
@@ -311,15 +357,44 @@
           var ckInfo = c.ck_confidence !== null
             ? " | CK: " + (c.ck_confidence * 100).toFixed(0) + "% confidence, " + c.ck_answerability
             : " | CK: unavailable";
+
+          var diagHtml = "";
+          if (c.winner_reason) {
+            diagHtml += "<div class='diag-row'><span class='diag-label'>Winner reason:</span> <span class='diag-value'>" + c.winner_reason + "</span></div>";
+          }
+          if (c.ck_confidence !== null && c.overall_winner === "rag") {
+            if (c.ck_retrieval_score !== null) {
+              diagHtml += "<div class='diag-row'><span class='diag-label'>CK retrieval score:</span> <span class='diag-value'>" + c.ck_retrieval_score.toFixed(3) + "</span></div>";
+            }
+            if (c.ck_source_count !== null) {
+              diagHtml += "<div class='diag-row'><span class='diag-label'>CK sources:</span> <span class='diag-value'>" + c.ck_source_count + "</span></div>";
+            }
+            if (c.ck_answer) {
+              diagHtml += "<div class='diag-row'><span class='diag-label'>CK answer:</span> <span class='diag-value diag-answer'>" + c.ck_answer.substring(0, 300) + "</span></div>";
+            }
+            if (c.ck_missing_evidence) {
+              diagHtml += "<div class='diag-row'><span class='diag-label'>Missing evidence:</span> <span class='diag-value'>" + c.ck_missing_evidence + "</span></div>";
+            }
+          }
+
+          var issueBtn = "";
+          if (c.overall_winner === "rag") {
+            issueBtn = "<a class='create-issue-btn' href='" + buildIssueUrl(c) + "' target='_blank' rel='noopener'>Create Issue</a>";
+          }
+
           html +=
             "<div class='case-item'>" +
+            "<div class='case-header'>" +
             winnerBadge +
             " <span class='case-query'>" + c.query + "</span>" +
+            issueBtn +
+            "</div>" +
             "<div class='case-meta'>" +
             c.category.replace(/_/g, " ") +
             " | RAG: " + c.rag_tokens + " tokens, " + c.rag_sections + " sections, " + c.rag_time_ms + "ms" +
             ckInfo +
             "</div>" +
+            diagHtml +
             "</div>";
         });
         html += "</div>";

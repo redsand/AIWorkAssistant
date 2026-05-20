@@ -570,10 +570,15 @@ async function runAiReview(
 
 const reviewedMRs = new Set<string>(); // "source:project/mrNumber"
 const reviewedMRShas = new Map<string, string>(); // mrKey → last_commit_sha
+const reviewedMRTimes = new Map<string, number>(); // mrKey → Date.now() of last review
 const mrSkipCounts = new Map<string, number>(); // mrKey → consecutive SHA-unchanged skips
 
 /** Stop polling an MR after this many consecutive SHA-unchanged skips. */
 const MAX_CONSECUTIVE_SKIPS = parseInt(process.env.MAX_CONSECUTIVE_SKIPS ?? "5", 10);
+
+/** Minimum time (ms) between re-reviews of the same MR on SHA change.
+ *  Prevents double-review when aicoder pushes during or right after a review cycle. */
+const MIN_RE_REVIEW_INTERVAL_MS = parseInt(process.env.MIN_RE_REVIEW_INTERVAL_MS ?? "120000", 10);
 
 /** Backoff bounds for the outer poll loop when MRs are being skipped. */
 const BASE_POLL_INTERVAL_MS = 30_000;
@@ -586,6 +591,7 @@ const REVIEWER_STATE_FILE = path.join(process.cwd(), ".aicoder", "reviewer-state
 interface ReviewerState {
   reviewedMRs: string[];
   reviewedMRShas: Record<string, string>;
+  reviewedMRTimes: Record<string, number>;
   updatedAt: string;
 }
 
@@ -599,6 +605,11 @@ function loadReviewerState(): void {
       if (data.reviewedMRShas) {
         Object.entries(data.reviewedMRShas).forEach(([key, sha]: [string, string]) => {
           reviewedMRShas.set(key, sha);
+        });
+      }
+      if (data.reviewedMRTimes) {
+        Object.entries(data.reviewedMRTimes).forEach(([key, time]: [string, number]) => {
+          reviewedMRTimes.set(key, time);
         });
       }
       const total = reviewedMRs.size;
@@ -670,6 +681,7 @@ function saveReviewerState(): void {
     const state: ReviewerState = {
       reviewedMRs: [...reviewedMRs],
       reviewedMRShas: Object.fromEntries(reviewedMRShas),
+      reviewedMRTimes: Object.fromEntries(reviewedMRTimes),
       updatedAt: new Date().toISOString(),
     };
     fs.writeFileSync(REVIEWER_STATE_FILE, JSON.stringify(state, null, 2), "utf-8");
@@ -739,8 +751,20 @@ async function pollMergeRequests(
           const currentSha = await vcs.getLatestCommitSha(target.name, mr.number).catch(() => undefined);
           const issueTag = mrIssueTag(vcs, mr);
           if (currentSha && currentSha !== lastSha) {
+            // Cooldown check: don't re-review if the last review was too recent.
+            // This prevents double-review when aicoder pushes during or right after
+            // a review cycle (e.g. aicoder was still running tests when reviewer
+            // picked up the initial MR).
+            const lastReviewTime = reviewedMRTimes.get(mrKey);
+            const elapsed = lastReviewTime ? Date.now() - lastReviewTime : Infinity;
+            if (lastReviewTime && elapsed < MIN_RE_REVIEW_INTERVAL_MS) {
+              const remaining = Math.round((MIN_RE_REVIEW_INTERVAL_MS - elapsed) / 1000);
+              log.skip(`MR !${mr.number}${issueTag} SHA changed but last review was ${Math.round(elapsed / 1000)}s ago — waiting ${remaining}s for aicoder to settle`);
+              continue;
+            }
             log.review(`MR !${mr.number}${issueTag} has new commits (SHA: ${lastSha.slice(0,8)} → ${currentSha.slice(0,8)}) — re-reviewing`);
             reviewedMRs.delete(mrKey);
+            reviewedMRTimes.delete(mrKey);
             mrSkipCounts.delete(mrKey);
             // SHA changed → reset backoff
             currentPollIntervalMs = null;
@@ -820,6 +844,7 @@ async function pollMergeRequests(
       }
 
       reviewedMRs.add(mrKey);
+      reviewedMRTimes.set(mrKey, Date.now());
       saveReviewerState();
 
       const tag = mrIssueTag(vcs, mr);
@@ -1439,6 +1464,17 @@ async function findMrAcrossTargets(
         if (mr) return { mr, target: syntheticTarget, vcs };
       } catch {
         // try next candidate
+      }
+    }
+    // Non-GitLab targets have no candidateProjects — try the target directly
+    if (candidateProjects.size === 0) {
+      const vcs = getVcsClient(target, config);
+      try {
+        const mrs = await vcs.listOpenMergeRequests(target.name);
+        const mr = mrs.find((m) => m.number === mrNumber);
+        if (mr) return { mr, target, vcs };
+      } catch {
+        // try next target
       }
     }
   }

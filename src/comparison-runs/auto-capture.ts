@@ -1,4 +1,4 @@
-import { comparisonRunDatabase } from "./database";
+import { comparisonRunDatabase, ComparisonRunDatabase } from "./database";
 import type { SaveComparisonInput, ComparisonEvalCategory } from "./types";
 import type { ComparisonRunResult } from "../eval/comparison/reportTypes";
 
@@ -41,10 +41,11 @@ function fromBatchResult(
 export function saveBatchComparison(
   result: ComparisonRunResult,
   description?: string,
+  db?: ComparisonRunDatabase,
 ): void {
   try {
     const input = fromBatchResult(result, description);
-    comparisonRunDatabase.createRun(input);
+    (db ?? comparisonRunDatabase).createRun(input);
   } catch (err) {
     console.error("[ComparisonRuns] Failed to save batch comparison:", err);
   }
@@ -66,10 +67,17 @@ export function saveLiveComparison(params: {
   ckClaimCount: number | null;
   ckTimeMs: number | null;
   ckContradictions: number | null;
+  ckAnswer?: string | null;
+  ckRetrievalScore?: number | null;
+  ckSourceCount?: number | null;
+  ckMissingEvidence?: string | null;
   overallWinner: "rag" | "claimkit" | "tie";
+  winnerReason?: string;
+  db?: ComparisonRunDatabase;
 }): void {
   try {
-    comparisonRunDatabase.createRun({
+    const target = params.db ?? comparisonRunDatabase;
+    target.createRun({
       source: "live",
       description: params.query.substring(0, 200),
       cases: [
@@ -77,6 +85,7 @@ export function saveLiveComparison(params: {
           query: params.query,
           category: params.category ?? "direct_fact",
           overallWinner: params.overallWinner,
+          winnerReason: params.winnerReason,
           rag: {
             contextTokens: params.ragTokens,
             sections: params.ragSections,
@@ -90,6 +99,10 @@ export function saveLiveComparison(params: {
                   claimCount: params.ckClaimCount ?? 0,
                   processingTimeMs: params.ckTimeMs ?? 0,
                   contradictions: params.ckContradictions ?? 0,
+                  answer: params.ckAnswer ?? undefined,
+                  retrievalScore: params.ckRetrievalScore ?? undefined,
+                  sourceCount: params.ckSourceCount ?? undefined,
+                  missingEvidence: params.ckMissingEvidence ?? undefined,
                 }
               : null,
         },

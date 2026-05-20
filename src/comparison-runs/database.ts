@@ -57,6 +57,11 @@ class ComparisonRunDatabase {
         ck_claim_count INTEGER,
         ck_time_ms INTEGER,
         ck_contradictions INTEGER,
+        ck_answer TEXT,
+        ck_retrieval_score REAL,
+        ck_source_count INTEGER,
+        ck_missing_evidence TEXT,
+        winner_reason TEXT,
         created_at TEXT NOT NULL,
         FOREIGN KEY (run_id) REFERENCES comparison_runs(id) ON DELETE CASCADE
       );
@@ -68,6 +73,25 @@ class ComparisonRunDatabase {
       CREATE INDEX IF NOT EXISTS idx_comparison_runs_created ON comparison_runs(created_at);
       CREATE INDEX IF NOT EXISTS idx_comparison_runs_source ON comparison_runs(source);
     `);
+
+    this.runMigrations();
+  }
+
+  private runMigrations() {
+    const migrations: Array<{ col: string; def: string }> = [
+      { col: "ck_answer", def: "TEXT" },
+      { col: "ck_retrieval_score", def: "REAL" },
+      { col: "ck_source_count", def: "INTEGER" },
+      { col: "ck_missing_evidence", def: "TEXT" },
+      { col: "winner_reason", def: "TEXT" },
+    ];
+    for (const { col, def } of migrations) {
+      try {
+        this.db.exec(`ALTER TABLE comparison_cases ADD COLUMN ${col} ${def}`);
+      } catch {
+        // Column already exists — skip
+      }
+    }
   }
 
   // ── Create ──────────────────────────────────────────────────────────
@@ -83,8 +107,9 @@ class ComparisonRunDatabase {
          (id, run_id, query, category, overall_winner,
           rag_tokens, rag_sections, rag_time_ms,
           ck_confidence, ck_answerability, ck_claim_count, ck_time_ms, ck_contradictions,
+          ck_answer, ck_retrieval_score, ck_source_count, ck_missing_evidence, winner_reason,
           created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     const txn = this.db.transaction(() => {
@@ -104,6 +129,11 @@ class ComparisonRunDatabase {
           c.claimkit?.claimCount ?? null,
           c.claimkit?.processingTimeMs ?? null,
           c.claimkit?.contradictions ?? null,
+          c.claimkit?.answer?.substring(0, 2000) ?? null,
+          c.claimkit?.retrievalScore ?? null,
+          c.claimkit?.sourceCount ?? null,
+          c.claimkit?.missingEvidence ?? null,
+          c.winnerReason ?? null,
           now,
         );
       }
@@ -369,6 +399,11 @@ class ComparisonRunDatabase {
       ck_claim_count: row.ck_claim_count as number | null,
       ck_time_ms: row.ck_time_ms as number | null,
       ck_contradictions: row.ck_contradictions as number | null,
+      ck_answer: row.ck_answer as string | null,
+      ck_retrieval_score: row.ck_retrieval_score as number | null,
+      ck_source_count: row.ck_source_count as number | null,
+      ck_missing_evidence: row.ck_missing_evidence as string | null,
+      winner_reason: row.winner_reason as string | null,
       created_at: row.created_at as string,
     };
   }

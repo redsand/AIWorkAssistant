@@ -30,6 +30,11 @@ export interface ComparisonCaseRow {
   ck_claim_count: number | null;
   ck_time_ms: number | null;
   ck_contradictions: number | null;
+  ck_answer: string | null;
+  ck_retrieval_score: number | null;
+  ck_source_count: number | null;
+  ck_missing_evidence: string | null;
+  winner_reason: string | null;
   created_at: string;
 }
 
@@ -110,6 +115,7 @@ export interface SaveCaseInput {
   query: string;
   category: ComparisonEvalCategory;
   overallWinner: ComparisonWinner;
+  winnerReason?: string;
   rag: {
     contextTokens: number;
     sections: number;
@@ -121,6 +127,10 @@ export interface SaveCaseInput {
     claimCount: number;
     processingTimeMs: number;
     contradictions: number;
+    answer?: string;
+    retrievalScore?: number;
+    sourceCount?: number;
+    missingEvidence?: string;
   } | null;
 }
 

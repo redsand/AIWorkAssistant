@@ -114,12 +114,18 @@ export async function assembleContextPacket(
 
     // Auto-save comparison data for dashboard
     let overallWinner: "rag" | "claimkit" | "tie" = "tie";
+    let winnerReason: string | undefined;
     if (!claimKitResult) {
       overallWinner = "rag";
+      winnerReason = "ck_unavailable";
     } else if (claimKitResult.confidence > 0.5 && claimKitResult.answerability === "answerable") {
       overallWinner = "claimkit";
+      winnerReason = "high_confidence";
     } else if (claimKitResult.confidence < 0.3 || claimKitResult.answerability === "not_answerable") {
       overallWinner = "rag";
+      winnerReason = claimKitResult.answerability === "not_answerable" ? "not_answerable" : "low_confidence";
+    } else {
+      winnerReason = "uncertain";
     }
     const ragMs = Date.now() - ragStart;
     saveLiveComparison({
@@ -132,7 +138,12 @@ export async function assembleContextPacket(
       ckClaimCount: claimKitResult?.metadata.claimCount ?? null,
       ckTimeMs: claimKitResult ? ckMs : null,
       ckContradictions: claimKitResult?.contradictions.length ?? null,
+      ckAnswer: claimKitResult?.answer ?? null,
+      ckRetrievalScore: claimKitResult?.metadata.retrievalScore ?? null,
+      ckSourceCount: claimKitResult?.metadata.sourceIds.length ?? null,
+      ckMissingEvidence: claimKitResult?.missingEvidence?.join(", ") ?? null,
       overallWinner,
+      winnerReason,
     });
   }
 
