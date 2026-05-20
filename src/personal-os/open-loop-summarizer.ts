@@ -85,7 +85,7 @@ class OpenLoopSummarizer {
 
     // Decision work items not yet resolved
     for (const item of data.workItems) {
-      if (item.type === "decision" && item.status !== "done" && item.status !== "archived") {
+      if (item.type === "decision" && !item.archived) {
         decisionsWaiting.push({
           title: item.title,
           source: "work_items",

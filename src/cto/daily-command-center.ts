@@ -502,7 +502,7 @@ class CtoDailyCommandCenter {
         item.dueAt &&
         item.dueAt.slice(0, 10) < date &&
         item.status !== "done" &&
-        item.status !== "archived",
+        !item.archived,
     );
   }
 

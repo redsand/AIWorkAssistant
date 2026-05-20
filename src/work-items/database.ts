@@ -47,12 +47,18 @@ class WorkItemDatabase {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         completed_at TEXT,
+        archived INTEGER NOT NULL DEFAULT 0,
         tags_json TEXT,
         linked_resources_json TEXT,
         notes_json TEXT,
         metadata_json TEXT
       );
+    `);
 
+    // Run migrations before creating indexes so the archived column exists
+    this.runMigrations();
+
+    this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status);
       CREATE INDEX IF NOT EXISTS idx_work_items_type ON work_items(type);
       CREATE INDEX IF NOT EXISTS idx_work_items_priority ON work_items(priority);
@@ -60,7 +66,36 @@ class WorkItemDatabase {
       CREATE INDEX IF NOT EXISTS idx_work_items_owner ON work_items(owner);
       CREATE INDEX IF NOT EXISTS idx_work_items_due_at ON work_items(due_at);
       CREATE INDEX IF NOT EXISTS idx_work_items_created_at ON work_items(created_at);
+      CREATE INDEX IF NOT EXISTS idx_work_items_archived ON work_items(archived);
     `);
+  }
+
+  private runMigrations() {
+    // Migration: add archived column if it doesn't exist (for existing databases)
+    const hasArchivedColumn = this.db
+      .prepare(
+        "SELECT COUNT(*) as cnt FROM pragma_table_info('work_items') WHERE name = 'archived'",
+      )
+      .get() as { cnt: number };
+
+    if (hasArchivedColumn.cnt === 0) {
+      this.db.exec("ALTER TABLE work_items ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
+    }
+
+    // Migration: set archived=1 for existing items with status 'archived' or 'done'
+    const unarchivedDoneCount = (
+      this.db
+        .prepare(
+          "SELECT COUNT(*) as cnt FROM work_items WHERE archived = 0 AND (status = 'archived' OR status = 'done')",
+        )
+        .get() as { cnt: number }
+    ).cnt;
+
+    if (unarchivedDoneCount > 0) {
+      this.db.exec(
+        "UPDATE work_items SET archived = 1 WHERE archived = 0 AND (status = 'archived' OR status = 'done')",
+      );
+    }
   }
 
   createWorkItem(params: WorkItemCreateParams): WorkItem {
@@ -81,6 +116,7 @@ class WorkItemDatabase {
       createdAt: now,
       updatedAt: now,
       completedAt: null,
+      archived: false,
       tagsJson: params.tags ? JSON.stringify(params.tags) : null,
       linkedResourcesJson: params.linkedResources
         ? JSON.stringify(params.linkedResources)
@@ -91,8 +127,8 @@ class WorkItemDatabase {
 
     this.db
       .prepare(
-        `INSERT INTO work_items (id, type, title, description, status, priority, owner, source, source_url, source_external_id, due_at, created_at, updated_at, completed_at, tags_json, linked_resources_json, notes_json, metadata_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO work_items (id, type, title, description, status, priority, owner, source, source_url, source_external_id, due_at, created_at, updated_at, completed_at, archived, tags_json, linked_resources_json, notes_json, metadata_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         item.id,
@@ -109,6 +145,7 @@ class WorkItemDatabase {
         item.createdAt,
         item.updatedAt,
         item.completedAt,
+        item.archived ? 1 : 0,
         item.tagsJson,
         item.linkedResourcesJson,
         item.notesJson,
@@ -126,11 +163,25 @@ class WorkItemDatabase {
     const updates: string[] = [];
     const values: unknown[] = [];
 
+    if (patch.status !== undefined) {
+      updates.push("status = ?");
+      values.push(patch.status);
+      // Auto-archive when status is set to done, un-archive when set to anything else
+      if (patch.status === "done") {
+        updates.push("archived = 1");
+        if (!existing.completedAt) {
+          updates.push("completed_at = ?");
+          values.push(now);
+        }
+      } else if (existing.archived) {
+        updates.push("archived = 0");
+      }
+    }
+
     const fieldMap: Record<string, unknown> = {
       type: patch.type,
       title: patch.title,
       description: patch.description,
-      status: patch.status,
       priority: patch.priority,
       owner: patch.owner,
       source: patch.source,
@@ -199,7 +250,7 @@ class WorkItemDatabase {
       params.push(`%${filters.search}%`, `%${filters.search}%`);
     }
     if (!filters?.includeArchived) {
-      conditions.push("status != 'archived'");
+      conditions.push("archived = 0");
     }
 
     const whereClause =
@@ -269,7 +320,7 @@ class WorkItemDatabase {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        "UPDATE work_items SET status = 'done', completed_at = ?, updated_at = ? WHERE id = ?",
+        "UPDATE work_items SET status = 'done', archived = 1, completed_at = ?, updated_at = ? WHERE id = ?",
       )
       .run(now, now, id);
     return this.getWorkItem(id);
@@ -279,7 +330,7 @@ class WorkItemDatabase {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        "UPDATE work_items SET status = 'archived', updated_at = ? WHERE id = ?",
+        "UPDATE work_items SET archived = 1, updated_at = ? WHERE id = ?",
       )
       .run(now, id);
     return this.getWorkItem(id);
@@ -296,12 +347,12 @@ class WorkItemDatabase {
 
   getStats(): WorkItemStats {
     const totalRow = this.db
-      .prepare("SELECT COUNT(*) as count FROM work_items WHERE status != 'archived'")
+      .prepare("SELECT COUNT(*) as count FROM work_items WHERE archived = 0")
       .get() as { count: number };
 
     const overdueRow = this.db
       .prepare(
-        "SELECT COUNT(*) as count FROM work_items WHERE due_at < ? AND status NOT IN ('done', 'archived')",
+        "SELECT COUNT(*) as count FROM work_items WHERE due_at < ? AND archived = 0 AND status != 'done'",
       )
       .get(new Date().toISOString()) as { count: number };
 
@@ -309,7 +360,7 @@ class WorkItemDatabase {
       (
         this.db
           .prepare(
-            "SELECT status, COUNT(*) as count FROM work_items WHERE status != 'archived' GROUP BY status",
+            "SELECT status, COUNT(*) as count FROM work_items WHERE archived = 0 GROUP BY status",
           )
           .all() as { status: string; count: number }[]
       ).map((r) => [r.status, r.count]),
@@ -318,7 +369,7 @@ class WorkItemDatabase {
       (
         this.db
           .prepare(
-            "SELECT type, COUNT(*) as count FROM work_items WHERE status != 'archived' GROUP BY type",
+            "SELECT type, COUNT(*) as count FROM work_items WHERE archived = 0 GROUP BY type",
           )
           .all() as { type: string; count: number }[]
       ).map((r) => [r.type, r.count]),
@@ -327,7 +378,7 @@ class WorkItemDatabase {
       (
         this.db
           .prepare(
-            "SELECT priority, COUNT(*) as count FROM work_items WHERE status != 'archived' GROUP BY priority",
+            "SELECT priority, COUNT(*) as count FROM work_items WHERE archived = 0 GROUP BY priority",
           )
           .all() as { priority: string; count: number }[]
       ).map((r) => [r.priority, r.count]),
@@ -358,6 +409,7 @@ class WorkItemDatabase {
       createdAt: row.created_at as string,
       updatedAt: row.updated_at as string,
       completedAt: row.completed_at as string | null,
+      archived: row.archived === 1 || row.archived === true,
       tagsJson: row.tags_json as string | null,
       linkedResourcesJson: row.linked_resources_json as string | null,
       notesJson: row.notes_json as string | null,

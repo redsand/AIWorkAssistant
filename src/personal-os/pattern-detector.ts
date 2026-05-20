@@ -10,7 +10,7 @@ class PatternDetector {
     // Recurring task types from work items
     const typeCounts: Record<string, number> = {};
     for (const item of data.workItems) {
-      if (item.status !== "done" && item.status !== "archived") {
+      if (!item.archived) {
         typeCounts[item.type] = (typeCounts[item.type] || 0) + 1;
       }
     }

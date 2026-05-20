@@ -6,7 +6,7 @@ class DelegationSuggester {
     const candidates: DelegationCandidate[] = [];
 
     for (const item of workItems) {
-      if (item.status === "done" || item.status === "archived") continue;
+      if (item.archived) continue;
 
       if (item.priority === "critical") continue;
       if (item.status === "blocked") continue;
