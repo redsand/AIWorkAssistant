@@ -105,8 +105,8 @@ export class OpenCodeExecutor implements ProviderExecutor {
     cliPath: string,
     _defaultModel: string,
   ): { command: string; args: string[] } {
-    const args: string[] = [];
-    if (options.model) args.push("--model", options.model);
+    const args = ["run", "--format", "json", "--dangerously-skip-permissions"];
+    if (options.model) args.push("-m", options.model);
     return { command: cliPath, args };
   }
 
@@ -127,36 +127,6 @@ export class OpenCodeExecutor implements ProviderExecutor {
   }
 }
 
-export class ZaiExecutor implements ProviderExecutor {
-  readonly providerName: ProviderType = "zai";
-
-  buildCommand(
-    options: LaunchOptions,
-    cliPath: string,
-    defaultModel: string,
-  ): { command: string; args: string[] } {
-    const model = options.model || defaultModel;
-    const args: string[] = [];
-    if (model) args.push("--model", model);
-    return { command: cliPath, args };
-  }
-
-  buildEnv(
-    options: LaunchOptions,
-    ollamaUrl: string,
-  ): Record<string, string> {
-    if (options.ollamaUrl) {
-      return {
-        ZAI_BASE_URL: `${ollamaUrl}/v1`,
-        ZAI_API_KEY: process.env.ZAI_API_KEY || "ollama",
-      };
-    }
-    const env: Record<string, string> = {};
-    if (process.env.ZAI_API_KEY) env.ZAI_API_KEY = process.env.ZAI_API_KEY;
-    return env;
-  }
-}
-
 export function resolveExecutor(provider: ProviderType): ProviderExecutor {
   switch (provider) {
     case "codex":
@@ -165,7 +135,5 @@ export function resolveExecutor(provider: ProviderType): ProviderExecutor {
       return new ClaudeExecutor();
     case "opencode":
       return new OpenCodeExecutor();
-    case "zai":
-      return new ZaiExecutor();
   }
 }

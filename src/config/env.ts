@@ -17,7 +17,7 @@ const envSchema = z.object({
   AUTH_SESSION_SECRET: z.string().default("change-me-in-production"),
 
   // OpenCode API
-  OPENCODE_API_URL: z.string().url().default("https://api.opencode.com/v1"),
+  OPENCODE_API_URL: z.string().url().default("https://opencode.ai/zen/go/v1"),
   OPENCODE_API_KEY: z.string().default(""),
   OPENCODE_MODEL: z.string().default(""),
 

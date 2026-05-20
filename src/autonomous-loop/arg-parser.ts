@@ -26,11 +26,11 @@ Options:
   --source <type>      Issue source: github | gitlab | jira | jitbit | work_items | auto (default: auto)
   --owner <name>       GitHub/GitLab owner (overrides server default)
   --repo <name>        Repository/project name (overrides server default)
-  --agent <name>       Coding agent: codex | opencode | claude | zai (default: claude)
+  --agent <name>       Coding agent: codex | opencode | claude (default: claude)
   --claude             Shorthand for --agent claude
   --codex              Shorthand for --agent codex
-  --opencode           Shorthand for --agent opencode
-  --zai                Shorthand for --agent zai
+  --opencode           Route through OpenCode Go API (sets OPENAI_BASE_URL to OPENCODE_API_URL)
+  --zai                Route through Z.ai API (sets OPENAI_BASE_URL to ZAI_BASE_URL)
   --ollama             Route agent through Ollama launcher (sets OPENAI_BASE_URL, etc.)
   --model <name>       Override model for the agent (e.g. glm-5.1:cloud)
   --label <label>      Issue label to filter (default: ready-for-agent)
@@ -70,9 +70,11 @@ Remote config (fetches everything else from AIWorkAssistant):
     if (argv[i] === "--ollama") {
       out["ollama"] = "true";
     } else if (argv[i] === "--zai") {
-      out["agent"] = "zai";
+      out["api"] = "zai";
     } else if (argv[i] === "--opencode") {
-      out["agent"] = "opencode";
+      out["api"] = "opencode";
+    } else if (argv[i] === "--poll") {
+      out["poll"] = "true";
     } else if (argv[i] === "--claude") {
       out["agent"] = "claude";
     } else if (argv[i] === "--codex") {
@@ -122,12 +124,21 @@ export const FIN_LINE_REGEX = new RegExp(`^${FIN_ESCAPED}$`, "m");
 export const POLL_MS = parseInt(ARGV["poll-ms"] || process.env.AICODER_POLL_MS || "60000", 10);
 export const MAX_CYCLES = parseInt(ARGV["max-cycles"] || process.env.AICODER_MAX_CYCLES || "0", 10);
 export const WORKSPACE = ARGV.workspace || process.env.AICODER_WORKSPACE || process.cwd();
-export const AGENT = (ARGV.agent || process.env.AICODER_AGENT || "claude") as ProviderType;
+
+function normalizeAgentName(value: string): ProviderType {
+  const normalized = value.toLowerCase();
+  if (normalized === "codex" || normalized === "opencode" || normalized === "claude") return normalized;
+  console.error(`Unknown agent "${value}". Valid: codex, opencode, claude`);
+  process.exit(2);
+}
+
+export const AGENT = normalizeAgentName(ARGV.agent || process.env.AICODER_AGENT || "claude");
 export const LABEL = ARGV.label || process.env.AICODER_LABEL || "ready-for-agent";
 export const PRIORITY = (ARGV.priority || process.env.AICODER_PRIORITY || "label") as PriorityMode;
 export const SOURCE = (ARGV.source || process.env.AICODER_SOURCE || "auto") as TicketSourceType | "auto";
 export const LOOKUP = (ARGV.lookup || process.env.AICODER_LOOKUP || "memory") as LookupMode;
 export const USE_OLLAMA = "ollama" in ARGV || process.env.AICODER_OLLAMA === "true";
+export const API_PROVIDER = (ARGV.api || process.env.AICODER_API || null) as "opencode" | "zai" | null;
 export const DEBUG = "debug" in ARGV || process.env.AICODER_DEBUG === "true";
 export const SKIP_BASELINE = "skip-baseline" in ARGV || process.env.AICODER_SKIP_BASELINE === "true";
 export const SKIP_AGENT = "skip-agent" in ARGV || process.env.AICODER_SKIP_AGENT === "true";
@@ -137,7 +148,18 @@ export const RESUME_RUN = "resume-run" in ARGV;
 export const DISCARD_RUN = "discard-run" in ARGV;
 export const FORCE_REPROCESS = "force" in ARGV;
 export const WATCH_ISSUE = ARGV.watch || null;
-export const MODEL = ARGV.model || process.env.AICODER_MODEL || process.env.CODEX_MODEL || "gpt-5.5";
+
+function defaultModel(agent: ProviderType, apiProvider: "opencode" | "zai" | null): string {
+  if (apiProvider === "opencode" || agent === "opencode") {
+    return process.env.OPENCODE_MODEL || "glm-5";
+  }
+  if (apiProvider === "zai") {
+    return process.env.ZAI_MODEL || process.env.CODEX_MODEL || "gpt-5.5";
+  }
+  return process.env.CODEX_MODEL || "gpt-5.5";
+}
+
+export const MODEL = ARGV.model || process.env.AICODER_MODEL || defaultModel(AGENT, API_PROVIDER);
 export const OLLAMA_URL = process.env.OLLAMA_API_URL || "http://localhost:11434";
 export const TARGET_ISSUE_KEY = ARGV.issue || null;
 export const PUBLISH_BRANCH = ARGV.publish || null;

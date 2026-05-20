@@ -32,7 +32,9 @@
       "Bash(git push *)",
       "Bash(npm install *)",
       "Bash(rtk npx *)",
-      "Bash(rtk npm *)"
+      "Bash(rtk npm *)",
+      "Bash(opencode --help)",
+      "Bash(opencode run *)"
     ]
   }
 }

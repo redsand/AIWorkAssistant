@@ -6,7 +6,6 @@ import {
   CodexExecutor,
   ClaudeExecutor,
   OpenCodeExecutor,
-  ZaiExecutor,
   resolveExecutor,
 } from "../executors";
 import { OllamaLauncher } from "../launcher";
@@ -18,6 +17,7 @@ import {
   enforceDependencyOrder,
   prioritizeItems,
 } from "../priority-sorter";
+import { buildAgentArgs } from "../../../autonomous-loop/agent-runner";
 import type { LaunchOptions, ProviderType } from "../types";
 
 // ─── Executor Tests ──────────────────────────────────────────────────────────
@@ -153,26 +153,28 @@ describe("OpenCodeExecutor", () => {
     expect(executor.providerName).toBe("opencode");
   });
 
-  it("builds command with no args when no model specified", () => {
+  it("builds command with run subcommand, json format, and permission bypass", () => {
     const options: LaunchOptions = {
       provider: "opencode",
       prompt: "test prompt",
     };
     const result = executor.buildCommand(options, "opencode", "default-model");
     expect(result.command).toBe("opencode");
-    expect(result.args).toEqual([]);
+    expect(result.args).toContain("run");
+    expect(result.args).toContain("--format");
+    expect(result.args).toContain("json");
+    expect(result.args).toContain("--dangerously-skip-permissions");
     expect(result.args).not.toContain("test prompt");
   });
 
-  it("builds command with --model when model is specified", () => {
+  it("includes -m model when model is specified", () => {
     const options: LaunchOptions = {
       provider: "opencode",
       prompt: "test prompt",
       model: "gpt-4o",
     };
     const result = executor.buildCommand(options, "opencode", "default-model");
-    expect(result.command).toBe("opencode");
-    expect(result.args).toContain("--model");
+    expect(result.args).toContain("-m");
     expect(result.args).toContain("gpt-4o");
   });
 
@@ -198,48 +200,6 @@ describe("OpenCodeExecutor", () => {
   });
 });
 
-describe("ZaiExecutor", () => {
-  const executor = new ZaiExecutor();
-
-  it("has providerName zai", () => {
-    expect(executor.providerName).toBe("zai");
-  });
-
-  it("builds command with --model from options", () => {
-    const options: LaunchOptions = {
-      provider: "zai",
-      prompt: "test prompt",
-      model: "zai-turbo",
-    };
-    const result = executor.buildCommand(options, "zai", "default-model");
-    expect(result.command).toBe("zai");
-    expect(result.args).toContain("--model");
-    expect(result.args).toContain("zai-turbo");
-    expect(result.args).not.toContain("test prompt");
-  });
-
-  it("builds command with default model when no model in options", () => {
-    const options: LaunchOptions = {
-      provider: "zai",
-      prompt: "test prompt",
-    };
-    const result = executor.buildCommand(options, "zai", "default-model");
-    expect(result.args).toContain("--model");
-    expect(result.args).toContain("default-model");
-  });
-
-  it("builds env with ZAI_BASE_URL when ollamaUrl is set", () => {
-    const options: LaunchOptions = {
-      provider: "zai",
-      prompt: "test",
-      ollamaUrl: "http://localhost:11434",
-    };
-    const env = executor.buildEnv(options, "http://localhost:11434");
-    expect(env.ZAI_BASE_URL).toBe("http://localhost:11434/v1");
-    expect(env.ZAI_API_KEY).toBeDefined();
-  });
-});
-
 describe("resolveExecutor", () => {
   it("returns CodexExecutor for codex", () => {
     expect(resolveExecutor("codex")).toBeInstanceOf(CodexExecutor);
@@ -252,10 +212,6 @@ describe("resolveExecutor", () => {
   it("returns OpenCodeExecutor for opencode", () => {
     expect(resolveExecutor("opencode")).toBeInstanceOf(OpenCodeExecutor);
   });
-
-  it("returns ZaiExecutor for zai", () => {
-    expect(resolveExecutor("zai")).toBeInstanceOf(ZaiExecutor);
-  });
 });
 
 // ─── Command Length Safety ────────────────────────────────────────────────────
@@ -263,7 +219,7 @@ describe("resolveExecutor", () => {
 describe("Command line length safety", () => {
   it("all executors produce args under 1000 chars regardless of prompt length", () => {
     const veryLongPrompt = "A".repeat(100_000);
-    const providers: ProviderType[] = ["codex", "claude", "opencode", "zai"];
+    const providers: ProviderType[] = ["codex", "claude", "opencode"];
 
     for (const provider of providers) {
       const executor = resolveExecutor(provider);
@@ -285,7 +241,7 @@ describe("Command line length safety", () => {
 
   it("prompt content never appears in any executor args", () => {
     const uniquePrompt = `UNIQUE_MARKER_${Date.now()}_xyzzy`;
-    const providers: ProviderType[] = ["codex", "claude", "opencode", "zai"];
+    const providers: ProviderType[] = ["codex", "claude", "opencode"];
 
     for (const provider of providers) {
       const executor = resolveExecutor(provider);
@@ -719,7 +675,7 @@ describe("Launcher + Executor integration", () => {
     expect(args).toContain("o4-mini");
   });
 
-  it("OpenCodeExecutor passes no args and routes via env", () => {
+  it("OpenCodeExecutor includes run subcommand and routes API via env", () => {
     const executor = new OpenCodeExecutor();
     const options: LaunchOptions = {
       provider: "opencode",
@@ -730,7 +686,8 @@ describe("Launcher + Executor integration", () => {
     const { args } = executor.buildCommand(options, "opencode", "default");
     const env = executor.buildEnv(options, "http://localhost:11434");
 
-    expect(args).toEqual([]);
+    expect(args).toContain("run");
+    expect(args).toContain("--dangerously-skip-permissions");
     expect(env.OPENCODE_API_URL).toBe("http://localhost:11434/v1");
   });
 });
@@ -771,6 +728,95 @@ describe("Regression: glm-5.1:cloud must not reach Claude CLI", () => {
     const { args } = executor.buildCommand(options, "claude", "claude-sonnet-4-6");
     expect(args).toContain("--model");
     expect(args).toContain("claude-sonnet-4-6");
+  });
+});
+
+describe("Regression: direct Claude provider routing", () => {
+  it("uses a Claude alias for OpenCode-backed models in direct mode", () => {
+    const args = buildAgentArgs("claude", undefined, "DeepSeek V4 Pro", "opencode");
+
+    expect(args).toContain("--model");
+    expect(args).toContain("opus");
+    expect(args).not.toContain("DeepSeek V4 Pro");
+  });
+
+  it("does not pass the Codex default model to native Claude direct mode", () => {
+    const args = buildAgentArgs("claude", undefined, "gpt-5.5");
+
+    expect(args).not.toContain("--model");
+    expect(args).not.toContain("gpt-5.5");
+  });
+});
+
+describe("Regression: direct Codex provider routing", () => {
+  it("does not invent a Responses endpoint for OpenCode Go", () => {
+    const previousCodeUrl = process.env.OPENCODE_CODEX_API_URL;
+    const previousResponsesUrl = process.env.OPENCODE_RESPONSES_API_URL;
+    delete process.env.OPENCODE_CODEX_API_URL;
+    delete process.env.OPENCODE_RESPONSES_API_URL;
+
+    try {
+      const args = buildAgentArgs("codex", undefined, "DeepSeek V4 Pro", "opencode");
+
+      expect(args).not.toContain("--ignore-user-config");
+      expect(args).not.toContain("model_provider=\"opencode\"");
+      expect(args).not.toContain("https://opencode.ai/zen/v1");
+      expect(args).toContain("DeepSeek V4 Pro");
+    } finally {
+      if (previousCodeUrl === undefined) {
+        delete process.env.OPENCODE_CODEX_API_URL;
+      } else {
+        process.env.OPENCODE_CODEX_API_URL = previousCodeUrl;
+      }
+      if (previousResponsesUrl === undefined) {
+        delete process.env.OPENCODE_RESPONSES_API_URL;
+      } else {
+        process.env.OPENCODE_RESPONSES_API_URL = previousResponsesUrl;
+      }
+    }
+  });
+
+  it("uses explicit Responses-compatible OpenCode config when supplied", () => {
+    const previousCodeUrl = process.env.OPENCODE_CODEX_API_URL;
+    const previousResponsesUrl = process.env.OPENCODE_RESPONSES_API_URL;
+    process.env.OPENCODE_CODEX_API_URL = "https://example.test/v1";
+    delete process.env.OPENCODE_RESPONSES_API_URL;
+
+    try {
+      const args = buildAgentArgs("codex", undefined, "DeepSeek V4 Pro", "opencode");
+
+      expect(args).toContain("model_provider=\"opencode\"");
+      expect(args).toContain("model_providers.opencode.base_url=\"https://example.test/v1\"");
+      expect(args).toContain("model_providers.opencode.env_key=\"OPENCODE_API_KEY\"");
+      expect(args).toContain("model_providers.opencode.wire_api=\"responses\"");
+      expect(args).toContain("model_providers.opencode.requires_openai_auth=false");
+    } finally {
+      if (previousCodeUrl === undefined) {
+        delete process.env.OPENCODE_CODEX_API_URL;
+      } else {
+        process.env.OPENCODE_CODEX_API_URL = previousCodeUrl;
+      }
+      if (previousResponsesUrl === undefined) {
+        delete process.env.OPENCODE_RESPONSES_API_URL;
+      } else {
+        process.env.OPENCODE_RESPONSES_API_URL = previousResponsesUrl;
+      }
+    }
+  });
+});
+
+describe("Regression: direct OpenCode model routing", () => {
+  it("maps OpenCode Go display names to provider/model ids", () => {
+    const args = buildAgentArgs("opencode", undefined, "DeepSeek V4 Pro");
+
+    expect(args).toContain("-m");
+    expect(args).toContain("opencode-go/deepseek-v4-pro");
+  });
+
+  it("preserves explicit OpenCode provider/model ids", () => {
+    const args = buildAgentArgs("opencode", undefined, "opencode-go/glm-5.1");
+
+    expect(args).toContain("opencode-go/glm-5.1");
   });
 });
 

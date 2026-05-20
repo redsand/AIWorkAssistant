@@ -25,6 +25,7 @@ export interface AgentConfig {
   agent: ProviderType;
   workspace: string;
   model?: string;
+  apiProvider?: "opencode" | "zai" | null;
   debug?: boolean;
   ollamaUrl?: string;
   finToken?: string;
@@ -40,26 +41,96 @@ function buildFinRegexes(token: string): { finRegex: RegExp; finLineRegex: RegEx
   };
 }
 
-export function buildAgentArgs(agent: string, resumeSessionId?: string, model?: string): string[] {
+function isClaudeModel(model: string): boolean {
+  return model === "opus" || model === "sonnet" || model === "haiku" || model.startsWith("claude-");
+}
+
+function quoteWindowsShellArg(arg: string): string {
+  if (!/[\s"]/u.test(arg)) return arg;
+  return `"${arg.replace(/"/g, '\\"')}"`;
+}
+
+function prepareSpawnArgs(args: string[]): string[] {
+  return process.platform === "win32" ? args.map(quoteWindowsShellArg) : args;
+}
+
+const OPENCODE_GO_MODEL_IDS: Record<string, string> = {
+  "glm-5": "opencode-go/glm-5",
+  "glm-5.1": "opencode-go/glm-5.1",
+  "kimi k2.5": "opencode-go/kimi-k2.5",
+  "kimi k2.6": "opencode-go/kimi-k2.6",
+  "deepseek v4 pro": "opencode-go/deepseek-v4-pro",
+  "deepseek v4 flash": "opencode-go/deepseek-v4-flash",
+  "mimo-v2.5": "opencode-go/mimo-v2.5",
+  "mimo-v2.5-pro": "opencode-go/mimo-v2.5-pro",
+  "minimax m2.7": "opencode-go/minimax-m2.7",
+  "minimax m2.5": "opencode-go/minimax-m2.5",
+  "qwen3.6 plus": "opencode-go/qwen3.6-plus",
+  "qwen3.5 plus": "opencode-go/qwen3.5-plus",
+};
+
+function normalizeOpenCodeModel(model: string): string {
+  if (model.includes("/")) return model;
+  const key = model.trim().toLowerCase();
+  return OPENCODE_GO_MODEL_IDS[key] || model;
+}
+
+function getOpenCodeCodexResponsesBase(): string | null {
+  return process.env.OPENCODE_CODEX_API_URL || process.env.OPENCODE_RESPONSES_API_URL || null;
+}
+
+function getCodexOpenCodeGoError(): string {
+  const base = process.env.OPENCODE_API_URL || "https://opencode.ai/zen/go/v1";
+  return `Codex CLI cannot use OpenCode Go directly: ${base} exposes /chat/completions, while this Codex CLI provider path requires a Responses-compatible endpoint. Use --agent opencode for OpenCode Go, or set OPENCODE_CODEX_API_URL/OPENCODE_RESPONSES_API_URL to a Responses-compatible endpoint.`;
+}
+
+export function buildAgentArgs(
+  agent: string,
+  resumeSessionId?: string,
+  model?: string,
+  apiProvider?: "opencode" | "zai" | null,
+): string[] {
   switch (agent) {
     case "codex": {
       const codexModel = model || process.env.CODEX_MODEL || "gpt-5.5";
-      return [
+      const args = [
         "exec",
         "--model",
         codexModel,
         "--json",
         "--dangerously-bypass-approvals-and-sandbox",
       ];
-    }
-    case "opencode": {
-      const args: string[] = [];
-      if (model) args.push("--model", model);
+      if (apiProvider === "opencode") {
+        const base = getOpenCodeCodexResponsesBase();
+        if (base) {
+          args.splice(1, 0,
+            "-c", "model_provider=\"opencode\"",
+            "-c", "model_providers.opencode.name=\"OpenCode\"",
+            "-c", `model_providers.opencode.base_url="${base}"`,
+            "-c", "model_providers.opencode.env_key=\"OPENCODE_API_KEY\"",
+            "-c", "model_providers.opencode.wire_api=\"responses\"",
+            "-c", "model_providers.opencode.requires_openai_auth=false",
+            "-c", "forced_login_method=\"api\"",
+          );
+        }
+      } else if (apiProvider === "zai") {
+        const base = process.env.ZAI_API_URL || process.env.OPENAI_BASE_URL || "https://api.z.ai/api/coding/paas/v4";
+        args.splice(1, 0,
+          "-c", "model_provider=\"z_ai\"",
+          "-c", "model_providers.z_ai.name=\"z.ai - GLM Coding Plan\"",
+          "-c", `model_providers.z_ai.base_url="${base}"`,
+          "-c", "model_providers.z_ai.env_key=\"ZAI_API_KEY\"",
+          "-c", "model_providers.z_ai.wire_api=\"chat\"",
+          "-c", "model_providers.z_ai.requires_openai_auth=false",
+          "-c", "forced_login_method=\"api\"",
+        );
+      }
       return args;
     }
-    case "zai": {
-      const zaiModel = model || process.env.ZAI_MODEL || "gpt-5.5";
-      return ["--model", zaiModel];
+    case "opencode": {
+      const args = ["run", "--format", "json", "--dangerously-skip-permissions"];
+      if (model) args.push("-m", normalizeOpenCodeModel(model));
+      return args;
     }
     case "claude": {
       const args = [
@@ -71,6 +142,11 @@ export function buildAgentArgs(agent: string, resumeSessionId?: string, model?: 
         "--dangerously-skip-permissions",
       ];
       if (resumeSessionId) args.push("--resume", resumeSessionId);
+      if (apiProvider && model) {
+        args.push("--model", "opus");
+      } else if (model && isClaudeModel(model)) {
+        args.push("--model", model);
+      }
       return args;
     }
     default:
@@ -94,8 +170,15 @@ export async function runAgentDirect(
     const finToken = cfg.finToken ?? (process.env.FIN_SIGNAL || "FIN");
     const { finRegex, finLineRegex } = buildFinRegexes(finToken);
 
-    const agentArgs = buildAgentArgs(cfg.agent, resumeSessionId, cfg.model);
-    const child = spawn(cfg.agent, agentArgs, {
+    if (cfg.agent === "codex" && cfg.apiProvider === "opencode" && !getOpenCodeCodexResponsesBase()) {
+      const message = getCodexOpenCodeGoError();
+      logger.logError(message);
+      resolve({ finDetected: false, exitCode: -1, ranTests: false, stderr: message });
+      return;
+    }
+
+    const agentArgs = buildAgentArgs(cfg.agent, resumeSessionId, cfg.model, cfg.apiProvider);
+    const child = spawn(cfg.agent, prepareSpawnArgs(agentArgs), {
       cwd: cfg.workspace,
       stdio: ["pipe", "pipe", "pipe"],
       shell: process.platform === "win32",

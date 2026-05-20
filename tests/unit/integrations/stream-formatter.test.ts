@@ -306,6 +306,127 @@ describe("createStreamFormatter — tool result events", () => {
   });
 });
 
+describe("createStreamFormatter — opencode events", () => {
+  it("formats OpenCode nested text parts", () => {
+    const output = formatEvent({
+      type: "message.part.updated",
+      part: { type: "text", text: "Working through the change" },
+    }, "opencode");
+
+    expect(stripAnsi(output)).toContain("Working through the change");
+  });
+
+  it("formats OpenCode nested tool parts", () => {
+    const output = formatEvent({
+      type: "message.part.updated",
+      part: {
+        type: "tool",
+        name: "bash",
+        input: { command: "npm test" },
+      },
+    }, "opencode");
+
+    const plain = stripAnsi(output);
+    expect(plain).toContain("run");
+    expect(plain).toContain("npm test");
+  });
+
+  it("formats lowercase OpenCode read tools with file paths", () => {
+    const output = formatEvent({
+      type: "tool_call",
+      tool: "read",
+      input: { filePath: "src/routes/dependencies.ts" },
+    }, "opencode");
+
+    const plain = stripAnsi(output);
+    expect(plain).toContain("read");
+    expect(plain).toContain("src/routes/dependencies.ts");
+  });
+
+  it("formats OpenCode read tools when arguments are top-level", () => {
+    const output = formatEvent({
+      type: "tool_call",
+      tool: "read",
+      path: "src/services/dependency-graph.ts",
+    }, "opencode");
+
+    const plain = stripAnsi(output);
+    expect(plain).toContain("read");
+    expect(plain).toContain("src/services/dependency-graph.ts");
+  });
+
+  it("formats OpenCode tools when payload uses parameters", () => {
+    const output = formatEvent({
+      type: "tool_call",
+      tool: "grep",
+      parameters: { pattern: "crossRepoEdges", path: "src" },
+    }, "opencode");
+
+    const plain = stripAnsi(output);
+    expect(plain).toContain("grep");
+    expect(plain).toContain("crossRepoEdges");
+  });
+
+  it("formats OpenCode todo writes with task details", () => {
+    const output = formatEvent({
+      type: "tool_call",
+      tool: "todowrite",
+      input: {
+        todos: [
+          { status: "in_progress", content: "Inspect graph edge filtering" },
+          { status: "pending", content: "Add regression tests" },
+        ],
+      },
+    }, "opencode");
+
+    const plain = stripAnsi(output);
+    expect(plain).toContain("todo");
+    expect(plain).toContain("Inspect graph edge filtering");
+    expect(plain).toContain("Add regression tests");
+  });
+
+  it("formats OpenCode step events without raw bracket tags", () => {
+    const start = formatEvent({
+      type: "step_start",
+      title: "Reading dependency graph code",
+    }, "opencode");
+    const finish = formatEvent({ type: "step_finish" }, "opencode");
+
+    const plain = stripAnsi(start + finish);
+    expect(plain).toContain("Reading dependency graph code");
+    expect(plain).toContain("step finished");
+    expect(plain).not.toContain("[step_start]");
+    expect(plain).not.toContain("[step_finish]");
+  });
+
+  it("formats OpenCode session updates with model and session id", () => {
+    const output = formatEvent({
+      type: "session.updated",
+      sessionID: "584c1804abcdef",
+      modelID: "DeepSeek V4 Pro",
+    }, "opencode");
+
+    const plain = stripAnsi(output);
+    expect(plain).toContain("Session started");
+    expect(plain).toContain("model=DeepSeek V4 Pro");
+    expect(plain).toContain("session=584c1804");
+  });
+
+  it("formats OpenCode object-shaped errors", () => {
+    const output = formatEvent({
+      type: "error",
+      error: {
+        message: "provider returned 401",
+        status: 401,
+      },
+    }, "opencode");
+
+    const plain = stripAnsi(output);
+    expect(plain).toContain("provider returned 401");
+    expect(plain).not.toContain("[object Object]");
+  });
+});
+
 // ─── Result events ────────────────────────────────────────────────────────────
 
 describe("createStreamFormatter — result events", () => {
@@ -535,13 +656,53 @@ describe("createStreamFormatter — unknown events", () => {
   });
 });
 
+describe("createStreamFormatter — codex diagnostics", () => {
+  it("formats Codex turn failure details", () => {
+    const formatter = createStreamFormatter("codex");
+    const output = formatter.push(JSON.stringify({
+      type: "turn.failed",
+      error: {
+        message: "provider rejected request",
+      },
+    }) + "\n");
+
+    const plain = stripAnsi(output);
+    expect(plain).toContain("turn.failed");
+    expect(plain).toContain("provider rejected request");
+  });
+
+  it("formats Codex error event message fields", () => {
+    const formatter = createStreamFormatter("codex");
+    const output = formatter.push(JSON.stringify({
+      type: "error",
+      message: "transport failed",
+    }) + "\n");
+
+    expect(stripAnsi(output)).toContain("transport failed");
+  });
+
+  it("formats raw Codex failure payloads when no message field exists", () => {
+    const formatter = createStreamFormatter("codex");
+    const output = formatter.push(JSON.stringify({
+      type: "turn.failed",
+      code: "provider_error",
+      status: 502,
+    }) + "\n");
+
+    const plain = stripAnsi(output);
+    expect(plain).toContain("turn.failed");
+    expect(plain).toContain("provider_error");
+    expect(plain).toContain("502");
+  });
+});
+
 // ─── Non-Claude agent pass-through ────────────────────────────────────────────
 
 describe("createStreamFormatter — non-Claude agent", () => {
   it("passes through raw output for non-Claude agents", () => {
-    const formatter = createStreamFormatter("codex");
-    const output = formatter.push("raw output from codex\n");
-    expect(output).toBe("raw output from codex\n");
+    const formatter = createStreamFormatter("custom-agent");
+    const output = formatter.push("raw output from custom agent\n");
+    expect(output).toBe("raw output from custom agent\n");
   });
 
   it("flush returns empty for non-Claude agents", () => {

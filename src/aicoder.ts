@@ -26,7 +26,7 @@ import {
   RESUME_RUN, DISCARD_RUN, FORCE_REPROCESS, WATCH_ISSUE, MODEL, OLLAMA_URL,
   TARGET_ISSUE_KEY, PUBLISH_BRANCH, BASE_BRANCH_CANDIDATES, FOCUSED_MODE,
   SKIP_POLL, MAX_REWORK, REVIEW_POLL_MS, WAIT_FOR_DEPS, DRY_RUN_PUSH, FORCE_DONE,
-  POLL_MS, MAX_CYCLES, UNIT_TEST_TIMEOUT, INTEGRATION_TEST_TIMEOUT,
+  POLL_MS, MAX_CYCLES, UNIT_TEST_TIMEOUT, INTEGRATION_TEST_TIMEOUT, API_PROVIDER,
 } from "./autonomous-loop/arg-parser";
 import { getProjectConfig as _getProjectConfig } from "./autonomous-loop/project-detect";
 import {
@@ -176,7 +176,65 @@ const REVIEW_HUMAN_REVIEW_MARKER = "Review Requires Human — Ready for Human Re
 process.env.AICODER_AGENT = AGENT;
 process.env.AICODER_MODEL = MODEL;
 process.env.AICODER_OLLAMA = USE_OLLAMA ? "true" : "false";
-console.log(`[aicoder] agent=${AGENT} model=${MODEL} ollama=${USE_OLLAMA} workspace=${WORKSPACE}`);
+
+function stripTrailingV1(url: string): string {
+  return url.replace(/\/v1\/?$/, "");
+}
+
+function hasSecret(value: string): string {
+  return value ? "present" : "missing";
+}
+
+if (API_PROVIDER === "opencode") {
+  const base = process.env.OPENCODE_API_URL || process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen/go/v1";
+  const key = process.env.OPENCODE_API_KEY || "";
+  const anthropicBase = process.env.OPENCODE_ANTHROPIC_BASE_URL || stripTrailingV1(base);
+  process.env.OPENAI_BASE_URL = base;
+  process.env.OPENCODE_API_URL = base;
+  process.env.OPENCODE_BASE_URL = base;
+  if (key) {
+    process.env.OPENAI_API_KEY = key;
+    process.env.CODEX_API_KEY = key;
+    process.env.OPENCODE_API_KEY = key;
+  }
+  process.env.OPENCODE_MODEL = MODEL;
+  if (AGENT === "claude") {
+    process.env.ANTHROPIC_BASE_URL = anthropicBase;
+    if (key) {
+      process.env.ANTHROPIC_API_KEY = key;
+      process.env.ANTHROPIC_AUTH_TOKEN = key;
+    }
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = MODEL;
+    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = MODEL;
+    process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = MODEL;
+  }
+  console.log(`[aicoder] provider routing openaiBase=${base} anthropicBase=${AGENT === "claude" ? anthropicBase : "n/a"} key=${hasSecret(key)} codexKey=${hasSecret(process.env.CODEX_API_KEY || "")}`);
+} else if (API_PROVIDER === "zai") {
+  const base = process.env.ZAI_API_URL || process.env.ZAI_BASE_URL || "https://api.z.ai/api/coding/paas/v4";
+  const anthropicBase = process.env.ZAI_ANTHROPIC_BASE_URL || "https://api.z.ai/api/anthropic";
+  const key = process.env.ZAI_API_KEY || "";
+  process.env.OPENAI_BASE_URL = base;
+  if (key) {
+    process.env.OPENAI_API_KEY = key;
+    process.env.CODEX_API_KEY = key;
+    process.env.ZAI_API_KEY = key;
+    process.env.Z_AI_API_KEY = key;
+  }
+  process.env.ZAI_MODEL = MODEL;
+  if (AGENT === "claude") {
+    process.env.ANTHROPIC_BASE_URL = anthropicBase;
+    if (key) {
+      process.env.ANTHROPIC_API_KEY = key;
+      process.env.ANTHROPIC_AUTH_TOKEN = key;
+    }
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = MODEL;
+    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = MODEL;
+    process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = MODEL;
+  }
+  console.log(`[aicoder] provider routing openaiBase=${base} anthropicBase=${AGENT === "claude" ? anthropicBase : "n/a"} key=${hasSecret(key)} codexKey=${hasSecret(process.env.CODEX_API_KEY || "")}`);
+}
+
+console.log(`[aicoder] agent=${AGENT} model=${MODEL} api=${API_PROVIDER ?? "default"} ollama=${USE_OLLAMA} workspace=${WORKSPACE}`);
 const ollamaLauncher = USE_OLLAMA ? new OllamaLauncher({ ollamaUrl: OLLAMA_URL }) : null;
 const runLogger = new RunLogger(WORKSPACE);
 
@@ -203,7 +261,7 @@ const getBranchModifiedFiles = () => _getBranchModifiedFiles(WORKSPACE, getBaseB
 const pullAndUpdateBase = () => _pullAndUpdateBase(WORKSPACE, BASE_BRANCH_CANDIDATES, runLogger, (b: string, d: string) => forceCheckout(b, d));
 const runTestSuite = (suiteKind: TestSuiteKind = "all") => _runTestSuite(suiteKind, getProjectConfig(), WORKSPACE, runLogger, UNIT_TEST_TIMEOUT, INTEGRATION_TEST_TIMEOUT);
 const checkCoverage = () => _checkCoverage(getProjectConfig(), WORKSPACE, runLogger);
-const agentCfg: AgentConfig = { agent: AGENT, workspace: WORKSPACE, model: MODEL, debug: DEBUG, ollamaUrl: OLLAMA_URL };
+const agentCfg: AgentConfig = { agent: AGENT, workspace: WORKSPACE, model: MODEL, apiProvider: API_PROVIDER, debug: DEBUG, ollamaUrl: OLLAMA_URL };
 let activeChild: import("child_process").ChildProcess | null = null;
 const runAgent = (prompt: string, resumeSessionId?: string) => _runAgent(prompt, agentCfg, ollamaLauncher, resumeSessionId, runLogger, (child) => { activeChild = child; });
 const createPR = (cfg: ServerConfig, item: WorkItem, branchName: string) => _createPR(cfg, item, branchName, WORKSPACE, getBaseBranch(), runLogger);

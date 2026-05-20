@@ -115,6 +115,7 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   Read: "read",
   Write: "write",
   Edit: "edit",
+  MultiEdit: "edit",
   Bash: "run",
   Glob: "find",
   Grep: "grep",
@@ -122,8 +123,8 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   WebSearch: "search",
   Create: "create",
   Delete: "delete",
-  MultiEdit: "edit",
   NotebookEdit: "notebook-edit",
+  TodoWrite: "todo",
   TaskCreate: "task-create",
   TaskUpdate: "task-update",
   AskUserQuestion: "ask",
@@ -133,6 +134,28 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
 
 function toolDisplayName(name: string): string {
   return TOOL_DISPLAY_NAMES[name] || name;
+}
+
+function canonicalToolName(name: string): string {
+  const key = name.replace(/[_\-\s.]/g, "").toLowerCase();
+  const aliases: Record<string, string> = {
+    bash: "Bash",
+    shell: "Bash",
+    run: "Bash",
+    read: "Read",
+    write: "Write",
+    edit: "Edit",
+    multiedit: "MultiEdit",
+    glob: "Glob",
+    grep: "Grep",
+    webfetch: "WebFetch",
+    websearch: "WebSearch",
+    todowrite: "TodoWrite",
+    todo: "TodoWrite",
+    taskcreate: "TaskCreate",
+    taskupdate: "TaskUpdate",
+  };
+  return aliases[key] || name;
 }
 
 // ─── Text helpers ─────────────────────────────────────────────────────────────
@@ -340,27 +363,32 @@ function formatInlineMarkdown(text: string, color: (s: string) => string): strin
 // ─── Tool use formatting ─────────────────────────────────────────────────────
 
 function formatToolUse(name: string, input?: Record<string, unknown>, color?: (s: string) => string): string {
-  const display = toolDisplayName(name);
+  const canonicalName = canonicalToolName(name);
+  const display = toolDisplayName(canonicalName);
   const c = color ?? ((s: string) => `${ANSI.green}${s}${ANSI.reset}`);
   const prefix = `  ${c("▶")} ${ANSI.green}${ANSI.bold}${display}${ANSI.reset}`;
 
   if (!input) return prefix;
 
-  switch (name) {
+  switch (canonicalName) {
     case "Bash": {
       const cmd = String(input.command ?? input.cmd ?? "");
       return `${prefix}\n    ${ANSI.dim}${truncate(cmd, 120)}${ANSI.reset}`;
     }
     case "Read": {
-      const fp = String(input.file_path ?? input.filePath ?? "");
+      const fp = String(input.file_path ?? input.filePath ?? input.path ?? input.target ?? "");
       return `${prefix}\n    ${ANSI.dim}${fp}${ANSI.reset}`;
     }
     case "Write": {
-      const fp = String(input.file_path ?? input.filePath ?? "");
+      const fp = String(input.file_path ?? input.filePath ?? input.path ?? input.target ?? "");
       return `${prefix}\n    ${ANSI.dim}${fp}${ANSI.reset}`;
     }
     case "Edit": {
-      const fp = String(input.file_path ?? input.filePath ?? "");
+      const fp = String(input.file_path ?? input.filePath ?? input.path ?? input.target ?? "");
+      return `${prefix}\n    ${ANSI.dim}${fp}${ANSI.reset}`;
+    }
+    case "MultiEdit": {
+      const fp = String(input.file_path ?? input.filePath ?? input.path ?? input.target ?? "");
       return `${prefix}\n    ${ANSI.dim}${fp}${ANSI.reset}`;
     }
     case "Glob": {
@@ -396,8 +424,31 @@ function formatToolUse(name: string, input?: Record<string, unknown>, color?: (s
       return prefix;
     }
     default:
+      if (typeof input.command === "string" || typeof input.cmd === "string") {
+        return `${prefix}\n    ${ANSI.dim}${truncate(String(input.command ?? input.cmd), 120)}${ANSI.reset}`;
+      }
+      const summary = summarizeToolInput(input);
+      if (summary) return `${prefix}\n    ${ANSI.dim}${summary}${ANSI.reset}`;
       return prefix;
   }
+}
+
+function summarizeToolInput(input: Record<string, unknown>): string {
+  for (const key of ["file_path", "filePath", "path", "target", "query", "pattern", "url", "description", "title", "content"]) {
+    const value = input[key];
+    if (typeof value === "string" && value.trim()) return truncate(value.trim(), 160);
+  }
+  const entries = Object.entries(input)
+    .filter(([key, value]) => value !== undefined && value !== null && !["type", "tool", "name", "id", "callID", "call_id"].includes(key))
+    .slice(0, 4);
+  if (entries.length === 0) return "";
+  const summary = entries.map(([key, value]) => {
+    if (typeof value === "string") return `${key}: ${truncate(value, 80)}`;
+    if (typeof value === "number" || typeof value === "boolean") return `${key}: ${String(value)}`;
+    if (Array.isArray(value)) return `${key}: ${value.length} item${value.length === 1 ? "" : "s"}`;
+    return `${key}: ${truncate(JSON.stringify(value), 80)}`;
+  }).join(", ");
+  return truncate(summary, 180);
 }
 
 // ─── Debug logging ───────────────────────────────────────────────────────────
@@ -455,6 +506,9 @@ interface CodexEvent {
   type?: string;
   thread_id?: string;
   item?: CodexItem;
+  message?: unknown;
+  error?: unknown;
+  reason?: unknown;
   [key: string]: unknown;
 }
 
@@ -521,6 +575,7 @@ function createCodexFormatter(
     }
 
     const etype = event.type ?? "";
+    const diagnostic = codexDiagnostic(event);
 
     switch (etype) {
       case "thread.started": {
@@ -604,18 +659,49 @@ function createCodexFormatter(
       }
 
       case "error": {
-        const msg = event.item?.text || "";
+        const msg = diagnostic || event.item?.text || formatCodexEventPayload(event);
         return `  ${error("[error]")} ${msg}`;
       }
 
       default: {
-        // Summarize unknown event types
         const parts: string[] = [];
         if (etype) parts.push(dim(`[${etype}]`));
         if (event.item?.type) parts.push(dim(String(event.item.type)));
         if (event.item?.text) parts.push(truncate(String(event.item.text), 80));
+        if (diagnostic) parts.push(truncate(diagnostic, 500));
+        if (!diagnostic && etype.includes("failed")) parts.push(formatCodexEventPayload(event));
         return parts.length > 0 ? `  ${parts.join(" ")}` : "";
       }
+    }
+  }
+
+  function codexDiagnostic(event: CodexEvent): string {
+    for (const value of [event.error, event.message, event.reason]) {
+      const formatted = formatDiagnosticValue(value);
+      if (formatted) return formatted;
+    }
+    return "";
+  }
+
+  function formatDiagnosticValue(value: unknown): string {
+    if (typeof value === "string") return value;
+    if (!value || typeof value !== "object") return "";
+    const obj = value as Record<string, unknown>;
+    for (const key of ["message", "error", "reason", "details", "detail"]) {
+      if (typeof obj[key] === "string") return obj[key];
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+
+  function formatCodexEventPayload(event: CodexEvent): string {
+    try {
+      return JSON.stringify(event);
+    } catch {
+      return String(event);
     }
   }
 
@@ -660,6 +746,305 @@ function createCodexFormatter(
   };
 }
 
+// ─── OpenCode formatter ───────────────────────────────────────────────────────
+//
+// SST opencode emits NDJSON to stdout. Known event shapes (best-effort — the
+// schema is not formally documented so we handle common patterns and fall back
+// gracefully for anything else).
+
+interface OpenCodeEvent {
+  type?: string;
+  sessionID?: string;
+  session_id?: string;
+  modelID?: string;
+  // text / message content
+  content?: string | unknown;
+  text?: string;
+  message?: string | unknown;
+  part?: {
+    type?: string;
+    text?: string;
+    content?: string;
+    name?: string;
+    tool?: string;
+    input?: Record<string, unknown>;
+    args?: Record<string, unknown>;
+    arguments?: Record<string, unknown>;
+    params?: Record<string, unknown>;
+    parameters?: Record<string, unknown>;
+    data?: Record<string, unknown>;
+    output?: string;
+    result?: string;
+    error?: string;
+  };
+  // tool use
+  name?: string;
+  tool?: string;
+  input?: Record<string, unknown>;
+  args?: Record<string, unknown>;
+  arguments?: Record<string, unknown>;
+  params?: Record<string, unknown>;
+  parameters?: Record<string, unknown>;
+  data?: Record<string, unknown>;
+  // tool result
+  result?: string | unknown;
+  output?: string;
+  // completion
+  done?: boolean;
+  error?: unknown;
+  [key: string]: unknown;
+}
+
+function createOpenCodeFormatter(debugMode: boolean, debugWorkspace?: string): StreamFormatter {
+  const useColor = process.stdout.isTTY && process.env.NO_COLOR !== "1";
+  const dim = (s: string) => useColor ? `${ANSI.dim}${s}${ANSI.reset}` : s;
+  const bold = (s: string) => useColor ? `${ANSI.bold}${s}${ANSI.reset}` : s;
+  const green = (s: string) => useColor ? `${ANSI.green}${s}${ANSI.reset}` : s;
+  const cyan = (s: string) => useColor ? `${ANSI.cyan}${s}${ANSI.reset}` : s;
+  const gray = (s: string) => useColor ? `${ANSI.gray}${s}${ANSI.reset}` : s;
+  const red = (s: string) => useColor ? `${ANSI.red}${s}${ANSI.reset}` : s;
+
+  let buffer = "";
+  let agentRanTests = false;
+
+  const TEST_RE = /\b(?:pytest|vitest|jest|npm\s+test|pnpm\s+test|yarn\s+test|cargo\s+test|go\s+test)\b/;
+
+  function formatLine(raw: string): string {
+    if (!raw) return "";
+    if (debugMode && debugWorkspace) debugLog(debugWorkspace, raw);
+
+    let event: OpenCodeEvent;
+    try {
+      event = JSON.parse(raw);
+    } catch {
+      // Not JSON — pass through if it looks meaningful
+      if (raw.trim() && !/^\s*$/.test(raw)) return dim(raw);
+      return "";
+    }
+
+    const type = event.type ?? "";
+    const part = event.part;
+    const partType = part?.type ?? "";
+
+    if (type === "step_start" || type === "step.started" || type === "step.start") {
+      const label = openCodeEventLabel(event) || "step started";
+      return `  ${cyan("→")} ${dim(label)}`;
+    }
+
+    if (type === "step_finish" || type === "step.finished" || type === "step.finish") {
+      const label = openCodeEventLabel(event);
+      return label ? `  ${green("✓")} ${dim(label)}` : `  ${green("✓")} ${dim("step finished")}`;
+    }
+
+    // Tool use
+    if (type === "tool_use" || type === "tool_call" || type.includes("tool") || partType === "tool") {
+      const toolName = event.name || event.tool || part?.name || part?.tool || "";
+      const input = openCodeToolInput(event);
+      const output = typeof event.result === "string" ? event.result
+        : typeof event.output === "string" ? event.output
+        : typeof part?.result === "string" ? part.result
+        : typeof part?.output === "string" ? part.output
+        : "";
+      const error = formatOpenCodeDiagnostic(event.error) || formatOpenCodeDiagnostic(part?.error);
+      if (output.trim() || error.trim()) {
+        const resultText = error.trim() || output.trim();
+        const lineCount = resultText.split("\n").length;
+        return lineCount <= 3
+          ? `  ${gray("◀")} ${formatReadableValue(resultText, 200)}`
+          : `  ${gray("◀")} ${lineCount} lines`;
+      }
+      if (toolName) {
+        const canonicalName = canonicalToolName(toolName);
+        if (TEST_RE.test(String(input?.command ?? input?.cmd ?? toolName))) agentRanTests = true;
+        if (canonicalName === "Bash" && TEST_RE.test(String(input?.command ?? input?.cmd ?? ""))) agentRanTests = true;
+        return formatToolUse(toolName, input, green);
+      }
+      return `  ${green("▶")} ${dim("tool_use")}`;
+    }
+
+    // Text / message content
+    if (type === "text" || type === "message" || type === "assistant" || partType === "text" || type.includes("message.part")) {
+      const text = typeof event.content === "string" ? event.content
+        : typeof event.text === "string" ? event.text
+        : typeof event.message === "string" ? event.message
+        : typeof part?.text === "string" ? part.text
+        : typeof part?.content === "string" ? part.content
+        : "";
+      if (text.trim()) {
+        const lines = formatContentLines(text, (s) => s);
+        return lines.join("\n");
+      }
+      return "";
+    }
+
+    // Tool result
+    if (type === "tool_result" || type === "tool_output") {
+      const resultText = typeof event.result === "string" ? event.result
+        : typeof event.output === "string" ? event.output
+        : "";
+      if (resultText.trim()) {
+        const lineCount = resultText.trim().split("\n").length;
+        return lineCount <= 3
+          ? `  ${gray("◀")} ${formatReadableValue(resultText.trim(), 200)}`
+          : `  ${gray("◀")} ${lineCount} lines`;
+      }
+      return `  ${gray("◀")} (empty)`;
+    }
+
+    // Session / init
+    if (type === "session" || type === "init" || type === "start" || type.startsWith("session.")) {
+      const model = typeof event.model === "string" ? event.model
+        : typeof event.modelID === "string" ? event.modelID
+        : "";
+      const id = typeof event.id === "string" ? event.id.slice(0, 8)
+        : typeof event.sessionID === "string" ? event.sessionID.slice(0, 8)
+        : typeof event.session_id === "string" ? event.session_id.slice(0, 8)
+        : "";
+      const parts = [`${cyan(bold("[opencode]"))} Session started`];
+      if (model) parts.push(`model=${model}`);
+      if (id) parts.push(`session=${id}`);
+      return parts.join(" · ");
+    }
+
+    // Completion / done
+    if (type === "done" || type === "complete" || event.done === true) {
+      const cost = typeof event.cost === "number" ? event.cost : undefined;
+      const parts = [green("✓ Complete")];
+      if (cost) parts.push(`$${cost.toFixed(4)}`);
+      return parts.join(" · ");
+    }
+
+    // Error
+    if (type === "error" || event.error) {
+      const msg = formatOpenCodeDiagnostic(event.error)
+        || formatOpenCodeDiagnostic(event.message)
+        || formatOpenCodeDiagnostic(event)
+        || "unknown error";
+      return `  ${red("[error]")} ${msg}`;
+    }
+
+    // Thinking / reasoning
+    if (type === "thinking" || type === "reasoning") {
+      const text = typeof event.content === "string" ? event.content
+        : typeof event.text === "string" ? event.text : "";
+      if (text.trim()) {
+        const preview = text.split("\n").slice(0, 3).join("\n");
+        const lines = formatContentLines(preview, (s) => dim(s));
+        return [`  ${dim("[thinking]")}`, ...lines].join("\n");
+      }
+      return `  ${dim("[thinking] …")}`;
+    }
+
+    // Generic fallback — show type + any text content
+    const fallbackText = typeof event.content === "string" ? event.content
+      : typeof event.text === "string" ? event.text
+      : typeof event.message === "string" ? event.message
+      : typeof part?.text === "string" ? part.text
+      : typeof part?.content === "string" ? part.content
+      : "";
+    const parts: string[] = [];
+    if (type) parts.push(dim(`[${type}]`));
+    if (fallbackText) parts.push(truncate(fallbackText.split("\n")[0], 100));
+    return parts.length ? `  ${parts.join(" ")}` : "";
+  }
+
+  function openCodeToolInput(event: OpenCodeEvent): Record<string, unknown> | undefined {
+    const part = event.part;
+    for (const value of [
+      event.input,
+      event.args,
+      event.arguments,
+      event.params,
+      event.parameters,
+      event.data,
+      part?.input,
+      part?.args,
+      part?.arguments,
+      part?.params,
+      part?.parameters,
+      part?.data,
+    ]) {
+      if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+    }
+    const toolName = event.name || event.tool || part?.name || part?.tool;
+    const derived = omitOpenCodeMetadata(event);
+    if (toolName && Object.keys(derived).length > 0) return derived;
+    return undefined;
+  }
+
+  function omitOpenCodeMetadata(event: OpenCodeEvent): Record<string, unknown> {
+    const ignored = new Set([
+      "type",
+      "tool",
+      "name",
+      "part",
+      "sessionID",
+      "session_id",
+      "modelID",
+      "done",
+      "error",
+      "result",
+      "output",
+    ]);
+    const derived: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(event)) {
+      if (!ignored.has(key) && value !== undefined && value !== null) derived[key] = value;
+    }
+    return derived;
+  }
+
+  function openCodeEventLabel(event: OpenCodeEvent): string {
+    for (const key of ["title", "label", "name", "message", "text", "content"]) {
+      const value = event[key];
+      if (typeof value === "string" && value.trim()) return truncate(value.trim(), 120);
+    }
+    const partText = typeof event.part?.text === "string" ? event.part.text
+      : typeof event.part?.content === "string" ? event.part.content
+      : "";
+    return partText.trim() ? truncate(partText.trim(), 120) : "";
+  }
+
+  function formatOpenCodeDiagnostic(value: unknown): string {
+    if (typeof value === "string") return value;
+    if (!value || typeof value !== "object") return "";
+    const obj = value as Record<string, unknown>;
+    for (const key of ["message", "error", "reason", "details", "detail", "code"]) {
+      const nested = obj[key];
+      if (typeof nested === "string" && nested.trim()) return nested;
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+
+  return {
+    get ranTests() { return agentRanTests; },
+
+    push(chunk: string): string {
+      buffer += chunk;
+      const out: string[] = [];
+      let idx: number;
+      while ((idx = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        const formatted = formatLine(line);
+        if (formatted) out.push(formatted);
+      }
+      return out.join("\n") + (out.length ? "\n" : "");
+    },
+
+    flush(): string {
+      const remaining = buffer.trim();
+      buffer = "";
+      if (!remaining) return "";
+      const formatted = formatLine(remaining);
+      return formatted ? formatted + "\n" : "";
+    },
+  };
+}
+
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
 export function createStreamFormatter(agent: string, workspace?: string, options?: StreamFormatterOptions): StreamFormatter {
@@ -673,7 +1058,12 @@ export function createStreamFormatter(agent: string, workspace?: string, options
     if (debugWorkspace) clearDebugLog(debugWorkspace);
   }
 
-  // For non-Claude/non-codex agents, pass through raw output
+  // opencode CLI agent — parse its NDJSON event stream
+  if (agent === "opencode") {
+    return createOpenCodeFormatter(debugMode, debugWorkspace);
+  }
+
+  // Unknown agents — raw passthrough
   if (agent !== "claude" && agent !== "codex") {
     return {
       ranTests: false,
