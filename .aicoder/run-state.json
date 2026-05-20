@@ -1,21 +1,23 @@
 {
-  "issueKey": "86",
-  "issueNumber": 86,
-  "title": "[ClaimKit #7] Create A/B comparison eval runner (RAG vs ClaimKit)",
-  "url": "https://github.com/redsand/AIWorkAssistant/issues/86",
+  "issueKey": "21",
+  "issueNumber": 21,
+  "title": "[P5] Add Simple Automation Recipes",
+  "url": "https://github.com/redsand/AIWorkAssistant/issues/21",
   "owner": "redsand",
   "repo": "AIWorkAssistant",
-  "suggestedBranch": "ai/issue-86-claimkit-7-create-a-b-comparison-eval-ru",
+  "suggestedBranch": "ai/issue-21-p5-add-simple-automation-recipes",
   "labels": [
+    "feature",
+    "priority:medium",
+    "phase-5",
+    "automation",
     "ready-for-agent",
-    "claimkit",
-    "evaluation",
-    "comparison"
+    "In Progress"
   ],
   "source": "github",
-  "checkpoint": "issue_transitioned",
+  "checkpoint": "branch_checked_out",
   "apiUrl": "http://localhost:3050",
   "apiKey": "ai-loop-key-2026-GcArYGIlbgbFT83XntreWn",
-  "startedAt": "2026-05-20T02:05:32.299Z",
-  "updatedAt": "2026-05-20T02:05:33.134Z"
+  "startedAt": "2026-05-20T14:47:11.898Z",
+  "updatedAt": "2026-05-20T14:47:18.351Z"
 }
