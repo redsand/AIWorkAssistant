@@ -29,6 +29,8 @@ import {
   ensureScrollListener,
   enableAutoScroll,
   isAutoScrollEnabled,
+  setCurrentStreamingMessageId,
+  markStreamingMessageInterrupted,
 } from "./messages.js";
 import { loadRoadmaps } from "./sidebar.js";
 import { loadConversations } from "./conversations.js";
@@ -42,6 +44,8 @@ async function handleStreamResponse(response, progressElRef, onError) {
   let eventType = "";
   let roadmapTouched = false;
   let contentCount = 0;
+  let streamingMessageId = null;
+  let accumulatedContent = "";
 
   function ensureProgressEl() {
     if (!progressElRef.progressEl) {
@@ -92,8 +96,14 @@ async function handleStreamResponse(response, progressElRef, onError) {
             currentThinking += data.thinking;
           }
           if (data.content && data.content.trim()) {
-            addMessage(data.content, "assistant", currentThinking || undefined);
-            currentThinking = "";
+            accumulatedContent += data.content;
+            if (streamingMessageId === null) {
+              streamingMessageId = addMessage(accumulatedContent, "assistant", currentThinking || undefined);
+              setCurrentStreamingMessageId(streamingMessageId);
+              currentThinking = "";
+            } else {
+              addMessage(accumulatedContent, "assistant", undefined, { messageId: streamingMessageId });
+            }
             contentCount++;
           }
           if (data.message) {
@@ -103,6 +113,7 @@ async function handleStreamResponse(response, progressElRef, onError) {
                 headerText.innerHTML = `<span class="tool-call-status error"></span> Error occurred`;
               }
             }
+            setCurrentStreamingMessageId(null);
             addMessage(
               "Sorry, I encountered an error: " + data.message,
               "assistant",
@@ -121,15 +132,22 @@ async function handleStreamResponse(response, progressElRef, onError) {
       if (buffer.trim()) {
         buffer += "\n";
         const result = processBuffer(true);
-        if (result.error) return { error: true, roadmapTouched };
+        if (result.error) {
+          setCurrentStreamingMessageId(null);
+          return { error: true, roadmapTouched };
+        }
       }
       break;
     }
     buffer += decoder.decode(value, { stream: true });
     const result = processBuffer(false);
-    if (result.error) return { error: true, roadmapTouched };
+    if (result.error) {
+      setCurrentStreamingMessageId(null);
+      return { error: true, roadmapTouched };
+    }
   }
 
+  setCurrentStreamingMessageId(null);
   return { error: false, roadmapTouched, contentCount };
 }
 
@@ -311,6 +329,7 @@ export async function sendMessage() {
   addMessage(message, "user");
 
   if (activeStreamController) {
+    markStreamingMessageInterrupted();
     activeStreamController.abort();
     setActiveStreamController(null);
   }
@@ -446,6 +465,7 @@ export async function resendMessage(message) {
   }
 
   if (activeStreamController) {
+    markStreamingMessageInterrupted();
     activeStreamController.abort();
     setActiveStreamController(null);
   }
