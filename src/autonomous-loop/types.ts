@@ -75,7 +75,7 @@ export interface RunState {
   repo: string;
   suggestedBranch: string;
   labels?: string[];
-  source: "github" | "gitlab" | "jira";
+  source: "github" | "gitlab" | "jira" | "work_items";
   checkpoint: PipelineCheckpoint;
   fromBranch?: string;
   sessionId?: string;

@@ -4,6 +4,8 @@ import { gitlabClient } from "../integrations/gitlab/gitlab-client";
 import { jiraClient } from "../integrations/jira/jira-client";
 import { jitbitClient } from "../integrations/jitbit/jitbit-client";
 import { ticketToTaskGenerator } from "../engineering/ticket-to-task";
+import { workItemDatabase } from "../work-items/database";
+import { hashUuidToNumber, parseWorkItemTagsJson } from "../autonomous-loop/work-item-utils";
 import { env } from "../config/env";
 import type { TicketSourceType } from "../integrations/source-resolver";
 
@@ -56,6 +58,9 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
           break;
         case "jitbit":
           items = await fetchJitbitWork(label, limit, skipPromptCheck);
+          break;
+        case "work_items":
+          items = await fetchWorkItemsWork(label, limit, skipPromptCheck);
           break;
       }
 
@@ -493,4 +498,45 @@ function extractJiraBodyText(description: any): string {
       .join("\n");
   }
   return "";
+}
+
+async function fetchWorkItemsWork(
+  label: string,
+  limit: number,
+  skipPromptCheck: boolean = false,
+): Promise<NormalizedWorkItem[]> {
+  const result = workItemDatabase.listWorkItems({ limit: 200 });
+  const filtered: NormalizedWorkItem[] = [];
+
+  for (const wi of result.items) {
+    // Skip done and archived items
+    if (wi.status === "done" || wi.status === "archived") continue;
+
+    const tags = parseWorkItemTagsJson(wi.tagsJson);
+    // Only include items with the label tag (e.g., "ready-for-agent")
+    if (!tags.some((t) => t.toLowerCase() === label.toLowerCase())) continue;
+
+    // Coding prompt check
+    if (!skipPromptCheck) {
+      const body = wi.description || "";
+      if (!ticketToTaskGenerator.hasCodingPromptContent(body)) continue;
+    }
+
+    const issueNum = hashUuidToNumber(wi.id);
+
+    filtered.push({
+      id: wi.id,
+      type: "work_item" as const,
+      title: wi.title,
+      number: issueNum,
+      url: "",
+      owner: wi.owner || "",
+      repo: "",
+      labels: tags,
+      suggestedBranch: makeBranchName(issueNum, wi.title),
+      body: wi.description || "",
+    });
+  }
+
+  return filtered.slice(0, limit);
 }

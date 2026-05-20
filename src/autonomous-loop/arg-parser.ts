@@ -23,7 +23,7 @@ Usage: aicoder [options]
 
 Options:
   --workspace <path>   Target project directory for git operations (default: cwd)
-  --source <type>      Issue source: github | gitlab | jira | jitbit | auto (default: auto)
+  --source <type>      Issue source: github | gitlab | jira | jitbit | work_items | auto (default: auto)
   --owner <name>       GitHub/GitLab owner (overrides server default)
   --repo <name>        Repository/project name (overrides server default)
   --agent <name>       Coding agent: codex | opencode | claude (default: claude)
