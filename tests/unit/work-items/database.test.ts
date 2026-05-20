@@ -71,6 +71,18 @@ describe("WorkItemDatabase", () => {
       const result = db.updateWorkItem("nonexistent", { title: "X" });
       expect(result).toBeNull();
     });
+
+    it("should auto-archive when status is set to done", () => {
+      const item = db.createWorkItem({ type: "task", title: "Test" });
+      const updated = db.updateWorkItem(item.id, { status: "done" });
+      expect(updated!.status).toBe("archived");
+    });
+
+    it("should not auto-archive when status is set to non-done values", () => {
+      const item = db.createWorkItem({ type: "task", title: "Test" });
+      const updated = db.updateWorkItem(item.id, { status: "active" });
+      expect(updated!.status).toBe("active");
+    });
   });
 
   describe("listWorkItems", () => {
@@ -133,11 +145,27 @@ describe("WorkItemDatabase", () => {
   });
 
   describe("completeWorkItem", () => {
-    it("should mark item as done with completedAt", () => {
+    it("should mark item as archived with completedAt", () => {
       const item = db.createWorkItem({ type: "task", title: "Test" });
       const completed = db.completeWorkItem(item.id);
-      expect(completed!.status).toBe("done");
+      expect(completed!.status).toBe("archived");
       expect(completed!.completedAt).toBeDefined();
+    });
+
+    it("should exclude completed items from default list", () => {
+      const item = db.createWorkItem({ type: "task", title: "Test" });
+      db.completeWorkItem(item.id);
+      const result = db.listWorkItems({});
+      expect(result.items).toHaveLength(0);
+    });
+
+    it("should include completed items when includeArchived is true", () => {
+      const item = db.createWorkItem({ type: "task", title: "Test" });
+      db.completeWorkItem(item.id);
+      const result = db.listWorkItems({ includeArchived: true });
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].status).toBe("archived");
+      expect(result.items[0].completedAt).toBeDefined();
     });
   });
 

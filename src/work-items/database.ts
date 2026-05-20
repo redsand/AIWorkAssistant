@@ -130,7 +130,7 @@ class WorkItemDatabase {
       type: patch.type,
       title: patch.title,
       description: patch.description,
-      status: patch.status,
+      status: patch.status === "done" ? "archived" : patch.status,
       priority: patch.priority,
       owner: patch.owner,
       source: patch.source,
@@ -269,7 +269,7 @@ class WorkItemDatabase {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        "UPDATE work_items SET status = 'done', completed_at = ?, updated_at = ? WHERE id = ?",
+        "UPDATE work_items SET status = 'archived', completed_at = ?, updated_at = ? WHERE id = ?",
       )
       .run(now, now, id);
     return this.getWorkItem(id);
