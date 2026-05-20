@@ -16,7 +16,8 @@
       "Bash(node -e ' *)",
       "Bash(python -c \"import sys,json; data=json.loads\\(sys.stdin.read\\(\\).strip\\(\\).split\\('\\\\n',1\\)[1]\\); print\\(json.dumps\\(data, indent=2\\)[:3000]\\)\")",
       "Bash(python *)",
-      "Bash(del \"C:\\\\Users\\\\TimShelton\\\\source\\\\repos\\\\hawk-soard\\\\.aicoder\\\\logs\\\\stream-debug.log\")"
+      "Bash(del \"C:\\\\Users\\\\TimShelton\\\\source\\\\repos\\\\hawk-soard\\\\.aicoder\\\\logs\\\\stream-debug.log\")",
+      "Bash(rtk tsc *)"
     ]
   }
 }

@@ -897,7 +897,11 @@ function resolveRepoWorkspace(config: ReviewerConfig, target: RepoTarget): strin
   if (!config.workspacePath) return undefined;
   const projectPath = target.gitlabProject || target.name;
   const repoName = projectPath.split("/").pop() || projectPath;
-  const resolved = path.resolve(config.workspacePath, repoName);
+  const base = path.resolve(config.workspacePath);
+  // If workspacePath already points directly at the repo (ends with repoName), don't append again.
+  const lastSegment = path.basename(base);
+  const resolved =
+    lastSegment.toLowerCase() === repoName.toLowerCase() ? base : path.resolve(base, repoName);
   if (!fs.existsSync(resolved)) {
     log.warn(`Workspace path ${resolved} does not exist — skipping tool-assisted review for ${repoName}`);
     return undefined;
