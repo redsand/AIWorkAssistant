@@ -181,6 +181,20 @@ const envSchema = z.object({
   RAG_CHUNK_SIZE: z.coerce.number().default(500),
   RAG_CHUNK_OVERLAP: z.coerce.number().default(50),
 
+  // ClaimKit (RAG replacement)
+  CLAIMKIT_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
+  CLAIMKIT_LLM_PROVIDER: z
+    .enum(["memory", "comparison", "ollama"])
+    .default("memory"),
+  CLAIMKIT_REDIS_URL: z.string().default(""),
+  CLAIMKIT_REDIS_PREFIX: z.string().default("aiworkassistant"),
+  CLAIMKIT_TOP_K: z.coerce.number().default(10),
+  CLAIMKIT_MIN_SCORE: z.coerce.number().default(0.0),
+  CLAIMKIT_MAX_EVIDENCE_ITEMS: z.coerce.number().default(20),
+
   // Nightly calendar planning
   NIGHTLY_PLAN_ENABLED: z
     .string()

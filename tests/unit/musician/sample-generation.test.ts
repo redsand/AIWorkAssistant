@@ -129,6 +129,7 @@ describe("LocalMusicGenProvider", () => {
 
   it("should be available when MUSICIAN_ENABLE_MUSICGEN is true", async () => {
     process.env.MUSICIAN_ENABLE_MUSICGEN = "true";
+    delete process.env.MUSICGEN_MODE;
     const provider = new LocalMusicGenProvider();
     const isAvailable = await provider.isAvailable();
     expect(isAvailable).toBe(true);

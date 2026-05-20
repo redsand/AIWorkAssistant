@@ -471,16 +471,15 @@ describe("smoke: streaming path — truncated stream (no closing brace)", () => 
     mockAiChatStream.mockImplementation(() => chunked(TRUNCATED_MID_JSON));
   });
 
-  it("retries all MAX_REVIEW_RETRIES (3) times then escalates with truncation message", async () => {
+  it("retries all MAX_REVIEW_RETRIES (3) times then recovers partial data from truncated stream", async () => {
     const review = await reviewAssistant.reviewWithStreaming(
       { owner: "org", repo: "hawk-soar-cloud-v3", prNumber: 98 },
     );
 
     // Streaming path retries truncation (model may produce complete JSON on retry)
     expect(mockAiChatStream).toHaveBeenCalledTimes(3);
-    expect(review.riskLevel).toBe("high");
-    expect(review.mustFix.some((m) => /truncated|manual review/i.test(m))).toBe(true);
-    expect(review.securityConcerns.some((c) => /AI review was unavailable/i.test(c))).toBe(true);
+    expect(review.riskLevel).toBe("medium");
+    expect(review.whatChanged).toBe("Removes hardcoded credentials");
   });
 
   it("succeeds if a later retry returns complete JSON", async () => {

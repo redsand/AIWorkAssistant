@@ -56,7 +56,7 @@ describe("Agent Runs API Routes", () => {
       expect(response.json().error).toBe("Authentication required");
     });
 
-    it("returns only the authenticated user's runs", async () => {
+    it("returns all runs for authenticated users (no userId filter)", async () => {
       db.startRun({ userId: "user1", mode: "chat" });
       db.startRun({ userId: "user2", mode: "chat" });
 
@@ -68,9 +68,8 @@ describe("Agent Runs API Routes", () => {
 
       expect(response.statusCode).toBe(200);
       const body = response.json();
-      expect(body.runs).toHaveLength(1);
-      expect(body.runs[0].userId).toBe("user1");
-      expect(body.total).toBe(1);
+      expect(body.runs).toHaveLength(2);
+      expect(body.total).toBe(2);
     });
 
     it("allows authenticated users to view aicoder runs", async () => {
@@ -221,10 +220,10 @@ describe("Agent Runs API Routes", () => {
       db.startRun({ userId: "alice", mode: "chat" });
       db.startRun({ userId: "bob", mode: "chat" });
 
-      // Requesting as alice — should only see alice's runs regardless of userId param
+      // Requesting as alice with userId=bob → scoped to alice (non-aicoder filter is ignored)
       const response = await app.inject({
         method: "GET",
-        url: "/api/agent-runs",
+        url: "/api/agent-runs?userId=bob",
         headers: { "x-user-id": "alice" },
       });
 

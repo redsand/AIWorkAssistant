@@ -32,12 +32,14 @@ const {
   mockGetMergeRequestChanges,
   mockListPipelines,
   mockListMergeRequestNotes,
+  mockListMergeRequestCommits,
 } = vi.hoisted(() => ({
   mockGitlabIsConfigured: vi.fn(() => true),
   mockGetMergeRequest: vi.fn(),
   mockGetMergeRequestChanges: vi.fn(),
   mockListPipelines: vi.fn(),
   mockListMergeRequestNotes: vi.fn(),
+  mockListMergeRequestCommits: vi.fn(),
 }));
 
 vi.mock("../../../src/integrations/gitlab/gitlab-client", () => ({
@@ -47,6 +49,7 @@ vi.mock("../../../src/integrations/gitlab/gitlab-client", () => ({
     getMergeRequestChanges: mockGetMergeRequestChanges,
     listPipelines: mockListPipelines,
     listMergeRequestNotes: mockListMergeRequestNotes,
+    listMergeRequestCommits: mockListMergeRequestCommits,
   },
 }));
 
@@ -304,6 +307,7 @@ describe("reviewAssistant.reviewGitLabMergeRequest", () => {
     mockGetMergeRequestChanges.mockResolvedValue(GITLAB_CHANGES);
     mockListPipelines.mockResolvedValue([{ ref: "feat/x", status: "success" }]);
     mockListMergeRequestNotes.mockResolvedValue([]);
+    mockListMergeRequestCommits.mockResolvedValue([]);
     mockAiIsConfigured.mockReturnValue(false);
   });
 
@@ -648,6 +652,7 @@ describe("reviewAssistant — existingComments populated from API", () => {
       { id: 1, body: "Looks good", author: { username: "dave" }, system: false },
       { id: 2, body: "assigned to carol", author: { username: "system" }, system: true },
     ]);
+    mockListMergeRequestCommits.mockResolvedValue([]);
     await reviewAssistant.reviewGitLabMergeRequest({ projectId: "123", mrIid: 7 });
     expect(mockListMergeRequestNotes).toHaveBeenCalledWith("123", 7);
   });
