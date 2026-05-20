@@ -18,7 +18,7 @@ class MockMemoryEmbeddingAdapter {}
 const mockClaimKitConstructor = vi.fn();
 const mockCreateMemoryStores = vi.fn(() => ({}));
 
-vi.doMock("claimkit", () => ({
+vi.doMock("@redsand/claimkit", () => ({
   ClaimKit: MockClaimKit,
   createMemoryStores: mockCreateMemoryStores,
   MemoryLLMAdapter: MockMemoryLLMAdapter,
