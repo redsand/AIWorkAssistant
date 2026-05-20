@@ -116,12 +116,28 @@ export function detectProjectConfig(workspace: string): ProjectConfig {
       const scripts = pkg.scripts ?? {};
       const testCmd: string[] = "test" in scripts ? ["npm", "test"] : [];
       const hasTestScript = "test" in scripts;
+
+      // Verify test directories exist before constructing filtered commands.
+      // If tests/unit doesn't exist, fall back to the full test command.
+      const unitDirExists = fs.existsSync(path.join(workspace, "tests", "unit"))
+        || fs.existsSync(path.join(workspace, "test", "unit"));
+      const integrationDirExists = fs.existsSync(path.join(workspace, "tests", "integration"))
+        || fs.existsSync(path.join(workspace, "test", "integration"));
+
       const unitCmd: string[] = "test-unit" in scripts
         ? ["npm", "run", "test-unit"]
-        : hasTestScript ? ["npm", "test", "--", "tests/unit"] : [];
+        : unitDirExists
+          ? ["npm", "test", "--", "tests/unit"]
+          : hasTestScript
+            ? testCmd
+            : [];
       const integrationCmd: string[] = "test-integration" in scripts
         ? ["npm", "run", "test-integration"]
-        : hasTestScript ? ["npm", "test", "--", "tests/integration"] : [];
+        : integrationDirExists
+          ? ["npm", "test", "--", "tests/integration"]
+          : hasTestScript
+            ? testCmd
+            : [];
       const coverageCmd: string[] = "test:coverage" in scripts
         ? ["npm", "run", "test:coverage"]
         : [];

@@ -13,10 +13,12 @@ import * as fs from "fs";
 import * as path from "path";
 import { type ConvergenceState, initConvergenceState } from "./convergence";
 
-const DEFAULT_WORKSPACE = process.cwd();
+function baseDir(): string {
+  return process.env.AICODER_STATE_DIR ?? process.cwd();
+}
 
 function stateFilePath(issueKey?: string): string {
-  const base = path.join(DEFAULT_WORKSPACE, ".aicoder");
+  const base = path.join(baseDir(), ".aicoder");
   if (issueKey) {
     // Sanitize issue key for use as a filename (e.g. "IR-110" → safe)
     const safe = issueKey.replace(/[^a-zA-Z0-9_\-]/g, "_");

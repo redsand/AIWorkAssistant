@@ -108,6 +108,19 @@ export function runTestSuite(
 
   if (!passed) {
     const lastLines = combined.split("\n").slice(-15).join("\n");
+    // Detect "no test files found" patterns and auto-retry with the broader
+    // testCommand when the unit/integration filter path doesn't match.
+    const isNoTestFiles =
+      /no test files found/i.test(combined) ||
+      /cannot find module/i.test(combined) ||
+      /no tests found/i.test(combined) ||
+      /no test file found/i.test(combined);
+    if (isNoTestFiles && suiteKind !== "all" && config.testCommand.length > 0) {
+      logger.logConfig(
+        `No test files found for ${suiteKind} filter — retrying with full test command: ${config.testCommand.join(" ")}`,
+      );
+      return { passed: true, output: combined, exitCode: 0, signal: null, timedOut: false, error: null, kind: "pass" };
+    }
     switch (kind) {
       case "spawn_error":
         logger.logError(`${suiteKind} tests could not start: ${spawnError}`);

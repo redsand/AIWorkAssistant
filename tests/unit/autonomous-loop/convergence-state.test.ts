@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
 import {
   loadConvergenceState,
   saveConvergenceState,
@@ -12,8 +13,9 @@ import { initConvergenceState, recordRoundFindings, hashFinding, type Convergenc
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-const STATE_DIR = path.join(process.cwd(), ".aicoder");
-const STATE_FILE = path.join(STATE_DIR, "convergence-state.json");
+let TEST_DIR: string;
+let STATE_DIR: string;
+let STATE_FILE: string;
 
 function fileExists(fp: string): boolean {
   try { return fs.existsSync(fp); } catch { return false; }
@@ -33,13 +35,17 @@ const finding1 = { file: "src/auth.ts", severity: "high", category: "security", 
 
 describe("convergence-state persistence", () => {
   beforeEach(() => {
+    TEST_DIR = path.join(os.tmpdir(), `aicoder-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    STATE_DIR = path.join(TEST_DIR, ".aicoder");
+    STATE_FILE = path.join(STATE_DIR, "convergence-state.json");
+    process.env.AICODER_STATE_DIR = TEST_DIR;
     _resetCache();
-    removeFile(STATE_FILE);
   });
 
   afterEach(() => {
     _resetCache();
-    removeFile(STATE_FILE);
+    delete process.env.AICODER_STATE_DIR;
+    try { fs.rmSync(TEST_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
   describe("loadConvergenceState", () => {
