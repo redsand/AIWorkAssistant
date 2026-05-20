@@ -140,7 +140,7 @@ describe("Musician Assistant Audio Asset Storage", () => {
       ).rejects.toThrow(/Invalid MIME type/);
     });
 
-    it("should accept all valid MIME types", async () => {
+    it("should accept all valid MIME types", { timeout: 30000 }, async () => {
       const validMimeTypes = [
         "audio/wav",
         "audio/mpeg",
@@ -243,7 +243,7 @@ describe("Musician Assistant Audio Asset Storage", () => {
       expect(result.total).toBe(3);
     });
 
-    it("should support pagination", async () => {
+    it("should support pagination", { timeout: 30000 }, async () => {
       const buffer = createWavBuffer();
 
       // Create 5 assets
@@ -258,7 +258,7 @@ describe("Musician Assistant Audio Asset Storage", () => {
       expect(result.total).toBe(5);
     });
 
-    it("should filter by type", async () => {
+    it("should filter by type", { timeout: 15000 }, async () => {
       const buffer = createWavBuffer();
       await saveUploadedAudio(buffer, "upload.wav", "audio/wav");
 

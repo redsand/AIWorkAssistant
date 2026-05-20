@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ClaimKit vs RAG — AI Work Assistant</title>
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#1a1a2e" />
+    <link rel="stylesheet" href="/css/comparison.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="/js/comparison.js?v=1" defer></script>
+  </head>
+  <body>
+    <div class="page">
+
+      <!-- Header -->
+      <div class="comp-header">
+        <div class="comp-header-left">
+          <a href="/" class="back-link">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 18 9 12 15 6"/>
+            </svg>
+            Back to Assistant
+          </a>
+          <div>
+            <div class="comp-title">ClaimKit vs RAG Comparison</div>
+            <div class="comp-subtitle">A/B comparison results and performance tracking</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="error-banner" class="error-banner"></div>
+
+      <!-- Stats Bar -->
+      <div class="stats-bar" id="stats-bar">
+        <div class="stat-chip"><div class="stat-value" id="stat-total-runs">—</div><div class="stat-label">Total Runs</div></div>
+        <div class="stat-chip"><div class="stat-value" id="stat-total-cases">—</div><div class="stat-label">Total Cases</div></div>
+        <div class="stat-chip"><div class="stat-value green" id="stat-ck-wins">—</div><div class="stat-label">CK Wins</div></div>
+        <div class="stat-chip"><div class="stat-value blue" id="stat-rag-wins">—</div><div class="stat-label">RAG Wins</div></div>
+        <div class="stat-chip"><div class="stat-value" id="stat-ck-conf">—</div><div class="stat-label">Avg CK Confidence</div></div>
+        <div class="stat-chip"><div class="stat-value" id="stat-answerability">—</div><div class="stat-label">Answerability Rate</div></div>
+      </div>
+
+      <!-- Row 1: Win Rate + Answerability -->
+      <div class="charts-row">
+        <div class="section" id="winrate-section">
+          <div class="section-title">Win Rate Distribution</div>
+          <div class="chart-wrap small-chart"><canvas id="winRateChart"></canvas></div>
+          <div class="state-msg" id="winrate-empty" style="display:none"><p>No data yet</p></div>
+        </div>
+        <div class="section" id="answerability-section">
+          <div class="section-title">Answerability Rate</div>
+          <div class="chart-wrap small-chart"><canvas id="answerabilityChart"></canvas></div>
+          <div class="state-msg" id="answerability-empty" style="display:none"><p>No data yet</p></div>
+        </div>
+      </div>
+
+      <!-- Row 2: Processing Time -->
+      <div class="section" id="time-section">
+        <div class="section-title">Processing Time Comparison (ms)</div>
+        <div class="chart-wrap"><canvas id="processingTimeChart"></canvas></div>
+        <div class="state-msg" id="time-empty" style="display:none"><p>No data yet</p></div>
+      </div>
+
+      <!-- Row 3: Confidence Trend -->
+      <div class="section" id="trend-section">
+        <div class="section-title">ClaimKit Confidence Over Time</div>
+        <div class="chart-wrap"><canvas id="confidenceTrendChart"></canvas></div>
+        <div class="state-msg" id="trend-empty" style="display:none"><p>No data yet</p></div>
+      </div>
+
+      <!-- Row 4: Category Breakdown -->
+      <div class="section" id="category-section">
+        <div class="section-title">Win Rate by Category</div>
+        <div class="chart-wrap"><canvas id="categoryChart"></canvas></div>
+        <div class="state-msg" id="category-empty" style="display:none"><p>No data yet</p></div>
+      </div>
+
+      <!-- Row 5: Historical Runs Table -->
+      <div class="section">
+        <div class="section-title">Historical Comparison Runs</div>
+        <div class="state-msg" id="runs-empty"><p>No comparison runs yet. Run <code>claimkit compare "query1" "query2"</code> to get started.</p></div>
+        <table class="runs-table" id="runs-table" style="display:none">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Source</th>
+              <th>Description</th>
+              <th>Cases</th>
+              <th>CK Wins</th>
+              <th>RAG Wins</th>
+              <th>Ties</th>
+              <th>CK Win Rate</th>
+            </tr>
+          </thead>
+          <tbody id="runs-tbody"></tbody>
+        </table>
+      </div>
+
+    </div>
+  </body>
+</html>

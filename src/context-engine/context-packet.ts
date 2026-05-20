@@ -16,6 +16,7 @@ import type {
   ScoredDocument,
 } from "./types";
 import { claimKitAdapter } from "./adapters/claimkit-adapter";
+import { saveLiveComparison } from "../comparison-runs/auto-capture";
 import { createBudget, estimateTokens, enforceBudget } from "./budget";
 import { compressDocuments } from "./compressor";
 import { rerank } from "./reranker";
@@ -50,18 +51,30 @@ export async function assembleContextPacket(
   const selectedMessages = selectMessages(deduped, historySlot.allocatedTokens);
   const historyTokens = selectedMessages.reduce((sum, s) => sum + s.tokens, 0);
 
+  const ragStart = Date.now();
   const docs = await retrieveAllStores(query);
 
   let claimKitResult: Awaited<ReturnType<typeof claimKitAdapter.query>> | null = null;
+  let ckMs = 0;
   if (claimKitAvailable) {
     const ckStart = Date.now();
     try {
       claimKitResult = await claimKitAdapter.query(query);
-      const ckMs = Date.now() - ckStart;
+      ckMs = Date.now() - ckStart;
       const symbol = claimKitResult.answerability === "answerable" ? "✅" : claimKitResult.answerability === "partially-answerable" ? "⚠️" : "❌";
       console.log(
-        `[ClaimKit] ${symbol} ${claimKitResult.answerability} | confidence=${(claimKitResult.confidence * 100).toFixed(0)}% | claims=${claimKitResult.metadata.claimCount} | contradictions=${claimKitResult.contradictions.length} | ${ckMs}ms`,
+        `[ClaimKit] ${symbol} ${claimKitResult.answerability} | confidence=${(claimKitResult.confidence * 100).toFixed(0)}% | claims=${claimKitResult.metadata.claimCount} | sources=${claimKitResult.metadata.sourceIds.length} | score=${claimKitResult.metadata.retrievalScore.toFixed(2)} | ${ckMs}ms`,
       );
+      if (claimKitResult.confidence < 0.1) {
+        console.log(
+          `[ClaimKit:DEBUG] query="${query.substring(0, 120)}" | ` +
+          `sources=${claimKitResult.metadata.sourceIds.length} | ` +
+          `retrievalScore=${claimKitResult.metadata.retrievalScore.toFixed(3)} | ` +
+          `answer=${claimKitResult.answer.substring(0, 200)} | ` +
+          `missingEvidence=[${claimKitResult.missingEvidence.slice(0, 5).join(", ")}] | ` +
+          `citations=[${claimKitResult.citations.slice(0, 3).map(c => c.sourceId).join(", ")}]`,
+        );
+      }
     } catch (err) {
       console.warn("[ClaimKit] Query failed:", err);
     }
@@ -90,6 +103,37 @@ export async function assembleContextPacket(
       `claims=${claimKitResult?.metadata.claimCount ?? "—"} | ` +
       `winner=${winner}`,
     );
+    console.log(
+      `[Comparison:Retrieval] RAG docs: [${docs.slice(0, 10).map(d => `${d.source}:${d.title?.substring(0, 40) ?? "—"}`).join(", ")}]`,
+    );
+    if (claimKitResult) {
+      console.log(
+        `[Comparison:Retrieval] CK sources: [${claimKitResult.metadata.sourceIds.slice(0, 10).join(", ")}] | score=${claimKitResult.metadata.retrievalScore.toFixed(3)}`,
+      );
+    }
+
+    // Auto-save comparison data for dashboard
+    let overallWinner: "rag" | "claimkit" | "tie" = "tie";
+    if (!claimKitResult) {
+      overallWinner = "rag";
+    } else if (claimKitResult.confidence > 0.5 && claimKitResult.answerability === "answerable") {
+      overallWinner = "claimkit";
+    } else if (claimKitResult.confidence < 0.3 || claimKitResult.answerability === "not_answerable") {
+      overallWinner = "rag";
+    }
+    const ragMs = Date.now() - ragStart;
+    saveLiveComparison({
+      query,
+      ragTokens,
+      ragSections: compressedDocs.length,
+      ragTimeMs: ragMs,
+      ckConfidence: claimKitResult?.confidence ?? null,
+      ckAnswerability: claimKitResult?.answerability ?? null,
+      ckClaimCount: claimKitResult?.metadata.claimCount ?? null,
+      ckTimeMs: claimKitResult ? ckMs : null,
+      ckContradictions: claimKitResult?.contradictions.length ?? null,
+      overallWinner,
+    });
   }
 
   const graphContext = retrieveGraphContext(query);

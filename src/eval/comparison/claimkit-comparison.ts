@@ -3,6 +3,7 @@ import { claimKitAdapter } from "../../context-engine/adapters/claimkit-adapter"
 import type { ComparisonRunResult, ComparisonCase } from "./reportTypes";
 import type { ComparisonEvalCategory } from "../types";
 import { evaluateThresholds, DEFAULT_THRESHOLDS } from "./thresholds";
+import { saveBatchComparison } from "../../comparison-runs/auto-capture";
 
 export interface ComparisonConfig {
   queries: string[];
@@ -93,6 +94,8 @@ export async function runClaimKitComparison(
     result,
     config.thresholds ?? DEFAULT_THRESHOLDS,
   );
+
+  saveBatchComparison(result, `Batch comparison: ${config.queries.length} queries`);
 
   return result;
 }

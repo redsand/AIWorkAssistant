@@ -2,7 +2,6 @@ import {
   ClaimKit,
   createMemoryStores,
   MemoryLLMAdapter,
-  MemoryEmbeddingAdapter,
 } from "claimkit";
 import type {
   QueryOptions,
@@ -11,6 +10,7 @@ import type {
   AnswerabilityStatus,
 } from "claimkit";
 import { env } from "../../config/env";
+import { ClaimKitEmbeddingAdapter } from "./claimkit-embedding";
 
 export type { AnswerabilityStatus };
 
@@ -42,7 +42,7 @@ export class ClaimKitAdapter {
     }
     try {
       const llm = new MemoryLLMAdapter();
-      const embeddings = new MemoryEmbeddingAdapter();
+      const embeddings = new ClaimKitEmbeddingAdapter();
       const stores = createMemoryStores();
       this.claimKit = new ClaimKit({
         llm,
@@ -57,6 +57,9 @@ export class ClaimKitAdapter {
         },
       });
       this.initialized = true;
+      console.log(
+        `[ClaimKit] Initialized — embeddings: ${embeddings.model.provider}/${embeddings.model.model} (${embeddings.dimensions}d)`,
+      );
       return true;
     } catch (err) {
       this.initError = err instanceof Error ? err.message : String(err);
