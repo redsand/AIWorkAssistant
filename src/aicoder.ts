@@ -87,6 +87,7 @@ import {
 import type { SemanticFinding } from "./autonomous-loop/semantic-review";
 import { loadConvergenceState, saveConvergenceState, serializeConvergence } from "./autonomous-loop/convergence-state";
 import { loadReviewGateState, saveReviewGateState, clearReviewGateState, markForceDone } from "./autonomous-loop/review-gate-state";
+import { ensureAgentsMdRules } from "./autonomous-loop/agents-md";
 
 // Re-export so callers and the orchestrator can import from either module.
 export {
@@ -1993,6 +1994,11 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   // Checkpoint: branch checked out
   currentState = { ...currentState, fromBranch, checkpoint: "branch_checked_out" };
   saveRunState(currentState);
+
+  // Ensure the workspace has targeted prompt rules to reduce LLM errors
+  if (ensureAgentsMdRules(WORKSPACE)) {
+    trackStep(run.id, "note", "Ensured AGENTS.md contains targeted prompt rules for this workspace");
+  }
 
   // TDD: Run baseline tests first; if they fail, try to fix before starting work
   if (SKIP_BASELINE) {
