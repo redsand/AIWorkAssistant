@@ -20,6 +20,27 @@ import { renderMarkdown } from "./markdown.js";
 const SCROLL_NEAR_BOTTOM_PX = 150;
 
 let autoScrollEnabled = true;
+let currentStreamingMessageId = null;
+let msgCounter = 0;
+
+export function setCurrentStreamingMessageId(id) {
+  currentStreamingMessageId = id;
+}
+
+export function markStreamingMessageInterrupted() {
+  if (!currentStreamingMessageId) return;
+  const el = document.getElementById(currentStreamingMessageId);
+  if (el) {
+    const bubble = el.querySelector(".message-bubble");
+    if (bubble) {
+      const marker = document.createElement("div");
+      marker.className = "interrupted-marker";
+      marker.textContent = "Interrupted";
+      bubble.appendChild(marker);
+    }
+  }
+  currentStreamingMessageId = null;
+}
 
 function getChatMessagesEl() {
   return document.getElementById("chatMessages");
@@ -113,9 +134,30 @@ export function showError(message) {
   chatMessages.insertBefore(errorDiv, chatMessages.firstChild);
 }
 
-export function addMessage(content, type, thinking, { scroll = true } = {}) {
+export function addMessage(content, type, thinking, { scroll = true, messageId = null } = {}) {
   const messagesDiv = document.getElementById("chatMessages");
+
+  if (messageId) {
+    const existing = document.getElementById(messageId);
+    if (existing) {
+      const bubble = existing.querySelector(".message-bubble");
+      if (bubble) {
+        let contentEl = bubble.querySelector(".message-content");
+        if (!contentEl) {
+          contentEl = document.createElement("div");
+          contentEl.className = "message-content";
+          bubble.appendChild(contentEl);
+        }
+        contentEl.innerHTML = renderMarkdown(content);
+        if (scroll && autoScrollEnabled) scrollChatToBottom();
+      }
+      return messageId;
+    }
+  }
+
+  const id = "msg-" + (++msgCounter) + "-" + Math.random().toString(36).slice(2, 6);
   const messageDiv = document.createElement("div");
+  messageDiv.id = id;
   messageDiv.className = `message ${type}`;
   messageDiv.dataset.originalText = type === "user" ? content : "";
 
@@ -126,20 +168,21 @@ export function addMessage(content, type, thinking, { scroll = true } = {}) {
   bubble.className = "message-bubble";
 
   if (type === "assistant") {
-    let html = "";
-
     if (thinking && thinking.trim()) {
       const thinkingId = "think-" + Date.now();
-      html += `<div class="thinking-section">`;
-      html += `<div class="thinking-header" onclick="document.getElementById('${thinkingId}').classList.toggle('expanded'); document.getElementById('${thinkingId}-toggle').classList.toggle('expanded');">`;
-      html += `<span class="thinking-toggle" id="${thinkingId}-toggle">&#9654;</span> Thinking`;
-      html += `</div>`;
-      html += `<div class="thinking-body" id="${thinkingId}">${escapeHtml(thinking)}</div>`;
-      html += `</div>`;
+      let thinkHtml = `<div class="thinking-section">`;
+      thinkHtml += `<div class="thinking-header" onclick="document.getElementById('${thinkingId}').classList.toggle('expanded'); document.getElementById('${thinkingId}-toggle').classList.toggle('expanded');">`;
+      thinkHtml += `<span class="thinking-toggle" id="${thinkingId}-toggle">&#9654;</span> Thinking`;
+      thinkHtml += `</div>`;
+      thinkHtml += `<div class="thinking-body" id="${thinkingId}">${escapeHtml(thinking)}</div>`;
+      thinkHtml += `</div>`;
+      bubble.innerHTML = thinkHtml;
     }
 
-    html += renderMarkdown(content);
-    bubble.innerHTML = html;
+    const contentEl = document.createElement("div");
+    contentEl.className = "message-content";
+    contentEl.innerHTML = renderMarkdown(content);
+    bubble.appendChild(contentEl);
   } else {
     bubble.textContent = content;
   }
@@ -160,6 +203,8 @@ export function addMessage(content, type, thinking, { scroll = true } = {}) {
   if (scroll && autoScrollEnabled) {
     scrollChatToBottom();
   }
+
+  return id;
 }
 
 export function createToolProgress() {
