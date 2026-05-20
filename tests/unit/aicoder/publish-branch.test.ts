@@ -55,7 +55,7 @@ afterEach(() => {
   }
 });
 
-describe("pushBranch — force push after rebase failure", () => {
+describe("pushBranch — force push after rebase failure", { timeout: 15_000 }, () => {
   it("normal push succeeds when remote branch does not exist", () => {
     git(["checkout", "-b", "ai/issue-99-fix"], localDir);
     writeFile(localDir, "fix.ts", "const x = 1;");

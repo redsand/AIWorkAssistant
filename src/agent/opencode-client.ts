@@ -1,5 +1,5 @@
 import { getProvider } from "./providers/factory";
-import type { AIProvider } from "./providers/types";
+import type { AIProvider, StreamEvent } from "./providers/types";
 import type {
   ChatMessage,
   ToolCall,
@@ -24,7 +24,7 @@ class OpenCodeClient {
     return this.provider.chat(request);
   }
 
-  chatStream(request: ChatRequest): AsyncGenerator<string, void, unknown> {
+  chatStream(request: ChatRequest): AsyncGenerator<string | StreamEvent, void, unknown> {
     return this.provider.chatStream(request);
   }
 
