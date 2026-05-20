@@ -39,6 +39,9 @@ import { projectAssessmentRoutes } from "./routes/project-assessment";
 import { digestRoutes } from "./routes/digests";
 import { musicianRoutes } from "./routes/musician";
 import { recipeRoutes } from "./routes/recipes";
+import { claimKitAdapter } from "./context-engine/adapters/claimkit-adapter";
+import { comparisonRoutes } from "./comparison-runs/api";
+import { ingestKnowledgeStore, ingestCodebaseStore, ingestGraphStore } from "./context-engine/claimkit-ingestion";
 import {
   authMiddleware,
   isAuthConfigured,
@@ -115,6 +118,7 @@ export async function buildServer() {
   await server.register(digestRoutes, { prefix: "/api/digests" });
   await server.register(musicianRoutes, { prefix: "/api/musician" });
   await server.register(recipeRoutes);
+  await server.register(comparisonRoutes, { prefix: "/api/comparison" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 
@@ -135,6 +139,11 @@ export async function buildServer() {
   // Serve the musician assistant page at /musician (no .html extension)
   server.get("/musician", async (_request, reply) => {
     return reply.sendFile("musician.html");
+  });
+
+  // Serve the comparison dashboard at /comparison (no .html extension)
+  server.get("/comparison", async (_request, reply) => {
+    return reply.sendFile("comparison.html");
   });
 
   // Force no-cache on static assets so Cloudflare doesn't cache them
@@ -346,6 +355,38 @@ async function start() {
         })
         .catch((err) => {
           console.error("[RAG] Indexing failed:", err);
+        });
+    }
+
+    if (env.CLAIMKIT_ENABLED) {
+      claimKitAdapter
+        .initialize()
+        .then(async (available) => {
+          if (!available) {
+            console.warn(`[ClaimKit] Failed to initialize: ${claimKitAdapter.getInitError()}`);
+            return;
+          }
+          console.log(
+            `[ClaimKit] Initialized (provider: ${env.CLAIMKIT_LLM_PROVIDER}, topK: ${env.CLAIMKIT_TOP_K}, minScore: ${env.CLAIMKIT_MIN_SCORE})`,
+          );
+          console.log("[ClaimKit] Ingesting stores...");
+          const [knowledge, codebase, graph] = await Promise.all([
+            ingestKnowledgeStore(),
+            ingestCodebaseStore(),
+            ingestGraphStore(),
+          ]);
+          console.log(
+            `[ClaimKit] Ingestion complete — ` +
+            `knowledge: ${knowledge.ingested}/${knowledge.total} | ` +
+            `codebase: ${codebase.ingested}/${codebase.total} | ` +
+            `graph: ${graph.ingested}/${graph.total}` +
+            (knowledge.errors + codebase.errors + graph.errors > 0
+              ? ` | errors: ${knowledge.errors + codebase.errors + graph.errors}`
+              : ""),
+          );
+        })
+        .catch((err) => {
+          console.error("[ClaimKit] Startup error:", err);
         });
     }
 
