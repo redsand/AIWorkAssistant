@@ -113,7 +113,7 @@ describe("ZaiProvider chatStream", () => {
   });
 
   describe("thinking tokens", () => {
-    it("yields a thinking StreamEvent when response has thinking", async () => {
+    it("yields thinking as <<THINKING>>-wrapped string matching Ollama", async () => {
       makePostMock({ content: "answer", thinking: "Let me reason" });
 
       const provider = makeProvider();
@@ -121,13 +121,16 @@ describe("ZaiProvider chatStream", () => {
         provider.chatStream({ messages: [{ role: "user", content: "q" }] }),
       );
 
-      expect(strings.join("")).toBe("answer");
-      const thinkingEvents = events.filter((e) => e.type === "thinking");
-      expect(thinkingEvents).toHaveLength(1);
-      expect(thinkingEvents[0]).toEqual({ type: "thinking", content: "Let me reason" });
+      // thinking is now a wrapped string, not StreamEvent
+      const thinkingStrings = strings.filter((s) => s.startsWith("<<THINKING>>"));
+      const contentStrings = strings.filter((s) => !s.startsWith("<<THINKING>>"));
+      expect(contentStrings.join("")).toBe("answer");
+      expect(thinkingStrings).toHaveLength(1);
+      expect(thinkingStrings[0]).toBe("<<THINKING>>Let me reason<<//THINKING>>");
+      expect(events.filter((e) => e.type === "thinking")).toHaveLength(0);
     });
 
-    it("yields thinking even when content is empty", async () => {
+    it("yields thinking as string even when content is empty", async () => {
       makePostMock({ content: "", thinking: "reasoning only" });
 
       const provider = makeProvider();
@@ -135,20 +138,22 @@ describe("ZaiProvider chatStream", () => {
         provider.chatStream({ messages: [{ role: "user", content: "q" }] }),
       );
 
-      expect(strings).toHaveLength(0);
-      const thinkingEvents = events.filter((e) => e.type === "thinking");
-      expect(thinkingEvents).toHaveLength(1);
-      expect(thinkingEvents[0]).toEqual({ type: "thinking", content: "reasoning only" });
+      const thinkingStrings = strings.filter((s) => s.startsWith("<<THINKING>>"));
+      expect(thinkingStrings).toHaveLength(1);
+      expect(thinkingStrings[0]).toBe("<<THINKING>>reasoning only<<//THINKING>>");
+      expect(events.filter((e) => e.type === "thinking")).toHaveLength(0);
     });
 
-    it("does not yield thinking event when thinking is undefined", async () => {
+    it("does not yield thinking string when thinking is undefined", async () => {
       makePostMock({ content: "answer" });
 
       const provider = makeProvider();
-      const { events } = await collectStream(
+      const { strings, events } = await collectStream(
         provider.chatStream({ messages: [{ role: "user", content: "q" }] }),
       );
 
+      const thinkingStrings = strings.filter((s) => s.startsWith("<<THINKING>>"));
+      expect(thinkingStrings).toHaveLength(0);
       expect(events.filter((e) => e.type === "thinking")).toHaveLength(0);
     });
   });
@@ -219,7 +224,7 @@ describe("ZaiProvider chatStream", () => {
   });
 
   describe("mixed thinking, content, and tool_calls", () => {
-    it("yields thinking before content before tool_calls", async () => {
+    it("yields thinking as string before content before tool_calls", async () => {
       const toolCalls: ToolCall[] = [
         { id: "call_mix", type: "function", function: { name: "search", arguments: '{"q":"test"}' } },
       ];
@@ -231,18 +236,15 @@ describe("ZaiProvider chatStream", () => {
         collected.push(item);
       }
 
-      const types = collected.map((i) => (typeof i === "string" ? "string" : i.type));
-      const thinkingIdx = types.indexOf("thinking");
-      const firstStringIdx = types.indexOf("string");
-      const tcIdx = types.indexOf("tool_calls");
+      // thinking is now a <<THINKING>>-wrapped string, first item yielded
+      expect(typeof collected[0]).toBe("string");
+      expect((collected[0] as string).startsWith("<<THINKING>>")).toBe(true);
+      expect(collected[0]).toBe("<<THINKING>>Hmm<<//THINKING>>");
 
-      expect(thinkingIdx).toBeGreaterThanOrEqual(0);
-      expect(firstStringIdx).toBeGreaterThanOrEqual(0);
-      expect(tcIdx).toBeGreaterThanOrEqual(0);
-
-      // thinking comes before content, tool_calls comes after content
-      expect(thinkingIdx).toBeLessThan(firstStringIdx);
-      expect(firstStringIdx).toBeLessThan(tcIdx);
+      // tool_calls should be the last item (a StreamEvent)
+      const lastItem = collected[collected.length - 1];
+      expect(typeof lastItem).toBe("object");
+      expect((lastItem as StreamEvent).type).toBe("tool_calls");
     });
   });
 });

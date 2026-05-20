@@ -247,6 +247,7 @@ export class OllamaProvider extends AIProvider {
       // Buffer incomplete lines — multiple SSE events can arrive in one chunk.
       // Parsing the raw chunk directly drops all but the first event in the batch.
       let lineBuffer = "";
+      const toolCallAccumulator: ToolCall[] = [];
       for await (const chunk of response.data) {
         lineBuffer += chunk.toString();
         const lines = lineBuffer.split("\n");
@@ -261,12 +262,41 @@ export class OllamaProvider extends AIProvider {
           try {
             const parsed = JSON.parse(data);
             const delta = parsed.choices[0]?.delta;
+            const finishReason = parsed.choices[0]?.finish_reason;
 
             if (delta?.reasoning_content || delta?.thinking) {
               yield `<<THINKING>>${delta.reasoning_content || delta.thinking}<<//THINKING>>`;
             }
+
             if (delta?.content) {
               yield delta.content;
+            }
+
+            if (delta?.tool_calls) {
+              for (const tcd of delta.tool_calls) {
+                const idx: number = tcd.index ?? 0;
+                while (toolCallAccumulator.length <= idx) {
+                  toolCallAccumulator.push({
+                    id: "",
+                    type: "function" as const,
+                    function: { name: "", arguments: "" },
+                  });
+                }
+                const existing = toolCallAccumulator[idx];
+                if (tcd.id) existing.id = tcd.id;
+                if (tcd.type) existing.type = tcd.type;
+                if (tcd.function?.name) {
+                  existing.function.name = tcd.function.name;
+                }
+                if (tcd.function?.arguments) {
+                  existing.function.arguments += tcd.function.arguments;
+                }
+              }
+            }
+
+            if (finishReason === "tool_calls" && toolCallAccumulator.length > 0) {
+              yield { type: "tool_calls", toolCalls: [...toolCallAccumulator] };
+              toolCallAccumulator.length = 0;
             }
           } catch {
             continue;

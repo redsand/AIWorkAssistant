@@ -225,7 +225,9 @@ function makeGithubClient(token: string, owner: string) {
       const res = await client.get(`/repos/${owner}/${repo}/pulls`, {
         params: { state: "open", per_page: 50, sort: "updated", direction: "desc" },
       });
-      log.step(`Found ${res.data.length} open PRs in ${owner}/${repo}`);
+      if (res.data.length > 0) {
+        log.step(`Found ${res.data.length} open PRs in ${owner}/${repo}`);
+      }
       return res.data;
     },
 
@@ -729,7 +731,6 @@ async function pollMergeRequests(
   }
 
   for (const target of targets) {
-    log.poll(`Checking ${target.source}:${target.name} for open MRs/PRs`);
     const vcs = getVcsClient(target, config);
     let mrs: MergeRequest[];
     try {
@@ -738,7 +739,8 @@ async function pollMergeRequests(
       log.error(`Failed to fetch MRs/PRs from ${target.source}:${target.name}: ${err instanceof Error ? err.message : err}`);
       continue;
     }
-    log.poll(`${target.source}:${target.name} returned ${mrs.length} open MRs/PRs`);
+    if (mrs.length > 0) {
+      log.poll(`${target.source}:${target.name} returned ${mrs.length} open MRs/PRs`);
 
     for (const mr of mrs) {
       if (!mr.author.includes("ai") && !mr.title.startsWith("[AI]")) continue;
@@ -893,6 +895,7 @@ async function pollMergeRequests(
         // until aicoder pushes new commits (SHA changes)
       }
     }
+    } // if mrs.length > 0
   }
 }
 
@@ -1183,6 +1186,10 @@ async function mergeWithSummary(
       `## ✅ Review Passed — Merging\n\n${result.summary}\n\n${agentLine}\n\nMerging now.`,
     );
 
+    // Post the same review comment to the original source issue for continuity
+    const reviewComment = `## ✅ Review Passed — Merged\n\n${result.summary}\n\n${agentLine}\n\nMR has been reviewed and merged.`;
+    await postReviewToSourceIssue(vcs, project, mr, reviewComment);
+
     // Retry up to 3 times on 422 — GitLab sometimes returns 422 transiently while
     // computing mergeability (pipeline checks, branch protection status, etc.).
     const MAX_MERGE_RETRIES = 3;
@@ -1246,6 +1253,9 @@ async function mergeWithSummary(
         mr.number,
         `## ⚠️ Review Passed — ${REVIEW_MERGE_CONFLICT_MARKER}\n\n${result.summary}\n\n${agentLine}\n\nMerge could not be completed due to conflicts with the base branch: ${errMsg}\n\nThe autonomous agent will attempt to rebase and resolve conflicts.`,
       ).catch(() => {});
+      // Post review to source issue even when merge conflicts — the review itself was clean
+      await postReviewToSourceIssue(vcs, project, mr,
+        `## ⚠️ Review Passed — Merge Conflict\n\n${result.summary}\n\n${agentLine}\n\nMerge failed due to conflicts: ${errMsg}`).catch(() => {});
       return "conflict";
     } else if (isPipelineBlocked) {
       await vcs.addComment(
@@ -1260,8 +1270,50 @@ async function mergeWithSummary(
         mr.number,
         `## ⚠️ Review Passed — Merge Failed\n\n${result.summary}\n\n${agentLine}\n\nMerge could not be completed automatically: ${errMsg}\n\nManual merge required.`,
       ).catch(() => {});
+      // Post review to source issue even when merge fails — the review itself passed
+      await postReviewToSourceIssue(vcs, project, mr,
+        `## ⚠️ Review Passed — Merge Failed\n\n${result.summary}\n\n${agentLine}\n\nMerge failed: ${errMsg}`).catch(() => {});
       return "failed";
     }
+  }
+}
+
+/**
+ * Post the same review comment to the original source issue that was posted on the MR/PR.
+ * This ensures the issue tracker has a complete record of what happened during review.
+ */
+async function postReviewToSourceIssue(
+  vcs: VcsClient,
+  project: string,
+  mr: { number: number; title: string; body?: string | null; sourceBranch?: string },
+  reviewComment: string,
+): Promise<void> {
+  let issueKey = vcs.extractLinkedIssueKey(mr.body ?? null);
+  if (!issueKey) {
+    issueKey = vcs.extractIssueKeyFromBranch(mr.sourceBranch);
+  }
+  if (!issueKey) {
+    log.warn(`MR !${mr.number} has no linked issue — cannot post review comment to source issue`);
+    return;
+  }
+
+  // Add MR reference header to the comment for the issue
+  const issueBody = `## Review Complete for MR !${mr.number}\n\n${reviewComment}`;
+
+  const isJiraKey = /^[A-Z]+-\d+$/.test(issueKey);
+  if (isJiraKey && jiraClient.isConfigured()) {
+    await addCommentToJiraIssue(issueKey, issueBody);
+    log.jira(`Posted review summary on Jira ${issueKey} for MR !${mr.number}`);
+  } else if (isJiraKey) {
+    log.warn(`Jira not configured — cannot post review to ${issueKey}`);
+  } else {
+    const issueNumber = parseInt(issueKey, 10);
+    if (isNaN(issueNumber)) {
+      log.warn(`Could not parse issue number from key "${issueKey}"`);
+      return;
+    }
+    await vcs.addCommentToIssue(project, issueNumber, issueBody);
+    log.rework(`Posted review summary on issue #${issueNumber} for MR !${mr.number}`);
   }
 }
 
@@ -1314,12 +1366,16 @@ async function postReworkPrompt(
       }
     }
     await addCommentToJiraIssue(issueKey, buildReworkPrompt(result));
+    // Also post the review findings to the source issue for continuity
+    await postReviewToSourceIssue(vcs, project, mr, formatReviewFindings(result));
     await addLabelToJiraIssue(issueKey, "ready-for-agent");
     log.rework(`Posted rework prompt on Jira ${issueKey} for MR !${mr.number}`);
   } else {
     // Numeric GitHub issue
     const issueNumber = parseInt(issueKey, 10);
     await vcs.addCommentToIssue(project, issueNumber, buildReworkPrompt(result));
+    // Also post the review findings to the source issue for continuity
+    await postReviewToSourceIssue(vcs, project, mr, formatReviewFindings(result));
     await vcs.addLabelToIssue(project, issueNumber, "ready-for-agent").catch(() => {
       log.warn(`Could not add ready-for-agent label to issue #${issueNumber}`);
     });

@@ -207,7 +207,7 @@ export class OpenCodeProvider extends AIProvider {
             const finishReason = parsed.choices[0]?.finish_reason;
 
             if (delta?.reasoning_content) {
-              yield { type: "thinking", content: delta.reasoning_content };
+              yield `<<THINKING>>${delta.reasoning_content}<<//THINKING>>`;
             }
 
             if (delta?.content) {

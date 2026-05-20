@@ -160,7 +160,7 @@ export class ZaiProvider extends AIProvider {
     const response = await this.chat(request);
 
     if (response.thinking) {
-      yield { type: "thinking", content: response.thinking };
+      yield `<<THINKING>>${response.thinking}<<//THINKING>>`;
     }
 
     if (response.content) {

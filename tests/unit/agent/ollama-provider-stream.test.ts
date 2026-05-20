@@ -1,5 +1,6 @@
 /**
- * Unit tests for OpenCodeProvider chatStream — tool_calls, thinking, and content.
+ * Unit tests for OllamaProvider chatStream — tool_calls, thinking, and content.
+ * Verifies Ollama behaves identically to OpenCode and Z.ai providers.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -17,51 +18,45 @@ vi.mock("axios", () => {
     default: {
       ...(actual as any).default,
       create: mockAxiosCreate,
-      isAxiosError: (err: unknown) => err instanceof Error && (err as any).isAxiosError === true,
+      isAxiosError: (err: unknown) =>
+        err instanceof Error && (err as any).isAxiosError === true,
     },
   };
 });
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-/**
- * Builds an array of SSE line chunks from events. Each event becomes one chunk
- * matching the current provider behavior (one SSE line per network chunk).
- */
-function makeSSELines(events: Array<Record<string, unknown> | "[DONE]">): string[] {
+function makeSSELines(
+  events: Array<Record<string, unknown> | "[DONE]">,
+): string[] {
   return events.map((ev) => {
     if (ev === "[DONE]") return "data: [DONE]\n";
     return `data: ${JSON.stringify(ev)}\n`;
   });
 }
 
-/**
- * Creates a minimal readable stream that emits each chunk one at a time,
- * simulating the axios stream response.
- */
 async function* sseGenerator(chunks: string[]): AsyncGenerator<Buffer> {
   for (const c of chunks) {
-    // Small delay to let stream iteration interleave
     await new Promise((r) => setTimeout(r, 0));
     yield Buffer.from(c);
   }
 }
 
 // ── Dynamic import after mocks are set up ──────────────────────────────────
-import { OpenCodeProvider } from "../../../src/agent/providers/opencode-provider";
+import { OllamaProvider } from "../../../src/agent/providers/ollama-provider";
 import type { ProviderConfig } from "../../../src/agent/providers/types";
 
-function makeProvider(): OpenCodeProvider {
+function makeProvider(): OllamaProvider {
   const config: ProviderConfig = {
-    apiKey: "test-key",
-    baseUrl: "http://localhost:1234",
-    model: "opencode-test",
+    apiKey: "",
+    baseUrl: "http://localhost:11434",
+    model: "llama3",
     temperature: 0.7,
     topP: 0.95,
     maxRetries: 0,
     timeout: 30000,
   };
-  return new OpenCodeProvider(config);
+  return new OllamaProvider(config);
 }
 
 async function collectStream(
@@ -90,7 +85,7 @@ function makePostMock(): MockPostFn {
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
-describe("OpenCodeProvider chatStream", () => {
+describe("OllamaProvider chatStream", () => {
   let postMock: MockPostFn;
 
   beforeEach(() => {
@@ -103,7 +98,11 @@ describe("OpenCodeProvider chatStream", () => {
       const lines = makeSSELines([
         { choices: [{ delta: { content: "Hello" }, index: 0 }] },
         { choices: [{ delta: { content: " world" }, index: 0 }] },
-        { choices: [{ delta: { content: "!" }, index: 0, finish_reason: "stop" }] },
+        {
+          choices: [
+            { delta: { content: "!" }, index: 0, finish_reason: "stop" },
+          ],
+        },
         "[DONE]",
       ]);
 
@@ -121,7 +120,15 @@ describe("OpenCodeProvider chatStream", () => {
     it("handles empty content delta gracefully", async () => {
       const lines = makeSSELines([
         { choices: [{ delta: {}, index: 0 }] },
-        { choices: [{ delta: { content: "ok" }, index: 0, finish_reason: "stop" }] },
+        {
+          choices: [
+            {
+              delta: { content: "ok" },
+              index: 0,
+              finish_reason: "stop",
+            },
+          ],
+        },
         "[DONE]",
       ]);
 
@@ -138,11 +145,27 @@ describe("OpenCodeProvider chatStream", () => {
   });
 
   describe("thinking tokens", () => {
-    it("yields thinking as <<THINKING>>-wrapped strings matching Ollama", async () => {
+    it("yields thinking as <<THINKING>>-wrapped strings", async () => {
       const lines = makeSSELines([
-        { choices: [{ delta: { reasoning_content: "Let me think" }, index: 0 }] },
-        { choices: [{ delta: { reasoning_content: " about this" }, index: 0 }] },
-        { choices: [{ delta: { content: "answer" }, index: 0, finish_reason: "stop" }] },
+        {
+          choices: [
+            { delta: { thinking: "Let me think" }, index: 0 },
+          ],
+        },
+        {
+          choices: [
+            { delta: { thinking: " about this" }, index: 0 },
+          ],
+        },
+        {
+          choices: [
+            {
+              delta: { content: "answer" },
+              index: 0,
+              finish_reason: "stop",
+            },
+          ],
+        },
         "[DONE]",
       ]);
 
@@ -153,18 +176,32 @@ describe("OpenCodeProvider chatStream", () => {
         provider.chatStream({ messages: [{ role: "user", content: "q" }] }),
       );
 
-      // Thinking is now string-wrapped, not StreamEvent. Content strings are "answer" (last chunk).
-      // Find the thinking strings (wrapped with <<THINKING>> markers)
-      const thinkingStrings = strings.filter((s) => s.startsWith("<<THINKING>>"));
+      const thinkingStrings = strings.filter((s) =>
+        s.startsWith("<<THINKING>>"),
+      );
+      const contentStrings = strings.filter(
+        (s) => !s.startsWith("<<THINKING>>"),
+      );
+      expect(contentStrings.join("")).toBe("answer");
       expect(thinkingStrings).toHaveLength(2);
       expect(thinkingStrings[0]).toBe("<<THINKING>>Let me think<<//THINKING>>");
-      expect(thinkingStrings[1]).toBe("<<THINKING>> about this<<//THINKING>>");
+      expect(thinkingStrings[1]).toBe(
+        "<<THINKING>> about this<<//THINKING>>",
+      );
       expect(events).toHaveLength(0);
     });
 
-    it("yields thinking as string even without subsequent content", async () => {
+    it("handles reasoning_content field (some Ollama models)", async () => {
       const lines = makeSSELines([
-        { choices: [{ delta: { reasoning_content: "Reasoning only" }, index: 0, finish_reason: "stop" }] },
+        {
+          choices: [
+            {
+              delta: { reasoning_content: "Deep reasoning" },
+              index: 0,
+              finish_reason: "stop",
+            },
+          ],
+        },
         "[DONE]",
       ]);
 
@@ -175,10 +212,13 @@ describe("OpenCodeProvider chatStream", () => {
         provider.chatStream({ messages: [{ role: "user", content: "q" }] }),
       );
 
-      // Thinking is a string, not a StreamEvent
-      const thinkingStrings = strings.filter((s) => s.startsWith("<<THINKING>>"));
+      const thinkingStrings = strings.filter((s) =>
+        s.startsWith("<<THINKING>>"),
+      );
       expect(thinkingStrings).toHaveLength(1);
-      expect(thinkingStrings[0]).toBe("<<THINKING>>Reasoning only<<//THINKING>>");
+      expect(thinkingStrings[0]).toBe(
+        "<<THINKING>>Deep reasoning<<//THINKING>>",
+      );
       expect(events).toHaveLength(0);
     });
   });
@@ -187,35 +227,46 @@ describe("OpenCodeProvider chatStream", () => {
     it("accumulates tool call deltas and yields on finish_reason=tool_calls", async () => {
       const lines = makeSSELines([
         {
-          choices: [{
-            delta: {
-              tool_calls: [
-                { index: 0, id: "call_abc", type: "function", function: { name: "read_file", arguments: "" } },
-              ],
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_abc",
+                    type: "function",
+                    function: { name: "read_file", arguments: "" },
+                  },
+                ],
+              },
+              index: 0,
             },
-            index: 0,
-          }],
+          ],
         },
         {
-          choices: [{
-            delta: {
-              tool_calls: [
-                { index: 0, function: { arguments: '{"path"' } },
-              ],
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  { index: 0, function: { arguments: '{"path"' } },
+                ],
+              },
+              index: 0,
             },
-            index: 0,
-          }],
+          ],
         },
         {
-          choices: [{
-            delta: {
-              tool_calls: [
-                { index: 0, function: { arguments: ':"src/app.ts"}' } },
-              ],
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  { index: 0, function: { arguments: ':"src/app.ts"}' } },
+                ],
+              },
+              index: 0,
+              finish_reason: "tool_calls",
             },
-            index: 0,
-            finish_reason: "tool_calls",
-          }],
+          ],
         },
         "[DONE]",
       ]);
@@ -224,7 +275,10 @@ describe("OpenCodeProvider chatStream", () => {
 
       const provider = makeProvider();
       const { strings, events } = await collectStream(
-        provider.chatStream({ messages: [{ role: "user", content: "read file" }], tools: [] }),
+        provider.chatStream({
+          messages: [{ role: "user", content: "read file" }],
+          tools: [],
+        }),
       );
 
       expect(strings).toHaveLength(0);
@@ -232,30 +286,50 @@ describe("OpenCodeProvider chatStream", () => {
       expect(toolCallEvents).toHaveLength(1);
       expect(toolCallEvents[0]).toEqual({
         type: "tool_calls",
-        toolCalls: [{
-          id: "call_abc",
-          type: "function",
-          function: {
-            name: "read_file",
-            arguments: '{"path":"src/app.ts"}',
+        toolCalls: [
+          {
+            id: "call_abc",
+            type: "function",
+            function: {
+              name: "read_file",
+              arguments: '{"path":"src/app.ts"}',
+            },
           },
-        }],
+        ],
       });
     });
 
     it("handles multiple parallel tool calls", async () => {
       const lines = makeSSELines([
         {
-          choices: [{
-            delta: {
-              tool_calls: [
-                { index: 0, id: "call_1", type: "function", function: { name: "read_file", arguments: '{"path":"a.ts"}' } },
-                { index: 1, id: "call_2", type: "function", function: { name: "grep", arguments: '{"p":"TODO"}' } },
-              ],
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_1",
+                    type: "function",
+                    function: {
+                      name: "read_file",
+                      arguments: '{"path":"a.ts"}',
+                    },
+                  },
+                  {
+                    index: 1,
+                    id: "call_2",
+                    type: "function",
+                    function: {
+                      name: "grep",
+                      arguments: '{"p":"TODO"}',
+                    },
+                  },
+                ],
+              },
+              index: 0,
+              finish_reason: "tool_calls",
             },
-            index: 0,
-            finish_reason: "tool_calls",
-          }],
+          ],
         },
         "[DONE]",
       ]);
@@ -264,7 +338,10 @@ describe("OpenCodeProvider chatStream", () => {
 
       const provider = makeProvider();
       const { events } = await collectStream(
-        provider.chatStream({ messages: [{ role: "user", content: "do stuff" }], tools: [] }),
+        provider.chatStream({
+          messages: [{ role: "user", content: "do stuff" }],
+          tools: [],
+        }),
       );
 
       const tcEvents = events.filter((e) => e.type === "tool_calls");
@@ -278,15 +355,22 @@ describe("OpenCodeProvider chatStream", () => {
     it("does not yield tool_calls event when finish_reason is not tool_calls", async () => {
       const lines = makeSSELines([
         {
-          choices: [{
-            delta: {
-              tool_calls: [
-                { index: 0, id: "call_x", type: "function", function: { name: "f", arguments: "{}" } },
-              ],
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_x",
+                    type: "function",
+                    function: { name: "f", arguments: "{}" },
+                  },
+                ],
+              },
+              index: 0,
+              finish_reason: "stop",
             },
-            index: 0,
-            finish_reason: "stop",
-          }],
+          ],
         },
         "[DONE]",
       ]);
@@ -295,30 +379,93 @@ describe("OpenCodeProvider chatStream", () => {
 
       const provider = makeProvider();
       const { events } = await collectStream(
-        provider.chatStream({ messages: [{ role: "user", content: "hi" }], tools: [] }),
+        provider.chatStream({
+          messages: [{ role: "user", content: "hi" }],
+          tools: [],
+        }),
       );
 
-      // finish_reason was "stop" so tool_calls should not be emitted
       const tcEvents = events.filter((e) => e.type === "tool_calls");
       expect(tcEvents).toHaveLength(0);
+    });
+
+    it("handles tool calls without IDs (Ollama synthesizes them)", async () => {
+      const lines = makeSSELines([
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    type: "function",
+                    function: {
+                      name: "search",
+                      arguments: '{"q":"test"}',
+                    },
+                  },
+                ],
+              },
+              index: 0,
+              finish_reason: "tool_calls",
+            },
+          ],
+        },
+        "[DONE]",
+      ]);
+
+      postMock.mockResolvedValue({ data: sseGenerator(lines) });
+
+      const provider = makeProvider();
+      const { events } = await collectStream(
+        provider.chatStream({
+          messages: [{ role: "user", content: "search" }],
+          tools: [],
+        }),
+      );
+
+      const tcEvents = events.filter((e) => e.type === "tool_calls");
+      expect(tcEvents).toHaveLength(1);
+      const tc = tcEvents[0] as Extract<StreamEvent, { type: "tool_calls" }>;
+      expect(tc.toolCalls).toHaveLength(1);
+      expect(tc.toolCalls[0].function.name).toBe("search");
+      expect(tc.toolCalls[0].function.arguments).toBe('{"q":"test"}');
     });
   });
 
   describe("mixed content, thinking, and tool_calls", () => {
-    it("handles all three streamed together", async () => {
+    it("handles all three streamed together like OpenCode", async () => {
       const lines = makeSSELines([
-        { choices: [{ delta: { reasoning_content: "Hmm" }, index: 0 }] },
-        { choices: [{ delta: { content: "Let me check" }, index: 0 }] },
         {
-          choices: [{
-            delta: {
-              tool_calls: [
-                { index: 0, id: "call_mix", type: "function", function: { name: "search", arguments: '{"q":"test"}' } },
-              ],
+          choices: [
+            { delta: { thinking: "Hmm" }, index: 0 },
+          ],
+        },
+        {
+          choices: [
+            { delta: { content: "Let me check" }, index: 0 },
+          ],
+        },
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_mix",
+                    type: "function",
+                    function: {
+                      name: "search",
+                      arguments: '{"q":"test"}',
+                    },
+                  },
+                ],
+              },
+              index: 0,
+              finish_reason: "tool_calls",
             },
-            index: 0,
-            finish_reason: "tool_calls",
-          }],
+          ],
         },
         "[DONE]",
       ]);
@@ -327,15 +474,22 @@ describe("OpenCodeProvider chatStream", () => {
 
       const provider = makeProvider();
       const { strings, events } = await collectStream(
-        provider.chatStream({ messages: [{ role: "user", content: "q" }], tools: [] }),
+        provider.chatStream({
+          messages: [{ role: "user", content: "q" }],
+          tools: [],
+        }),
       );
 
-      // Content is "Let me check", thinking is in wrapped strings
-      const thinkingStrings = strings.filter((s) => s.startsWith("<<THINKING>>"));
-      const contentStrings = strings.filter((s) => !s.startsWith("<<THINKING>>"));
-      expect(contentStrings.join("")).toBe("Let me check");
+      // thinking as string, content as string, tool_calls as StreamEvent
+      const thinkingStrings = strings.filter((s) =>
+        s.startsWith("<<THINKING>>"),
+      );
+      const contentStrings = strings.filter(
+        (s) => !s.startsWith("<<THINKING>>"),
+      );
       expect(thinkingStrings).toHaveLength(1);
       expect(thinkingStrings[0]).toBe("<<THINKING>>Hmm<<//THINKING>>");
+      expect(contentStrings.join("")).toBe("Let me check");
       expect(events.some((e) => e.type === "tool_calls")).toBe(true);
     });
   });
@@ -373,27 +527,6 @@ describe("OpenCodeProvider chatStream", () => {
       );
 
       expect(strings.join("")).toBe("ok");
-    });
-  });
-
-  describe("auth error handling", () => {
-    it("throws when API key is not configured", async () => {
-      mockAxiosCreate.mockReturnValue({ post: vi.fn() });
-      const provider = new OpenCodeProvider({
-        apiKey: "",
-        baseUrl: "http://localhost:1234",
-        model: "test",
-        temperature: 0.7,
-        topP: 0.95,
-        maxRetries: 0,
-        timeout: 30000,
-      });
-
-      await expect(async () => {
-        for await (const _ of provider.chatStream({ messages: [{ role: "user", content: "hi" }] })) {
-          // should throw before entering loop
-        }
-      }).rejects.toThrow("API key not configured");
     });
   });
 });
