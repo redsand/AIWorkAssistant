@@ -430,6 +430,218 @@ function clearDebugLog(workspace: string): void {
   }
 }
 
+// ─── Codex formatter ──────────────────────────────────────────────────────────
+
+interface CodexItem {
+  id?: string;
+  type?: string;
+  text?: string;
+  command?: string;
+  aggregated_output?: string;
+  exit_code?: number | null;
+  status?: string;
+  file_path?: string;
+  [key: string]: unknown;
+}
+
+interface CodexEvent {
+  type?: string;
+  thread_id?: string;
+  item?: CodexItem;
+  [key: string]: unknown;
+}
+
+const CX = {
+  dim: "\x1b[2m",
+  bold: "\x1b[1m",
+  reset: "\x1b[0m",
+  green: "\x1b[32m",
+  cyan: "\x1b[36m",
+  red: "\x1b[31m",
+  yellow: "\x1b[33m",
+  gray: "\x1b[90m",
+} as const;
+
+function codexUseColor(): boolean {
+  return process.stdout.isTTY && process.env.NO_COLOR !== "1" && process.env.FORCE_COLOR !== "0";
+}
+
+function createCodexFormatter(
+  _c: Record<string, (s: string) => string>,
+  debugMode: boolean,
+  debugWorkspace?: string,
+): StreamFormatter {
+  const color = codexUseColor();
+  const dim = (s: string) => color ? `${CX.dim}${s}${CX.reset}` : s;
+  const agent = (s: string) => color ? `${CX.cyan}${CX.bold}${s}${CX.reset}` : s;
+  const thinking = (s: string) => color ? `${CX.dim}${CX.gray}${s}${CX.reset}` : s;
+  const tool = (s: string) => color ? `${CX.green}${CX.bold}${s}${CX.reset}` : s;
+  const toolDim = (s: string) => color ? `${CX.dim}${s}${CX.reset}` : s;
+  const result = (s: string) => color ? `${CX.dim}${CX.gray}${s}${CX.reset}` : s;
+  const success = (s: string) => color ? `${CX.green}${CX.bold}${s}${CX.reset}` : s;
+  const error = (s: string) => color ? `${CX.red}${CX.bold}${s}${CX.reset}` : s;
+  const yellow = (s: string) => color ? `${CX.yellow}${s}${CX.reset}` : s;
+
+  let buffer = "";
+  let activeCommands: Map<string, string> = new Map(); // item_id → command string
+  let agentRanTests = false;
+
+  function formatCodexLine(rawLine: string): string {
+    if (!rawLine) return "";
+
+    // Try to parse as JSON event
+    let event: CodexEvent;
+    try {
+      event = JSON.parse(rawLine);
+    } catch {
+      // Non-JSON line (e.g., ERROR messages) — show dimmed
+      return dim(rawLine);
+    }
+
+    if (debugMode && debugWorkspace) {
+      debugLog(debugWorkspace, rawLine);
+    }
+
+    const etype = event.type ?? "";
+
+    switch (etype) {
+      case "thread.started": {
+        const tid = (event.thread_id || "").slice(0, 8);
+        return `${agent("[codex]")} Session started · ${tid}`;
+      }
+
+      case "turn.started": {
+        return thinking("  → turn");
+      }
+
+      case "item.started": {
+        const item = event.item;
+        if (!item) return thinking("  → item");
+        const itemId = item.id || "";
+
+        if (item.type === "command_execution") {
+          const cmd = truncate(item.command || "", 120);
+          activeCommands.set(itemId, cmd);
+          return `  ${tool("▶")} ${toolDim(cmd)}`;
+        }
+
+        if (item.type === "agent_message") {
+          return thinking("  [thinking] …");
+        }
+
+        if (item.type === "file_change") {
+          const fp = item.file_path || "";
+          return `  ${yellow("✎")} ${dim(fp)}`;
+        }
+
+        return `  → ${dim(item.type || "item")}`;
+      }
+
+      case "item.completed": {
+        const item = event.item;
+        if (!item) return "";
+
+        if (item.type === "command_execution") {
+          const cmd = activeCommands.get(item.id || "") || item.command || "";
+          activeCommands.delete(item.id || "");
+          const exitOk = item.exit_code === 0 || item.exit_code === null;
+          const statusIcon = exitOk ? success("✓") : error(`✗ (exit ${item.exit_code})`);
+          const output = item.aggregated_output || "";
+          const summary = summarizeCommandOutput(output);
+          return `  ${statusIcon} ${toolDim(cmd)}${summary ? `\n    ${result(summary)}` : ""}`;
+        }
+
+        if (item.type === "agent_message") {
+          const text = item.text || "";
+          if (text) {
+            return formatContentLines(text, (s) => s).join("\n");
+          }
+          return "";
+        }
+
+        if (item.type === "file_change") {
+          const fp = item.file_path || "";
+          return `  ${success("✓")} ${dim(fp)}`;
+        }
+
+        return "";
+      }
+
+      case "item.updated": {
+        const item = event.item;
+        if (!item) return "";
+
+        if (item.type === "agent_message" && item.text) {
+          // Streaming text delta — show incremental
+          const short = truncate(item.text.replace(/\n/g, " "), 100);
+          return dim(`  ${short}`);
+        }
+
+        if (item.type === "command_execution") {
+          // Command output streaming — skip, show final on completed
+          return "";
+        }
+
+        return "";
+      }
+
+      case "error": {
+        const msg = event.item?.text || "";
+        return `  ${error("[error]")} ${msg}`;
+      }
+
+      default: {
+        // Summarize unknown event types
+        const parts: string[] = [];
+        if (etype) parts.push(dim(`[${etype}]`));
+        if (event.item?.type) parts.push(dim(String(event.item.type)));
+        if (event.item?.text) parts.push(truncate(String(event.item.text), 80));
+        return parts.length > 0 ? `  ${parts.join(" ")}` : "";
+      }
+    }
+  }
+
+  function summarizeCommandOutput(output: string): string {
+    if (!output || output.length <= 200) return truncate(output, 200);
+    const lines = output.trim().split("\n");
+    if (lines.length <= 1) return truncate(output, 200);
+    return `${lines.length} lines`;
+  }
+
+  return {
+    get ranTests() { return agentRanTests; },
+
+    push(chunk: string): string {
+      buffer += chunk;
+      const lines: string[] = [];
+      let newlineIdx: number;
+
+      while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, newlineIdx).trim();
+        buffer = buffer.slice(newlineIdx + 1);
+
+        if (!line) continue;
+
+        const formatted = formatCodexLine(line);
+        if (formatted) lines.push(formatted);
+      }
+
+      return lines.join("\n") + (lines.length > 0 ? "\n" : "");
+    },
+
+    flush(): string {
+      if (buffer.trim()) {
+        const remaining = buffer.trim();
+        buffer = "";
+        const formatted = formatCodexLine(remaining);
+        return formatted ? formatted + "\n" : "";
+      }
+      buffer = "";
+      return "";
+    },
+  };
+}
+
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
 export function createStreamFormatter(agent: string, workspace?: string, options?: StreamFormatterOptions): StreamFormatter {
@@ -443,8 +655,8 @@ export function createStreamFormatter(agent: string, workspace?: string, options
     if (debugWorkspace) clearDebugLog(debugWorkspace);
   }
 
-  // For non-Claude agents, pass through raw output
-  if (agent !== "claude") {
+  // For non-Claude/non-codex agents, pass through raw output
+  if (agent !== "claude" && agent !== "codex") {
     return {
       ranTests: false,
       push(chunk: string) {
@@ -472,6 +684,13 @@ export function createStreamFormatter(agent: string, workspace?: string, options
     progress: (s: string) => useColor ? `${ANSI.cyan}${s}${ANSI.reset}` : s,
     content: (s: string) => s, // base color applied via formatContentLines
   };
+
+  // ─── Codex formatter (codex emits its own JSON-line format) ──────────
+  if (agent === "codex") {
+    return createCodexFormatter(c, debugMode, debugWorkspace);
+  }
+
+  // ─── Claude formatter below ──────────────────────────────────────────
 
   let buffer = "";
   let turnCount = 0;

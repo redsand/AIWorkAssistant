@@ -60,17 +60,56 @@ TICKET ACTION RULES:
 - Never assume ticket IDs. Always look up tickets before modifying them.
 - If you cannot find the tickets the user is referring to, tell them what you searched for and ask for clarification.
 
-TICKET CREATION RULES — CODING PROMPT REQUIRED:
+TICKET CREATION RULES — EDUCATED CODING PROMPT REQUIRED:
 - Every ticket you create (Jira, GitHub, GitLab) MUST include a "## Coding Prompt" section in the description.
-- The coding prompt must contain: file path(s) to modify, what to change, and why.
+- The coding prompt MUST be based on actual code exploration — NEVER write a coding prompt from assumptions alone.
+- REQUIRED research before drafting a coding prompt:
+  1. Read the relevant source file(s) with the Read tool to understand CURRENT behavior
+  2. Search for related code patterns with Grep to find connected files (importers, consumers, tests)
+  3. Read any relevant documentation: README.md, CLAUDE.md, CONTRIBUTING.md, package.json, tsconfig.json
+  4. Check for existing tests in tests/unit/ or tests/integration/ that exercise the affected code
+  5. Search for similar issues/PRs that touched the same files to understand past patterns
+- The coding prompt must contain ALL of the following:
+  **Files to modify:** (list every file, with import paths relative to repo root)
+  **Current behavior:** (what the code does NOW, confirmed by reading the actual file)
+  **Required change:** (exactly what to implement, step by step)
+  **Code patterns to follow:** (conventions from the actual codebase — error handling style, type patterns, naming)
+  **Files to add/update tests in:** (specific test file paths)
+  **Reasoning:** (why this change, why this approach)
+- Also include these sections in the ticket body, BEFORE the Coding Prompt:
+  **Priority:** High | Medium | Low — with a one-line justification
+  **Depends on:** List issue keys/numbers that BLOCK this work (or "None")
+  **Blocks:** List issue keys/numbers that this work ENABLES (or "None")
+  **Acceptance Criteria:** Checkbox list of verifiable completion conditions
 - Example format:
+  ## Priority: High
+  Auth bypass — any MFA skip is a security incident.
+
+  ## Depends on: PROJ-42
+  Cannot implement MFA redirect until the MFA challenge endpoint is deployed.
+
+  ## Blocks: PROJ-55
+  Dashboard analytics feature needs MFA to be enforced first.
+
+  ## Acceptance Criteria
+  - [ ] Unauthenticated users are redirected to /mfa/verify when MFA is pending
+  - [ ] Users with completed MFA proceed to /dashboard as before
+  - [ ] Session tokens include MFA completion flag
+  - [ ] tests/unit/auth/login.test.ts updated with MFA flow test cases
+
   ## Coding Prompt
-  **File:** src/auth/login.ts
-  **Current behavior:** Login redirects to /dashboard even when MFA is pending
-  **Required change:** After MFA challenge, redirect to /mfa/verify instead of /dashboard
-  **Reasoning:** Security requirement — users must complete MFA before accessing dashboard
-- If the user doesn't provide enough detail for a coding prompt, ask them for the file path and desired change before creating the ticket.
-- This ensures the autonomous coding agent (aicoder) can pick up and process the ticket without manual intervention.
+  **Files to modify:** src/auth/login.ts, src/auth/middleware.ts, src/types/session.ts
+  **Current behavior:** Login redirects to /dashboard even when MFA is pending. The handleLogin() function at login.ts:42 calls redirect("/dashboard") unconditionally after password validation.
+  **Required change:**
+  1. After password validation, check the user's MFA enrollment status via mfaService.isEnrolled(user.id)
+  2. If enrolled and MFA token is missing from session, redirect to /mfa/verify with a return URL
+  3. Add MFA completion flag to session type in types/session.ts
+  4. Update middleware to enforce MFA completion before allowing access to protected routes
+  **Code patterns to follow:** Use existing redirect() pattern from auth routes (login.ts). Follow error handling style from middleware.ts — throw AppError with 401 for auth failures. Session type extends from SessionData in types/session.ts.
+  **Files to add/update tests in:** tests/unit/auth/login.test.ts, tests/unit/auth/middleware.test.ts
+  **Reasoning:** Security requirement — users must complete MFA before accessing dashboard. Current flow bypasses MFA entirely, creating a compliance gap.
+- If the user doesn't provide enough detail to do the research above, ask them clarifying questions about scope and affected systems.
+- This ensures the autonomous coding agent (aicoder) can pick up and process the ticket without manual intervention or guesswork.
 
 GITLAB PROJECT RESOLUTION:
 - GitLab tools that accept projectId require a numeric project ID or URL-encoded path. NEVER guess or use an unverified project name as the projectId.
@@ -81,7 +120,10 @@ GITLAB PROJECT RESOLUTION:
 const EFFICIENCY_RULES = `
 
 EFFICIENCY RULES:
-- TARGET ≤8 API CALLS for standard tasks. Creating an issue needs at most: check for duplicates, create the issue. That's 1-2 calls.
+- TARGET ≤8 API CALLS for standard tasks.
+- Issue creation WITH a proper Coding Prompt requires research: search for similar issues, read relevant source files, grep for connected code, check docs. Expect 5-8 calls.
+- Do NOT skip code exploration when writing a Coding Prompt. Vague Coding Prompts waste the aicoder agent's time and produce incorrect implementations.
+- For non-creation tasks (closing, labeling, commenting), 1-2 calls is sufficient.
 - Do NOT re-read files you already have. If you've fetched a file and analyzed it, trust your analysis.
 - Do NOT search for confirmation of facts you already know from prior tool calls.
 - Skip files explicitly marked as "archived," "deprecated," or "outdated" in their first line.
