@@ -539,13 +539,13 @@ describe("createStreamFormatter — unknown events", () => {
 
 describe("createStreamFormatter — non-Claude agent", () => {
   it("passes through raw output for non-Claude agents", () => {
-    const formatter = createStreamFormatter("codex");
-    const output = formatter.push("raw output from codex\n");
-    expect(output).toBe("raw output from codex\n");
+    const formatter = createStreamFormatter("ollama");
+    const output = formatter.push("raw output from ollama\n");
+    expect(output).toBe("raw output from ollama\n");
   });
 
   it("flush returns empty for non-Claude agents", () => {
-    const formatter = createStreamFormatter("codex");
+    const formatter = createStreamFormatter("ollama");
     expect(formatter.flush()).toBe("");
   });
 });
