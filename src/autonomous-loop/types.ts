@@ -36,6 +36,7 @@ export interface RunResult {
   exitCode: number | null;
   ranTests?: boolean;
   sessionId?: string;
+  stderr?: string;
 }
 
 export type TestSuiteKind = "unit" | "integration" | "all";

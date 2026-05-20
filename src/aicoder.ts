@@ -1202,16 +1202,26 @@ function detectPackageManager(): "npm" | "pnpm" | "yarn" {
   return "npm";
 }
 
-/** Run `npm/pnpm/yarn install` in the workspace. */
+/** Run `npm/pnpm/yarn install` in the workspace. Retries with shell if direct spawn fails. */
 function runPackageInstall(pm: "npm" | "pnpm" | "yarn"): { success: boolean; command: string; exitCode: number | null } {
   const cmd = `${pm} install`;
   runLogger.logWork(`Running ${cmd} in workspace...`);
-  const result = spawnSync(pm, ["install"], {
+  let result = spawnSync(pm, ["install"], {
     cwd: WORKSPACE,
     stdio: "pipe",
     encoding: "utf-8",
     timeout: 120_000,
   });
+  if (result.error && (result.error as any).code === "ENOENT") {
+    runLogger.logConfig(`Direct spawn failed (ENOENT) — retrying with shell`);
+    result = spawnSync(pm, ["install"], {
+      cwd: WORKSPACE,
+      stdio: "pipe",
+      encoding: "utf-8",
+      timeout: 120_000,
+      shell: true,
+    });
+  }
   if (result.error) {
     runLogger.logError(`${cmd} spawn error: ${result.error.message}`);
     return { success: false, command: cmd, exitCode: -1 };
@@ -1291,10 +1301,11 @@ async function fixBaselineTests(_cfg: ServerConfig, item: WorkItem): Promise<boo
     runLogger.logWork(`Baseline fix attempt ${attempts}/${maxAttempts}`);
 
     const fixPrompt = buildBaselineFixPrompt(lastOutput, item);
-    const { finDetected, exitCode } = await runAgent(fixPrompt);
+    const { finDetected, exitCode, stderr } = await runAgent(fixPrompt);
 
     if (!finDetected && exitCode !== 0) {
       runLogger.logError(`Baseline fix agent exited with code ${exitCode ?? "unknown"} — stopping`);
+      if (stderr) runLogger.logError(`Agent stderr: ${stderr.slice(-1000)}`);
       return false;
     }
 
@@ -1321,6 +1332,85 @@ async function fixBaselineTests(_cfg: ServerConfig, item: WorkItem): Promise<boo
   }
 
   runLogger.logError(`Baseline tests still failing after ${maxAttempts} fix attempts — aborting`);
+  return false;
+}
+
+const COVERAGE_MAX_FIX_ATTEMPTS = parseInt(process.env.AICODER_COVERAGE_MAX_FIX || "2", 10);
+
+function buildCoverageFixPrompt(coverageOutput: string, item: WorkItem): string {
+  const maxOutputLen = 8000;
+  const truncatedOutput = coverageOutput.length > maxOutputLen
+    ? coverageOutput.slice(coverageOutput.length - maxOutputLen)
+    : coverageOutput;
+  const cfg = getProjectConfig();
+  const covCmd = cfg.coverageCommand.join(" ") || "npm run coverage";
+
+  return `# URGENT: Fix Test Coverage Gap
+
+The test coverage is below the required threshold for the branch implementing issue #${item.number}: ${item.title}.
+
+The agent must bring coverage above the threshold by adding unit tests for the changed code.
+
+## Coverage Output
+
+\`\`\`
+${truncatedOutput}
+\`\`\`
+
+## Instructions
+
+1. **Identify uncovered code.** Review the coverage output to find files and lines that lack test coverage — focus on the files YOU modified.
+2. **Add unit tests** that exercise the uncovered paths. Cover edge cases, error paths, and happy paths.
+3. **Do NOT modify production code.** Only add or update test files. Do not refactor, add features, or change existing behavior.
+4. **Run \`${covCmd}\` locally after adding tests** to verify the coverage threshold is now met.
+5. **Commit your test additions** with a message like "test: add coverage for [file/feature]".
+
+Focus ONLY on adding test coverage. Do not implement new features or make unrelated changes.`;
+}
+
+/**
+ * Attempt to fix coverage gaps by invoking the agent with a coverage-specific
+ * prompt. Retries up to COVERAGE_MAX_FIX_ATTEMPTS times. Returns true if
+ * coverage passes after a fix, false if still failing.
+ */
+async function fixCoverageGap(item: WorkItem, coverageOutput: string): Promise<boolean> {
+  let attempts = 0;
+  let lastOutput = coverageOutput;
+
+  while (attempts < COVERAGE_MAX_FIX_ATTEMPTS) {
+    attempts++;
+    runLogger.logWork(`Coverage fix attempt ${attempts}/${COVERAGE_MAX_FIX_ATTEMPTS}`);
+
+    const fixPrompt = buildCoverageFixPrompt(lastOutput, item);
+    const { finDetected, exitCode, stderr: covStderr } = await runAgent(fixPrompt);
+
+    if (!finDetected && exitCode !== 0) {
+      runLogger.logError(`Coverage fix agent exited with code ${exitCode ?? "unknown"} — stopping`);
+      if (covStderr) runLogger.logError(`Agent stderr: ${covStderr.slice(-1000)}`);
+      return false;
+    }
+
+    if (!stageAndCommit(`[AI] coverage fix attempt ${attempts}`)) {
+      runLogger.logError("Coverage fix stage/commit failed — stopping");
+      return false;
+    }
+
+    const result = checkCoverage();
+    if (result.passed) {
+      runLogger.logConfig(`Coverage thresholds met after fix attempt ${attempts}`);
+      return true;
+    }
+
+    if (result.kind === "spawn_error") {
+      runLogger.logConfig("Coverage tool unavailable — cannot verify fix, continuing");
+      return true;
+    }
+
+    runLogger.logError(`Coverage still below threshold after fix attempt ${attempts}`);
+    lastOutput = result.output || lastOutput;
+  }
+
+  runLogger.log(`WARN`, `Coverage still below threshold after ${COVERAGE_MAX_FIX_ATTEMPTS} fix attempts — continuing anyway`);
   return false;
 }
 
@@ -1389,10 +1479,11 @@ async function attemptTestFix(item: WorkItem, reworkCount: number, initialOutput
     runLogger.logWork(`Test fix attempt ${attempts}/${maxAttempts} after rework`);
 
     const fixPrompt = buildBaselineFixPrompt(lastOutput, item);
-    const { finDetected, exitCode } = await runAgent(fixPrompt);
+    const { finDetected, exitCode, stderr: reworkStderr } = await runAgent(fixPrompt);
 
     if (!finDetected && exitCode !== 0) {
       runLogger.logError(`Test fix agent exited with code ${exitCode ?? "unknown"} — stopping`);
+      if (reworkStderr) runLogger.logError(`Agent stderr: ${reworkStderr.slice(-1000)}`);
       return false;
     }
 
@@ -2159,6 +2250,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   let exitCode: number | null;
   let agentRanTests: boolean;
   let agentSessionId: string | undefined;
+  let agentStderr: string | undefined;
   if (SKIP_AGENT) {
     runLogger.logConfig("Skipping agent execution (--skip-agent) — using existing changes");
     finDetected = true;
@@ -2171,6 +2263,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     exitCode = agentResult.exitCode;
     agentRanTests = agentResult.ranTests ?? false;
     agentSessionId = agentResult.sessionId;
+    agentStderr = agentResult.stderr;
   }
 
   // Checkpoint: agent complete
@@ -2181,6 +2274,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
 
   if (!finDetected && exitCode !== 0) {
     runLogger.log(`WARN`, `Agent exited with code ${exitCode} and no FIN signal — skipping push`);
+    if (agentStderr) runLogger.logError(`Agent stderr: ${agentStderr.slice(-1000)}`);
     runLogger.endRun(exitCode);
     // Don't save to processedIssues — allow retry on next aicoder cycle
     failRunTrack(run.id, `Agent exited with code ${exitCode}, no FIN signal`);
@@ -2270,20 +2364,13 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     }
     trackStep(run.id, "tool_call", "Integration tests passed", { toolName: "test_integration" });
 
-    // TDD: Check coverage thresholds
+    // TDD: Check coverage thresholds — use the LLM to fix gaps.
     const coverageResult = checkCoverage();
     if (!coverageResult.passed) {
-      // spawn_error means the coverage tool isn't installed — warn but don't block
       if (coverageResult.kind === "spawn_error") {
         runLogger.logConfig(`Coverage tool not available — skipping coverage check`);
       } else {
-        runLogger.logError(`Coverage check ${coverageResult.kind} — skipping push. Issue will be retried.`);
-        lastPipelineExitCode = EXIT_TEST_FAILURE;
-        runLogger.endRun(EXIT_TEST_FAILURE);
-        // Don't save to processedIssues — allow retry on next aicoder cycle
-        trackStep(run.id, "tool_call", `Coverage check ${coverageResult.kind}`, { toolName: "coverage", success: false });
-        failRunTrack(run.id, `Coverage check ${coverageResult.kind}`);
-        return null;
+        await fixCoverageGap(item, coverageResult.output || "coverage check failed");
       }
     }
   }
@@ -2468,12 +2555,14 @@ async function continueFromBaselineTestsPass(cfg: ServerConfig, item: WorkItem, 
       const freshResult = await runAgent(generated.prompt);
       if (!freshResult.finDetected && freshResult.exitCode !== 0) {
         runLogger.logError(`Agent exited with code ${freshResult.exitCode} on retry — aborting`);
+        if (freshResult.stderr) runLogger.logError(`Agent stderr: ${freshResult.stderr.slice(-1000)}`);
         clearRunState();
         return;
       }
       saveRunState({ ...state, checkpoint: "agent_complete", sessionId: freshResult.sessionId, agentRanTests: freshResult.ranTests });
     } else {
       runLogger.logError(`Agent exited with code ${agentResult.exitCode} — aborting`);
+      if (agentResult.stderr) runLogger.logError(`Agent stderr: ${agentResult.stderr.slice(-1000)}`);
       clearRunState();
       return;
     }
@@ -2521,9 +2610,7 @@ async function continueFromChangesCommitted(cfg: ServerConfig, item: WorkItem, s
     }
     const coverageResult = checkCoverage();
     if (!coverageResult.passed && coverageResult.kind !== "spawn_error") {
-      runLogger.logError(`Coverage check ${coverageResult.kind} on resume — aborting`);
-      clearRunState();
-      return;
+      await fixCoverageGap(item, coverageResult.output || "coverage check failed");
     }
   }
   saveRunState({ ...state, checkpoint: "tests_passed" });
@@ -2602,9 +2689,7 @@ async function continueFromReworkCommitted(cfg: ServerConfig, item: WorkItem, st
     }
     const coverageResult = checkCoverage();
     if (!coverageResult.passed && coverageResult.kind !== "spawn_error") {
-      runLogger.logError(`Rework coverage check ${coverageResult.kind} on resume — aborting`);
-      clearRunState();
-      return;
+      await fixCoverageGap(item, coverageResult.output || "coverage check failed");
     }
   }
   saveRunState({ ...state, checkpoint: "rework_tests_passed" });

@@ -509,8 +509,11 @@ function createCodexFormatter(
     try {
       event = JSON.parse(rawLine);
     } catch {
-      // Non-JSON line (e.g., ERROR messages) — show dimmed
-      return dim(rawLine);
+      // Non-JSON line — only show if it looks like an error (not metrics/progress noise)
+      if (/error|fail|fatal|panic|exception|timeout|refused/i.test(rawLine)) {
+        return dim(rawLine);
+      }
+      return "";
     }
 
     if (debugMode && debugWorkspace) {
@@ -535,7 +538,7 @@ function createCodexFormatter(
         const itemId = item.id || "";
 
         if (item.type === "command_execution") {
-          const cmd = truncate(item.command || "", 120);
+          const cmd = truncate(item.command || "", 500);
           activeCommands.set(itemId, cmd);
           return `  ${tool("▶")} ${toolDim(cmd)}`;
         }

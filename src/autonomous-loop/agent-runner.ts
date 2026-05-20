@@ -90,13 +90,14 @@ export async function runAgentDirect(
     const agentArgs = buildAgentArgs(cfg.agent, resumeSessionId, cfg.model);
     const child = spawn(cfg.agent, agentArgs, {
       cwd: cfg.workspace,
-      stdio: ["pipe", "pipe", "inherit"],
+      stdio: ["pipe", "pipe", "pipe"],
       shell: process.platform === "win32",
     });
     onChildReady?.(child);
 
     let finDetected = false;
     let outputBuf = "";
+    let stderrBuf = "";
     let capturedSessionId: string | undefined;
     const formatter = createStreamFormatter(cfg.agent, cfg.workspace, {
       debug: cfg.debug ?? false,
@@ -106,6 +107,10 @@ export async function runAgentDirect(
 
     child.stdin?.write(prompt);
     child.stdin?.end();
+
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderrBuf += chunk.toString();
+    });
 
     child.stdout?.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
@@ -126,7 +131,13 @@ export async function runAgentDirect(
     child.on("close", (code) => {
       const remaining = formatter.flush();
       if (remaining) process.stdout.write(remaining);
-      resolve({ finDetected, exitCode: code, ranTests: formatter.ranTests, sessionId: capturedSessionId });
+      const stderr = stderrBuf.trim();
+      if (stderr && code !== 0) {
+        // Truncate to last 2KB — the actionable part of API errors is at the end
+        const tail = stderr.length > 2048 ? "…\n" + stderr.slice(-2048) : stderr;
+        process.stderr.write(tail + "\n");
+      }
+      resolve({ finDetected, exitCode: code, ranTests: formatter.ranTests, sessionId: capturedSessionId, stderr });
     });
 
     child.on("error", (err) => {
