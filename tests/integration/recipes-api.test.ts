@@ -1,5 +1,14 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
+
+vi.mock("../../src/middleware/auth", async (importOriginal) => {
+  const actual = await importOriginal() as Record<string, unknown>;
+  return {
+    ...actual,
+    isAuthConfigured: () => false,
+    getApiKeyForAuth: () => "",
+  };
+});
 
 describe("Recipes API", () => {
   let server: FastifyInstance;
