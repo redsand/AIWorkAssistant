@@ -1128,6 +1128,7 @@ class ReviewAssistant {
             maxTokens: 65536,
             jsonMode: true,
           })) {
+            if (typeof chunk !== "string") continue;
             fullContent += chunk;
             pendingChunk += chunk;
 

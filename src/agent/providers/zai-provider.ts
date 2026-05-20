@@ -6,6 +6,7 @@ import {
   ProviderConfig,
   ChatRequest,
   ChatResponse,
+  StreamEvent,
   ToolCall,
 } from "./types";
 
@@ -155,7 +156,7 @@ export class ZaiProvider extends AIProvider {
 
   async *chatStream(
     request: ChatRequest,
-  ): AsyncGenerator<string, void, unknown> {
+  ): AsyncGenerator<string | StreamEvent, void, unknown> {
     const response = await this.chat(request);
     if (response.content) {
       const content = response.content;

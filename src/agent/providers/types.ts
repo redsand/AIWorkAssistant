@@ -72,6 +72,10 @@ export interface ProviderCapabilities {
   synthesizesToolCallIds: boolean;
 }
 
+export type StreamEvent =
+  | { type: "thinking"; content: string }
+  | { type: "tool_calls"; toolCalls: ToolCall[] };
+
 export type OpenCodeConfig = ProviderConfig;
 
 export const DEFAULT_MAX_CONTEXT_TOKENS = 64000;
@@ -112,7 +116,7 @@ export abstract class AIProvider {
   abstract chat(request: ChatRequest): Promise<ChatResponse>;
   abstract chatStream(
     request: ChatRequest,
-  ): AsyncGenerator<string, void, unknown>;
+  ): AsyncGenerator<string | StreamEvent, void, unknown>;
   abstract isConfigured(): boolean;
 
   getMaxContextTokens(): number {

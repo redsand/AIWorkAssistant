@@ -5,6 +5,8 @@ import {
   ProviderConfig,
   ChatRequest,
   ChatResponse,
+  StreamEvent,
+  ToolCall,
 } from "./types";
 
 export class OpenCodeProvider extends AIProvider {
@@ -160,7 +162,7 @@ export class OpenCodeProvider extends AIProvider {
 
   async *chatStream(
     request: ChatRequest,
-  ): AsyncGenerator<string, void, unknown> {
+  ): AsyncGenerator<string | StreamEvent, void, unknown> {
     if (!this.isConfigured()) {
       throw new Error(
         "OpenCode API key not configured. Set OPENCODE_API_KEY environment variable.",
@@ -180,28 +182,67 @@ export class OpenCodeProvider extends AIProvider {
         },
       );
 
+      const toolCallAccumulator: ToolCall[] = [];
+      let lineBuffer = "";
+
       for await (const chunk of response.data) {
-        const line = chunk.toString();
+        lineBuffer += chunk.toString();
+        const lines = lineBuffer.split("\n");
+        lineBuffer = lines.pop() ?? ""; // keep incomplete trailing line
 
-        if (!line.startsWith("data: ")) {
-          continue;
-        }
-
-        const data = line.slice(6);
-
-        if (data === "[DONE]") {
-          break;
-        }
-
-        try {
-          const parsed = JSON.parse(data);
-          const delta = parsed.choices[0]?.delta;
-
-          if (delta?.content) {
-            yield delta.content;
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) {
+            continue;
           }
-        } catch {
-          continue;
+
+          const data = line.slice(6).trim();
+
+          if (data === "[DONE]" || !data) {
+            continue;
+          }
+
+          try {
+            const parsed = JSON.parse(data);
+            const delta = parsed.choices[0]?.delta;
+            const finishReason = parsed.choices[0]?.finish_reason;
+
+            if (delta?.reasoning_content) {
+              yield { type: "thinking", content: delta.reasoning_content };
+            }
+
+            if (delta?.content) {
+              yield delta.content;
+            }
+
+            if (delta?.tool_calls) {
+              for (const tcd of delta.tool_calls) {
+                const idx: number = tcd.index ?? 0;
+                while (toolCallAccumulator.length <= idx) {
+                  toolCallAccumulator.push({
+                    id: "",
+                    type: "function" as const,
+                    function: { name: "", arguments: "" },
+                  });
+                }
+                const existing = toolCallAccumulator[idx];
+                if (tcd.id) existing.id = tcd.id;
+                if (tcd.type) existing.type = tcd.type;
+                if (tcd.function?.name) {
+                  existing.function.name = tcd.function.name;
+                }
+                if (tcd.function?.arguments) {
+                  existing.function.arguments += tcd.function.arguments;
+                }
+              }
+            }
+
+            if (finishReason === "tool_calls" && toolCallAccumulator.length > 0) {
+              yield { type: "tool_calls", toolCalls: [...toolCallAccumulator] };
+              toolCallAccumulator.length = 0;
+            }
+          } catch {
+            continue;
+          }
         }
       }
 

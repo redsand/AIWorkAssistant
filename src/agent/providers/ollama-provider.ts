@@ -8,6 +8,7 @@ import {
   ProviderConfig,
   ChatRequest,
   ChatResponse,
+  StreamEvent,
   ToolCall,
 } from "./types";
 
@@ -229,7 +230,7 @@ export class OllamaProvider extends AIProvider {
 
   async *chatStream(
     request: ChatRequest,
-  ): AsyncGenerator<string, void, unknown> {
+  ): AsyncGenerator<string | StreamEvent, void, unknown> {
     try {
       const requestBody = this.buildRequestBody({ ...request, stream: true });
 
