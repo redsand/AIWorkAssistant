@@ -247,7 +247,7 @@ class ProjectAssessor {
     const completedWorkItems = data.workItems.filter((item) => item.status === "done").length;
     const blockedWorkItems = data.workItems.filter((item) => item.status === "blocked").length;
     const overdueWorkItems = data.workItems.filter(
-      (item) => item.dueAt && item.dueAt.slice(0, 10) < today && item.status !== "done" && item.status !== "archived",
+      (item) => item.dueAt && item.dueAt.slice(0, 10) < today && !item.archived,
     ).length;
 
     const activeRoadmaps = data.roadmaps.length;

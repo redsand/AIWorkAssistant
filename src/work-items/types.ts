@@ -47,6 +47,7 @@ export interface WorkItem {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+  archived: boolean;
   tagsJson: string | null;
   linkedResourcesJson: string | null;
   notesJson: string | null;

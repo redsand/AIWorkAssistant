@@ -92,7 +92,7 @@ describe("OpenLoopSummarizer", () => {
   it("does not list done decision items", () => {
     const data = makeBriefData({
       workItems: [
-        { id: "4", title: "Resolved decision", status: "done", priority: "low", type: "decision", source: "chat" } as any,
+        { id: "4", title: "Resolved decision", status: "done", priority: "low", type: "decision", source: "chat", archived: true } as any,
       ],
     });
     const { decisionsWaiting } = openLoopSummarizer.summarizeOpenLoops(data);

@@ -402,7 +402,7 @@ class WeeklyDigestGenerator {
 
   private workBlocked(items: WorkItem[]): string[] {
     const blocked = items.filter((i) => i.status === "blocked");
-    const overdue = items.filter((i) => i.status !== "done" && i.status !== "archived" && i.dueAt && i.dueAt.slice(0, 10) < new Date().toISOString().slice(0, 10));
+    const overdue = items.filter((i) => i.status !== "done" && !i.archived && i.dueAt && i.dueAt.slice(0, 10) < new Date().toISOString().slice(0, 10));
     return this.listOrFallback([
       ...blocked.map((i) => `- Blocked: ${i.title}`),
       ...overdue.slice(0, 10).map((i) => `- Overdue: ${i.title}`),
@@ -418,7 +418,7 @@ class WeeklyDigestGenerator {
       items.push(`- IR follow-up: ${this.irCaseLabel(c)}`);
     }
     const overdue = data.workItems.filter(
-      (i) => i.dueAt && i.dueAt.slice(0, 10) < weekStart && i.status !== "done" && i.status !== "archived",
+      (i) => i.dueAt && i.dueAt.slice(0, 10) < weekStart && !i.archived,
     );
     for (const i of overdue.slice(0, 5)) {
       items.push(`- Overdue work item: ${i.title}`);

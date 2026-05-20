@@ -510,7 +510,7 @@ async function fetchWorkItemsWork(
 
   for (const wi of result.items) {
     // Skip done and archived items
-    if (wi.status === "done" || wi.status === "archived") continue;
+    if (wi.archived) continue;
 
     const tags = parseWorkItemTagsJson(wi.tagsJson);
     // Only include items with the label tag (e.g., "ready-for-agent")

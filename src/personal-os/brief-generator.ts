@@ -267,7 +267,7 @@ class PersonalOsBriefGenerator {
 
   private buildTodaysLoad(data: BriefData, date: string): TodaysLoadSection {
     const overdue = data.workItems.filter(
-      (item) => item.dueAt && item.dueAt.slice(0, 10) < date && item.status !== "done" && item.status !== "archived",
+      (item) => item.dueAt && item.dueAt.slice(0, 10) < date && !item.archived,
     );
     const failedPipelines = data.gitlab.pipelines.filter((p) =>
       String(p.status || "").toLowerCase().includes("fail"),
