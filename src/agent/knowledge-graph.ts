@@ -245,6 +245,16 @@ class KnowledgeGraph {
     return rows.map((r) => this.rowToEdge(r));
   }
 
+  getAllNodes(): KGNode[] {
+    const rows = this.db.prepare(`SELECT * FROM kg_nodes ORDER BY updated_at DESC`).all() as any[];
+    return rows.map((r) => this.rowToNode(r));
+  }
+
+  getAllEdges(): KGEdge[] {
+    const rows = this.db.prepare(`SELECT * FROM kg_edges ORDER BY created_at DESC`).all() as any[];
+    return rows.map((r) => this.rowToEdge(r));
+  }
+
   getNeighbors(
     nodeId: string,
     maxDepth: number = 2,

@@ -271,3 +271,222 @@ describe("ingestCodebaseStore", () => {
     expect(stats.sourceIds).toEqual(["src-cb-1", "src-cb-3"]);
   });
 });
+
+// ── ingestGraphStore ───────────────────────────────────────────────────
+
+const mockGetAllNodes = vi.fn();
+const mockGetAllEdges = vi.fn();
+
+const mockKnowledgeGraph = {
+  getAllNodes: mockGetAllNodes,
+  getAllEdges: mockGetAllEdges,
+};
+
+vi.doMock("../../../src/agent/knowledge-graph", () => ({
+  knowledgeGraph: mockKnowledgeGraph,
+}));
+
+describe("ingestGraphStore", () => {
+  let ingestGraphStore: () => Promise<{
+    total: number;
+    ingested: number;
+    skipped: number;
+    errors: number;
+    sourceIds: string[];
+    durationMs: number;
+  }>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.resetModules();
+
+    vi.doMock("../../../src/context-engine/adapters/claimkit-adapter", () => ({
+      claimKitAdapter: mockClaimKitAdapter,
+    }));
+    vi.doMock("../../../src/agent/knowledge-graph", () => ({
+      knowledgeGraph: mockKnowledgeGraph,
+    }));
+
+    const mod = await import("../../../src/context-engine/claimkit-ingestion");
+    ingestGraphStore = mod.ingestGraphStore;
+  });
+
+  it("should return early when ClaimKit is not available", async () => {
+    mockIsAvailable.mockReturnValue(false);
+
+    const stats = await ingestGraphStore();
+
+    expect(stats.total).toBe(0);
+    expect(stats.ingested).toBe(0);
+    expect(stats.skipped).toBe(0);
+    expect(stats.errors).toBe(0);
+    expect(stats.sourceIds).toEqual([]);
+    expect(mockGetAllNodes).not.toHaveBeenCalled();
+    expect(mockGetAllEdges).not.toHaveBeenCalled();
+  });
+
+  it("should handle empty graph", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockGetAllNodes.mockReturnValue([]);
+    mockGetAllEdges.mockReturnValue([]);
+
+    const stats = await ingestGraphStore();
+
+    expect(stats.total).toBe(0);
+    expect(stats.ingested).toBe(0);
+    expect(stats.errors).toBe(0);
+    expect(stats.sourceIds).toEqual([]);
+  });
+
+  it("should ingest all nodes and edges from the knowledge graph", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockGetAllNodes.mockReturnValue([
+      {
+        id: "kg-component-1",
+        type: "component",
+        title: "Auth Service",
+        content: "Handles user authentication and authorization",
+        status: "accepted",
+        context: "Core infrastructure component",
+        tags: ["auth", "security"],
+        metadata: { owner: "Team A", tier: "critical" },
+        createdAt: new Date("2026-01-01"),
+        updatedAt: new Date("2026-01-15"),
+      },
+      {
+        id: "kg-decision-1",
+        type: "decision",
+        title: "Use JWT for API auth",
+        content: "Decided to use JWT tokens for API authentication",
+        status: "accepted",
+        context: undefined,
+        tags: [],
+        metadata: {},
+        createdAt: new Date("2026-01-02"),
+        updatedAt: new Date("2026-01-02"),
+      },
+    ]);
+    mockGetAllEdges.mockReturnValue([
+      {
+        id: "edge-1",
+        sourceId: "kg-component-1",
+        targetId: "kg-decision-1",
+        type: "implements",
+        description: "Auth Service uses JWT as decided",
+        createdAt: new Date("2026-01-03"),
+      },
+    ]);
+    mockIngest
+      .mockResolvedValueOnce({ sourceId: "src-g-1" })
+      .mockResolvedValueOnce({ sourceId: "src-g-2" })
+      .mockResolvedValueOnce({ sourceId: "src-g-3" });
+
+    const stats = await ingestGraphStore();
+
+    expect(stats.total).toBe(3);
+    expect(stats.ingested).toBe(3);
+    expect(stats.skipped).toBe(0);
+    expect(stats.errors).toBe(0);
+    expect(stats.sourceIds).toEqual(["src-g-1", "src-g-2", "src-g-3"]);
+    expect(stats.durationMs).toBeGreaterThanOrEqual(0);
+
+    expect(mockIngest).toHaveBeenCalledTimes(3);
+
+    // First call: the "Auth Service" node
+    expect(mockIngest).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("Entity: Auth Service (component)"),
+      {
+        entityId: "kg-component-1",
+        entityType: "component",
+        source: "graph",
+      },
+    );
+
+    // Second call: the "Use JWT for API auth" node
+    expect(mockIngest).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining("Entity: Use JWT for API auth (decision)"),
+      {
+        entityId: "kg-decision-1",
+        entityType: "decision",
+        source: "graph",
+      },
+    );
+
+    // Third call: the edge
+    expect(mockIngest).toHaveBeenNthCalledWith(
+      3,
+      expect.stringContaining("Relationship: kg-component-1 --[implements]--> kg-decision-1"),
+      {
+        relationshipId: "edge-1",
+        relationshipType: "implements",
+        source: "graph",
+      },
+    );
+  });
+
+  it("should continue ingesting after node failures and count errors", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockGetAllNodes.mockReturnValue([
+      { id: "n1", type: "component", title: "Good", content: "c", status: "accepted", tags: [], metadata: {}, createdAt: new Date(), updatedAt: new Date() },
+      { id: "n2", type: "component", title: "Bad", content: "c", status: "accepted", tags: [], metadata: {}, createdAt: new Date(), updatedAt: new Date() },
+      { id: "n3", type: "component", title: "Good2", content: "c", status: "accepted", tags: [], metadata: {}, createdAt: new Date(), updatedAt: new Date() },
+    ]);
+    mockGetAllEdges.mockReturnValue([]);
+    mockIngest
+      .mockResolvedValueOnce({ sourceId: "src-g-1" })
+      .mockRejectedValueOnce(new Error("Ingest failed"))
+      .mockResolvedValueOnce({ sourceId: "src-g-3" });
+
+    const stats = await ingestGraphStore();
+
+    expect(stats.total).toBe(3);
+    expect(stats.ingested).toBe(2);
+    expect(stats.errors).toBe(1);
+    expect(stats.sourceIds).toEqual(["src-g-1", "src-g-3"]);
+  });
+
+  it("should continue ingesting after edge failures and count errors", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockGetAllNodes.mockReturnValue([]);
+    mockGetAllEdges.mockReturnValue([
+      { id: "e1", sourceId: "a", targetId: "b", type: "depends_on", description: "ok", createdAt: new Date() },
+      { id: "e2", sourceId: "c", targetId: "d", type: "blocks", description: "fail", createdAt: new Date() },
+    ]);
+    mockIngest
+      .mockResolvedValueOnce({ sourceId: "src-e-1" })
+      .mockRejectedValueOnce(new Error("Edge ingest failed"));
+
+    const stats = await ingestGraphStore();
+
+    expect(stats.total).toBe(2);
+    expect(stats.ingested).toBe(1);
+    expect(stats.errors).toBe(1);
+    expect(stats.sourceIds).toEqual(["src-e-1"]);
+  });
+
+  it("should handle nodes without optional fields gracefully", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockGetAllNodes.mockReturnValue([
+      {
+        id: "minimal-node",
+        type: "assumption",
+        title: "Minimal Node",
+        content: "Just content",
+        status: "proposed",
+        tags: [],
+        metadata: {},
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    mockGetAllEdges.mockReturnValue([]);
+    mockIngest.mockResolvedValueOnce({ sourceId: "src-min" });
+
+    const stats = await ingestGraphStore();
+
+    expect(stats.ingested).toBe(1);
+    expect(mockIngest).toHaveBeenCalledTimes(1);
+  });
+});
