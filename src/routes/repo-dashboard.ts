@@ -17,6 +17,13 @@ import { env } from "../config/env";
 
 const MAX_ISSUES = 200;
 
+const issueCache = new Map<string, { data: DashboardIssue[]; fetchedAt: number }>();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+export function invalidateIssueCache(platform: string, repo: string): void {
+  issueCache.delete(`${platform}:${repo}`);
+}
+
 // ─── Platform repo types ─────────────────────────────────────────────────────
 
 export interface RepoInfo {
@@ -681,29 +688,36 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
   });
 
   fastify.get<{
-    Querystring: { repo: string; platform: string; limit?: string };
+    Querystring: { repo: string; platform: string; limit?: string; since?: string };
   }>("/issues", async (request) => {
-    const { repo, platform, limit: limitRaw } = request.query;
+    const { repo, platform, limit: limitRaw, since } = request.query;
     const limit = Math.min(parseInt(limitRaw || "50", 10) || 50, MAX_ISSUES);
 
+    const cacheKey = `${platform}:${repo}`;
     let issues: DashboardIssue[] = [];
 
     try {
-      switch (platform) {
-        case "github":
-          issues = await fetchGitHubIssues(repo);
-          break;
-        case "gitlab":
-          issues = await fetchGitLabIssues(repo);
-          break;
-        case "jira":
-          issues = await fetchJiraIssues(repo);
-          break;
-        case "work_items":
-          issues = await fetchWorkItemIssues(
-            repo as import("../work-items/types").WorkItemSource,
-          );
-          break;
+      const cached = issueCache.get(cacheKey);
+      if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+        issues = cached.data;
+      } else {
+        switch (platform) {
+          case "github":
+            issues = await fetchGitHubIssues(repo);
+            break;
+          case "gitlab":
+            issues = await fetchGitLabIssues(repo);
+            break;
+          case "jira":
+            issues = await fetchJiraIssues(repo);
+            break;
+          case "work_items":
+            issues = await fetchWorkItemIssues(
+              repo as import("../work-items/types").WorkItemSource,
+            );
+            break;
+        }
+        issueCache.set(cacheKey, { data: issues, fetchedAt: Date.now() });
       }
     } catch (err: any) {
       return {
@@ -713,7 +727,11 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
       };
     }
 
-    return { issues: issues.slice(0, limit), total: issues.length };
+    const filtered = since
+      ? issues.filter((i) => i.updatedAt >= since)
+      : issues;
+
+    return { issues: filtered.slice(0, limit), total: filtered.length };
   });
 
   fastify.get<{

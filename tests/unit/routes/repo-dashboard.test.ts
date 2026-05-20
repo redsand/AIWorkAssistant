@@ -10,6 +10,7 @@ import {
   normalizePriority,
   calculateBurndown,
   repoDashboardRoutes,
+  invalidateIssueCache,
 } from "../../../src/routes/repo-dashboard";
 import type {
   DashboardSprint,
@@ -136,8 +137,16 @@ describe("repoDashboardRoutes", () => {
     await server.register(repoDashboardRoutes, { prefix: "/api/repo-dashboard" });
     await server.ready();
     vi.clearAllMocks();
+    // Clear cache for all repos used in tests to prevent cross-test contamination
+    invalidateIssueCache("github", "org/repo");
+    invalidateIssueCache("gitlab", "org/repo");
+    invalidateIssueCache("jira", "PROJ");
+    invalidateIssueCache("work_items", "chat");
   });
-  afterEach(async () => { await server.close(); });
+  afterEach(async () => {
+    await server.close();
+    vi.restoreAllMocks();
+  });
 
   describe("GET /repos (work items)", () => {
     it("should return work item repos grouped by source with open counts", async () => {
@@ -449,6 +458,91 @@ describe("repoDashboardRoutes", () => {
       vi.mocked(jiraClient.getSprints).mockRejectedValue(new Error("jira down"));
       const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/burndown?platform=jira&repo=PROJ&sprintId=jira-sprint-5" });
       expect(res.json().error).toBe("Sprint not found");
+    });
+  });
+
+  describe("issue cache", () => {
+    const mockIssue = { number: 1, state: "open", title: "Cached Issue", pull_request: null, labels: [], assignee: null, html_url: "https://github.com/org/repo/issues/1", created_at: "2025-01-01T00:00:00Z", updated_at: "2025-01-02T00:00:00Z", body: "" };
+
+    it("should use cached data on second request without refetching", async () => {
+      vi.mocked(githubClient.listIssues).mockResolvedValue([mockIssue]);
+
+      await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=github&repo=org/repo" });
+      await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=github&repo=org/repo" });
+
+      expect(githubClient.listIssues).toHaveBeenCalledTimes(1);
+    });
+
+    it("should refetch after cache TTL expires", async () => {
+      vi.mocked(githubClient.listIssues).mockResolvedValue([mockIssue]);
+
+      await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=github&repo=org/repo" });
+      expect(githubClient.listIssues).toHaveBeenCalledTimes(1);
+
+      const dateSpy = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60 * 1000 + 1);
+
+      await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=github&repo=org/repo" });
+      expect(githubClient.listIssues).toHaveBeenCalledTimes(2);
+
+      dateSpy.mockRestore();
+    });
+
+    it("should filter issues by since parameter on fresh fetch", async () => {
+      vi.mocked(githubClient.listIssues).mockResolvedValue([
+        { ...mockIssue, number: 1, title: "Old Issue", updated_at: "2025-01-01T00:00:00Z" },
+        { ...mockIssue, number: 2, title: "New Issue", updated_at: "2025-02-01T00:00:00Z" },
+      ]);
+
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=github&repo=org/repo&since=2025-01-15T00:00:00Z" });
+
+      expect(res.statusCode).toBe(200);
+      const data = res.json();
+      expect(data.issues).toHaveLength(1);
+      expect(data.issues[0].title).toBe("New Issue");
+    });
+
+    it("should filter cached issues by since without refetching", async () => {
+      vi.mocked(githubClient.listIssues).mockResolvedValue([
+        { ...mockIssue, number: 1, title: "Old Issue", updated_at: "2025-01-01T00:00:00Z" },
+        { ...mockIssue, number: 2, title: "New Issue", updated_at: "2025-02-01T00:00:00Z" },
+      ]);
+
+      // Populate cache
+      await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=github&repo=org/repo" });
+      // Filter cached data with since
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=github&repo=org/repo&since=2025-01-15T00:00:00Z" });
+
+      expect(githubClient.listIssues).toHaveBeenCalledTimes(1);
+      expect(res.json().issues).toHaveLength(1);
+      expect(res.json().issues[0].title).toBe("New Issue");
+    });
+
+    it("should refetch after invalidateIssueCache is called", async () => {
+      vi.mocked(githubClient.listIssues).mockResolvedValue([mockIssue]);
+
+      await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=github&repo=org/repo" });
+      expect(githubClient.listIssues).toHaveBeenCalledTimes(1);
+
+      invalidateIssueCache("github", "org/repo");
+
+      await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=github&repo=org/repo" });
+      expect(githubClient.listIssues).toHaveBeenCalledTimes(2);
+    });
+
+    it("should cache independently per platform and repo", async () => {
+      vi.mocked(githubClient.listIssues).mockResolvedValue([mockIssue]);
+      vi.mocked(gitlabClient.listIssues).mockResolvedValue([{ iid: 1, id: 101, state: "opened", title: "GL", labels: [], assignee: null, web_url: "", created_at: "", updated_at: "", description: "" }]);
+
+      await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=github&repo=org/repo" });
+      invalidateIssueCache("gitlab", "org/repo");
+      await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=gitlab&repo=org/repo" });
+
+      expect(githubClient.listIssues).toHaveBeenCalledTimes(1);
+      expect(gitlabClient.listIssues).toHaveBeenCalledTimes(1);
+
+      // GitHub cache still valid
+      await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=github&repo=org/repo" });
+      expect(githubClient.listIssues).toHaveBeenCalledTimes(1);
     });
   });
 });
