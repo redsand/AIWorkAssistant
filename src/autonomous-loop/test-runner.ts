@@ -60,30 +60,18 @@ export function runTestSuite(
 
   logger.logGit(`Running ${suiteKind} tests`, command.join(" "));
 
-  const useShell = process.platform === "win32";
   let result = spawnSync(command[0], command.slice(1), {
     cwd: workspace, stdio: "pipe", encoding: "utf-8", timeout,
+    shell: process.platform === "win32",
   });
-
-  if (result.error && useShell && (result.error as any).code === "ENOENT") {
-    logger.logConfig("Direct spawn failed (ENOENT) — retrying with shell");
-    result = spawnSync(command[0], command.slice(1), {
-      cwd: workspace, stdio: "pipe", encoding: "utf-8", timeout, shell: true,
-    });
-  }
 
   if (result.error && config.type === "python" && command[0] === "pytest") {
     const fallbackCmd = process.platform === "win32" ? "python" : "python3";
     logger.logConfig(`pytest spawn failed — retrying with ${fallbackCmd} -m pytest`);
     result = spawnSync(fallbackCmd, ["-m", "pytest", ...command.slice(1)], {
       cwd: workspace, stdio: "pipe", encoding: "utf-8", timeout,
+      shell: process.platform === "win32",
     });
-    if (result.error && (result.error as any).code === "ENOENT") {
-      logger.logConfig("python -m pytest direct spawn failed — retrying with shell");
-      result = spawnSync(fallbackCmd, ["-m", "pytest", ...command.slice(1)], {
-        cwd: workspace, stdio: "pipe", encoding: "utf-8", timeout, shell: true,
-      });
-    }
   }
 
   const stdout = (result.stdout || "").trim();
@@ -154,17 +142,10 @@ export function checkCoverage(
 
   logger.logGit("Checking coverage thresholds", config.coverageCommand.join(" "));
 
-  const useShell = process.platform === "win32";
-  let result = spawnSync(config.coverageCommand[0], config.coverageCommand.slice(1), {
+  const result = spawnSync(config.coverageCommand[0], config.coverageCommand.slice(1), {
     cwd: workspace, stdio: "pipe", encoding: "utf-8", timeout: 300_000,
+    shell: process.platform === "win32",
   });
-
-  if (result.error && useShell && (result.error as any).code === "ENOENT") {
-    logger.logConfig("Direct spawn failed (ENOENT) — retrying with shell");
-    result = spawnSync(config.coverageCommand[0], config.coverageCommand.slice(1), {
-      cwd: workspace, stdio: "pipe", encoding: "utf-8", timeout: 300_000, shell: true,
-    });
-  }
 
   const stdout = (result.stdout || "").trim();
   const stderr = (result.stderr || "").trim();

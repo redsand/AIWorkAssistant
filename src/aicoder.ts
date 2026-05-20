@@ -1206,22 +1206,13 @@ function detectPackageManager(): "npm" | "pnpm" | "yarn" {
 function runPackageInstall(pm: "npm" | "pnpm" | "yarn"): { success: boolean; command: string; exitCode: number | null } {
   const cmd = `${pm} install`;
   runLogger.logWork(`Running ${cmd} in workspace...`);
-  let result = spawnSync(pm, ["install"], {
+  const result = spawnSync(pm, ["install"], {
     cwd: WORKSPACE,
     stdio: "pipe",
     encoding: "utf-8",
     timeout: 120_000,
+    shell: process.platform === "win32",
   });
-  if (result.error && (result.error as any).code === "ENOENT") {
-    runLogger.logConfig(`Direct spawn failed (ENOENT) — retrying with shell`);
-    result = spawnSync(pm, ["install"], {
-      cwd: WORKSPACE,
-      stdio: "pipe",
-      encoding: "utf-8",
-      timeout: 120_000,
-      shell: true,
-    });
-  }
   if (result.error) {
     runLogger.logError(`${cmd} spawn error: ${result.error.message}`);
     return { success: false, command: cmd, exitCode: -1 };

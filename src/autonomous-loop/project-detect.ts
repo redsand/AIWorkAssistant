@@ -126,14 +126,14 @@ export function detectProjectConfig(workspace: string): ProjectConfig {
 
       const unitCmd: string[] = "test-unit" in scripts
         ? ["npm", "run", "test-unit"]
-        : unitDirExists
+        : (unitDirExists && hasTestScript)
           ? ["npm", "test", "--", "tests/unit"]
           : hasTestScript
             ? testCmd
             : [];
       const integrationCmd: string[] = "test-integration" in scripts
         ? ["npm", "run", "test-integration"]
-        : integrationDirExists
+        : (integrationDirExists && hasTestScript)
           ? ["npm", "test", "--", "tests/integration"]
           : hasTestScript
             ? testCmd
