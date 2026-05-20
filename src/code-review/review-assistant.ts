@@ -6,7 +6,7 @@ import { workItemDatabase } from "../work-items/database";
 
 // ── Streaming event type for review progress ─────────────────────────────────
 export interface ReviewStreamEvent {
-  type: "progress" | "stream";
+  type: "progress" | "stream" | "thinking";
   message?: string;
   chunk?: string;
 }
@@ -1119,6 +1119,7 @@ class ReviewAssistant {
           let fullContent = "";
           let pendingChunk = "";
           let lastStreamTime = Date.now();
+          let thinkingBuffer = "";
 
           for await (const chunk of aiClient.chatStream({
             messages: [
@@ -1131,6 +1132,32 @@ class ReviewAssistant {
           })) {
             if (typeof chunk !== "string") continue;
             fullContent += chunk;
+
+            // Separate thinking from review content for visibility.
+            // Z.ai/OpenCode yield thinking as <<THINKING>>...<<//THINKING>> strings
+            // that would corrupt JSON parsing if left in the accumulated content.
+            if (chunk.startsWith("<<THINKING>>") || thinkingBuffer) {
+              thinkingBuffer += chunk;
+              const endIdx = thinkingBuffer.indexOf("<<//THINKING>>");
+              if (endIdx !== -1) {
+                const thinking = thinkingBuffer.slice(0, endIdx + 15);
+                thinkingBuffer = "";
+                // Emit thinking for visibility
+                const cleanThinking = thinking
+                  .replace(/^<<THINKING>>/, "")
+                  .replace(/<<\/\/THINKING>>$/, "");
+                if (cleanThinking.length > 0) {
+                  onProgress?.({ type: "thinking", chunk: cleanThinking });
+                }
+                // Continue with any content after the thinking marker
+                const after = thinking.slice(endIdx + 15);
+                if (after) {
+                  fullContent += after; // already added above, just tracking
+                }
+              }
+              continue;
+            }
+
             pendingChunk += chunk;
 
             // Throttle stream events — emit accumulated chunk every 500ms or 200 chars
@@ -1149,7 +1176,7 @@ class ReviewAssistant {
 
           onProgress?.({ type: "progress", message: "AI review complete — parsing results..." });
 
-          // Strip <<THINKING>>...<<//THINKING>> wrappers that Z.ai/OpenCode yield as strings
+          // Strip thinking wrappers before JSON parsing (they were already emitted above)
           const stripped = fullContent.trim()
             .replace(/<<THINKING>>[\s\S]*?<<\/\/THINKING>>/g, "")
             .replace(/^```(?:json)?\s*/m, "")

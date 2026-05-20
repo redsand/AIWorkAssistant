@@ -1003,6 +1003,10 @@ async function runLocalStreamingReview(
       (event: ReviewStreamEvent) => {
         if (event.type === "progress") {
           log.step(`[review] ${event.message}`);
+        } else if (event.type === "thinking") {
+          // Show a brief snippet of the AI's reasoning
+          const snippet = (event.chunk || "").replace(/\n/g, " ").slice(0, 120);
+          process.stdout.write(`${C.dim}[review thinking] ${snippet}${C.reset}\n`);
         } else if (event.type === "stream") {
           // Show a brief snippet of the streaming AI output
           const snippet = (event.chunk || "").replace(/\n/g, " ").slice(0, 120);
@@ -1115,6 +1119,9 @@ async function runAiReviewStreaming(
           const event = JSON.parse(data);
           if (event.type === "progress") {
             log.step(`[review] ${event.message}`);
+          } else if (event.type === "thinking") {
+            const snippet = (event.chunk || "").replace(/\n/g, " ").slice(0, 120);
+            process.stdout.write(`${C.dim}[review thinking] ${snippet}${C.reset}\n`);
           } else if (event.type === "stream") {
             const snippet = (event.chunk || "").replace(/\n/g, " ").slice(0, 120);
             process.stdout.write(`${C.dim}[review stream] ${snippet}${C.reset}\n`);
