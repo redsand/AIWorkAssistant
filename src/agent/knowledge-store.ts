@@ -214,6 +214,29 @@ class KnowledgeStore {
     return rows.map((r) => this.rowToEntry(r));
   }
 
+  getAllEntries(options?: {
+    source?: KnowledgeEntry["source"];
+    sessionId?: string;
+  }): KnowledgeEntry[] {
+    let sql = `SELECT * FROM knowledge WHERE 1=1`;
+    const params: unknown[] = [];
+
+    if (options?.source) {
+      sql += ` AND source = ?`;
+      params.push(options.source);
+    }
+
+    if (options?.sessionId) {
+      sql += ` AND session_id = ?`;
+      params.push(options.sessionId);
+    }
+
+    sql += ` ORDER BY created_at DESC`;
+
+    const rows = this.db.prepare(sql).all(...params) as any[];
+    return rows.map((r) => this.rowToEntry(r));
+  }
+
   getStats(): {
     totalEntries: number;
     bySource: Record<string, number>;
