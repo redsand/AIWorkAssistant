@@ -1,4 +1,4 @@
-import { getProvider } from "./providers/factory";
+import { getProvider, resetProvider } from "./providers/factory";
 import type { AIProvider, StreamEvent } from "./providers/types";
 import type {
   ChatMessage,
@@ -18,6 +18,16 @@ class OpenCodeClient {
 
   get providerName(): string {
     return this.provider.name;
+  }
+
+  get modelName(): string {
+    return (this.provider as any).config?.model ?? "";
+  }
+
+  /** Re-create the provider from current env vars (for --provider/--model overrides). */
+  refresh(): void {
+    resetProvider();
+    this.provider = getProvider();
   }
 
   chat(request: ChatRequest): Promise<ChatResponse> {

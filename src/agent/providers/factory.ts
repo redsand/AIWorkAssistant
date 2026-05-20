@@ -59,7 +59,7 @@ export function createProvider(): AIProvider {
       return new OpenCodeProvider({
         apiKey: env.OPENCODE_API_KEY,
         baseUrl: env.OPENCODE_API_URL,
-        model: "glm-5",
+        model: env.OPENCODE_MODEL || "glm-5",
         temperature: 0.7,
         topP: 0.95,
         maxRetries: 3,
@@ -76,4 +76,9 @@ export function getProvider(): AIProvider {
     _provider = createProvider();
   }
   return _provider;
+}
+
+/** Clear the cached provider so the next getProvider() re-creates it from current env. */
+export function resetProvider(): void {
+  _provider = null;
 }

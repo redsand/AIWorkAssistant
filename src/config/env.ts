@@ -19,6 +19,7 @@ const envSchema = z.object({
   // OpenCode API
   OPENCODE_API_URL: z.string().url().default("https://api.opencode.com/v1"),
   OPENCODE_API_KEY: z.string().default(""),
+  OPENCODE_MODEL: z.string().default(""),
 
   // AI Provider Selection
   AI_PROVIDER: z.enum(["opencode", "zai", "ollama"]).default("opencode"),

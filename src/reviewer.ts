@@ -8,6 +8,7 @@ import { gitlabClient } from "./integrations/gitlab/gitlab-client";
 import { jiraClient } from "./integrations/jira/jira-client";
 import { reviewAssistant } from "./code-review/review-assistant";
 import type { ReviewStreamEvent } from "./code-review/review-assistant";
+import { aiClient } from "./agent/opencode-client";
 import { parseReviewFindings } from "./autonomous-loop/review-findings-parser";
 import { recordGateFindings } from "./autonomous-loop/review-gate-state";
 import { formatConvergenceReport, initConvergenceState, recordRoundFindings, checkConvergence, DEFAULT_CONVERGENCE_CONFIG } from "./autonomous-loop/convergence";
@@ -69,6 +70,8 @@ Options:
   --workspace-path <path> Base directory containing local clones of all repos (e.g. ../ or /home/user/repos).
                           The reviewer resolves each MR's workspace as <workspace-path>/<repo-name>.
                           Enables file/git tool access during review. Also set via REVIEW_WORKSPACE_PATH env var.
+  --provider <name>     AI provider: opencode | zai | ollama (overrides AI_PROVIDER env)
+  --model <name>        Model name for the selected provider (overrides env defaults)
   --review-mr <n>       Force a fresh review of MR/PR number n and exit
   --merge-mr <n>        Force-merge MR/PR number n, close the linked issue, and exit
   --help                 Show this help
@@ -1608,7 +1611,52 @@ async function forceMergeMr(mrNumber: number): Promise<void> {
   }
 }
 
+/**
+ * Apply --provider and --model CLI overrides by setting process.env before
+ * the provider singleton is used. Then refresh the cached aiClient so it
+ * picks up the new env values.
+ */
+function applyProviderOverrides(): void {
+  const provider = ARGV.provider as string | undefined;
+  const model = ARGV.model as string | undefined;
+  if (!provider && !model) return;
+
+  if (provider) {
+    const valid = ["opencode", "zai", "ollama"];
+    if (!valid.includes(provider)) {
+      log.error(`Unknown provider "${provider}". Valid: ${valid.join(", ")}`);
+      process.exit(1);
+    }
+    process.env.AI_PROVIDER = provider;
+  }
+
+  if (model) {
+    const resolvedProvider = (provider || process.env.AI_PROVIDER || "opencode").toLowerCase();
+    switch (resolvedProvider) {
+      case "zai":
+        process.env.ZAI_MODEL = model;
+        break;
+      case "ollama":
+        process.env.OLLAMA_MODEL = model;
+        break;
+      default:
+        process.env.OPENCODE_MODEL = model;
+        break;
+    }
+  }
+
+  // Refresh the cached provider singleton so it picks up the overridden env vars
+  aiClient.refresh();
+
+  const providerName = aiClient.providerName;
+  const modelName = aiClient.modelName || model || "(default)";
+  log.config(`Provider override: ${providerName} / ${modelName}`);
+}
+
 async function main(): Promise<void> {
+  // Apply --provider/--model overrides before any provider usage
+  applyProviderOverrides();
+
   // One-shot commands — handle and exit before entering the poll loop
   const reviewMr = ARGV["review-mr"] ? parseInt(ARGV["review-mr"], 10) : null;
   const mergeMr = ARGV["merge-mr"] ? parseInt(ARGV["merge-mr"], 10) : null;
