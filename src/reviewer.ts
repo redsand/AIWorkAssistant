@@ -89,6 +89,7 @@ Local config (.env):
   SECURITY_AGENT_CMD        External security review command
   QA_AGENT_CMD              External QA review command
   QUALITY_AGENT_CMD         External code quality command
+  REGRESSION_AGENT_CMD       External regression detection command
 
 GitLab-specific:
   GITLAB_DEFAULT_PROJECT    GitLab project path (e.g. siem/octorepl)
@@ -128,6 +129,7 @@ interface ReviewerConfig {
   securityAgentCmd: string;
   qaAgentCmd: string;
   qualityAgentCmd: string;
+  regressionAgentCmd: string;
   gitlabProject: string;
   /** Base directory containing local repo clones — reviewer resolves <workspacePath>/<repo-name> per MR. */
   workspacePath?: string;
@@ -157,7 +159,7 @@ function parseRepoTargets(
 
 interface ReviewFinding {
   severity: "critical" | "high" | "medium" | "low";
-  category: "security" | "qa" | "quality";
+  category: "security" | "qa" | "quality" | "regression";
   file: string;
   line?: number;
   message: string;
@@ -212,6 +214,7 @@ async function loadConfig(): Promise<ReviewerConfig> {
     securityAgentCmd: process.env.SECURITY_AGENT_CMD || "review-agent --category security",
     qaAgentCmd: process.env.QA_AGENT_CMD || "review-agent --category qa",
     qualityAgentCmd: process.env.QUALITY_AGENT_CMD || "review-agent --category quality",
+    regressionAgentCmd: process.env.REGRESSION_AGENT_CMD || "",
     gitlabProject: ARGV["gitlab-project"] || process.env.GITLAB_DEFAULT_PROJECT || "",
     workspacePath: ARGV["workspace-path"] || process.env.REVIEW_WORKSPACE_PATH || undefined,
   };
@@ -1009,17 +1012,22 @@ async function runLocalStreamingReview(
     );
 
     const findings = codeReviewToFindings(review);
+
+    log.step(`Review complete: ${findings.length} findings, risk=${review.riskLevel}, rec=${review.recommendation}`);
+
+    // Run regression detection to catch accidental feature loss
+    const regression = await runRegressionReview(diff, config.regressionAgentCmd);
+    findings.push(...regression.findings);
     const hasCriticalOrHigh = findings.some(
       (f) => f.severity === "critical" || f.severity === "high",
     );
-
-    log.step(`Review complete: ${findings.length} findings, risk=${review.riskLevel}, rec=${review.recommendation}`);
 
     return {
       clean: !hasCriticalOrHigh,
       findings,
       summary: review.suggestedReviewComment || buildSummary(findings),
       recommendation: review.recommendation,
+      agentStatus: { regression: regression.status },
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1028,13 +1036,14 @@ async function runLocalStreamingReview(
     const sec = runAgentReview(diff, "security", config.securityAgentCmd);
     const qa = runAgentReview(diff, "qa", config.qaAgentCmd);
     const qual = runAgentReview(diff, "quality", config.qualityAgentCmd);
-    const findings: ReviewFinding[] = [...sec.findings, ...qa.findings, ...qual.findings];
+    const reg = await runRegressionReview(diff, config.regressionAgentCmd);
+    const findings: ReviewFinding[] = [...sec.findings, ...qa.findings, ...qual.findings, ...reg.findings];
     const hasCriticalOrHigh = findings.some((f) => f.severity === "critical" || f.severity === "high");
     return {
       clean: !hasCriticalOrHigh,
       findings,
       summary: buildSummary(findings),
-      agentStatus: { security: sec.status, qa: qa.status, quality: qual.status },
+      agentStatus: { security: sec.status, qa: qa.status, quality: qual.status, regression: reg.status },
       recommendation: hasCriticalOrHigh ? "needs_changes" : "ready_for_human_review",
     };
   }
@@ -1138,9 +1147,129 @@ async function runAiReviewStreaming(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Regression detection — AI-driven analysis for accidental feature loss
+// ---------------------------------------------------------------------------
+
+const REGRESSION_SYSTEM_PROMPT = `You are a regression detection specialist. Analyze the provided git diff for signs of ACCIDENTAL feature removal — code that was likely deleted unintentionally during a rebase, merge conflict resolution, or refactor.
+
+Do NOT flag intentional cleanup, refactoring, or code that has a clear replacement in the diff.
+
+Look specifically for these patterns:
+
+1. DELETED IMPORTS: An import line removed ("-import ...") where the imported module is not referenced by any added code in the diff.
+
+2. REMOVED ROUTE REGISTRATIONS: Lines like server.register(...), app.get/post/use(...), router.use(...), or express.static(...) that were deleted without replacement.
+
+3. REMOVED INITIALIZATION: Database connection setup, middleware registration, server startup listeners, or async initialization blocks that were deleted.
+
+4. REBASE ARTIFACTS: Large contiguous blocks of deletions (10+ lines) with no corresponding additions nearby — often indicates one side of a conflict was silently dropped.
+
+5. REMOVED EXPORTS: Public function/class/constant exports deleted without replacement or migration.
+
+6. CONFIGURATION/PLUGIN REMOVAL: Module registration, plugin setup, or configuration binding lines removed.
+
+CRITICAL RULES:
+- Only flag deletions that appear ACCIDENTAL (no replacement code, no migration in the diff)
+- If the deletion is accompanied by new code that replaces it, do NOT flag it
+- Test file deletions are nearly always intentional — do NOT flag them
+- Doc comment or whitespace-only deletions are never regressions
+- Provide the specific file path from the diff header for each finding
+- Give line numbers from the @@ hunk headers where possible
+
+Respond with ONLY this JSON structure (no markdown fences, no text before or after):
+{
+  "findings": [
+    {
+      "severity": "critical|high|medium|low",
+      "file": "path/to/file.ts",
+      "line": 45,
+      "message": "Brief description of what was removed and why it looks accidental",
+      "suggestion": "Specific action to verify or restore the removed code"
+    }
+  ]
+}
+
+If no regressions are detected, return: {"findings": []}`;
+
+async function runRegressionReview(
+  diff: string,
+  regressionAgentCmd: string,
+): Promise<{ findings: ReviewFinding[]; status: "passed" | "failed" }> {
+  // Delegate to external CLI if configured
+  if (regressionAgentCmd) {
+    return runAgentReview(diff, "regression", regressionAgentCmd);
+  }
+
+  // Use AI client directly
+  if (!aiClient.isConfigured()) {
+    return {
+      status: "failed",
+      findings: [{
+        severity: "medium",
+        category: "regression",
+        file: "*",
+        message: "Regression analysis skipped — AI client not configured",
+        suggestion: "Review the diff manually for accidental feature removals, especially in server entry points and route files.",
+      }],
+    };
+  }
+
+  try {
+    const response = await aiClient.chat({
+      messages: [
+        { role: "system", content: REGRESSION_SYSTEM_PROMPT },
+        { role: "user", content: diff },
+      ],
+      temperature: 0.3,
+      maxTokens: 16384,
+      jsonMode: true,
+    });
+
+    const content = response.content.trim();
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      const findings: ReviewFinding[] = (parsed.findings || []).map((f: any) => ({
+        severity: f.severity || "medium",
+        category: "regression" as const,
+        file: f.file || "unknown",
+        line: f.line,
+        message: f.message || "Potential regression detected",
+        suggestion: f.suggestion || "Review this deletion to confirm it was intentional.",
+      }));
+      return { findings, status: "passed" };
+    }
+
+    return {
+      status: "failed",
+      findings: [{
+        severity: "medium",
+        category: "regression",
+        file: "*",
+        message: "Regression analysis could not parse AI response",
+        suggestion: "Review the diff manually for accidental feature removals.",
+      }],
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error(`Regression agent failed: ${message}`);
+    return {
+      status: "failed",
+      findings: [{
+        severity: "medium",
+        category: "regression",
+        file: "*",
+        message: `Regression analysis unavailable: ${message}`,
+        suggestion: "Review the diff manually for signs of accidental feature removal before merging.",
+      }],
+    };
+  }
+}
+
 function runAgentReview(
   diff: string,
-  category: "security" | "qa" | "quality",
+  category: "security" | "qa" | "quality" | "regression",
   cmd: string,
 ): { findings: ReviewFinding[]; status: "passed" | "failed" } {
   try {
@@ -1167,10 +1296,10 @@ function runAgentReview(
 }
 
 function formatAgentStatus(agentStatus?: Record<string, "passed" | "failed">): string {
-  if (!agentStatus) return "**Review agents:** Security ✓ | QA ✓ | Quality ✓";
+  if (!agentStatus) return "**Review agents:** Security ✓ | QA ✓ | Quality ✓ | Regression ✓";
   const fmt = (cat: string, label: string) =>
     agentStatus[cat] === "failed" ? `${label} ✗ (failed)` : `${label} ✓`;
-  return `**Review agents:** ${fmt("security", "Security")} | ${fmt("qa", "QA")} | ${fmt("quality", "Quality")}`;
+  return `**Review agents:** ${fmt("security", "Security")} | ${fmt("qa", "QA")} | ${fmt("quality", "Quality")} | ${fmt("regression", "Regression")}`;
 }
 
 function buildSummary(findings: ReviewFinding[]): string {
@@ -1431,7 +1560,7 @@ function buildReworkPrompt(result: ReviewResult): string {
     ? `\n### Reviewer Notes\n\n${result.summary}\n`
     : "";
 
-  return `## Coding Prompt\n\n### Rework from PR Review\n\nThe following must be completed before merge:\n\n${testSection}${fixSection}${reviewGuidance}\n### Reasoning\nThese findings were identified by the security, QA, and code quality review agents. All critical and high severity issues must be resolved and all test gaps must be filled. Re-run the full implementation addressing each item.`;
+  return `## Coding Prompt\n\n### Rework from PR Review\n\nThe following must be completed before merge:\n\n${testSection}${fixSection}${reviewGuidance}\n### Reasoning\nThese findings were identified by the security, QA, code quality, and regression review agents. All critical and high severity issues must be resolved and all test gaps must be filled. Re-run the full implementation addressing each item.`;
 }
 
 async function postSuggestionsWithTracking(

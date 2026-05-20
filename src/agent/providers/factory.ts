@@ -25,14 +25,17 @@ export function getEffectiveContextLimit(
 }
 
 export function createProvider(): AIProvider {
-  const provider = env.AI_PROVIDER;
+  // Read process.env first so --provider/--model CLI overrides take effect.
+  // The env object is a frozen snapshot from import time and won't reflect
+  // runtime changes to process.env made by applyProviderOverrides().
+  const provider = process.env.AI_PROVIDER || env.AI_PROVIDER;
 
   switch (provider) {
     case "zai":
       return new ZaiProvider({
         apiKey: env.ZAI_API_KEY,
         baseUrl: env.ZAI_API_URL,
-        model: env.ZAI_MODEL,
+        model: process.env.ZAI_MODEL || env.ZAI_MODEL,
         temperature: env.ZAI_TEMPERATURE,
         topP: env.ZAI_TOP_P,
         maxRetries: 5,
@@ -44,13 +47,13 @@ export function createProvider(): AIProvider {
       return new OllamaProvider({
         apiKey: env.OLLAMA_API_KEY,
         baseUrl: env.OLLAMA_API_URL,
-        model: env.OLLAMA_MODEL,
+        model: process.env.OLLAMA_MODEL || env.OLLAMA_MODEL,
         temperature: env.OLLAMA_TEMPERATURE,
         topP: 0.9,
         maxRetries: env.OLLAMA_API_KEY ? 5 : 2,
         timeout: 300000,
         maxContextTokens: getEffectiveContextLimit(
-          env.OLLAMA_MODEL,
+          process.env.OLLAMA_MODEL || env.OLLAMA_MODEL,
           env.OLLAMA_MAX_CONTEXT_TOKENS,
         ),
       });
@@ -59,7 +62,7 @@ export function createProvider(): AIProvider {
       return new OpenCodeProvider({
         apiKey: env.OPENCODE_API_KEY,
         baseUrl: env.OPENCODE_API_URL,
-        model: env.OPENCODE_MODEL || "glm-5",
+        model: process.env.OPENCODE_MODEL || env.OPENCODE_MODEL || "glm-5",
         temperature: 0.7,
         topP: 0.95,
         maxRetries: 3,

@@ -278,6 +278,7 @@ const envSchema = z.object({
   SECURITY_AGENT_CMD: z.string().default("review-agent --category security"),
   QA_AGENT_CMD: z.string().default("review-agent --category qa"),
   QUALITY_AGENT_CMD: z.string().default("review-agent --category quality"),
+  REGRESSION_AGENT_CMD: z.string().default(""),
 
   // Musician Assistant (MVP)
   MUSICIAN_ASSISTANT_ENABLED: z

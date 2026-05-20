@@ -87,7 +87,7 @@ export function codeReviewToFindings(review: {
   add(review.migrationRisks ?? [], "high", "quality");
   add(review.shouldFix ?? [], "medium", "quality");
   add(review.testGaps ?? [], "medium", "qa");
-  add(review.observabilityConcerns ?? [], "low", "quality");
+  add(review.observabilityConcerns ?? [], "medium", "quality");
   // Operational items (credential rotation, external system changes) are advisory only —
   // posted as comments but never block merge.
   add(review.operationalItems ?? [], "low", "quality");

@@ -12,6 +12,8 @@ class EmbeddingService {
   private baseUrl: string;
   private apiKey: string;
   private model: string;
+  private fallbackBaseUrl: string;
+  private fallbackApiKey: string;
   private available: boolean | null = null;
   private lastCheck = 0;
   private checkIntervalMs = 5 * 60 * 1000;
@@ -19,6 +21,11 @@ class EmbeddingService {
   constructor() {
     this.provider = env.AI_PROVIDER;
     this.model = env.RAG_EMBEDDING_MODEL;
+
+    // Fallback: OpenAI-compatible endpoint for when the primary provider
+    // doesn't support embeddings (e.g. Ollama without nomic-embed-text)
+    this.fallbackBaseUrl = env.OPENCODE_API_URL;
+    this.fallbackApiKey = env.OPENCODE_API_KEY;
 
     switch (this.provider) {
       case "ollama":
@@ -100,11 +107,35 @@ class EmbeddingService {
           this.available = await this.checkOllama();
           break;
         default:
-          this.available = await this.checkOpenAICompatible();
+          this.available = await this.checkOpenAICompatible(
+            this.baseUrl,
+            this.apiKey,
+          );
           break;
       }
     } catch {
       this.available = false;
+    }
+
+    // If primary provider failed, try fallback (OpenAI-compatible endpoint)
+    if (!this.available && this.fallbackBaseUrl !== this.baseUrl && this.fallbackApiKey) {
+      try {
+        this.available = await this.checkOpenAICompatible(
+          this.fallbackBaseUrl,
+          this.fallbackApiKey,
+        );
+        if (this.available) {
+          console.log(
+            `[Embedding] Primary provider ${this.provider} unavailable — using OpenAI-compatible fallback`,
+          );
+          // Override for the actual embed calls
+          this.baseUrl = this.fallbackBaseUrl;
+          this.apiKey = this.fallbackApiKey;
+          this.provider = "opencode";
+        }
+      } catch {
+        // fallback also failed
+      }
     }
 
     if (!this.available) {
@@ -229,17 +260,19 @@ class EmbeddingService {
     }
   }
 
-  private async checkOpenAICompatible(): Promise<boolean> {
-    if (!this.apiKey) return false;
+  private async checkOpenAICompatible(baseUrl?: string, apiKey?: string): Promise<boolean> {
+    const url = baseUrl || this.baseUrl;
+    const key = apiKey || this.apiKey;
+    if (!key) return false;
 
     try {
       const response = await axios.post(
-        `${this.baseUrl}/embeddings`,
+        `${url}/embeddings`,
         { model: this.model, input: "test" },
         {
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${this.apiKey}`,
+            Authorization: `Bearer ${key}`,
           },
           timeout: 10000,
         },
