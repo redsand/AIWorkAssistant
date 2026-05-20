@@ -706,7 +706,7 @@ describe("createStreamFormatter — non-Claude agent", () => {
   });
 
   it("flush returns empty for non-Claude agents", () => {
-    const formatter = createStreamFormatter("codex");
+    const formatter = createStreamFormatter("ollama");
     expect(formatter.flush()).toBe("");
   });
 });

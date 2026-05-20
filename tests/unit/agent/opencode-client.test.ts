@@ -4,7 +4,24 @@
 
 import { describe, it, expect, beforeAll } from "vitest";
 import { aiClient } from "../../../src/agent/opencode-client";
-import type { ChatMessage, Tool } from "../../../src/agent/opencode-client";
+import type { ChatMessage, Tool, ChatResponse } from "../../../src/agent/opencode-client";
+
+// Guard against slow/hanging API endpoints: if the server accepts the connection
+// but doesn't respond within this window, reject so the test can skip cleanly
+// rather than waiting for the vitest timeout to kill the whole test.
+const CHAT_TIMEOUT_MS = 10000;
+
+function withChatTimeout(promise: Promise<ChatResponse>): Promise<ChatResponse> {
+  return Promise.race([
+    promise,
+    new Promise<ChatResponse>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`API call timed out after ${CHAT_TIMEOUT_MS}ms`)),
+        CHAT_TIMEOUT_MS,
+      )
+    ),
+  ]);
+}
 
 describe("OpenCode Client", () => {
   let apiReachable = false;
@@ -39,7 +56,7 @@ describe("OpenCode Client", () => {
 
       let response;
       try {
-        response = await aiClient.chat({ messages });
+        response = await withChatTimeout(aiClient.chat({ messages }));
       } catch (error) {
         if (error instanceof Error) {
           console.warn(
@@ -79,7 +96,7 @@ describe("OpenCode Client", () => {
 
       let response;
       try {
-        response = await aiClient.chat({ messages });
+        response = await withChatTimeout(aiClient.chat({ messages }));
       } catch (error) {
         if (error instanceof Error) {
           console.warn(
@@ -125,7 +142,7 @@ describe("OpenCode Client", () => {
 
       let response;
       try {
-        response = await aiClient.chat({ messages, tools });
+        response = await withChatTimeout(aiClient.chat({ messages, tools }));
       } catch (error) {
         if (error instanceof Error) {
           console.warn(

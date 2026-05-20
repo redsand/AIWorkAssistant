@@ -54,6 +54,8 @@
   let sprintIssues = [];
   let currentSprintId = null;
   let networkInstance = null;
+  let lastFetchedAt = null;
+  let lastFetchedPlatformKey = null;
 
   const STATUS_COLORS = {
     open: "#3b82f6",
@@ -129,6 +131,13 @@
   function showEmpty(key, isEmpty) {
     var el = document.getElementById(key + "-empty");
     if (el) el.style.display = isEmpty ? "block" : "none";
+  }
+
+  function updateLastUpdatedDisplay() {
+    var el = document.getElementById("last-updated");
+    if (!el || !lastFetchedAt) return;
+    var diffMin = Math.floor((Date.now() - new Date(lastFetchedAt).getTime()) / 60000);
+    el.textContent = diffMin === 0 ? "Last updated: just now" : "Last updated: " + diffMin + " min ago";
   }
 
   /** Get a fresh 2d context from a canvas by ID. */
@@ -305,8 +314,10 @@
       if (counts[s] !== undefined) counts[s]++;
       else counts[s] = 1;
     }
-    makeDoughnut(STATUS_CANVAS_ID, counts, function (empty) {
-      showEmpty("status", empty);
+    requestAnimationFrame(function () {
+      makeDoughnut(STATUS_CANVAS_ID, counts, function (empty) {
+        showEmpty("status", empty);
+      });
     });
   }
 
@@ -317,8 +328,10 @@
       if (counts[p] !== undefined) counts[p]++;
       else counts[p] = 1;
     }
-    makeDoughnut(PRIORITY_CANVAS_ID, counts, function (empty) {
-      showEmpty("priority", empty);
+    requestAnimationFrame(function () {
+      makeDoughnut(PRIORITY_CANVAS_ID, counts, function (empty) {
+        showEmpty("priority", empty);
+      });
     });
   }
 
@@ -339,17 +352,19 @@
     var values = sorted.map(function (e) {
       return e[1];
     });
-    makeBar(
-      ASSIGNEE_CANVAS_ID,
-      labels,
-      values,
-      function () {
-        return "#667eea";
-      },
-      function (empty) {
-        showEmpty("assignee", empty);
-      },
-    );
+    requestAnimationFrame(function () {
+      makeBar(
+        ASSIGNEE_CANVAS_ID,
+        labels,
+        values,
+        function () {
+          return "#667eea";
+        },
+        function (empty) {
+          showEmpty("assignee", empty);
+        },
+      );
+    });
   }
 
   function renderDependencyGraph(nodes, edges) {
@@ -557,7 +572,7 @@
     });
     destroyNetwork();
 
-    loadDashboard(platform, repoKey);
+    loadDashboard(platform, repoKey, true);
   }
 
   refreshBtn.addEventListener("click", function () {
@@ -617,17 +632,30 @@
     if (loader) loader.style.display = "none";
   }
 
-  async function loadDashboard(platform, repoKey) {
+  async function loadDashboard(platform, repoKey, forceRefresh) {
     showDashboardLoading();
+    var currentKey = platform + ":" + repoKey;
+    var isIncremental = !forceRefresh &&
+      lastFetchedAt !== null &&
+      lastFetchedPlatformKey === currentKey &&
+      (Date.now() - new Date(lastFetchedAt).getTime() < 5 * 60 * 1000);
+
     try {
+      var issuesUrl = "/api/repo-dashboard/issues?platform=" +
+        encodeURIComponent(platform) +
+        "&repo=" +
+        encodeURIComponent(repoKey) +
+        "&limit=200";
+
+      if (isIncremental) {
+        issuesUrl += "&since=" + encodeURIComponent(lastFetchedAt);
+      }
+      if (forceRefresh) {
+        issuesUrl += "&_t=" + Date.now();
+      }
+
       var results = await Promise.all([
-        fetch(
-          "/api/repo-dashboard/issues?platform=" +
-            encodeURIComponent(platform) +
-            "&repo=" +
-            encodeURIComponent(repoKey) +
-            "&limit=200",
-        ),
+        fetch(issuesUrl),
         fetch(
           "/api/repo-dashboard/dependencies?platform=" +
             encodeURIComponent(platform) +
@@ -647,7 +675,19 @@
         return;
       }
 
-      allIssues = issuesData.issues || [];
+      if (isIncremental) {
+        var updatedIssues = issuesData.issues || [];
+        var issueMap = {};
+        allIssues.forEach(function (i) { issueMap[i.platform + ":" + i.id] = i; });
+        updatedIssues.forEach(function (i) { issueMap[i.platform + ":" + i.id] = i; });
+        allIssues = Object.values(issueMap);
+      } else {
+        allIssues = issuesData.issues || [];
+      }
+
+      lastFetchedAt = new Date().toISOString();
+      lastFetchedPlatformKey = currentKey;
+      updateLastUpdatedDisplay();
 
       hideDashboardLoading();
       dashboardContent.style.display = "block";
@@ -964,4 +1004,5 @@
   // ─── Initial load ──────────────────────────────────────────────────────────
 
   loadRepos();
+  setInterval(updateLastUpdatedDisplay, 60000);
 })();
