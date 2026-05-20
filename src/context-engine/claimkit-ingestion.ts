@@ -1,6 +1,8 @@
 import { claimKitAdapter } from "./adapters/claimkit-adapter";
 import { knowledgeStore } from "../agent/knowledge-store";
 import type { KnowledgeEntry } from "../agent/knowledge-store";
+import { codebaseIndexer } from "../agent/codebase-indexer";
+import type { IndexedFile } from "../agent/codebase-indexer";
 
 export interface IngestionStats {
   total: number;
@@ -42,5 +44,38 @@ export async function ingestKnowledgeStore(): Promise<IngestionStats> {
 
   stats.durationMs = Date.now() - start;
   console.log(`[ClaimKit Ingestion] Knowledge store: ${stats.ingested}/${stats.total} ingested (${stats.errors} errors) in ${stats.durationMs}ms`);
+  return stats;
+}
+
+export async function ingestCodebaseStore(): Promise<IngestionStats> {
+  const start = Date.now();
+  const stats: IngestionStats = { total: 0, ingested: 0, skipped: 0, errors: 0, sourceIds: [], durationMs: 0 };
+
+  if (!claimKitAdapter.isAvailable()) {
+    console.warn("[ClaimKit Ingestion] ClaimKit not available, skipping codebase ingestion");
+    return stats;
+  }
+
+  const files: IndexedFile[] = codebaseIndexer.getIndexedFiles();
+  stats.total = files.length;
+
+  for (const file of files) {
+    try {
+      const text = `File: ${file.path}\n\n${file.content}`;
+      const { sourceId } = await claimKitAdapter.ingest(text, {
+        path: file.path,
+        source: "codebase",
+        language: file.language,
+      });
+      stats.sourceIds.push(sourceId);
+      stats.ingested++;
+    } catch (err) {
+      console.warn(`[ClaimKit Ingestion] Failed to ingest file ${file.path}:`, err);
+      stats.errors++;
+    }
+  }
+
+  stats.durationMs = Date.now() - start;
+  console.log(`[ClaimKit Ingestion] Codebase: ${stats.ingested}/${stats.total} ingested (${stats.errors} errors) in ${stats.durationMs}ms`);
   return stats;
 }
