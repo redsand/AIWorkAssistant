@@ -134,6 +134,32 @@ body {
   font-size: 14px;
 }
 
+.loading-spinner {
+  text-align: center;
+  padding: 60px 20px;
+  color: #6b7280;
+  font-size: 14px;
+}
+
+.spinner {
+  width: 36px;
+  height: 36px;
+  margin: 0 auto 14px auto;
+  border: 3px solid #e5e7eb;
+  border-top-color: #667eea;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.repo-select:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
 /* ─── Dependency Graph ─────────────────────────────────────────────────────── */
 
 .graph-legend {

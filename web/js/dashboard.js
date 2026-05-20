@@ -301,10 +301,17 @@
   // ─── Load data ─────────────────────────────────────────────────────────────
 
   async function loadRepos() {
+    repoSelect.innerHTML = '<option value="">Loading repositories…</option>';
+    repoSelect.disabled = true;
     try {
       const resp = await fetch("/api/repo-dashboard/repos");
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
+
+      if (data.repos.length === 0) {
+        repoSelect.innerHTML = '<option value="">— No repositories available —</option>';
+        return;
+      }
 
       repoSelect.innerHTML = '<option value="">— Select a repository —</option>';
       for (const repo of data.repos) {
@@ -314,11 +321,27 @@
         repoSelect.appendChild(opt);
       }
     } catch (err) {
+      repoSelect.innerHTML = '<option value="">— Failed to load repositories —</option>';
       showError("Failed to load repositories: " + err.message);
+    } finally {
+      repoSelect.disabled = false;
     }
   }
 
+  function showDashboardLoading() {
+    emptyState.style.display = "none";
+    dashboardContent.style.display = "none";
+    const loader = document.getElementById("dashboard-loading");
+    if (loader) loader.style.display = "block";
+  }
+
+  function hideDashboardLoading() {
+    const loader = document.getElementById("dashboard-loading");
+    if (loader) loader.style.display = "none";
+  }
+
   async function loadDashboard(platform, repoKey) {
+    showDashboardLoading();
     try {
       const [issuesResp, depsResp] = await Promise.all([
         fetch(`/api/repo-dashboard/issues?platform=${encodeURIComponent(platform)}&repo=${encodeURIComponent(repoKey)}&limit=200`),
@@ -332,13 +355,13 @@
 
       if (issuesData.error) {
         showError(issuesData.error);
+        hideDashboardLoading();
         return;
       }
 
       allIssues = issuesData.issues || [];
 
-      // Show dashboard, hide empty state
-      emptyState.style.display = "none";
+      hideDashboardLoading();
       dashboardContent.style.display = "block";
 
       renderStats(allIssues);
@@ -348,6 +371,7 @@
       renderDependencyGraph(depsData.nodes || [], depsData.edges || []);
       renderTable(allIssues);
     } catch (err) {
+      hideDashboardLoading();
       showError("Failed to load dashboard data: " + err.message);
     }
   }

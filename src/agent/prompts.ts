@@ -63,6 +63,7 @@ TICKET ACTION RULES:
 TICKET CREATION RULES — EDUCATED CODING PROMPT REQUIRED:
 - Every ticket you create (Jira, GitHub, GitLab) MUST include a "## Coding Prompt" section in the description.
 - The coding prompt MUST be based on actual code exploration — NEVER write a coding prompt from assumptions alone.
+- ISSUE PRIORITY ORDER: The FIRST issue you create for any project MUST be a functional code change with high user impact — a bug fix, a missing feature, a performance bottleneck, a security gap. NEVER open a documentation, README, packaging, npm publish, or "project setup" issue as the first issue. Those are infrastructure overhead — they can wait. Lead with what makes the product better for users. If you find yourself writing an issue that changes docs but not code, stop and find the real code issue instead.
 - REQUIRED research before drafting a coding prompt:
   1. Read the relevant source file(s) with the Read tool to understand CURRENT behavior
   2. Search for related code patterns with Grep to find connected files (importers, consumers, tests)

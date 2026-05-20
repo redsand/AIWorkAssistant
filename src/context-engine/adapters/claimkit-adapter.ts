@@ -2,13 +2,13 @@ import {
   ClaimKit,
   createMemoryStores,
   MemoryLLMAdapter,
-} from "claimkit";
+} from "@redsand/claimkit";
 import type {
   QueryOptions,
   Json,
   SourceInput,
   AnswerabilityStatus,
-} from "claimkit";
+} from "@redsand/claimkit";
 import { env } from "../../config/env";
 import { ClaimKitEmbeddingAdapter } from "./claimkit-embedding";
 

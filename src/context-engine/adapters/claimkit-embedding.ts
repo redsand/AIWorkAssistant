@@ -1,5 +1,5 @@
-import { EmbeddingAdapter } from "claimkit";
-import type { EmbeddingModelMetadata } from "claimkit";
+import { EmbeddingAdapter } from "@redsand/claimkit";
+import type { EmbeddingModelMetadata } from "@redsand/claimkit";
 import { embeddingService } from "../../agent/embedding-service";
 import { env } from "../../config/env";
 
