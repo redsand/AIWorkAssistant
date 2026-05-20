@@ -1003,7 +1003,8 @@ class ReviewAssistant {
             maxTokens: 65536,
             jsonMode: true,
           });
-          const content = response.content.trim();
+          const content = response.content.trim()
+            .replace(/<<THINKING>>[\s\S]*?<<\/\/THINKING>>/g, "");
           const jsonMatch = content.match(/\{[\s\S]*\}/);
           if (jsonMatch) {
             try {
@@ -1148,8 +1149,11 @@ class ReviewAssistant {
 
           onProgress?.({ type: "progress", message: "AI review complete — parsing results..." });
 
-          // Strip markdown code fences the model sometimes adds despite the instruction
-          const stripped = fullContent.trim().replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "");
+          // Strip <<THINKING>>...<<//THINKING>> wrappers that Z.ai/OpenCode yield as strings
+          const stripped = fullContent.trim()
+            .replace(/<<THINKING>>[\s\S]*?<<\/\/THINKING>>/g, "")
+            .replace(/^```(?:json)?\s*/m, "")
+            .replace(/\s*```\s*$/m, "");
           const content = stripped.trim();
           lastStreamContent = content; // save for partial extraction if all retries fail
 
