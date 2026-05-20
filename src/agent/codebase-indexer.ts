@@ -4,6 +4,12 @@ import * as path from "path";
 import { env } from "../config/env";
 import { embeddingService, cosineSimilarity } from "./embedding-service";
 
+export interface IndexedFile {
+  path: string;
+  language: string;
+  content: string;
+}
+
 interface CodeChunk {
   id: string;
   filePath: string;
@@ -506,6 +512,26 @@ class CodebaseIndexer {
       embedded: providerInfo.available === true,
       embeddingProvider: providerInfo.available ? providerInfo.provider : null,
     };
+  }
+
+  getIndexedFiles(): IndexedFile[] {
+    const filePaths = this.db
+      .prepare(`SELECT DISTINCT file_path, language FROM code_chunks ORDER BY file_path`)
+      .all() as { file_path: string; language: string }[];
+
+    const chunkStmt = this.db.prepare(
+      `SELECT content FROM code_chunks WHERE file_path = ? ORDER BY start_line`,
+    );
+
+    return filePaths.map((row) => {
+      const chunks = chunkStmt.all(row.file_path) as { content: string }[];
+      const content = chunks.map((c) => c.content).join("\n");
+      return {
+        path: row.file_path,
+        language: row.language,
+        content,
+      };
+    });
   }
 
   isIndexed(): boolean {

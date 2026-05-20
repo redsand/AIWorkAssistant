@@ -155,3 +155,119 @@ describe("ingestKnowledgeStore", () => {
     });
   });
 });
+
+// ── ingestCodebaseStore ───────────────────────────────────────────────
+
+const mockGetIndexedFiles = vi.fn();
+
+const mockCodebaseIndexer = {
+  getIndexedFiles: mockGetIndexedFiles,
+};
+
+vi.doMock("../../../src/agent/codebase-indexer", () => ({
+  codebaseIndexer: mockCodebaseIndexer,
+}));
+
+describe("ingestCodebaseStore", () => {
+  let ingestCodebaseStore: () => Promise<{
+    total: number;
+    ingested: number;
+    skipped: number;
+    errors: number;
+    sourceIds: string[];
+    durationMs: number;
+  }>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.resetModules();
+
+    // Re-register the claimKitAdapter mock (vi.resetModules clears it)
+    vi.doMock("../../../src/context-engine/adapters/claimkit-adapter", () => ({
+      claimKitAdapter: mockClaimKitAdapter,
+    }));
+    vi.doMock("../../../src/agent/codebase-indexer", () => ({
+      codebaseIndexer: mockCodebaseIndexer,
+    }));
+
+    const mod = await import("../../../src/context-engine/claimkit-ingestion");
+    ingestCodebaseStore = mod.ingestCodebaseStore;
+  });
+
+  it("should return early when ClaimKit is not available", async () => {
+    mockIsAvailable.mockReturnValue(false);
+
+    const stats = await ingestCodebaseStore();
+
+    expect(stats.total).toBe(0);
+    expect(stats.ingested).toBe(0);
+    expect(stats.skipped).toBe(0);
+    expect(stats.errors).toBe(0);
+    expect(stats.sourceIds).toEqual([]);
+    expect(mockGetIndexedFiles).not.toHaveBeenCalled();
+  });
+
+  it("should handle empty codebase index", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockGetIndexedFiles.mockReturnValue([]);
+
+    const stats = await ingestCodebaseStore();
+
+    expect(stats.total).toBe(0);
+    expect(stats.ingested).toBe(0);
+    expect(stats.errors).toBe(0);
+    expect(stats.sourceIds).toEqual([]);
+  });
+
+  it("should ingest all files from the codebase indexer", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockGetIndexedFiles.mockReturnValue([
+      { path: "src/index.ts", language: "typescript", content: "console.log('hello');" },
+      { path: "README.md", language: "markdown", content: "# Project\n\nDescription here." },
+    ]);
+    mockIngest
+      .mockResolvedValueOnce({ sourceId: "src-cb-1" })
+      .mockResolvedValueOnce({ sourceId: "src-cb-2" });
+
+    const stats = await ingestCodebaseStore();
+
+    expect(stats.total).toBe(2);
+    expect(stats.ingested).toBe(2);
+    expect(stats.skipped).toBe(0);
+    expect(stats.errors).toBe(0);
+    expect(stats.sourceIds).toEqual(["src-cb-1", "src-cb-2"]);
+    expect(stats.durationMs).toBeGreaterThanOrEqual(0);
+
+    expect(mockIngest).toHaveBeenCalledTimes(2);
+    expect(mockIngest).toHaveBeenNthCalledWith(
+      1,
+      "File: src/index.ts\n\nconsole.log('hello');",
+      { path: "src/index.ts", source: "codebase", language: "typescript" },
+    );
+    expect(mockIngest).toHaveBeenNthCalledWith(
+      2,
+      "File: README.md\n\n# Project\n\nDescription here.",
+      { path: "README.md", source: "codebase", language: "markdown" },
+    );
+  });
+
+  it("should continue ingesting after failures and count errors", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockGetIndexedFiles.mockReturnValue([
+      { path: "a.ts", language: "typescript", content: "a" },
+      { path: "b.ts", language: "typescript", content: "b" },
+      { path: "c.ts", language: "typescript", content: "c" },
+    ]);
+    mockIngest
+      .mockResolvedValueOnce({ sourceId: "src-cb-1" })
+      .mockRejectedValueOnce(new Error("Ingest failed"))
+      .mockResolvedValueOnce({ sourceId: "src-cb-3" });
+
+    const stats = await ingestCodebaseStore();
+
+    expect(stats.total).toBe(3);
+    expect(stats.ingested).toBe(2);
+    expect(stats.errors).toBe(1);
+    expect(stats.sourceIds).toEqual(["src-cb-1", "src-cb-3"]);
+  });
+});
