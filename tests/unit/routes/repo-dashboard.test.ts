@@ -139,6 +139,58 @@ describe("repoDashboardRoutes", () => {
   });
   afterEach(async () => { await server.close(); });
 
+  describe("GET /repos (work items)", () => {
+    it("should return work item repos grouped by source with open counts", async () => {
+      vi.mocked(githubClient.listRepositories).mockRejectedValue(new Error("down"));
+      vi.mocked(gitlabClient.getProjects).mockRejectedValue(new Error("down"));
+      vi.mocked(jiraClient.getProjects).mockRejectedValue(new Error("down"));
+      vi.mocked(workItemDatabase.listWorkItems)
+        .mockReturnValueOnce({ total: 5, items: [] })
+        .mockReturnValueOnce({
+          total: 5,
+          items: [
+            { id: "1", title: "T1", status: "active", priority: "high", owner: "dev", sourceUrl: "", sourceExternalId: "e1", source: "chat", createdAt: "", updatedAt: "", description: "" },
+            { id: "2", title: "T2", status: "done", priority: "medium", owner: "dev", sourceUrl: "", sourceExternalId: "e2", source: "chat", createdAt: "", updatedAt: "", description: "" },
+            { id: "3", title: "T3", status: "proposed", priority: "low", owner: null, sourceUrl: "", sourceExternalId: "e3", source: "jira", createdAt: "", updatedAt: "", description: "" },
+            { id: "4", title: "T4", status: "archived", priority: "medium", owner: null, sourceUrl: "", sourceExternalId: "e4", source: "jira", createdAt: "", updatedAt: "", description: "" },
+            { id: "5", title: "T5", status: "blocked", priority: "critical", owner: null, sourceUrl: "", sourceExternalId: "e5", source: "github", createdAt: "", updatedAt: "", description: "" },
+          ],
+        });
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/repos" });
+      expect(res.statusCode).toBe(200);
+      const repos = res.json().repos;
+      const chatRepo = repos.find((r: any) => r.repoKey === "chat");
+      const jiraRepo = repos.find((r: any) => r.repoKey === "jira");
+      const ghRepo = repos.find((r: any) => r.repoKey === "github");
+      expect(chatRepo.issueCount).toBe(2);
+      expect(chatRepo.openCount).toBe(1);
+      expect(jiraRepo.issueCount).toBe(2);
+      expect(jiraRepo.openCount).toBe(1);
+      expect(ghRepo.issueCount).toBe(1);
+      expect(ghRepo.openCount).toBe(1);
+    });
+
+    it("should handle work item DB error gracefully", async () => {
+      vi.mocked(githubClient.listRepositories).mockRejectedValue(new Error("down"));
+      vi.mocked(gitlabClient.getProjects).mockRejectedValue(new Error("down"));
+      vi.mocked(jiraClient.getProjects).mockRejectedValue(new Error("down"));
+      vi.mocked(workItemDatabase.listWorkItems).mockImplementation(() => { throw new Error("DB down"); });
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/repos" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().repos).toEqual([]);
+    });
+
+    it("should return empty repos when work items total is zero", async () => {
+      vi.mocked(githubClient.listRepositories).mockRejectedValue(new Error("down"));
+      vi.mocked(gitlabClient.getProjects).mockRejectedValue(new Error("down"));
+      vi.mocked(jiraClient.getProjects).mockRejectedValue(new Error("down"));
+      vi.mocked(workItemDatabase.listWorkItems).mockReturnValue({ total: 0, items: [] });
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/repos" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().repos).toEqual([]);
+    });
+  });
+
   describe("GET /repos", () => {
     it("should return empty when all providers fail", async () => {
       vi.mocked(githubClient.listRepositories).mockRejectedValue(new Error("down"));
@@ -249,6 +301,49 @@ describe("repoDashboardRoutes", () => {
       const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/dependencies?platform=github&repo=org/repo" });
       expect(res.json().nodes).toEqual([]);
     });
+    it("should return GitLab dependency graph", async () => {
+      vi.mocked(gitlabClient.listIssues).mockResolvedValue([
+        { iid: 1, id: 101, state: "opened", title: "GL1", labels: [], assignee: null, web_url: "https://gitlab.com/org/repo/issues/1", created_at: "", updated_at: "", description: "requires #2" },
+        { iid: 2, id: 102, state: "closed", title: "GL2", labels: [], assignee: null, web_url: "https://gitlab.com/org/repo/issues/2", created_at: "", updated_at: "", description: "" },
+      ]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/dependencies?platform=gitlab&repo=org/repo" });
+      expect(res.json().nodes).toHaveLength(2);
+      expect(res.json().edges).toHaveLength(1);
+    });
+    it("should handle GitLab dependency errors", async () => {
+      vi.mocked(gitlabClient.listIssues).mockRejectedValue(new Error("err"));
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/dependencies?platform=gitlab&repo=org/repo" });
+      expect(res.json().nodes).toEqual([]);
+      expect(res.json().edges).toEqual([]);
+    });
+    it("should return work_items dependency graph", async () => {
+      vi.mocked(workItemDatabase.listWorkItems).mockReturnValue({
+        total: 2,
+        items: [
+          { id: "wi-1", title: "Task 1", status: "active", priority: "high", owner: "dev", sourceUrl: "http://example.com/1", sourceExternalId: "e1", source: "chat", createdAt: "", updatedAt: "", description: "depends on #2" },
+          { id: "wi-2", title: "Task 2", status: "done", priority: "medium", owner: null, sourceUrl: "http://example.com/2", sourceExternalId: "e2", source: "chat", createdAt: "", updatedAt: "", description: "" },
+        ],
+      });
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/dependencies?platform=work_items&repo=chat" });
+      expect(res.json().nodes).toHaveLength(2);
+    });
+    it("should handle work_items dependency errors", async () => {
+      vi.mocked(workItemDatabase.listWorkItems).mockImplementation(() => { throw new Error("DB error"); });
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/dependencies?platform=work_items&repo=chat" });
+      expect(res.json().nodes).toEqual([]);
+      expect(res.json().edges).toEqual([]);
+    });
+    it("should return Jira dependency graph", async () => {
+      vi.mocked(jiraClient.searchIssues).mockResolvedValue([{ key: "PROJ-1", fields: { summary: "J1", status: { name: "In Progress" }, priority: { name: "High" }, assignee: null, labels: [], created: "", updated: "", description: "blocked by #2" } }]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/dependencies?platform=jira&repo=PROJ" });
+      expect(res.json().nodes).toHaveLength(1);
+    });
+    it("should handle Jira dependency errors", async () => {
+      vi.mocked(jiraClient.searchIssues).mockRejectedValue(new Error("err"));
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/dependencies?platform=jira&repo=PROJ" });
+      expect(res.json().nodes).toEqual([]);
+      expect(res.json().edges).toEqual([]);
+    });
   });
 
   describe("GET /sprints", () => {
@@ -348,6 +443,11 @@ describe("repoDashboardRoutes", () => {
     it("should handle sprint fetch failure", async () => {
       vi.mocked(githubClient.listMilestones).mockRejectedValue(new Error("err"));
       const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/burndown?platform=github&repo=org/repo&sprintId=gh-milestone-1" });
+      expect(res.json().error).toBe("Sprint not found");
+    });
+    it("should handle Jira burndown sprint fetch failure", async () => {
+      vi.mocked(jiraClient.getSprints).mockRejectedValue(new Error("jira down"));
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/burndown?platform=jira&repo=PROJ&sprintId=jira-sprint-5" });
       expect(res.json().error).toBe("Sprint not found");
     });
   });
