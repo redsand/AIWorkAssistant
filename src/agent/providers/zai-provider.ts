@@ -158,12 +158,21 @@ export class ZaiProvider extends AIProvider {
     request: ChatRequest,
   ): AsyncGenerator<string | StreamEvent, void, unknown> {
     const response = await this.chat(request);
+
+    if (response.thinking) {
+      yield { type: "thinking", content: response.thinking };
+    }
+
     if (response.content) {
       const content = response.content;
       const chunkSize = 40;
       for (let i = 0; i < content.length; i += chunkSize) {
         yield content.slice(i, i + chunkSize);
       }
+    }
+
+    if (response.toolCalls && response.toolCalls.length > 0) {
+      yield { type: "tool_calls", toolCalls: response.toolCalls };
     }
   }
 
