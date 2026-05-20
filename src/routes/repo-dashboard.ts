@@ -17,7 +17,7 @@ import { env } from "../config/env";
 
 const MAX_ISSUES = 200;
 
-const issueCache = new Map<string, { data: DashboardIssue[]; fetchedAt: number }>();
+const issueCache = new Map<string, { data: DashboardIssue[]; fetchedAt: number; lastAccessed: number }>();
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_CACHE_SIZE = 100;
 
@@ -689,18 +689,28 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
   });
 
   fastify.get<{
-    Querystring: { repo: string; platform: string; limit?: string; since?: string };
+    Querystring: { repo: string; platform: string; limit?: string; since?: string; _t?: string };
   }>("/issues", async (request) => {
-    const { repo, platform, limit: limitRaw, since } = request.query;
+    const { repo, platform, limit: limitRaw, since, _t } = request.query;
     const limit = Math.min(parseInt(limitRaw || "50", 10) || 50, MAX_ISSUES);
+    const bypassCache = Boolean(_t);
+
+    if (since !== undefined && since !== "") {
+      const sinceDate = new Date(since);
+      if (isNaN(sinceDate.getTime())) {
+        return { issues: [], total: 0, error: "Invalid since parameter: must be a valid ISO date string" };
+      }
+    }
 
     const cacheKey = `${platform}:${repo}`;
     let issues: DashboardIssue[] = [];
 
     try {
+      const now = Date.now();
       const cached = issueCache.get(cacheKey);
-      if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+      if (!bypassCache && cached && now - cached.fetchedAt < CACHE_TTL_MS) {
         request.log.debug({ cacheKey }, "issue cache hit");
+        cached.lastAccessed = now;
         issues = cached.data;
       } else {
         request.log.debug({ cacheKey }, "issue cache miss");
@@ -721,10 +731,18 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
             break;
         }
         if (issueCache.size >= MAX_CACHE_SIZE) {
-          const oldestKey = issueCache.keys().next().value;
-          if (oldestKey !== undefined) issueCache.delete(oldestKey);
+          // LRU eviction: remove the least recently accessed entry
+          let lruKey: string | undefined;
+          let lruAccess = Infinity;
+          for (const [k, v] of issueCache.entries()) {
+            if (v.lastAccessed < lruAccess) {
+              lruAccess = v.lastAccessed;
+              lruKey = k;
+            }
+          }
+          if (lruKey !== undefined) issueCache.delete(lruKey);
         }
-        issueCache.set(cacheKey, { data: issues, fetchedAt: Date.now() });
+        issueCache.set(cacheKey, { data: issues, fetchedAt: now, lastAccessed: now });
       }
     } catch (err: any) {
       return {
@@ -734,8 +752,9 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
       };
     }
 
-    const filtered = since
-      ? issues.filter((i) => i.updatedAt >= since)
+    const sinceFilter = since && since !== "" ? since : null;
+    const filtered = sinceFilter
+      ? issues.filter((i) => i.updatedAt >= sinceFilter)
       : issues;
 
     return { issues: filtered.slice(0, limit), total: filtered.length };
