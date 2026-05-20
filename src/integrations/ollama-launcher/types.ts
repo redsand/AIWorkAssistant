@@ -1,4 +1,4 @@
-export type ProviderType = "codex" | "claude" | "opencode";
+export type ProviderType = "codex" | "claude" | "opencode" | "zai";
 
 export interface LaunchOptions {
   provider: ProviderType;

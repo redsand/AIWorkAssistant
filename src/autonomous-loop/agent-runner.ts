@@ -52,8 +52,15 @@ export function buildAgentArgs(agent: string, resumeSessionId?: string, model?: 
         "--dangerously-bypass-approvals-and-sandbox",
       ];
     }
-    case "opencode":
-      return [];
+    case "opencode": {
+      const args: string[] = [];
+      if (model) args.push("--model", model);
+      return args;
+    }
+    case "zai": {
+      const zaiModel = model || process.env.ZAI_MODEL || "gpt-5.5";
+      return ["--model", zaiModel];
+    }
     case "claude": {
       const args = [
         "-p",

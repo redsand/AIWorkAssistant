@@ -176,6 +176,7 @@ const REVIEW_HUMAN_REVIEW_MARKER = "Review Requires Human — Ready for Human Re
 process.env.AICODER_AGENT = AGENT;
 process.env.AICODER_MODEL = MODEL;
 process.env.AICODER_OLLAMA = USE_OLLAMA ? "true" : "false";
+console.log(`[aicoder] agent=${AGENT} model=${MODEL} ollama=${USE_OLLAMA} workspace=${WORKSPACE}`);
 const ollamaLauncher = USE_OLLAMA ? new OllamaLauncher({ ollamaUrl: OLLAMA_URL }) : null;
 const runLogger = new RunLogger(WORKSPACE);
 
@@ -2065,6 +2066,11 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
       if (currentResp.data?.status === "active") {
         runLogger.logWork(`${item.id} already active — keeping status`);
         trackStep(run.id, "note", `${item.id} already active`);
+      } else if (currentResp.data?.status === "done" || currentResp.data?.status === "archived") {
+        runLogger.logSkip(`${item.id} is already Done/Archived — skipping`);
+        saveProcessedIssue(item.id);
+        failedAttempts.delete(item.id);
+        return null;
       } else {
         await axios.patch(
           `${cfg.apiUrl}/api/work-items/${item.id}`,
@@ -2082,6 +2088,13 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     try {
       const currentIssue = await jiraClient.getIssue(item.id);
       const currentStatus = currentIssue.fields.status?.name?.toLowerCase() ?? "";
+      const isDone = /done|closed|resolved|completed/i.test(currentStatus);
+      if (isDone) {
+        runLogger.logSkip(`${item.id} is already Done/Closed at source — skipping (use --force-reopen to override)`);
+        saveProcessedIssue(item.id);
+        failedAttempts.delete(item.id);
+        return null;
+      }
       if (currentStatus === "in progress") {
         runLogger.logWork(`${item.id} already In Progress — keeping status`);
         trackStep(run.id, "note", `${item.id} already In Progress on Jira`);
@@ -2108,6 +2121,12 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
       const issueIid = item.number;
       if (projectId && issueIid) {
         const issue = await gitlabClient.getIssue(projectId, issueIid);
+        if (issue?.state === "closed") {
+          runLogger.logSkip(`${item.id} is already Closed at source — skipping`);
+          saveProcessedIssue(item.id);
+          failedAttempts.delete(item.id);
+          return null;
+        }
         const rawLabels: string | string[] = issue?.labels || [];
         const labelArray: string[] = typeof rawLabels === "string" ? rawLabels.split(",").map((l: string) => l.trim()) : Array.isArray(rawLabels) ? rawLabels.map((l: any) => (typeof l === "string" ? l.trim() : String(l))) : [];
         if (labelArray.some((l: string) => l.toLowerCase() === "in progress" || l.toLowerCase() === "doing")) {
@@ -2131,6 +2150,12 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
       if (owner && repo && item.number) {
         const headers = { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" };
         const issueResp = await axios.get(`https://api.github.com/repos/${owner}/${repo}/issues/${item.number}`, { headers });
+        if (issueResp.data?.state === "closed") {
+          runLogger.logSkip(`${item.id} is already Closed at source — skipping`);
+          saveProcessedIssue(item.id);
+          failedAttempts.delete(item.id);
+          return null;
+        }
         const currentLabels: string[] = (issueResp.data?.labels || []).map((l: any) => typeof l === "string" ? l : l.name);
         if (currentLabels.some((l: string) => l.toLowerCase() === "in progress")) {
           runLogger.logWork(`${item.id} already has "In Progress" label — keeping label`);

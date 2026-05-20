@@ -17,6 +17,7 @@ export class OllamaLauncher {
   private codexCliPath: string;
   private claudeCliPath: string;
   private opencodeCliPath: string;
+  private zaiCliPath: string;
   private ollamaUrl: string;
 
   constructor(config?: {
@@ -24,6 +25,7 @@ export class OllamaLauncher {
     codexCliPath?: string;
     claudeCliPath?: string;
     opencodeCliPath?: string;
+    zaiCliPath?: string;
     ollamaUrl?: string;
   }) {
     this.defaultModel =
@@ -44,6 +46,10 @@ export class OllamaLauncher {
       config?.opencodeCliPath ||
       process.env.OLLAMA_LAUNCHER_OPENCODE_CLI_PATH ||
       "opencode";
+    this.zaiCliPath =
+      config?.zaiCliPath ||
+      process.env.OLLAMA_LAUNCHER_ZAI_CLI_PATH ||
+      "zai";
     this.ollamaUrl =
       config?.ollamaUrl ||
       process.env.OLLAMA_API_URL ||
@@ -58,6 +64,8 @@ export class OllamaLauncher {
         return this.claudeCliPath;
       case "opencode":
         return this.opencodeCliPath;
+      case "zai":
+        return this.zaiCliPath;
     }
   }
 

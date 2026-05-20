@@ -101,32 +101,58 @@ export class OpenCodeExecutor implements ProviderExecutor {
   readonly providerName: ProviderType = "opencode";
 
   buildCommand(
-    _options: LaunchOptions,
+    options: LaunchOptions,
     cliPath: string,
     _defaultModel: string,
   ): { command: string; args: string[] } {
-    return {
-      command: cliPath,
-      args: [],
-    };
+    const args: string[] = [];
+    if (options.model) args.push("--model", options.model);
+    return { command: cliPath, args };
   }
 
   buildEnv(
     options: LaunchOptions,
     ollamaUrl: string,
   ): Record<string, string> {
-    // When ollamaUrl is provided and different from default, route through Ollama
     if (options.ollamaUrl) {
       return {
         OPENCODE_API_URL: `${ollamaUrl}/v1`,
         OPENCODE_API_KEY: process.env.OPENCODE_API_KEY || "ollama",
       };
     }
-    // Otherwise use the existing OPENCODE_API_URL from env
     const env: Record<string, string> = {};
-    if (process.env.OPENCODE_API_KEY) {
-      env.OPENCODE_API_KEY = process.env.OPENCODE_API_KEY;
+    if (process.env.OPENCODE_API_KEY) env.OPENCODE_API_KEY = process.env.OPENCODE_API_KEY;
+    if (options.model) env.OPENCODE_MODEL = options.model;
+    return env;
+  }
+}
+
+export class ZaiExecutor implements ProviderExecutor {
+  readonly providerName: ProviderType = "zai";
+
+  buildCommand(
+    options: LaunchOptions,
+    cliPath: string,
+    defaultModel: string,
+  ): { command: string; args: string[] } {
+    const model = options.model || defaultModel;
+    const args: string[] = [];
+    if (model) args.push("--model", model);
+    return { command: cliPath, args };
+  }
+
+  buildEnv(
+    options: LaunchOptions,
+    ollamaUrl: string,
+  ): Record<string, string> {
+    if (options.ollamaUrl) {
+      return {
+        ZAI_BASE_URL: `${ollamaUrl}/v1`,
+        ZAI_API_KEY: process.env.ZAI_API_KEY || "ollama",
+      };
     }
+    const env: Record<string, string> = {};
+    if (process.env.ZAI_API_KEY) env.ZAI_API_KEY = process.env.ZAI_API_KEY;
     return env;
   }
 }
@@ -139,5 +165,7 @@ export function resolveExecutor(provider: ProviderType): ProviderExecutor {
       return new ClaudeExecutor();
     case "opencode":
       return new OpenCodeExecutor();
+    case "zai":
+      return new ZaiExecutor();
   }
 }

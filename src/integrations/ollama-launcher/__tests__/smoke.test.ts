@@ -6,6 +6,7 @@ import {
   CodexExecutor,
   ClaudeExecutor,
   OpenCodeExecutor,
+  ZaiExecutor,
   resolveExecutor,
 } from "../executors";
 import { OllamaLauncher } from "../launcher";
@@ -152,7 +153,7 @@ describe("OpenCodeExecutor", () => {
     expect(executor.providerName).toBe("opencode");
   });
 
-  it("builds command with no args (prompt piped via stdin)", () => {
+  it("builds command with no args when no model specified", () => {
     const options: LaunchOptions = {
       provider: "opencode",
       prompt: "test prompt",
@@ -160,8 +161,29 @@ describe("OpenCodeExecutor", () => {
     const result = executor.buildCommand(options, "opencode", "default-model");
     expect(result.command).toBe("opencode");
     expect(result.args).toEqual([]);
-    // Prompt is NOT in args
     expect(result.args).not.toContain("test prompt");
+  });
+
+  it("builds command with --model when model is specified", () => {
+    const options: LaunchOptions = {
+      provider: "opencode",
+      prompt: "test prompt",
+      model: "gpt-4o",
+    };
+    const result = executor.buildCommand(options, "opencode", "default-model");
+    expect(result.command).toBe("opencode");
+    expect(result.args).toContain("--model");
+    expect(result.args).toContain("gpt-4o");
+  });
+
+  it("sets OPENCODE_MODEL env var when model is specified (non-Ollama)", () => {
+    const options: LaunchOptions = {
+      provider: "opencode",
+      prompt: "test",
+      model: "gpt-4o",
+    };
+    const env = executor.buildEnv(options, "http://localhost:11434");
+    expect(env.OPENCODE_MODEL).toBe("gpt-4o");
   });
 
   it("builds env with OPENCODE_API_URL when ollamaUrl is set", () => {
@@ -173,6 +195,48 @@ describe("OpenCodeExecutor", () => {
     const env = executor.buildEnv(options, "http://localhost:11434");
     expect(env.OPENCODE_API_URL).toBe("http://localhost:11434/v1");
     expect(env.OPENCODE_API_KEY).toBeDefined();
+  });
+});
+
+describe("ZaiExecutor", () => {
+  const executor = new ZaiExecutor();
+
+  it("has providerName zai", () => {
+    expect(executor.providerName).toBe("zai");
+  });
+
+  it("builds command with --model from options", () => {
+    const options: LaunchOptions = {
+      provider: "zai",
+      prompt: "test prompt",
+      model: "zai-turbo",
+    };
+    const result = executor.buildCommand(options, "zai", "default-model");
+    expect(result.command).toBe("zai");
+    expect(result.args).toContain("--model");
+    expect(result.args).toContain("zai-turbo");
+    expect(result.args).not.toContain("test prompt");
+  });
+
+  it("builds command with default model when no model in options", () => {
+    const options: LaunchOptions = {
+      provider: "zai",
+      prompt: "test prompt",
+    };
+    const result = executor.buildCommand(options, "zai", "default-model");
+    expect(result.args).toContain("--model");
+    expect(result.args).toContain("default-model");
+  });
+
+  it("builds env with ZAI_BASE_URL when ollamaUrl is set", () => {
+    const options: LaunchOptions = {
+      provider: "zai",
+      prompt: "test",
+      ollamaUrl: "http://localhost:11434",
+    };
+    const env = executor.buildEnv(options, "http://localhost:11434");
+    expect(env.ZAI_BASE_URL).toBe("http://localhost:11434/v1");
+    expect(env.ZAI_API_KEY).toBeDefined();
   });
 });
 
@@ -188,6 +252,10 @@ describe("resolveExecutor", () => {
   it("returns OpenCodeExecutor for opencode", () => {
     expect(resolveExecutor("opencode")).toBeInstanceOf(OpenCodeExecutor);
   });
+
+  it("returns ZaiExecutor for zai", () => {
+    expect(resolveExecutor("zai")).toBeInstanceOf(ZaiExecutor);
+  });
 });
 
 // ─── Command Length Safety ────────────────────────────────────────────────────
@@ -195,7 +263,7 @@ describe("resolveExecutor", () => {
 describe("Command line length safety", () => {
   it("all executors produce args under 1000 chars regardless of prompt length", () => {
     const veryLongPrompt = "A".repeat(100_000);
-    const providers: ProviderType[] = ["codex", "claude", "opencode"];
+    const providers: ProviderType[] = ["codex", "claude", "opencode", "zai"];
 
     for (const provider of providers) {
       const executor = resolveExecutor(provider);
@@ -217,7 +285,7 @@ describe("Command line length safety", () => {
 
   it("prompt content never appears in any executor args", () => {
     const uniquePrompt = `UNIQUE_MARKER_${Date.now()}_xyzzy`;
-    const providers: ProviderType[] = ["codex", "claude", "opencode"];
+    const providers: ProviderType[] = ["codex", "claude", "opencode", "zai"];
 
     for (const provider of providers) {
       const executor = resolveExecutor(provider);

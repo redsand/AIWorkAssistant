@@ -26,7 +26,11 @@ Options:
   --source <type>      Issue source: github | gitlab | jira | jitbit | work_items | auto (default: auto)
   --owner <name>       GitHub/GitLab owner (overrides server default)
   --repo <name>        Repository/project name (overrides server default)
-  --agent <name>       Coding agent: codex | opencode | claude (default: claude)
+  --agent <name>       Coding agent: codex | opencode | claude | zai (default: claude)
+  --claude             Shorthand for --agent claude
+  --codex              Shorthand for --agent codex
+  --opencode           Shorthand for --agent opencode
+  --zai                Shorthand for --agent zai
   --ollama             Route agent through Ollama launcher (sets OPENAI_BASE_URL, etc.)
   --model <name>       Override model for the agent (e.g. glm-5.1:cloud)
   --label <label>      Issue label to filter (default: ready-for-agent)
@@ -61,11 +65,18 @@ Remote config (fetches everything else from AIWorkAssistant):
 `);
       process.exit(EXIT_SUCCESS);
     }
-    if (argv[i].startsWith("--") && argv[i + 1] && !argv[i + 1].startsWith("--")) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    } else if (argv[i] === "--ollama") {
+    // Check known boolean/shorthand flags BEFORE the generic key=value handler so
+    // that e.g. `--opencode somevalue` doesn't get swallowed as a key-value pair.
+    if (argv[i] === "--ollama") {
       out["ollama"] = "true";
+    } else if (argv[i] === "--zai") {
+      out["agent"] = "zai";
+    } else if (argv[i] === "--opencode") {
+      out["agent"] = "opencode";
+    } else if (argv[i] === "--claude") {
+      out["agent"] = "claude";
+    } else if (argv[i] === "--codex") {
+      out["agent"] = "codex";
     } else if (argv[i] === "--debug") {
       out["debug"] = "true";
     } else if (argv[i] === "--skip-baseline") {
@@ -93,6 +104,9 @@ Remote config (fetches everything else from AIWorkAssistant):
       i++;
       out["force"] = "true";
       out["discard-run"] = "true";
+    } else if (argv[i].startsWith("--") && argv[i + 1] && !argv[i + 1].startsWith("--")) {
+      out[argv[i].slice(2)] = argv[i + 1];
+      i++;
     }
   }
   return out;
