@@ -47,6 +47,8 @@ import { startTunnel } from "./integrations/file/tunnel";
 import { startCalendarScheduler } from "./scheduler/calendar-midnight";
 import { initializeMCP } from "./integrations/mcp";
 import { codebaseIndexer } from "./agent/codebase-indexer";
+import { claimKitAdapter } from "./context-engine/adapters/claimkit-adapter";
+import { ingestKnowledgeStore, ingestCodebaseStore, ingestGraphStore } from "./context-engine/claimkit-ingestion";
 import path from "path";
 
 export async function buildServer() {
@@ -344,6 +346,38 @@ async function start() {
         })
         .catch((err) => {
           console.error("[RAG] Indexing failed:", err);
+        });
+    }
+
+    if (env.CLAIMKIT_ENABLED) {
+      claimKitAdapter
+        .initialize()
+        .then(async (available) => {
+          if (!available) {
+            console.warn(`[ClaimKit] Failed to initialize: ${claimKitAdapter.getInitError()}`);
+            return;
+          }
+          console.log(
+            `[ClaimKit] Initialized (provider: ${env.CLAIMKIT_LLM_PROVIDER}, topK: ${env.CLAIMKIT_TOP_K}, minScore: ${env.CLAIMKIT_MIN_SCORE})`,
+          );
+          console.log("[ClaimKit] Ingesting stores...");
+          const [knowledge, codebase, graph] = await Promise.all([
+            ingestKnowledgeStore(),
+            ingestCodebaseStore(),
+            ingestGraphStore(),
+          ]);
+          console.log(
+            `[ClaimKit] Ingestion complete — ` +
+            `knowledge: ${knowledge.ingested}/${knowledge.total} | ` +
+            `codebase: ${codebase.ingested}/${codebase.total} | ` +
+            `graph: ${graph.ingested}/${graph.total}` +
+            (knowledge.errors + codebase.errors + graph.errors > 0
+              ? ` | errors: ${knowledge.errors + codebase.errors + graph.errors}`
+              : ""),
+          );
+        })
+        .catch((err) => {
+          console.error("[ClaimKit] Startup error:", err);
         });
     }
 

@@ -17,7 +17,20 @@
       "Bash(python -c \"import sys,json; data=json.loads\\(sys.stdin.read\\(\\).strip\\(\\).split\\('\\\\n',1\\)[1]\\); print\\(json.dumps\\(data, indent=2\\)[:3000]\\)\")",
       "Bash(python *)",
       "Bash(del \"C:\\\\Users\\\\TimShelton\\\\source\\\\repos\\\\hawk-soard\\\\.aicoder\\\\logs\\\\stream-debug.log\")",
-      "Bash(rtk tsc *)"
+      "Bash(rtk tsc *)",
+      "Bash(xargs grep -l \"COMPARISON\\\\|comparison.*set\\\\|comparison.*config\")",
+      "Bash(xargs grep -l \"comparison\\\\|eval\")",
+      "Bash(Select-String -Path \"C:\\\\Users\\\\TimShelton\\\\source\\\\repos\\\\ai-assist-tim\\\\.env\" -Pattern \"CLAIMKIT|COMPARISON|RAG_INDEX\")",
+      "Bash(Select-Object Line)",
+      "Read(//c/Users/TimShelton/source/repos/claimkit/src/core/**)",
+      "Read(//c/Users/TimShelton/source/repos/claimkit/src/**)",
+      "Read(//c/Users/TimShelton/source/repos/claimkit/**)",
+      "Bash(npm run *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git tag *)",
+      "Bash(git push *)",
+      "Bash(npm install *)"
     ]
   }
 }

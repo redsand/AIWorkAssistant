@@ -43,6 +43,11 @@ export async function runFfprobe(filePath: string): Promise<FfprobeData | null> 
     let output = "";
     let error = "";
 
+    const timeout = setTimeout(() => {
+      child.kill();
+      resolve(null);
+    }, 10_000);
+
     child.stdout.on("data", (data) => {
       output += data.toString();
     });
@@ -52,6 +57,7 @@ export async function runFfprobe(filePath: string): Promise<FfprobeData | null> 
     });
 
     child.on("close", (code) => {
+      clearTimeout(timeout);
       if (code !== 0) {
         resolve(null);
         return;
@@ -66,6 +72,7 @@ export async function runFfprobe(filePath: string): Promise<FfprobeData | null> 
     });
 
     child.on("error", () => {
+      clearTimeout(timeout);
       resolve(null);
     });
   });

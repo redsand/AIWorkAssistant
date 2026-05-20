@@ -11,9 +11,11 @@ export interface ComparisonCaseRag {
   processingTimeMs: number;
 }
 
+import type { AnswerabilityStatus } from "../../context-engine/adapters/claimkit-adapter";
+
 export interface ComparisonCaseClaimKit {
   confidence: number;
-  answerability: "answerable" | "partially_answerable" | "not_answerable";
+  answerability: AnswerabilityStatus;
   claimCount: number;
   processingTimeMs: number;
   contradictions: number;

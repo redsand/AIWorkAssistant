@@ -54,11 +54,19 @@ export async function assembleContextPacket(
 
   let claimKitResult: Awaited<ReturnType<typeof claimKitAdapter.query>> | null = null;
   if (claimKitAvailable) {
+    const ckStart = Date.now();
     try {
       claimKitResult = await claimKitAdapter.query(query);
+      const ckMs = Date.now() - ckStart;
+      const symbol = claimKitResult.answerability === "answerable" ? "✅" : claimKitResult.answerability === "partially-answerable" ? "⚠️" : "❌";
+      console.log(
+        `[ClaimKit] ${symbol} ${claimKitResult.answerability} | confidence=${(claimKitResult.confidence * 100).toFixed(0)}% | claims=${claimKitResult.metadata.claimCount} | contradictions=${claimKitResult.contradictions.length} | ${ckMs}ms`,
+      );
     } catch (err) {
-      console.warn("[ContextPacket] ClaimKit query failed:", err);
+      console.warn("[ClaimKit] Query failed:", err);
     }
+  } else if (env.CLAIMKIT_ENABLED) {
+    console.warn("[ClaimKit] Skipped — not initialized (run `claimkit ingest` to populate stores)");
   }
 
   const rerankedDocs = rerank(docs, query);
@@ -67,6 +75,22 @@ export async function assembleContextPacket(
     query,
     documentsSlot.allocatedTokens,
   );
+
+  if (env.CLAIMKIT_ENABLED) {
+    const ragTokens = compressedDocs.reduce((s, d) => s + d.tokens, 0);
+    const ckWins = claimKitResult &&
+      claimKitResult.confidence > 0.5 &&
+      claimKitResult.answerability === "answerable";
+    const winner = claimKitResult
+      ? (ckWins ? "ClaimKit ✅" : claimKitResult.answerability === "not_answerable" ? "RAG (CK n/a)" : "RAG (CK low confidence)")
+      : "RAG (CK unavailable)";
+    console.log(
+      `[Comparison] RAG: ${compressedDocs.length} docs, ${ragTokens} tokens | ` +
+      `CK: confidence=${claimKitResult ? (claimKitResult.confidence * 100).toFixed(0) + "%" : "—"}, ` +
+      `claims=${claimKitResult?.metadata.claimCount ?? "—"} | ` +
+      `winner=${winner}`,
+    );
+  }
 
   const graphContext = retrieveGraphContext(query);
   const graphTokens = estimateTokens(graphContext);

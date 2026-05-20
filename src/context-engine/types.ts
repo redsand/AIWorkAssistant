@@ -60,7 +60,7 @@ export interface ClaimKitContextSection {
   name: "claimkit_evidence";
   content: string;
   tokens: number;
-  answerability: "answerable" | "partially_answerable" | "not_answerable";
+  answerability: import("./adapters/claimkit-adapter").AnswerabilityStatus;
   contradictions: Array<{ claimA: string; claimB: string; reason: string }>;
   claimCount: number;
   confidence: number;

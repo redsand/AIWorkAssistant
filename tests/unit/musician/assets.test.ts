@@ -153,7 +153,7 @@ describe("Musician Assistant Audio Asset Storage", () => {
       ];
 
       for (const mimeType of validMimeTypes) {
-        const buffer = Buffer.from([0x00]); // Minimal valid data
+        const buffer = createWavBuffer();
         await expect(
           saveUploadedAudio(buffer, `test.${mimeType.split("/")[1]}`, mimeType)
         ).resolves.toBeDefined();
