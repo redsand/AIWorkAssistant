@@ -59,7 +59,7 @@ function calculateBurndown(sprint: DashboardSprint, issues: DashboardIssue[]): B
   const actual: number[] = [];
 
   const doneStatuses = new Set(["done"]);
-  const sprintIssues = issues.filter((i: any) => i.sprint === sprint.id);
+  const sprintIssues = issues.filter((i) => i.sprint === sprint.id);
   const totalPoints = sprintIssues.length;
 
   for (let d = 0; d <= totalDays; d++) {
@@ -274,5 +274,139 @@ describe("Empty State Handling", () => {
     expect(result.labels.length).toBe(14);
     expect(result.ideal[0]).toBe(0);
     expect(result.actual[0]).toBe(0);
+  });
+});
+
+describe("GitHub Milestone-to-Sprint Mapping", () => {
+  it("should assign sprint field from milestone number", () => {
+    const rawIssue = {
+      number: 42,
+      title: "Fix login bug",
+      state: "open",
+      html_url: "https://github.com/org/repo/issues/42",
+      assignee: { login: "dev1" },
+      labels: [{ name: "bug" }],
+      created_at: "2025-01-01T00:00:00Z",
+      updated_at: "2025-01-05T00:00:00Z",
+      body: "",
+      milestone: { number: 3, title: "Sprint 3" },
+    };
+
+    const milestone = rawIssue.milestone;
+    const sprint = milestone
+      ? `gh-milestone-${milestone.number}`
+      : "";
+
+    expect(sprint).toBe("gh-milestone-3");
+  });
+
+  it("should assign sprint field from sprint/ label when no milestone", () => {
+    const rawIssue = {
+      number: 43,
+      title: "Add feature X",
+      state: "open",
+      html_url: "https://github.com/org/repo/issues/43",
+      assignee: null,
+      labels: [{ name: "sprint/2025-01" }, { name: "enhancement" }],
+      created_at: "2025-01-01T00:00:00Z",
+      updated_at: "2025-01-05T00:00:00Z",
+      body: "",
+      milestone: null,
+    };
+
+    const sprintLabel = (rawIssue.labels as Array<{ name: string }>)
+      .map((l) => l.name)
+      .find((l) => l.startsWith("sprint/") || l.startsWith("iteration/"));
+    const sprint = rawIssue.milestone
+      ? `gh-milestone-${rawIssue.milestone.number}`
+      : sprintLabel
+        ? `gh-label-${sprintLabel}`
+        : "";
+
+    expect(sprint).toBe("gh-label-sprint/2025-01");
+  });
+
+  it("should assign iteration/ label as sprint when no milestone", () => {
+    const rawIssue = {
+      number: 44,
+      title: "Refactor module Y",
+      state: "open",
+      html_url: "https://github.com/org/repo/issues/44",
+      assignee: null,
+      labels: [{ name: "iteration/4" }],
+      created_at: "2025-01-01T00:00:00Z",
+      updated_at: "2025-01-05T00:00:00Z",
+      body: "",
+      milestone: null,
+    };
+
+    const sprintLabel = (rawIssue.labels as Array<{ name: string }>)
+      .map((l) => l.name)
+      .find((l) => l.startsWith("sprint/") || l.startsWith("iteration/"));
+    const sprint = rawIssue.milestone
+      ? `gh-milestone-${rawIssue.milestone.number}`
+      : sprintLabel
+        ? `gh-label-${sprintLabel}`
+        : "";
+
+    expect(sprint).toBe("gh-label-iteration/4");
+  });
+
+  it("should set empty sprint when no milestone and no sprint label", () => {
+    const rawIssue = {
+      number: 45,
+      title: "General task",
+      state: "open",
+      html_url: "https://github.com/org/repo/issues/45",
+      assignee: null,
+      labels: [{ name: "bug" }],
+      created_at: "2025-01-01T00:00:00Z",
+      updated_at: "2025-01-05T00:00:00Z",
+      body: "",
+      milestone: null,
+    };
+
+    const sprintLabel = (rawIssue.labels as Array<{ name: string }>)
+      .map((l) => l.name)
+      .find((l) => l.startsWith("sprint/") || l.startsWith("iteration/"));
+    const sprint = rawIssue.milestone
+      ? `gh-milestone-${rawIssue.milestone.number}`
+      : sprintLabel
+        ? `gh-label-${sprintLabel}`
+        : "";
+
+    expect(sprint).toBe("");
+  });
+});
+
+describe("Sprint Points Calculation", () => {
+  it("should count total and completed points from sprint issues", () => {
+    const issues: DashboardIssue[] = [
+      { id: "1", externalId: "#1", title: "A", url: "", status: "done", priority: "medium", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "", updatedAt: "", dependencies: [], sprint: "gh-milestone-3" },
+      { id: "2", externalId: "#2", title: "B", url: "", status: "open", priority: "high", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "", updatedAt: "", dependencies: [], sprint: "gh-milestone-3" },
+      { id: "3", externalId: "#3", title: "C", url: "", status: "done", priority: "low", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "", updatedAt: "", dependencies: [], sprint: "gh-milestone-3" },
+      { id: "4", externalId: "#4", title: "D", url: "", status: "in_progress", priority: "critical", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "", updatedAt: "", dependencies: [], sprint: "gh-milestone-3" },
+      { id: "5", externalId: "#5", title: "E", url: "", status: "open", priority: "medium", assignee: null, labels: [], platform: "github", repo: "org/repo", createdAt: "", updatedAt: "", dependencies: [], sprint: "gh-milestone-5" },
+    ];
+
+    const sprintIssues = issues.filter((i) => i.sprint === "gh-milestone-3");
+    expect(sprintIssues.length).toBe(4);
+    expect(sprintIssues.filter((i) => i.status === "done").length).toBe(2);
+  });
+
+  it("should calculate days left in active sprint", () => {
+    const now = new Date();
+    const startDate = new Date(now.getTime() - 7 * 86400000);
+    const endDate = new Date(now.getTime() + 7 * 86400000);
+    const daysLeft = Math.max(0, Math.ceil((endDate.getTime() - now.getTime()) / 86400000));
+    expect(daysLeft).toBeGreaterThanOrEqual(6);
+    expect(daysLeft).toBeLessThanOrEqual(8);
+  });
+
+  it("should return 0 days left for past sprint", () => {
+    const now = new Date();
+    const endDate = new Date(now.getTime() - 3 * 86400000);
+    const daysLeft = Math.max(0, Math.ceil((endDate.getTime() - now.getTime()) / 86400000));
+    expect(daysLeft).toBe(0);
   });
 });

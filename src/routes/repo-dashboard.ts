@@ -41,6 +41,7 @@ interface DashboardIssue {
   createdAt: string;
   updatedAt: string;
   dependencies: Array<{ id: string; label: string }>;
+  sprint?: string;
 }
 
 // ─── Sprint types ────────────────────────────────────────────────────────────
@@ -483,38 +484,62 @@ async function fetchGitHubSprints(
 
     let issues: DashboardIssue[] = [];
     try {
-      issues = await fetchGitHubIssues(repo);
+      const rawIssues = await githubClient.listIssues(
+        "all",
+        undefined,
+        owner,
+        repoName,
+      );
+      issues = rawIssues
+        .filter((i: any) => !i.pull_request)
+        .map((i: any) => {
+          const milestone = i.milestone;
+          const sprintLabel = ((i.labels || [])
+            .map((l: any) => (typeof l === "string" ? l : l.name))
+            .filter(Boolean) as string[])
+            .find((l) => l.startsWith("sprint/") || l.startsWith("iteration/"));
+          const sprint: string | undefined = milestone
+            ? `gh-milestone-${milestone.number}`
+            : sprintLabel
+              ? `gh-label-${sprintLabel}`
+              : "";
+          return {
+            id: String(i.number),
+            externalId: `#${i.number}`,
+            title: i.title || "",
+            url: i.html_url || "",
+            status: normalizeStatus(i.state, "github"),
+            priority: normalizePriority(
+              null,
+              (i.labels || []).map((l: any) =>
+                typeof l === "string" ? l : l.name,
+              ),
+            ),
+            assignee: i.assignee?.login || null,
+            labels: (i.labels || [])
+              .map((l: any) => (typeof l === "string" ? l : l.name))
+              .filter(Boolean),
+            platform: "github",
+            repo,
+            createdAt: i.created_at || "",
+            updatedAt: i.updated_at || "",
+            dependencies: parseDependencies(i.body || ""),
+            sprint,
+          };
+        });
     } catch {
       /* fall through with empty issues */
     }
 
-    const issuesWithSprint = issues.map((issue) => {
-      const milestone = (issue as any).milestone;
-      if (milestone) {
-        return { ...issue, sprint: `gh-milestone-${milestone.number}` };
-      }
-
-      const sprintLabel = issue.labels.find(
-        (l) => l.startsWith("sprint/") || l.startsWith("iteration/"),
-      );
-      if (sprintLabel) {
-        return { ...issue, sprint: `gh-label-${sprintLabel}` };
-      }
-      return { ...issue, sprint: "" };
-    });
-
     for (const sprint of sprints) {
-      const sprintIssues = issuesWithSprint.filter(
-        (i: any) => i.sprint === sprint.id,
-      );
-      const doneStatuses = ["done"];
+      const sprintIssues = issues.filter((i) => i.sprint === sprint.id);
       sprint.totalPoints = sprintIssues.length;
-      sprint.completedPoints = sprintIssues.filter((i: any) =>
-        doneStatuses.includes(i.status),
+      sprint.completedPoints = sprintIssues.filter((i) =>
+        i.status === "done",
       ).length;
     }
 
-    return { sprints, issues: issuesWithSprint as DashboardIssue[] };
+    return { sprints, issues };
   } catch (err: any) {
     return { sprints: [], issues: [] };
   }
@@ -575,7 +600,7 @@ async function fetchJiraSprints(
     }
 
     for (const sprint of sprints) {
-      const sprintIssues = allIssues.filter((i: any) => i.sprint === sprint.id);
+      const sprintIssues = allIssues.filter((i) => i.sprint === sprint.id);
       const doneStatuses = ["done"];
       sprint.totalPoints = sprintIssues.length;
       sprint.completedPoints = sprintIssues.filter((i: any) =>
@@ -583,7 +608,7 @@ async function fetchJiraSprints(
       ).length;
     }
 
-    return { sprints, issues: allIssues as DashboardIssue[] };
+    return { sprints, issues: allIssues };
   } catch (err: any) {
     return { sprints: [], issues: [] };
   }
@@ -611,7 +636,7 @@ function calculateBurndown(
   const actual: number[] = [];
 
   const doneStatuses = new Set(["done"]);
-  const sprintIssues = issues.filter((i: any) => i.sprint === sprint.id);
+  const sprintIssues = issues.filter((i) => i.sprint === sprint.id);
   const totalPoints = sprintIssues.length;
 
   for (let d = 0; d <= totalDays; d++) {
