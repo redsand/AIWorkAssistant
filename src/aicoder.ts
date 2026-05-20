@@ -88,6 +88,7 @@ import type { SemanticFinding } from "./autonomous-loop/semantic-review";
 import { loadConvergenceState, saveConvergenceState, serializeConvergence } from "./autonomous-loop/convergence-state";
 import { loadReviewGateState, saveReviewGateState, clearReviewGateState, markForceDone } from "./autonomous-loop/review-gate-state";
 import { ensureAgentsMdRules } from "./autonomous-loop/agents-md";
+import { hashUuidToNumber, parseWorkItemTagsJson, extractCodingPromptSection } from "./autonomous-loop/work-item-utils";
 
 // Re-export so callers and the orchestrator can import from either module.
 export {
@@ -250,6 +251,11 @@ async function generatePrompt(
   cfg: ServerConfig,
   item: WorkItem,
 ): Promise<GeneratedPrompt> {
+  // Work items: resolve from local database via API, build prompt directly
+  if (cfg.source === "work_items") {
+    return generatePromptFromWorkItem(cfg, item);
+  }
+
   // Determine source type: Jira keys (IR-82, PROJ-123) vs numeric GitHub issues
   const isJira = /^[A-Z]+-\d+$/.test(item.id);
   const sourceType = isJira ? "jira" : "github";
@@ -376,10 +382,13 @@ async function publishBranch(cfg: ServerConfig, branchName: string): Promise<voi
   runLogger.logWork(`Extracted issue key: ${issueKey}`);
 
   // 5. Look up the issue
+  const isWorkItemId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(issueKey);
   const isJira = /^[A-Z]+-\d+$/.test(issueKey);
   let item: WorkItem | null = null;
 
-  if (isJira) {
+  if (isWorkItemId) {
+    item = await fetchWorkItemDirectly(cfg, issueKey);
+  } else if (isJira) {
     item = await fetchJiraIssueDirectly(issueKey);
   } else {
     const num = parseInt(issueKey, 10);
@@ -407,7 +416,11 @@ async function publishBranch(cfg: ServerConfig, branchName: string): Promise<voi
   description += `Issue: ${item.id}\n\n`;
 
   // Issue description for reviewer context
-  if (isJira && jiraClient.isConfigured()) {
+  if (isWorkItemId) {
+    if (item.body) {
+      description += `## Description\n\n${truncate(item.body, 2000)}\n\n`;
+    }
+  } else if (isJira && jiraClient.isConfigured()) {
     try {
       const jiraIssue = await jiraClient.getIssue(item.id);
       const fields = jiraIssue.fields as typeof jiraIssue.fields & { description?: any };
@@ -1829,7 +1842,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     repo: item.repo,
     suggestedBranch: item.suggestedBranch,
     labels: item.labels,
-    source: (cfg.source === "gitlab" ? "gitlab" : cfg.source === "jira" ? "jira" : "github") as RunState["source"],
+    source: (cfg.source === "gitlab" ? "gitlab" : cfg.source === "jira" ? "jira" : cfg.source === "work_items" ? "work_items" : "github") as RunState["source"],
     checkpoint: "issue_transitioned",
     apiUrl: cfg.apiUrl,
     apiKey: cfg.apiKey,
@@ -1857,7 +1870,29 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   // Mark issue as "In Progress" so escalation doesn't pick it up
   const isJiraIssue = /^[A-Z]+-\d+$/.test(item.id);
   const ghToken = process.env.GITHUB_TOKEN;
-  if (isJiraIssue && jiraClient.isConfigured()) {
+  if (cfg.source === "work_items") {
+    try {
+      const currentResp = await axios.get<{ status: string }>(
+        `${cfg.apiUrl}/api/work-items/${item.id}`,
+        { headers: authHeaders(cfg) },
+      );
+      if (currentResp.data?.status === "active") {
+        runLogger.logWork(`${item.id} already active — skipping status update`);
+        trackStep(run.id, "note", `${item.id} already active`);
+      } else {
+        await axios.patch(
+          `${cfg.apiUrl}/api/work-items/${item.id}`,
+          { status: "active" },
+          { headers: { ...authHeaders(cfg), "Content-Type": "application/json" } },
+        );
+        runLogger.logWork(`Updated work item ${item.id} status → active`);
+        trackStep(run.id, "note", `Work item ${item.id} status set to active`);
+      }
+    } catch (err) {
+      runLogger.logWork(`Could not update work item ${item.id} status: ${err instanceof Error ? err.message : err}`);
+      trackStep(run.id, "note", `Work item status update failed: ${err instanceof Error ? err.message : err}`, { success: false });
+    }
+  } else if (isJiraIssue && jiraClient.isConfigured()) {
     try {
       const currentIssue = await jiraClient.getIssue(item.id);
       const currentStatus = currentIssue.fields.status?.name?.toLowerCase() ?? "";
@@ -2646,6 +2681,84 @@ async function fetchIssueByKey(cfg: ServerConfig, key: string): Promise<WorkItem
   return fetchIssueDirectly(cfg, num);
 }
 
+async function generatePromptFromWorkItem(
+  cfg: ServerConfig,
+  item: WorkItem,
+): Promise<GeneratedPrompt> {
+  try {
+    const resp = await axios.get<{
+      id: string;
+      title: string;
+      description: string;
+      status: string;
+      type: string;
+      tagsJson?: string | null;
+    }>(`${cfg.apiUrl}/api/work-items/${item.id}`, { headers: authHeaders(cfg) });
+
+    const wi = resp.data;
+    if (!wi || !wi.title) {
+      return { prompt: "", skipped: true, skipReason: "Work item not found" };
+    }
+
+    const body = wi.description || "";
+    const codingPrompt = extractCodingPromptSection(body);
+    const promptContent = codingPrompt || body;
+
+    if (!promptContent.trim()) {
+      return { prompt: "", skipped: true, skipReason: "Work item has no description or coding prompt" };
+    }
+
+    const prompt = `# Task: ${wi.title}
+
+## Description
+${promptContent}
+
+## Instructions
+Implement the changes described above. Follow the project's existing patterns and conventions.
+`;
+
+    return { prompt, skipped: false, skipReason: null };
+  } catch (err) {
+    runLogger.logError(`Failed to fetch work item ${item.id}: ${err instanceof Error ? err.message : err}`);
+    return { prompt: "", skipped: true, skipReason: `Failed to fetch work item: ${err instanceof Error ? err.message : err}` };
+  }
+}
+
+async function fetchWorkItemDirectly(cfg: ServerConfig, workItemId: string): Promise<WorkItem | null> {
+  try {
+    const resp = await axios.get<{
+      id: string;
+      title: string;
+      description: string;
+      status: string;
+      tagsJson?: string | null;
+      owner?: string;
+    }>(`${cfg.apiUrl}/api/work-items/${workItemId}`, { headers: authHeaders(cfg) });
+
+    const wi = resp.data;
+    if (!wi || !wi.title) return null;
+
+    const slug = wi.title
+      .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+    const tags = parseWorkItemTagsJson(wi.tagsJson ?? null);
+
+    return {
+      id: wi.id,
+      number: hashUuidToNumber(wi.id),
+      title: wi.title,
+      url: "",
+      owner: wi.owner || "",
+      repo: "",
+      suggestedBranch: `ai/issue-wi-${slug}`,
+      labels: tags,
+      body: wi.description || "",
+    };
+  } catch (err) {
+    runLogger.logError(`Failed to fetch work item ${workItemId}: ${err instanceof Error ? err.message : err}`);
+    return null;
+  }
+}
+
 async function fetchJiraIssueDirectly(key: string): Promise<WorkItem | null> {
   if (!jiraClient.isConfigured()) {
     runLogger.logError("Jira client not configured — set JIRA_* env vars for Jira issue lookups");
@@ -2860,7 +2973,7 @@ async function runReviewLoop(
     repo: item.repo,
     suggestedBranch: item.suggestedBranch,
     labels: item.labels,
-    source: (cfg.source === "gitlab" ? "gitlab" : cfg.source === "jira" ? "jira" : "github") as RunState["source"],
+    source: (cfg.source === "gitlab" ? "gitlab" : cfg.source === "jira" ? "jira" : cfg.source === "work_items" ? "work_items" : "github") as RunState["source"],
     checkpoint: "review_polling" as PipelineCheckpoint,
     prNumber,
     reworkCount,

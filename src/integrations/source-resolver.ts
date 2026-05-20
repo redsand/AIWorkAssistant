@@ -13,7 +13,7 @@ import * as fs from "fs";
 import * as path from "path";
 import axios from "axios";
 
-export type TicketSourceType = "github" | "gitlab" | "jira" | "jitbit";
+export type TicketSourceType = "github" | "gitlab" | "jira" | "jitbit" | "work_items";
 export type LookupMode = "memory" | "llm" | "auto";
 
 interface SourceCache {
