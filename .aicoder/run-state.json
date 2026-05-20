@@ -1,0 +1,22 @@
+{
+  "issueKey": "21",
+  "issueNumber": 21,
+  "title": "[P5] Add Simple Automation Recipes",
+  "url": "https://github.com/redsand/AIWorkAssistant/issues/21",
+  "owner": "redsand",
+  "repo": "AIWorkAssistant",
+  "suggestedBranch": "ai/issue-21-p5-add-simple-automation-recipes",
+  "labels": [
+    "feature",
+    "priority:medium",
+    "phase-5",
+    "automation",
+    "ready-for-agent"
+  ],
+  "source": "github",
+  "checkpoint": "issue_transitioned",
+  "apiUrl": "http://localhost:3050",
+  "apiKey": "ai-loop-key-2026-GcArYGIlbgbFT83XntreWn",
+  "startedAt": "2026-05-20T01:53:53.763Z",
+  "updatedAt": "2026-05-20T01:53:54.573Z"
+}
