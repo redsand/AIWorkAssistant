@@ -650,7 +650,6 @@ function analyzeDynamics(ctx: AnalysisContext): {
   }
 
   if (dynamicRange > maxDynamicRange) {
-    const excess = dynamicRange - maxDynamicRange;
     // This is only an issue for loud genres
     if (expectedCompression === "heavy" || expectedCompression === "brick-walled") {
       issues.push(
@@ -1053,84 +1052,6 @@ function generateExecutiveSummary(
   return lines.join("\n");
 }
 
-function generateSuggestedNextPass(
-  ctx: AnalysisContext,
-  fixes: MixFeedbackReport["prioritizedFixes"]
-): string {
-  const lines: string[] = [];
-
-  lines.push("## Suggested Mix Pass Workflow");
-  lines.push("");
-
-  const criticalFixes = fixes.filter((f) => f.priority === "critical");
-  const highFixes = fixes.filter((f) => f.priority === "high");
-
-  if (criticalFixes.length > 0) {
-    lines.push("### 1. Address Critical Issues First");
-    criticalFixes.forEach((fix) => {
-      lines.push(`- ${fix.recommendation}`);
-    });
-    lines.push("");
-  }
-
-  if (highFixes.length > 0) {
-    lines.push(`### ${criticalFixes.length > 0 ? "2" : "1"}. Address High-Priority Items`);
-    highFixes.forEach((fix) => {
-      lines.push(`- ${fix.recommendation}`);
-    });
-    lines.push("");
-  }
-
-  const nextStep = criticalFixes.length > 0 ? criticalFixes.length + highFixes.length + 1 : highFixes.length + 1;
-  lines.push(`### ${nextStep}. Re-analyze`);
-  lines.push("- Export a new mix after addressing the above items");
-  lines.push("- Run analysis again to verify improvements");
-  lines.push("- Check mix on multiple playback systems");
-  lines.push("");
-
-  return lines.join("\n");
-}
-
-function generateQuestionsForUser(ctx: AnalysisContext): string[] {
-  const questions: string[] = [];
-
-  // Genre-specific questions
-  if (ctx.profile.name === "Generic") {
-    questions.push("What genre or style are you targeting? This will help provide more specific feedback.");
-  }
-
-  // Dynamic range questions
-  if (ctx.metrics.dynamicRange !== undefined) {
-    if (ctx.metrics.dynamicRange < ctx.profile.minDynamicRange) {
-      questions.push("Is the heavy compression intentional for this track, or would you like help restoring dynamics?");
-    }
-  }
-
-  // Loudness questions
-  if (ctx.metrics.integratedLufs !== undefined) {
-    if (ctx.metrics.integratedLufs < ctx.profile.targetLufsMin - 3) {
-      questions.push("Are you planning to master this track later, or should it be louder at the mix stage?");
-    }
-  }
-
-  // Reference questions
-  if (!ctx.request.targetReferences || ctx.request.targetReferences.length === 0) {
-    questions.push("Do you have reference tracks you're trying to match? Comparing to references can help identify specific areas for improvement.");
-  }
-
-  // Listening context
-  if (!ctx.request.listeningContext) {
-    questions.push("What's your primary listening environment for this project? (earbuds, studio monitors, car, club, etc.)");
-  }
-
-  // User concerns
-  if (!ctx.request.userQuestions || ctx.request.userQuestions.length === 0) {
-    questions.push("Are there specific aspects of the mix you're concerned about or want feedback on?");
-  }
-
-  return questions;
-}
-
 // =============================================================================
 // Main Export: generateMixFeedback
 // =============================================================================
@@ -1189,9 +1110,6 @@ export function generateMixFeedback(
 
   // Generate narrative sections
   const executiveSummary = generateExecutiveSummary(ctx, prioritizedFixes);
-  const suggestedNextPass = generateSuggestedNextPass(ctx, prioritizedFixes);
-  const questionsForUser = generateQuestionsForUser(ctx);
-
   // Build frequency balance section
   const frequencyGauge = metrics.spectralBalance
     ? {

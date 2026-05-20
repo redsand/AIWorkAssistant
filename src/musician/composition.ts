@@ -86,13 +86,6 @@ const COMMON_PROGRESSIONS = {
   ],
 };
 
-// Cadence types
-const CADENCES = {
-  authentic: { chords: [5, 1], name: "Authentic Cadence", description: "V-I, strongest resolution" },
-  plagal: { chords: [4, 1], name: "Plagal Cadence", description: "IV-I, 'Amen' cadence" },
-  half: { chords: [1, 5], name: "Half Cadence", description: "Any-V, leaves tension" },
-  deceptive: { chords: [5, 6], name: "Deceptive Cadence", description: "V-vi, unexpected resolution" },
-};
 
 // =============================================================================
 // Types
@@ -632,7 +625,7 @@ export function analyzeChordProgression(params: {
   const borrowedChords: string[] = [];
   const secondaryDominants: string[] = [];
 
-  progression.forEach((chord, i) => {
+  progression.forEach((chord, _i) => {
     const root = chord.replace(/[^A-G#b]/g, "");
     const degreeIndex = scale.indexOf(root);
 
@@ -700,10 +693,10 @@ ${analysis}
  * Reharmonize progression
  */
 export function reharmonizeProgression(options: ReharmonizeOptions): ChordProgressionResult {
-  const { progression, key, targetMood = "jazzier", complexity = "moderate" } = options;
+  const { progression, key: _key, targetMood = "jazzier", complexity = "moderate" } = options;
 
   // Simple reharmonization strategies
-  const reharmonized = progression.map((chord, i) => {
+  const reharmonized = progression.map((chord, _i) => {
     if (targetMood === "jazzier") {
       // Add 7ths and extensions
       if (!chord.includes("7") && !chord.includes("maj")) {
@@ -796,7 +789,7 @@ function formatTime(seconds: number): string {
   return `${mins}:${String(secs).padStart(2, "0")}`;
 }
 
-function getSectionDescription(name: string, genre: string): string {
+function getSectionDescription(name: string, _genre: string): string {
   const descriptions: Record<string, string> = {
     intro: `Sets the mood, establishes key and tempo`,
     verse: `Storytelling section with lower energy`,
@@ -871,7 +864,7 @@ function getLyricSectionConfig(
   return configs[section] || configs.verse;
 }
 
-function getLyricExample(section: string, rhymeScheme: string): string {
+function getLyricExample(section: string, _rhymeScheme: string): string {
   const examples: Record<string, string> = {
     verse: `Line 1 - establishes scene (A)
 Line 2 - develops thought (B)
@@ -910,7 +903,7 @@ function getChordFunction(degree: number, mode: string): string {
   return functions[degree] || "Unknown";
 }
 
-function getEtudeStructure(concept: string, skillLevel: string): string {
+function getEtudeStructure(concept: string, _skillLevel: string): string {
   if (concept.toLowerCase().includes("scale")) {
     return `1. Play scale ascending (whole notes)
 2. Play scale descending (whole notes)
@@ -928,18 +921,18 @@ function getEtudeStructure(concept: string, skillLevel: string): string {
   return `Structured exercise focusing on ${concept} development`;
 }
 
-function getPracticeRoutine(concept: string, skillLevel: string): string {
+function getPracticeRoutine(_concept: string, skillLevel: string): string {
   const durations = { beginner: "15-20", intermediate: "20-30", advanced: "30-45", pro: "45-60" };
   return `1. Warm up (5 minutes)
-2. Slow practice at ${skillLevel === "beginner" ? "60" : skillLevel === "intermediate" ? "80" : "100"} BPM (${durations[skillLevel]} minutes)
+2. Slow practice at ${skillLevel === "beginner" ? "60" : skillLevel === "intermediate" ? "80" : "100"} BPM (${durations[skillLevel as keyof typeof durations]} minutes)
 3. Increase tempo gradually
 4. Apply to real musical situations
 5. Cool down and reflect
 
-**Total Time:** ${durations[skillLevel]} minutes`;
+**Total Time:** ${durations[skillLevel as keyof typeof durations]} minutes`;
 }
 
-function getEtudeTips(instrument: string, concept: string, skillLevel: string): string {
+function getEtudeTips(instrument: string, _concept: string, skillLevel: string): string {
   return `- Focus on accuracy before speed
 - Use a metronome for timing
 - ${instrument}-specific: ${getInstrumentSpecificTip(instrument)}

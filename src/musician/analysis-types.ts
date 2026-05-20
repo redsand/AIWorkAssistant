@@ -743,9 +743,9 @@ export interface MasteringFeedbackReport {
   streamingReadiness: {
     spotify: "ready" | "needs_adjustment" | "will_gain_match";
     appleMusic: "ready" | "needs_adjustment" | "will_gain_match";
-    youtube: "ready" | "needs_adjustment";
-    soundcloud: "ready" | "needs_adjustment";
-    bandcamp: "ready" | "needs_adjustment";
+    youtube: "ready" | "needs_adjustment" | "will_gain_match";
+    soundcloud: "ready" | "needs_adjustment" | "will_gain_match";
+    bandcamp: "ready" | "needs_adjustment" | "will_gain_match";
   };
 
   /**
@@ -784,7 +784,9 @@ export interface MasteringFeedbackReport {
       | "dither_noise"
       | "convolution"
       | "upscaling"
-      | "format_conversion";
+      | "format_conversion"
+      | "alignment_phase"
+      | "restoration_balance";
   }>;
 
   /**
@@ -873,11 +875,6 @@ export interface MusicGenerationRequest {
    */
   dryRun?: boolean;
 
-  /** Target key, e.g. "Am", "C major" */
-  key?: string;
-
-  /** Target tempo in BPM */
-  tempo?: number;
 }
 
 /**

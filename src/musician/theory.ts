@@ -12,21 +12,6 @@
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const NOTE_NAMES_FLAT = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
 
-const INTERVALS = {
-  unison: { semitones: 0, quality: "perfect" },
-  minor2nd: { semitones: 1, quality: "minor" },
-  major2nd: { semitones: 2, quality: "major" },
-  minor3rd: { semitones: 3, quality: "minor" },
-  major3rd: { semitones: 4, quality: "major" },
-  perfect4th: { semitones: 5, quality: "perfect" },
-  tritone: { semitones: 6, quality: "augmented" },
-  perfect5th: { semitones: 7, quality: "perfect" },
-  minor6th: { semitones: 8, quality: "minor" },
-  major6th: { semitones: 9, quality: "major" },
-  minor7th: { semitones: 10, quality: "minor" },
-  major7th: { semitones: 11, quality: "major" },
-  octave: { semitones: 12, quality: "perfect" },
-};
 
 const SCALES = {
   major: [0, 2, 4, 5, 7, 9, 11],
@@ -60,7 +45,6 @@ const KEY_SIGNATURES = {
   "Gb": { sharps: 0, flats: 6, accidentals: ["Bb", "Eb", "Ab", "Db", "Gb", "Cb"] },
 };
 
-const CIRCLE_OF_FIFTHS = ["C", "G", "D", "A", "E", "B", "F#", "Db", "Ab", "Eb", "Bb", "F"];
 
 // Guitar standard tuning (E A D G B E)
 const GUITAR_TUNING = [4, 9, 2, 7, 11, 4]; // MIDI note offsets from C
@@ -154,24 +138,6 @@ function buildScale(root: string, intervals: number[]): string[] {
     const noteIndex = (rootIndex + interval) % 12;
     return getNoteName(noteIndex, useFlats);
   });
-}
-
-function getIntervalName(semitones: number): string {
-  const normalized = ((semitones % 12) + 12) % 12;
-  for (const [name, data] of Object.entries(INTERVALS)) {
-    if (data.semitones === normalized) {
-      return name;
-    }
-  }
-  return "unknown";
-}
-
-function getExplanationDepth(skillLevel: SkillLevel): { simple: boolean; detailed: boolean; advanced: boolean } {
-  return {
-    simple: skillLevel === "beginner",
-    detailed: skillLevel === "intermediate" || skillLevel === "advanced",
-    advanced: skillLevel === "advanced",
-  };
 }
 
 // =============================================================================
@@ -451,8 +417,6 @@ export function explainConcept(
     throw new Error(`Topic "${topic}" not found. Available topics: ${Object.keys(TOPIC_DATA).join(", ")}`);
   }
 
-  const depth = getExplanationDepth(skillLevel);
-
   // Generate exercises based on topic
   const exercises = generateTopicExercises(normalizedTopic, skillLevel, 3);
 
@@ -555,7 +519,7 @@ ${ex.hint ? `**Hint:** ${ex.hint}\n` : ""}
  * Check user's answer
  */
 export function checkAnswer(
-  topic: string,
+  _topic: string,
   userAnswer: string,
   expectedAnswer: string
 ): AnswerCheck {
@@ -716,7 +680,6 @@ export function createKeyboardExample(
 
   // Generate ASCII keyboard
   const whiteKeys = ["C", "D", "E", "F", "G", "A", "B"];
-  const blackKeys = ["C#", "D#", "F#", "G#", "A#"];
 
   const keyboard: string[] = [];
 
@@ -816,7 +779,7 @@ ${drills.map((drill, i) => `## Drill ${i + 1}
 // Helper Functions for Exercise Generation
 // =============================================================================
 
-function generateTopicExercises(topic: string, skillLevel: SkillLevel, count: number): string[] {
+function generateTopicExercises(topic: string, _skillLevel: SkillLevel, count: number): string[] {
   const exercises: string[] = [];
 
   switch (topic) {
@@ -855,7 +818,7 @@ function generateTopicExercises(topic: string, skillLevel: SkillLevel, count: nu
 function generateSingleExercise(
   topic: string,
   skillLevel: SkillLevel,
-  instrument: Instrument | undefined,
+  _instrument: Instrument | undefined,
   index: number
 ): Exercise {
   const keys = ["C", "D", "E", "F", "G", "A", "B"];
@@ -889,7 +852,7 @@ function generateSingleExercise(
 
     case "key-signatures":
       question = `How many sharps or flats are in ${randomKey} major?`;
-      const keySig = KEY_SIGNATURES[randomKey];
+      const keySig = KEY_SIGNATURES[randomKey as keyof typeof KEY_SIGNATURES];
       if (keySig) {
         expectedAnswer = keySig.sharps > 0
           ? `${keySig.sharps} sharp${keySig.sharps > 1 ? "s" : ""}`
@@ -934,7 +897,7 @@ function calculateInterval(root: string, intervalName: string): string {
 
 function generateEarTrainingQuestion(
   topic: string,
-  skillLevel: SkillLevel,
+  _skillLevel: SkillLevel,
   index: number
 ): { description: string; audioDescription: string; expectedAnswer: string } {
   const keys = ["C", "D", "E", "F", "G"];

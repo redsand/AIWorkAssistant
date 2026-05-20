@@ -442,7 +442,7 @@ export async function selectProvider(
   request: MusicGenerationRequest
 ): Promise<MusicGenerationProvider> {
   // Try to honor explicit request preference if specified
-  if (request.modelPreference) {
+  if (request.modelPreference && request.modelPreference !== "external_api") {
     const preferredProvider = createProvider(request.modelPreference);
     const isAvailable = await preferredProvider.isAvailable();
 

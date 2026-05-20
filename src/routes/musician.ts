@@ -9,7 +9,6 @@ import {
 import { transcribeWithBasicPitch } from "../integrations/audio/basic-pitch-adapter";
 import { generateWithMusicGen } from "../integrations/audio/musicgen-adapter";
 import {
-  MusicGenerationRequest,
   AudioTechnicalMetrics,
 } from "../musician/analysis-types";
 import {
@@ -83,7 +82,7 @@ const generateSampleSchema = z.object({
   genre: z.string().max(100).optional(),
   key: z.string().max(20).optional(),
   tempo: z.number().int().min(40).max(300).optional(),
-  model: z.string().max(100).optional(),
+  model: z.enum(["mock", "huggingface", "local_musicgen", "external_api"]).optional(),
 });
 
 // Analysis request schema
@@ -425,7 +424,7 @@ export async function musicianRoutes(server: FastifyInstance) {
     }
     try {
       const res = await fetch(`${apiUrl}/models`, { signal: AbortSignal.timeout(5000) });
-      const data = await res.json();
+      const data = await res.json() as Record<string, unknown>;
       return reply.status(200).send({ ...data, serviceAvailable: true });
     } catch {
       return reply.status(200).send({

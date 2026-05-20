@@ -15,7 +15,7 @@ import type {
   MixFeedbackReport,
   MasteringFeedbackReport,
 } from "./analysis-types";
-import { getAudioAsset, getMusicianAssetFilePath } from "./assets";
+import { getMusicianAssetFilePath } from "./assets";
 import { runFfprobe, extractMetricsFromFfprobe, detectFfprobe } from "../integrations/audio/metadata";
 import { generateMixFeedback } from "./mix-feedback";
 import { generateMasteringFeedback } from "./mastering";
@@ -210,7 +210,7 @@ function prepareAnalysisFile(sourcePath: string, fileId: string): {
  * @returns Enhanced metrics with waveform data
  */
 async function extractWaveformMetrics(
-  filePath: string,
+  _filePath: string,
   baseMetrics: Partial<AudioTechnicalMetrics>
 ): Promise<{
   metrics: Partial<AudioTechnicalMetrics>;
@@ -235,7 +235,7 @@ async function extractWaveformMetrics(
  * @returns Enhanced metrics with Essentia data
  */
 async function runEssentiaAnalysis(
-  filePath: string,
+  _filePath: string,
   baseMetrics: Partial<AudioTechnicalMetrics>
 ): Promise<{
   metrics: Partial<AudioTechnicalMetrics>;
@@ -265,7 +265,7 @@ async function runEssentiaAnalysis(
  * @returns Transcription result or undefined
  */
 async function runTranscription(
-  filePath: string,
+  _filePath: string,
   requested: boolean
 ): Promise<{
   transcription?: unknown;
@@ -309,6 +309,7 @@ function generateReport(
   switch (analysisType) {
     case "mixdown":
       return generateMixFeedback(metrics, {
+        analysisType: "mixdown",
         genre,
         targetReferences: request?.targetReferences,
         listeningContext: request?.listeningContext,
@@ -316,6 +317,7 @@ function generateReport(
 
     case "mastering":
       return generateMasteringFeedback(metrics, {
+        analysisType: "mastering",
         genre,
         targetReferences: request?.targetReferences,
       });
@@ -349,7 +351,7 @@ function generateReport(
 function buildCompositionFeedback(
   metrics: AudioTechnicalMetrics,
   type: "composition" | "arrangement",
-  genre?: string
+  _genre?: string
 ): string {
   const lines: string[] = [];
 
@@ -384,7 +386,7 @@ function buildCompositionFeedback(
  */
 function buildPerformanceFeedback(
   metrics: AudioTechnicalMetrics,
-  genre?: string
+  _genre?: string
 ): string {
   const lines: string[] = [];
 
@@ -418,7 +420,7 @@ function buildPerformanceFeedback(
 function buildCombinedReport(
   metrics: AudioTechnicalMetrics,
   genre?: string,
-  request?: AudioAnalysisRequest
+  _request?: AudioAnalysisRequest
 ): string {
   const lines: string[] = [];
 
@@ -443,14 +445,14 @@ function buildCombinedReport(
 
   // Mix analysis
   lines.push("## Mix Analysis");
-  const mixReport = generateMixFeedback(metrics, { genre });
+  const mixReport = generateMixFeedback(metrics, { analysisType: "mixdown", genre });
   lines.push(mixReport.summary);
 
   lines.push("");
 
   // Mastering analysis
   lines.push("## Mastering Analysis");
-  const masterReport = generateMasteringFeedback(metrics, { genre });
+  const masterReport = generateMasteringFeedback(metrics, { analysisType: "mastering", genre });
   lines.push(`Release Readiness: ${masterReport.releaseReadiness}`);
 
   lines.push("");

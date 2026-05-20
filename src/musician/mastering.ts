@@ -77,10 +77,6 @@ const STREAMING_SPECS = {
 // Helper Functions
 // =============================================================================
 
-function formatLufs(lufs: number): string {
-  return `${lufs.toFixed(1)} LUFS`;
-}
-
 function formatDbtp(dbtp: number): string {
   return `${dbtp.toFixed(1)} dBTP`;
 }
@@ -102,7 +98,7 @@ interface MasteringContext {
  * Determine overall release readiness
  */
 function assessReleaseReadiness(
-  ctx: MasteringContext,
+  _ctx: MasteringContext,
   issues: Array<{ severity: "critical" | "high" | "medium" | "low"; message: string }>
 ): MasteringFeedbackReport["releaseReadiness"] {
   const criticalIssues = issues.filter((i) => i.severity === "critical");
@@ -504,7 +500,7 @@ function checkPhaseCompatibility(ctx: MasteringContext): Array<{
  */
 function assessStreamingReadiness(
   ctx: MasteringContext,
-  loudness: MasteringFeedbackReport["loudness"],
+  _loudness: MasteringFeedbackReport["loudness"],
   truePeak: MasteringFeedbackReport["truePeak"]
 ): MasteringFeedbackReport["streamingReadiness"] {
   const readiness: MasteringFeedbackReport["streamingReadiness"] = {
@@ -550,7 +546,7 @@ function generateExportRecommendations(
   const idealFormat: "wav" | "aiff" | "flac" = "wav";
 
   // Bit depth recommendation
-  const bitDepth: "16" | "24" | "32" = "24";
+  let bitDepth: "16" | "24" | "32" = "24";
 
   // Sample rate recommendation
   let sampleRateRec: "44.1" | "48" | "96" | "192" | "match_source" = "match_source";
@@ -563,7 +559,7 @@ function generateExportRecommendations(
   }
 
   // Dithering recommendation
-  const ditherRecommended = bitDepth === "16";
+  const ditherRecommended = (bitDepth as string) === "16";
   const ditherType: "noise-shaped" | "triangle" | "rectangular" = "noise-shaped";
 
   // Export chain
@@ -601,7 +597,7 @@ function generateExportRecommendations(
  */
 function generateVinylClubReadiness(
   ctx: MasteringContext,
-  truePeak: MasteringFeedbackReport["truePeak"]
+  _truePeak: MasteringFeedbackReport["truePeak"]
 ): MasteringFeedbackReport["vinylOrClubReadiness"] | undefined {
   // Only generate if specifically requested in user questions
   const needsVinylClub = ctx.request.userQuestions?.some(
