@@ -26,7 +26,7 @@ export interface AllocatedBudget {
 
 export interface ScoredDocument {
   id: string;
-  source: "knowledge" | "codebase" | "graph" | "memory";
+  source: "knowledge" | "codebase" | "graph" | "memory" | "claimkit";
   content: string;
   title: string;
   score: number;
@@ -56,10 +56,21 @@ export interface ContextSection {
   sourceCount?: number;
 }
 
+export interface ClaimKitContextSection {
+  name: "claimkit_evidence";
+  content: string;
+  tokens: number;
+  answerability: "answerable" | "partially_answerable" | "not_answerable";
+  contradictions: Array<{ claimA: string; claimB: string; reason: string }>;
+  claimCount: number;
+  confidence: number;
+}
+
 export interface ContextPacket {
   sections: ContextSection[];
   messages: ChatMessage[];
   totalTokens: number;
+  claimkitSection?: ClaimKitContextSection;
   budgetBreakdown: BudgetSlot[];
   diagnostics: {
     mode: ContextMode;
