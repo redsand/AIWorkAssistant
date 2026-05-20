@@ -19,6 +19,7 @@ import { branchRunner } from "../integrations/ticket-bridge/branch-runner";
 import type { AgentType } from "../integrations/ticket-bridge/branch-runner";
 import axios from "axios";
 import * as fs from "fs";
+import { registerClaimKitCommand } from "./commands/claimkit";
 
 // Load environment variables
 const env = loadEnv();
@@ -1050,6 +1051,9 @@ program
     console.log("Launching OpenCode...\n");
     await launchProvider(options);
   });
+
+// ClaimKit commands
+registerClaimKitCommand(program);
 
 // Parse and execute
 program.parseAsync(process.argv);
