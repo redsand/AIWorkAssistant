@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import * as fs from "fs";
 import * as path from "path";
+import { ingestSingleGraphNode, ingestSingleGraphEdge } from "../context-engine/claimkit-ingestion";
 
 export type KGNodeType =
   | "decision"
@@ -119,6 +120,19 @@ class KnowledgeGraph {
         now,
       );
 
+    ingestSingleGraphNode({
+      id,
+      type: node.type,
+      title: node.title,
+      content: node.content,
+      status: node.status,
+      context: node.context,
+      tags: node.tags,
+      metadata: node.metadata,
+      createdAt: new Date(now),
+      updatedAt: new Date(now),
+    }).catch(err => console.warn(`[KnowledgeGraph] Incremental ClaimKit ingestion failed for node ${id}:`, err));
+
     return id;
   }
 
@@ -215,6 +229,15 @@ class KnowledgeGraph {
         description || null,
         new Date().toISOString(),
       );
+
+    ingestSingleGraphEdge({
+      id,
+      sourceId,
+      targetId,
+      type,
+      description,
+      createdAt: new Date(),
+    }).catch(err => console.warn(`[KnowledgeGraph] Incremental ClaimKit ingestion failed for edge ${id}:`, err));
 
     return id;
   }

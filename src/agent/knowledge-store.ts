@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import * as fs from "fs";
 import * as path from "path";
+import { ingestSingleKnowledgeEntry } from "../context-engine/claimkit-ingestion";
 
 export interface KnowledgeEntry {
   id: string;
@@ -86,6 +87,20 @@ class KnowledgeStore {
         entry.createdAt.toISOString(),
         now,
       );
+
+    ingestSingleKnowledgeEntry({
+      id,
+      source: entry.source,
+      title: entry.title,
+      content: entry.content,
+      url: entry.url,
+      filePath: entry.filePath,
+      tags: entry.tags,
+      sessionId: entry.sessionId,
+      createdAt: entry.createdAt,
+      accessedAt: new Date(now),
+      accessCount: 0,
+    }).catch(err => console.warn(`[KnowledgeStore] Incremental ClaimKit ingestion failed for ${id}:`, err));
 
     return id;
   }
