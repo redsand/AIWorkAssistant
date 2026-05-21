@@ -115,3 +115,165 @@
 /**
  * @typedef {KanbanSSEEventCardUpdated|KanbanSSEEventAgentStarted|KanbanSSEEventAgentStep|KanbanSSEEventAgentCompleted|KanbanSSEEventDependencyUnblocked|KanbanSSEEventWorktreeChanged} KanbanSSEEvent
  */
+
+/**
+ * Kanban Board — portfolio-level view
+ *
+ * Fetches data from /api/kanban/board and renders cards into four columns.
+ * Read-only for now — no drag-drop, no live updates.
+ */
+(function () {
+  "use strict";
+
+  // ─── DOM refs ──────────────────────────────────────────────────────────────
+
+  var loadingEl = document.getElementById("kanban-loading");
+  var emptyEl = document.getElementById("kanban-empty");
+  var boardEl = document.getElementById("kanban-board");
+  var errorBanner = document.getElementById("error-banner");
+  var refreshBtn = document.getElementById("refresh-btn");
+
+  var columns = {
+    backlog: document.getElementById("col-backlog"),
+    in_flight: document.getElementById("col-in_flight"),
+    blocked: document.getElementById("col-blocked"),
+    done: document.getElementById("col-done"),
+  };
+
+  var counts = {
+    backlog: document.getElementById("count-backlog"),
+    in_flight: document.getElementById("count-in_flight"),
+    blocked: document.getElementById("count-blocked"),
+    done: document.getElementById("count-done"),
+  };
+
+  var PLATFORM_LABELS = {
+    github: "GH",
+    gitlab: "GL",
+    jira: "JI",
+    work_items: "WI",
+  };
+
+  // ─── Helpers ───────────────────────────────────────────────────────────────
+
+  function showError(msg) {
+    errorBanner.textContent = msg;
+    errorBanner.style.display = "block";
+  }
+
+  function hideError() {
+    errorBanner.style.display = "none";
+  }
+
+  function clearColumns() {
+    Object.keys(columns).forEach(function (key) {
+      columns[key].innerHTML = "";
+      counts[key].textContent = "0";
+    });
+  }
+
+  function platformLabel(platform) {
+    return PLATFORM_LABELS[platform] || platform.toUpperCase().slice(0, 2);
+  }
+
+  function escapeHtml(str) {
+    var div = document.createElement("div");
+    div.appendChild(document.createTextNode(str));
+    return div.innerHTML;
+  }
+
+  // ─── Card rendering ────────────────────────────────────────────────────────
+
+  function renderCard(card) {
+    var pl = platformLabel(card.platform);
+    var pri = card.priority || "unknown";
+    var depCount = (card.dependencyKeys && card.dependencyKeys.length) || 0;
+    var depTitle = depCount > 0 ? card.dependencyKeys.join(", ") : "";
+    var assignee = card.assignee ? escapeHtml(card.assignee) : "unassigned";
+    var externalId = escapeHtml(card.externalId || card.id);
+    var title = escapeHtml(card.title);
+
+    var article = document.createElement("article");
+    article.className = "kcard";
+    article.setAttribute("data-key", card.key);
+
+    article.innerHTML =
+      '<header>' +
+        '<span class="kbadge kbadge-platform">' + pl + '</span>' +
+        '<span class="kbadge kbadge-priority kbadge-priority-' + pri + '">' + pri + '</span>' +
+        '<span class="kcard-external">' + externalId + '</span>' +
+      '</header>' +
+      '<h3 class="kcard-title">' + title + '</h3>' +
+      '<footer>' +
+        '<span class="kcard-assignee">@' + assignee + '</span>' +
+        '<span class="kcard-deps" title="' + escapeHtml(depTitle) + '">' +
+          (depCount > 0 ? depCount + ' deps' : 'no deps') +
+        '</span>' +
+      '</footer>';
+
+    return article;
+  }
+
+  // ─── Board rendering ───────────────────────────────────────────────────────
+
+  function renderBoard(data) {
+    clearColumns();
+
+    var cards = data.cards || [];
+    var columnCounts = { backlog: 0, in_flight: 0, blocked: 0, done: 0 };
+
+    if (cards.length === 0) {
+      boardEl.style.display = "none";
+      emptyEl.style.display = "block";
+      return;
+    }
+
+    emptyEl.style.display = "none";
+    boardEl.style.display = "grid";
+
+    cards.forEach(function (card) {
+      var col = card.column || "backlog";
+      if (!columns[col]) {
+        col = "backlog";
+      }
+      columns[col].appendChild(renderCard(card));
+      columnCounts[col]++;
+    });
+
+    Object.keys(counts).forEach(function (key) {
+      counts[key].textContent = columnCounts[key];
+    });
+  }
+
+  // ─── Data fetch ────────────────────────────────────────────────────────────
+
+  function fetchBoard() {
+    hideError();
+    loadingEl.style.display = "block";
+    boardEl.style.display = "none";
+    emptyEl.style.display = "none";
+
+    fetch("/api/kanban/board")
+      .then(function (res) {
+        if (!res.ok) {
+          throw new Error("HTTP " + res.status + " " + res.statusText);
+        }
+        return res.json();
+      })
+      .then(function (data) {
+        loadingEl.style.display = "none";
+        renderBoard(data);
+      })
+      .catch(function (err) {
+        loadingEl.style.display = "none";
+        emptyEl.style.display = "none";
+        showError("Failed to load board: " + err.message);
+      });
+  }
+
+  // ─── Init ──────────────────────────────────────────────────────────────────
+
+  refreshBtn.addEventListener("click", fetchBoard);
+
+  fetchBoard();
+})();
