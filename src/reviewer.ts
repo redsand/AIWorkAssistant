@@ -602,7 +602,11 @@ const MAX_POLL_INTERVAL_MS = 300_000;
 let currentPollIntervalMs: number | null = null; // null = use config.pollIntervalMs
 
 // ── Persistent reviewer state ────────────────────────────────────────────────
-const REVIEWER_STATE_FILE = path.join(process.cwd(), ".aicoder", "reviewer-state.json");
+// Resolve lazily: workspacePath may be set after module load via --workspace-path
+function getReviewerStateFile(): string {
+  const ws = ARGV["workspace-path"] || process.env.REVIEW_WORKSPACE_PATH || process.cwd();
+  return path.join(ws, ".aicoder", "reviewer-state.json");
+}
 
 interface ReviewerState {
   reviewedMRs: string[];
@@ -613,8 +617,8 @@ interface ReviewerState {
 
 function loadReviewerState(): void {
   try {
-    if (fs.existsSync(REVIEWER_STATE_FILE)) {
-      const data: ReviewerState = JSON.parse(fs.readFileSync(REVIEWER_STATE_FILE, "utf-8"));
+    if (fs.existsSync(getReviewerStateFile())) {
+      const data: ReviewerState = JSON.parse(fs.readFileSync(getReviewerStateFile(), "utf-8"));
       if (data.reviewedMRs) {
         data.reviewedMRs.forEach((key: string) => reviewedMRs.add(key));
       }
@@ -692,7 +696,7 @@ async function verifyReviewerState(config: ReviewerConfig): Promise<void> {
 
 function saveReviewerState(): void {
   try {
-    const dir = path.dirname(REVIEWER_STATE_FILE);
+    const dir = path.dirname(getReviewerStateFile());
     fs.mkdirSync(dir, { recursive: true });
     const state: ReviewerState = {
       reviewedMRs: [...reviewedMRs],
@@ -700,7 +704,7 @@ function saveReviewerState(): void {
       reviewedMRTimes: Object.fromEntries(reviewedMRTimes),
       updatedAt: new Date().toISOString(),
     };
-    fs.writeFileSync(REVIEWER_STATE_FILE, JSON.stringify(state, null, 2), "utf-8");
+    fs.writeFileSync(getReviewerStateFile(), JSON.stringify(state, null, 2), "utf-8");
   } catch (err) {
     log.warn(`Could not persist reviewer state: ${err instanceof Error ? err.message : err}`);
   }
@@ -848,7 +852,7 @@ async function pollMergeRequests(
       // Persist structured findings for review gate and convergence detection
       const gateFindings = parseReviewFindings("", result.findings);
       if (gateFindings.length > 0) {
-        recordGateFindings(gateFindings);
+        recordGateFindings(gateFindings, mrKey);
         log.step(`Persisted ${gateFindings.length} findings to review gate state`);
       }
 

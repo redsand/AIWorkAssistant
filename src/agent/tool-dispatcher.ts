@@ -558,7 +558,7 @@ async function handleJiraCloseIssue(
   }
 
   // Review gate: check whether unresolved critical/high findings block "Done" transition
-  const gateState = loadReviewGateState();
+  const gateState = loadReviewGateState(key);
   const forceDone = params.force_done === true || params.forceDone === true;
   const gate = reviewGate(gateState.lastFindings, forceDone, gateState.reviewOccurred);
 

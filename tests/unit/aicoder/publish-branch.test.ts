@@ -102,7 +102,7 @@ describe("pushBranch — force push after rebase failure", { timeout: 15_000 }, 
     git(["commit", "-m", "feat: second attempt"], localDir);
 
     // Force push replaces the stale remote branch
-    const forceOk = pushBranch("ai/issue-99-fix", localDir, undefined, true);
+    const forceOk = pushBranch("ai/issue-99-fix", localDir, undefined, { force: true });
     expect(forceOk).toBe(true);
 
     // Remote now has the second attempt's commit, not the first
@@ -140,7 +140,7 @@ describe("pushBranch — force push after rebase failure", { timeout: 15_000 }, 
     expect(headAfterAbort).toBe(secondRunHead);
 
     // Force push now cleanly replaces the remote branch
-    const forceOk = pushBranch("ai/issue-100-fix", localDir, undefined, true);
+    const forceOk = pushBranch("ai/issue-100-fix", localDir, undefined, { force: true });
     expect(forceOk).toBe(true);
 
     const remoteHead = gitOut(["rev-parse", "refs/heads/ai/issue-100-fix"], remoteDir);

@@ -3,7 +3,7 @@ import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { cleanupMergedBranch, cleanupAllMergedBranches } from "../git-ops";
+import { cleanupMergedBranch, cleanupAllMergedBranches, pushBranch, recoverFromRebase, isRebaseInProgress } from "../git-ops";
 
 function git(args: string[], cwd: string): { ok: boolean; stdout: string; stderr: string } {
   const r = spawnSync("git", args, { cwd, stdio: "pipe", encoding: "utf-8" });
@@ -203,5 +203,129 @@ describe("cleanupAllMergedBranches", () => {
     expect(remaining).toContain("ai/issue-unmerged");
     expect(remaining).not.toContain("ai/issue-merged-1");
     expect(remaining).not.toContain("ai/issue-merged-2");
+  });
+});
+
+describe("pushBranch", () => {
+  let workspace: string;
+  let root: string;
+
+  beforeEach(() => {
+    const pair = makeRepoPair();
+    workspace = pair.workspace;
+    root = path.dirname(workspace);
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(root, { recursive: true, force: true });
+    } catch {
+      /* Windows sometimes holds the lock briefly in tests */
+    }
+  });
+
+  it("pushes to origin with normal push", () => {
+    gitMust(["checkout", "-b", "ai/test-push-normal"], workspace);
+    fs.writeFileSync(path.join(workspace, "test-push.txt"), "content\n");
+    gitMust(["add", "."], workspace);
+    gitMust(["commit", "-m", "test push"], workspace);
+    const result = pushBranch("ai/test-push-normal", workspace);
+    expect(result).toBe(true);
+  });
+
+  it("force pushes when force=true", () => {
+    gitMust(["checkout", "-b", "ai/test-push-force"], workspace);
+    fs.writeFileSync(path.join(workspace, "test-force.txt"), "v1\n");
+    gitMust(["add", "."], workspace);
+    gitMust(["commit", "-m", "force v1"], workspace);
+    gitMust(["push", "-u", "origin", "ai/test-push-force"], workspace);
+
+    // Amend to create diverged history
+    fs.writeFileSync(path.join(workspace, "test-force.txt"), "v2\n");
+    gitMust(["add", "."], workspace);
+    gitMust(["commit", "--amend", "-m", "force v2"], workspace);
+
+    const normalPush = git(["push", "origin", "ai/test-push-force"], workspace);
+    expect(normalPush.ok).toBe(false); // rejected (non-fast-forward)
+
+    const result = pushBranch("ai/test-push-force", workspace, undefined, { force: true });
+    expect(result).toBe(true);
+  });
+
+  it("force pushes with --force-with-lease when forceWithLease=true", () => {
+    gitMust(["checkout", "-b", "ai/test-push-fwl"], workspace);
+    fs.writeFileSync(path.join(workspace, "test-fwl.txt"), "v1\n");
+    gitMust(["add", "."], workspace);
+    gitMust(["commit", "-m", "fwl v1"], workspace);
+    gitMust(["push", "-u", "origin", "ai/test-push-fwl"], workspace);
+
+    // Amend to create diverged history
+    fs.writeFileSync(path.join(workspace, "test-fwl.txt"), "v2\n");
+    gitMust(["add", "."], workspace);
+    gitMust(["commit", "--amend", "-m", "fwl v2"], workspace);
+
+    const result = pushBranch("ai/test-push-fwl", workspace, undefined, { forceWithLease: true });
+    expect(result).toBe(true);
+  });
+
+  it("returns false on non-fast-forward rejection without force", () => {
+    gitMust(["checkout", "-b", "ai/test-push-reject"], workspace);
+    fs.writeFileSync(path.join(workspace, "test-reject.txt"), "v1\n");
+    gitMust(["add", "."], workspace);
+    gitMust(["commit", "-m", "reject v1"], workspace);
+    gitMust(["push", "-u", "origin", "ai/test-push-reject"], workspace);
+
+    // Create conflict on remote
+    gitMust(["checkout", "main"], workspace);
+    fs.writeFileSync(path.join(workspace, "conflict.txt"), "remote\n");
+    gitMust(["add", "."], workspace);
+    gitMust(["commit", "-m", "remote conflict"], workspace);
+    gitMust(["push", "origin", "main"], workspace);
+
+    // Create diverged local
+    gitMust(["checkout", "ai/test-push-reject"], workspace);
+    fs.writeFileSync(path.join(workspace, "test-reject.txt"), "v2\n");
+    gitMust(["add", "."], workspace);
+    gitMust(["commit", "--amend", "-m", "reject v2"], workspace);
+
+    const result = pushBranch("ai/test-push-reject", workspace);
+    expect(result).toBe(false);
+  });
+});
+
+describe("recoverFromRebase", () => {
+  let workspace: string;
+  let root: string;
+
+  beforeEach(() => {
+    const pair = makeRepoPair();
+    workspace = pair.workspace;
+    root = path.dirname(workspace);
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(root, { recursive: true, force: true });
+    } catch {
+      /* Windows sometimes holds the lock briefly in tests */
+    }
+  });
+
+  it("recovers from mid-rebase state", () => {
+    // Create a branch with a commit
+    gitMust(["checkout", "-b", "ai/test-rebase-recover"], workspace);
+    fs.writeFileSync(path.join(workspace, "rebase-test.txt"), "v1\n");
+    gitMust(["add", "."], workspace);
+    gitMust(["commit", "-m", "rebase v1"], workspace);
+
+    // Simulate mid-rebase by creating the rebase-merge directory
+    const gitDir = path.join(workspace, ".git");
+    fs.mkdirSync(path.join(gitDir, "rebase-merge"), { recursive: true });
+    fs.writeFileSync(path.join(gitDir, "rebase-merge", "head-name"), "refs/heads/ai/test-rebase-recover");
+
+    expect(isRebaseInProgress(workspace)).toBe(true);
+    const result = recoverFromRebase(workspace);
+    expect(result).toBe(true);
+    expect(isRebaseInProgress(workspace)).toBe(false);
   });
 });
