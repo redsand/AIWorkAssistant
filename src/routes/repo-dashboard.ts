@@ -1000,10 +1000,12 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
 
   fastify.post<{
     Body: { issueId: string; platform: string; repo: string; status: string };
-  }>("/transition", async (request) => {
+  }>("/transition", async (request, reply) => {
     const { issueId, platform, repo, status } = request.body || {};
+    request.log.info({ issueId, platform, repo, status }, "transition requested");
 
     if (!issueId || !platform || !repo || !status) {
+      reply.code(400);
       return {
         success: false,
         error: "issueId, platform, repo, and status are required",
@@ -1011,6 +1013,7 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
     }
 
     if (!VALID_TRANSITION_STATUSES.includes(status as any)) {
+      reply.code(400);
       return {
         success: false,
         error: `Invalid status "${status}". Must be one of: ${VALID_TRANSITION_STATUSES.join(", ")}`,
@@ -1108,11 +1111,14 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
       }
 
       invalidateIssueCache(platform, repo);
+      request.log.info({ issueId, platform, repo, status }, "transition succeeded");
       return { success: true };
     } catch (err: any) {
+      request.log.error({ err, issueId, platform, repo, status }, "transition failed");
+      reply.code(500);
       return {
         success: false,
-        error: err.message || "Failed to transition issue",
+        error: "Failed to transition issue",
       };
     }
   });

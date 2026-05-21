@@ -757,7 +757,7 @@ describe("repoDashboardRoutes", () => {
         url: "/api/repo-dashboard/transition",
         payload: {},
       });
-      expect(res.statusCode).toBe(200);
+      expect(res.statusCode).toBe(400);
       expect(res.json().success).toBe(false);
       expect(res.json().error).toBeDefined();
     });
@@ -768,7 +768,7 @@ describe("repoDashboardRoutes", () => {
         url: "/api/repo-dashboard/transition",
         payload: { issueId: "1", platform: "github", repo: "org/repo", status: "invalid_status" },
       });
-      expect(res.statusCode).toBe(200);
+      expect(res.statusCode).toBe(400);
       expect(res.json().success).toBe(false);
       expect(res.json().error).toMatch(/invalid.*status/i);
     });
@@ -910,8 +910,9 @@ describe("repoDashboardRoutes", () => {
         url: "/api/repo-dashboard/transition",
         payload: { issueId: "1", platform: "github", repo: "org/repo", status: "done" },
       });
+      expect(res.statusCode).toBe(500);
       expect(res.json().success).toBe(false);
-      expect(res.json().error).toBe("API error");
+      expect(res.json().error).toBe("Failed to transition issue");
     });
 
     it("should handle Jira getTransitions errors", async () => {
@@ -921,8 +922,9 @@ describe("repoDashboardRoutes", () => {
         url: "/api/repo-dashboard/transition",
         payload: { issueId: "PROJ-1", platform: "jira", repo: "PROJ", status: "in_progress" },
       });
+      expect(res.statusCode).toBe(500);
       expect(res.json().success).toBe(false);
-      expect(res.json().error).toBe("Jira down");
+      expect(res.json().error).toBe("Failed to transition issue");
     });
 
     it("should handle work_items not found", async () => {

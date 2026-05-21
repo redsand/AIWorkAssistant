@@ -603,6 +603,25 @@
     );
   }
 
+  // ─── HTML escaping helpers ──────────────────────────────────────────────────
+
+  function escapeHtml(str) {
+    var d = document.createElement("div");
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
+  function escapeAttr(str) {
+    return String(str).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function safeHref(url) {
+    var s = String(url || "").trim();
+    if (/^javascript\s*:/i.test(s)) return "#";
+    if (!/^https?:\/\//i.test(s)) return "#";
+    return escapeAttr(s);
+  }
+
   // ─── Board rendering ────────────────────────────────────────────────────────
 
   function renderBoard() {
@@ -636,15 +655,15 @@
         card.draggable = true;
         card.innerHTML =
           '<div class="board-card-header">' +
-            '<span class="platform-icon" title="' + i.platform + '">' + platformIcon(i.platform) + "</span>" +
-            '<a href="' + i.url + '" target="_blank" rel="noopener">' + i.externalId + "</a>" +
+            '<span class="platform-icon" title="' + escapeAttr(i.platform) + '">' + platformIcon(i.platform) + "</span>" +
+            '<a href="' + safeHref(i.url) + '" target="_blank" rel="noopener">' + escapeHtml(i.externalId) + "</a>" +
             priorityBadgeHtml(i.priority) +
           "</div>" +
-          '<div class="board-card-title">' + truncate(i.title, 80).replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</div>" +
+          '<div class="board-card-title">' + escapeHtml(truncate(i.title, 80)) + "</div>" +
           '<div class="board-card-footer">' +
-            "<span>" + (i.assignee || "—") + "</span>" +
+            "<span>" + escapeHtml(i.assignee || "—") + "</span>" +
             (i.labels || []).map(function (l) {
-              return '<span class="badge badge-low">' + l.replace(/</g, "&lt;") + "</span>";
+              return '<span class="badge badge-low">' + escapeHtml(l) + "</span>";
             }).join("") +
           "</div>";
         container.appendChild(card);
