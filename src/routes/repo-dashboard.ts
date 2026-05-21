@@ -73,6 +73,7 @@ export interface DashboardSprint {
   completedPoints: number;
   platform: string;
   repo: string;
+  description?: string;
 }
 
 export interface BurndownData {
@@ -480,6 +481,7 @@ async function fetchGitLabIssues(repoId: string): Promise<DashboardIssue[]> {
       createdAt: i.created_at || "",
       updatedAt: i.updated_at || "",
       dependencies: parseDependencies(i.description || ""),
+      sprint: i.milestone ? `gl-milestone-${i.milestone.id}` : undefined,
     };
   });
 }
@@ -565,6 +567,7 @@ async function fetchGitHubSprints(
           completedPoints: 0,
           platform: "github",
           repo,
+          description: m.description || undefined,
         };
       });
 
@@ -646,6 +649,7 @@ async function fetchJiraSprints(
       completedPoints: 0,
       platform: "jira",
       repo: projectKey,
+      description: s.goal || undefined,
     }));
 
     let allIssues: DashboardIssue[] = [];
@@ -696,6 +700,64 @@ async function fetchJiraSprints(
 
     return { sprints, issues: allIssues };
   } catch (err: any) {
+    return { sprints: [], issues: [] };
+  }
+}
+
+async function fetchGitLabSprints(
+  repoId: string,
+): Promise<{ sprints: DashboardSprint[]; issues: DashboardIssue[] }> {
+  try {
+    const milestones = await gitlabClient.listMilestones(repoId, "active");
+    const sprints: DashboardSprint[] = milestones.map((m: any) => ({
+      id: `gl-milestone-${m.id}`,
+      name: m.title || `Milestone ${m.id}`,
+      state: m.state === "active" ? "active" : "closed",
+      startDate: m.start_date || m.created_at || "",
+      endDate: m.due_date || "",
+      totalPoints: 0,
+      completedPoints: 0,
+      platform: "gitlab",
+      repo: repoId,
+      description: m.description || undefined,
+    }));
+
+    let issues: DashboardIssue[] = [];
+    try {
+      const rawIssues = await gitlabClient.listIssues(repoId, "all");
+      issues = rawIssues.map((i: any) => {
+        const milestone = i.milestone;
+        return {
+          id: String(i.iid || i.id),
+          externalId: `!${i.iid || i.id}`,
+          title: i.title || "",
+          url: i.web_url || "",
+          status: normalizeStatus(i.state, "gitlab", i.labels || []),
+          priority: normalizePriority(null, i.labels || []),
+          assignee: i.assignee?.username || i.assignee?.name || null,
+          labels: i.labels || [],
+          platform: "gitlab",
+          repo: repoId,
+          createdAt: i.created_at || "",
+          updatedAt: i.updated_at || "",
+          dependencies: parseDependencies(i.description || ""),
+          sprint: milestone ? `gl-milestone-${milestone.id}` : undefined,
+        };
+      });
+    } catch {
+      /* fall through with empty issues */
+    }
+
+    for (const sprint of sprints) {
+      const sprintIssues = issues.filter((i) => i.sprint === sprint.id);
+      sprint.totalPoints = sprintIssues.length;
+      sprint.completedPoints = sprintIssues.filter(
+        (i) => i.status === "done",
+      ).length;
+    }
+
+    return { sprints, issues };
+  } catch {
     return { sprints: [], issues: [] };
   }
 }
@@ -941,6 +1003,8 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
       switch (platform) {
         case "github":
           return await fetchGitHubSprints(repo);
+        case "gitlab":
+          return await fetchGitLabSprints(repo);
         case "jira":
           return await fetchJiraSprints(repo);
         default:
@@ -976,6 +1040,9 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
         case "github":
           ({ sprints, issues } = await fetchGitHubSprints(repo));
           break;
+        case "gitlab":
+          ({ sprints, issues } = await fetchGitLabSprints(repo));
+          break;
         case "jira":
           ({ sprints, issues } = await fetchJiraSprints(repo));
           break;
@@ -1002,6 +1069,291 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
         actual: [],
         error: err.message || "Failed to calculate burndown",
       };
+    }
+  });
+
+  // ─── Sprint Management Routes ──────────────────────────────────────────────
+
+  fastify.post<{
+    Body: {
+      platform: string;
+      repo: string;
+      name: string;
+      startDate?: string;
+      endDate?: string;
+      description?: string;
+    };
+  }>("/sprints", async (request, reply) => {
+    const { platform, repo, name, startDate, endDate, description } = request.body;
+    if (!platform || !repo || !name) {
+      return reply.code(400).send({
+        error: "platform, repo, and name are required",
+      });
+    }
+
+    try {
+      switch (platform) {
+        case "github": {
+          const [owner, repoName] = repo.split("/");
+          if (!owner || !repoName) {
+            return reply.code(400).send({ error: "Invalid GitHub repo format. Use owner/repo." });
+          }
+          const result = await githubClient.createMilestone(
+            { title: name, description, due_on: endDate },
+            owner,
+            repoName,
+          );
+          return reply.code(201).send({
+            sprint: {
+              id: `gh-milestone-${result.number}`,
+              name: result.title,
+              state: result.state === "open" ? "active" : "closed",
+              startDate: result.created_at || "",
+              endDate: result.due_on || "",
+              totalPoints: 0,
+              completedPoints: 0,
+              platform: "github",
+              repo,
+              description: result.description || undefined,
+            } as DashboardSprint,
+          });
+        }
+        case "gitlab": {
+          const result = await gitlabClient.createMilestone(repo, {
+            title: name,
+            description,
+            due_date: endDate,
+            start_date: startDate,
+          });
+          return reply.code(201).send({
+            sprint: {
+              id: `gl-milestone-${result.id}`,
+              name: result.title,
+              state: result.state === "active" ? "active" : "closed",
+              startDate: result.start_date || result.created_at || "",
+              endDate: result.due_date || "",
+              totalPoints: 0,
+              completedPoints: 0,
+              platform: "gitlab",
+              repo,
+              description: result.description || undefined,
+            } as DashboardSprint,
+          });
+        }
+        case "jira": {
+          const result = await jiraClient.createSprint({
+            projectKey: repo,
+            name,
+            goal: description,
+            startDate,
+            endDate,
+          });
+          return reply.code(201).send({
+            sprint: {
+              id: `jira-sprint-${result.id}`,
+              name: result.name,
+              state: result.state,
+              startDate: result.startDate || "",
+              endDate: result.endDate || "",
+              totalPoints: 0,
+              completedPoints: 0,
+              platform: "jira",
+              repo,
+              description: result.goal || undefined,
+            } as DashboardSprint,
+          });
+        }
+        default:
+          return reply.code(400).send({
+            error: `Unsupported platform: ${platform}. Use github, gitlab, or jira.`,
+          });
+      }
+    } catch (err: any) {
+      return reply.code(500).send({
+        error: err.message || "Failed to create sprint/milestone",
+      });
+    }
+  });
+
+  fastify.put<{
+    Params: { sprintId: string };
+    Body: {
+      platform: string;
+      repo: string;
+      name?: string;
+      startDate?: string;
+      endDate?: string;
+      description?: string;
+      state?: string;
+    };
+  }>("/sprints/:sprintId", async (request, reply) => {
+    const { sprintId } = request.params;
+    const { platform, repo, name, startDate, endDate, description, state } = request.body;
+    if (!platform || !repo || !sprintId) {
+      return reply.code(400).send({
+        error: "platform, repo, and sprintId (in URL path) are required",
+      });
+    }
+
+    try {
+      switch (platform) {
+        case "github": {
+          const [owner, repoName] = repo.split("/");
+          if (!owner || !repoName) {
+            return reply.code(400).send({ error: "Invalid GitHub repo format." });
+          }
+          const milestoneNumber = parseInt(sprintId.replace("gh-milestone-", ""), 10);
+          if (isNaN(milestoneNumber)) {
+            return reply.code(400).send({ error: "Invalid GitHub milestone ID" });
+          }
+          const ghState = state === "closed" ? "closed" as const
+            : state === "active" ? "open" as const
+            : undefined;
+          const result = await githubClient.updateMilestone(
+            milestoneNumber,
+            { title: name, description, due_on: endDate, state: ghState },
+            owner,
+            repoName,
+          );
+          return {
+            sprint: {
+              id: `gh-milestone-${result.number}`,
+              name: result.title,
+              state: result.state === "open" ? "active" : "closed",
+              startDate: result.created_at || "",
+              endDate: result.due_on || "",
+              totalPoints: 0,
+              completedPoints: 0,
+              platform: "github",
+              repo,
+              description: result.description || undefined,
+            } as DashboardSprint,
+          };
+        }
+        case "gitlab": {
+          const milestoneId = parseInt(sprintId.replace("gl-milestone-", ""), 10);
+          if (isNaN(milestoneId)) {
+            return reply.code(400).send({ error: "Invalid GitLab milestone ID" });
+          }
+          const glStateEvent = state === "closed" ? "close" as const
+            : state === "active" ? "activate" as const
+            : undefined;
+          const result = await gitlabClient.updateMilestone(repo, milestoneId, {
+            title: name,
+            description,
+            due_date: endDate,
+            start_date: startDate,
+            state_event: glStateEvent,
+          });
+          return {
+            sprint: {
+              id: `gl-milestone-${result.id}`,
+              name: result.title,
+              state: result.state === "active" ? "active" : "closed",
+              startDate: result.start_date || result.created_at || "",
+              endDate: result.due_date || "",
+              totalPoints: 0,
+              completedPoints: 0,
+              platform: "gitlab",
+              repo,
+              description: result.description || undefined,
+            } as DashboardSprint,
+          };
+        }
+        case "jira": {
+          const jiraSprintId = parseInt(sprintId.replace("jira-sprint-", ""), 10);
+          if (isNaN(jiraSprintId)) {
+            return reply.code(400).send({ error: "Invalid Jira sprint ID" });
+          }
+          const jiraState = state as "active" | "closed" | undefined;
+          const result = await jiraClient.updateSprint(jiraSprintId, {
+            name,
+            goal: description,
+            startDate,
+            endDate,
+            state: jiraState,
+          });
+          return {
+            sprint: {
+              id: `jira-sprint-${result.id}`,
+              name: result.name,
+              state: result.state,
+              startDate: result.startDate || "",
+              endDate: result.endDate || "",
+              totalPoints: 0,
+              completedPoints: 0,
+              platform: "jira",
+              repo,
+              description: result.goal || undefined,
+            } as DashboardSprint,
+          };
+        }
+        default:
+          return reply.code(400).send({
+            error: `Unsupported platform: ${platform}. Use github, gitlab, or jira.`,
+          });
+      }
+    } catch (err: any) {
+      return reply.code(500).send({
+        error: err.message || "Failed to update sprint/milestone",
+      });
+    }
+  });
+
+  fastify.delete<{
+    Params: { sprintId: string };
+    Body: { platform: string; repo: string };
+  }>("/sprints/:sprintId", async (request, reply) => {
+    const { sprintId } = request.params;
+    const { platform, repo } = request.body;
+    if (!platform || !repo || !sprintId) {
+      return reply.code(400).send({
+        error: "platform, repo, and sprintId (in URL path) are required",
+      });
+    }
+
+    try {
+      switch (platform) {
+        case "github": {
+          const [owner, repoName] = repo.split("/");
+          if (!owner || !repoName) {
+            return reply.code(400).send({ error: "Invalid GitHub repo format." });
+          }
+          const milestoneNumber = parseInt(sprintId.replace("gh-milestone-", ""), 10);
+          if (isNaN(milestoneNumber)) {
+            return reply.code(400).send({ error: "Invalid GitHub milestone ID" });
+          }
+          await githubClient.deleteMilestone(milestoneNumber, owner, repoName);
+          invalidateIssueCache("github", repo);
+          return { success: true };
+        }
+        case "gitlab": {
+          const milestoneId = parseInt(sprintId.replace("gl-milestone-", ""), 10);
+          if (isNaN(milestoneId)) {
+            return reply.code(400).send({ error: "Invalid GitLab milestone ID" });
+          }
+          await gitlabClient.deleteMilestone(repo, milestoneId);
+          invalidateIssueCache("gitlab", repo);
+          return { success: true };
+        }
+        case "jira": {
+          const jiraSprintId = parseInt(sprintId.replace("jira-sprint-", ""), 10);
+          if (isNaN(jiraSprintId)) {
+            return reply.code(400).send({ error: "Invalid Jira sprint ID" });
+          }
+          await jiraClient.updateSprint(jiraSprintId, { state: "closed" });
+          invalidateIssueCache("jira", repo);
+          return { success: true };
+        }
+        default:
+          return reply.code(400).send({
+            error: `Unsupported platform: ${platform}.`,
+          });
+      }
+    } catch (err: any) {
+      return reply.code(500).send({
+        error: err.message || "Failed to delete sprint/milestone",
+      });
     }
   });
 

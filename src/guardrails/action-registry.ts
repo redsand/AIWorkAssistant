@@ -651,6 +651,171 @@ class GuardrailsRegistry {
       impacts: ["hawk_ir", "security_incidents", "network", "infrastructure"],
     });
 
+    // GitHub milestone operations
+    this.registerAction({
+      id: "github.milestone.create",
+      category: ActionCategory.DATA_MODIFICATION,
+      riskLevel: RiskLevel.LOW,
+      operation: "github.milestone.create",
+      description: "Create a GitHub milestone",
+      requiresApproval: false,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 5000,
+      rateLimits: { maxPerHour: 20, maxPerDay: 100 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "developer"],
+      requiresConfirmation: false,
+      requiresJustification: false,
+      impacts: ["github", "milestones", "planning"],
+    });
+
+    this.registerAction({
+      id: "github.milestone.update",
+      category: ActionCategory.DATA_MODIFICATION,
+      riskLevel: RiskLevel.LOW,
+      operation: "github.milestone.update",
+      description: "Update a GitHub milestone",
+      requiresApproval: false,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 5000,
+      rateLimits: { maxPerHour: 20, maxPerDay: 100 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "developer"],
+      requiresConfirmation: false,
+      requiresJustification: false,
+      impacts: ["github", "milestones", "planning"],
+    });
+
+    this.registerAction({
+      id: "github.milestone.delete",
+      category: ActionCategory.DELETE,
+      riskLevel: RiskLevel.HIGH,
+      operation: "github.milestone.delete",
+      description: "Delete a GitHub milestone",
+      requiresApproval: true,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 30000,
+      rateLimits: { maxPerHour: 5, maxPerDay: 20 },
+      allowedUsers: [],
+      allowedRoles: ["admin"],
+      requiresConfirmation: true,
+      requiresJustification: true,
+      impacts: ["github", "milestones", "planning"],
+    });
+
+    // GitLab milestone operations
+    this.registerAction({
+      id: "gitlab.milestone.create",
+      category: ActionCategory.DATA_MODIFICATION,
+      riskLevel: RiskLevel.LOW,
+      operation: "gitlab.milestone.create",
+      description: "Create a GitLab milestone",
+      requiresApproval: false,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 5000,
+      rateLimits: { maxPerHour: 20, maxPerDay: 100 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "developer"],
+      requiresConfirmation: false,
+      requiresJustification: false,
+      impacts: ["gitlab", "milestones", "planning"],
+    });
+
+    this.registerAction({
+      id: "gitlab.milestone.update",
+      category: ActionCategory.DATA_MODIFICATION,
+      riskLevel: RiskLevel.LOW,
+      operation: "gitlab.milestone.update",
+      description: "Update a GitLab milestone",
+      requiresApproval: false,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 5000,
+      rateLimits: { maxPerHour: 20, maxPerDay: 100 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "developer"],
+      requiresConfirmation: false,
+      requiresJustification: false,
+      impacts: ["gitlab", "milestones", "planning"],
+    });
+
+    this.registerAction({
+      id: "gitlab.milestone.delete",
+      category: ActionCategory.DELETE,
+      riskLevel: RiskLevel.HIGH,
+      operation: "gitlab.milestone.delete",
+      description: "Delete a GitLab milestone",
+      requiresApproval: true,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 30000,
+      rateLimits: { maxPerHour: 5, maxPerDay: 20 },
+      allowedUsers: [],
+      allowedRoles: ["admin"],
+      requiresConfirmation: true,
+      requiresJustification: true,
+      impacts: ["gitlab", "milestones", "planning"],
+    });
+
+    // Jira sprint operations
+    this.registerAction({
+      id: "jira.sprint.create",
+      category: ActionCategory.DATA_MODIFICATION,
+      riskLevel: RiskLevel.MEDIUM,
+      operation: "jira.sprint.create",
+      description: "Create a Jira sprint",
+      requiresApproval: false,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 10000,
+      rateLimits: { maxPerHour: 10, maxPerDay: 30 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "project_lead"],
+      requiresConfirmation: false,
+      requiresJustification: false,
+      impacts: ["jira", "sprints", "planning"],
+    });
+
+    this.registerAction({
+      id: "jira.sprint.update",
+      category: ActionCategory.DATA_MODIFICATION,
+      riskLevel: RiskLevel.MEDIUM,
+      operation: "jira.sprint.update",
+      description: "Update a Jira sprint",
+      requiresApproval: false,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 10000,
+      rateLimits: { maxPerHour: 10, maxPerDay: 30 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "project_lead"],
+      requiresConfirmation: false,
+      requiresJustification: false,
+      impacts: ["jira", "sprints", "planning"],
+    });
+
+    this.registerAction({
+      id: "jira.sprint.delete",
+      category: ActionCategory.DELETE,
+      riskLevel: RiskLevel.HIGH,
+      operation: "jira.sprint.delete",
+      description: "Delete or close a Jira sprint",
+      requiresApproval: true,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 30000,
+      rateLimits: { maxPerHour: 5, maxPerDay: 20 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "project_lead"],
+      requiresConfirmation: true,
+      requiresJustification: true,
+      impacts: ["jira", "sprints", "planning"],
+    });
+
     // System configuration
     this.registerAction({
       id: "system.config_change",

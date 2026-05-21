@@ -887,6 +887,110 @@ export class JiraClient {
       );
     }
   }
+
+  private async getBoardId(projectKey: string): Promise<number> {
+    if (!this.isConfigured()) {
+      throw new Error("Jira client not configured");
+    }
+    const boardsResp = await this.client.get(`/rest/agile/1.0/board`, {
+      params: { projectKeyOrId: projectKey, type: "scrum" },
+    });
+    const boards = boardsResp.data?.values || [];
+    if (boards.length === 0) {
+      throw new Error(`No scrum board found for project ${projectKey}`);
+    }
+    return boards[0].id;
+  }
+
+  async createSprint(params: {
+    projectKey: string;
+    name: string;
+    goal?: string;
+    startDate?: string;
+    endDate?: string;
+  }): Promise<JiraSprint> {
+    if (!this.isConfigured()) {
+      throw new Error("Jira client not configured");
+    }
+    try {
+      const boardId = await this.getBoardId(params.projectKey);
+      const body: Record<string, unknown> = {
+        name: params.name,
+        originBoardId: boardId,
+      };
+      if (params.goal) body.goal = params.goal;
+      if (params.startDate) body.startDate = params.startDate;
+      if (params.endDate) body.endDate = params.endDate;
+      console.log(`[Jira] Creating sprint "${params.name}" on board ${boardId}`);
+      const response = await this.client.post(`/rest/agile/1.0/sprint`, body);
+      const s = response.data;
+      console.log(`[Jira] Sprint ${s.id} created`);
+      return {
+        id: s.id,
+        name: s.name,
+        state: s.state,
+        startDate: s.startDate,
+        endDate: s.endDate,
+        boardId: s.originBoardId,
+      };
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        const data = error.response?.data as any;
+        if (status === 400) {
+          throw new Error(
+            `Failed to create sprint: ${data?.message || "bad request"}`,
+          );
+        }
+      }
+      throw new Error(
+        `Failed to create sprint: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
+  async updateSprint(
+    sprintId: number,
+    params: {
+      name?: string;
+      goal?: string;
+      startDate?: string;
+      endDate?: string;
+      state?: "active" | "closed";
+    },
+  ): Promise<JiraSprint> {
+    if (!this.isConfigured()) {
+      throw new Error("Jira client not configured");
+    }
+    try {
+      const body: Record<string, unknown> = {};
+      if (params.name !== undefined) body.name = params.name;
+      if (params.goal !== undefined) body.goal = params.goal;
+      if (params.startDate !== undefined) body.startDate = params.startDate;
+      if (params.endDate !== undefined) body.endDate = params.endDate;
+      if (params.state !== undefined) body.state = params.state;
+      console.log(`[Jira] Updating sprint ${sprintId}`);
+      const response = await this.client.put(
+        `/rest/agile/1.0/sprint/${sprintId}`,
+        body,
+      );
+      const s = response.data;
+      console.log(`[Jira] Sprint ${sprintId} updated`);
+      return {
+        id: s.id,
+        name: s.name,
+        state: s.state,
+        startDate: s.startDate,
+        endDate: s.endDate,
+        boardId: s.originBoardId,
+      };
+    } catch (error) {
+      throw new Error(
+        `Failed to update sprint: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
   async createProject(params: {
     key: string;
     name: string;

@@ -201,6 +201,45 @@ class GuardrailsEnforcer {
       return "roadmap.delete";
     }
 
+    // GitHub milestone operations
+    if (operation === "github.milestone.create") {
+      return "github.milestone.create";
+    }
+
+    if (operation === "github.milestone.update") {
+      return "github.milestone.update";
+    }
+
+    if (operation === "github.milestone.delete") {
+      return "github.milestone.delete";
+    }
+
+    // GitLab milestone operations
+    if (operation === "gitlab.milestone.create") {
+      return "gitlab.milestone.create";
+    }
+
+    if (operation === "gitlab.milestone.update") {
+      return "gitlab.milestone.update";
+    }
+
+    if (operation === "gitlab.milestone.delete") {
+      return "gitlab.milestone.delete";
+    }
+
+    // Jira sprint operations
+    if (operation === "jira.sprint.create") {
+      return "jira.sprint.create";
+    }
+
+    if (operation === "jira.sprint.update") {
+      return "jira.sprint.update";
+    }
+
+    if (operation === "jira.sprint.delete") {
+      return "jira.sprint.delete";
+    }
+
     // System operations
     if (operation === "system.config" || operation === "config.change") {
       return "system.config_change";

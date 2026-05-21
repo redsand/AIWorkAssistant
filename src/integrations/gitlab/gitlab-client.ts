@@ -47,6 +47,20 @@ export interface GitlabProject {
   web_url: string;
 }
 
+export interface GitlabMilestone {
+  id: number;
+  iid: number;
+  project_id: number;
+  title: string;
+  description: string;
+  state: "active" | "closed";
+  created_at: string;
+  updated_at: string;
+  due_date?: string;
+  start_date?: string;
+  web_url: string;
+}
+
 export interface GitlabPushEvent {
   object_kind: string;
   event_name: string;
@@ -1271,6 +1285,156 @@ export class GitlabClient {
       }
       throw new Error(
         `Failed to list issues: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
+  async listMilestones(
+    projectId?: number | string,
+    state?: "active" | "closed" | "all",
+  ): Promise<GitlabMilestone[]> {
+    if (!this.isConfigured()) {
+      throw new Error("GitLab client not configured");
+    }
+    const resolvedId = this.resolveProjectId(projectId);
+    try {
+      this.log(`[GitLab] Fetching milestones for project ${resolvedId}`);
+      const params: Record<string, unknown> = { per_page: 50 };
+      if (state) params.state = state;
+      const response = await this.client.get(
+        `/api/v4/projects/${resolvedId}/milestones`,
+        { params },
+      );
+      const milestones = response.data || [];
+      this.log(`[GitLab] Found ${milestones.length} milestones`);
+      return milestones;
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 404) {
+        throw new Error(`Project ${resolvedId} not found`);
+      }
+      throw new Error(
+        `Failed to list milestones: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
+  async getMilestone(
+    projectId: number | string | undefined,
+    milestoneId: number,
+  ): Promise<GitlabMilestone> {
+    if (!this.isConfigured()) {
+      throw new Error("GitLab client not configured");
+    }
+    const resolvedId = this.resolveProjectId(projectId);
+    try {
+      const response = await this.client.get(
+        `/api/v4/projects/${resolvedId}/milestones/${milestoneId}`,
+      );
+      return response.data;
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 404) {
+        throw new Error(`Milestone ${milestoneId} not found`);
+      }
+      throw new Error(
+        `Failed to get milestone: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
+  async createMilestone(
+    projectId: number | string | undefined,
+    params: {
+      title: string;
+      description?: string;
+      due_date?: string;
+      start_date?: string;
+    },
+  ): Promise<GitlabMilestone> {
+    if (!this.isConfigured()) {
+      throw new Error("GitLab client not configured");
+    }
+    const resolvedId = this.resolveProjectId(projectId);
+    try {
+      console.log(`[GitLab] Creating milestone "${params.title}" in project ${resolvedId}`);
+      const body: Record<string, unknown> = { title: params.title };
+      if (params.description) body.description = params.description;
+      if (params.due_date) body.due_date = params.due_date;
+      if (params.start_date) body.start_date = params.start_date;
+      const response = await this.client.post(
+        `/api/v4/projects/${resolvedId}/milestones`,
+        body,
+      );
+      console.log(`[GitLab] Milestone ${response.data.id} created`);
+      return response.data;
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        const data = error.response?.data as any;
+        if (status === 400) {
+          throw new Error(
+            `Failed to create milestone: ${data?.message?.join(", ") || "bad request"}`,
+          );
+        }
+      }
+      throw new Error(
+        `Failed to create milestone: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
+  async updateMilestone(
+    projectId: number | string | undefined,
+    milestoneId: number,
+    params: {
+      title?: string;
+      description?: string;
+      due_date?: string;
+      start_date?: string;
+      state_event?: "activate" | "close";
+    },
+  ): Promise<GitlabMilestone> {
+    if (!this.isConfigured()) {
+      throw new Error("GitLab client not configured");
+    }
+    const resolvedId = this.resolveProjectId(projectId);
+    try {
+      console.log(`[GitLab] Updating milestone ${milestoneId} in project ${resolvedId}`);
+      const body: Record<string, unknown> = {};
+      if (params.title !== undefined) body.title = params.title;
+      if (params.description !== undefined) body.description = params.description;
+      if (params.due_date !== undefined) body.due_date = params.due_date;
+      if (params.start_date !== undefined) body.start_date = params.start_date;
+      if (params.state_event !== undefined) body.state_event = params.state_event;
+      const response = await this.client.put(
+        `/api/v4/projects/${resolvedId}/milestones/${milestoneId}`,
+        body,
+      );
+      console.log(`[GitLab] Milestone ${milestoneId} updated`);
+      return response.data;
+    } catch (error) {
+      throw new Error(
+        `Failed to update milestone: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
+  async deleteMilestone(
+    projectId: number | string | undefined,
+    milestoneId: number,
+  ): Promise<void> {
+    if (!this.isConfigured()) {
+      throw new Error("GitLab client not configured");
+    }
+    const resolvedId = this.resolveProjectId(projectId);
+    try {
+      console.log(`[GitLab] Deleting milestone ${milestoneId} in project ${resolvedId}`);
+      await this.client.delete(
+        `/api/v4/projects/${resolvedId}/milestones/${milestoneId}`,
+      );
+      console.log(`[GitLab] Milestone ${milestoneId} deleted`);
+    } catch (error) {
+      throw new Error(
+        `Failed to delete milestone: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
     }
   }

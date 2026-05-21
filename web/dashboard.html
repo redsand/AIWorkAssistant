@@ -144,6 +144,9 @@
               <select id="sprint-select" class="sprint-select">
                 <option value="">— Select a sprint —</option>
               </select>
+              <button class="sprint-action-btn" id="sprint-create-btn" title="Create Sprint">＋</button>
+              <button class="sprint-action-btn" id="sprint-edit-btn" title="Edit Sprint" disabled>✎</button>
+              <button class="sprint-action-btn sprint-action-delete" id="sprint-delete-btn" title="Delete Sprint" disabled>✕</button>
             </div>
           </div>
 
@@ -293,6 +296,58 @@
             <h3>Done <span class="count">0</span></h3>
             <div class="board-col-items"></div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sprint Create/Edit Modal -->
+    <div class="modal-overlay" id="sprint-modal" style="display: none">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="sprint-modal-title">Create Sprint</h3>
+          <button class="modal-close" id="sprint-modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-row">
+            <label class="modal-label" for="sprint-form-name">Name</label>
+            <input class="modal-input" id="sprint-form-name" type="text" placeholder="Sprint name" />
+          </div>
+          <div class="modal-row">
+            <label class="modal-label" for="sprint-form-desc">Description</label>
+            <textarea class="modal-textarea" id="sprint-form-desc" rows="3" placeholder="Sprint description / goal"></textarea>
+          </div>
+          <div class="modal-row modal-row-split">
+            <div class="modal-col">
+              <label class="modal-label" for="sprint-form-start">Start Date</label>
+              <input class="modal-input" id="sprint-form-start" type="date" />
+            </div>
+            <div class="modal-col">
+              <label class="modal-label" for="sprint-form-end">End Date</label>
+              <input class="modal-input" id="sprint-form-end" type="date" />
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="modal-btn modal-btn-cancel" id="sprint-modal-cancel">Cancel</button>
+          <button class="modal-btn modal-btn-primary" id="sprint-modal-save">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sprint Delete Confirmation Modal -->
+    <div class="modal-overlay" id="sprint-delete-modal" style="display: none">
+      <div class="modal-content modal-content-sm">
+        <div class="modal-header">
+          <h3>Delete Sprint</h3>
+          <button class="modal-close" id="sprint-delete-modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p>Are you sure you want to delete sprint <strong id="sprint-delete-name"></strong>?</p>
+          <p class="modal-warning">This action cannot be undone.</p>
+        </div>
+        <div class="modal-footer">
+          <button class="modal-btn modal-btn-cancel" id="sprint-delete-modal-cancel">Cancel</button>
+          <button class="modal-btn modal-btn-danger" id="sprint-delete-modal-confirm">Delete</button>
         </div>
       </div>
     </div>

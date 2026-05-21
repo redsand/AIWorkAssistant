@@ -38,6 +38,18 @@
   const statPointsRemaining = document.getElementById("stat-points-remaining");
   const statDaysLeft = document.getElementById("stat-days-left");
   const BURNDOWN_CANVAS_ID = "burndownChart";
+  const sprintCreateBtn = document.getElementById("sprint-create-btn");
+  const sprintEditBtn = document.getElementById("sprint-edit-btn");
+  const sprintDeleteBtn = document.getElementById("sprint-delete-btn");
+  const sprintModal = document.getElementById("sprint-modal");
+  const sprintModalTitle = document.getElementById("sprint-modal-title");
+  const sprintFormName = document.getElementById("sprint-form-name");
+  const sprintFormDesc = document.getElementById("sprint-form-desc");
+  const sprintFormStart = document.getElementById("sprint-form-start");
+  const sprintFormEnd = document.getElementById("sprint-form-end");
+  const sprintModalSave = document.getElementById("sprint-modal-save");
+  const sprintDeleteModal = document.getElementById("sprint-delete-modal");
+  const sprintDeleteName = document.getElementById("sprint-delete-name");
 
   // Table
   const issuesTable = document.getElementById("issues-table");
@@ -949,7 +961,7 @@
       }
 
       // Load sprint data for platforms that support sprints
-      if (platform === "github" || platform === "jira") {
+      if (platform === "github" || platform === "jira" || platform === "gitlab") {
         loadSprints(platform, repoKey);
       } else {
         sprintSection.style.display = "none";
@@ -1008,6 +1020,7 @@
       }
 
       var sprints = data.sprints || [];
+      window._loadedSprints = sprints;
       sprintIssues = (data.issues || []).map(function (issue) {
         return Object.assign({}, issue, { sprint: issue.sprint || "" });
       });
@@ -1206,10 +1219,171 @@
     }
   }
 
+  // ─── Sprint CRUD ─────────────────────────────────────────────────────────
+
+  function resetSprintModal() {
+    sprintFormName.value = "";
+    sprintFormDesc.value = "";
+    sprintFormStart.value = "";
+    sprintFormEnd.value = "";
+    sprintModalSave.dataset.mode = "create";
+    sprintModalSave.dataset.sprintId = "";
+  }
+
+  function showSprintModal(mode, sprint) {
+    resetSprintModal();
+    if (mode === "edit" && sprint) {
+      sprintModalTitle.textContent = "Edit Sprint";
+      sprintFormName.value = sprint.name || "";
+      sprintFormDesc.value = sprint.description || "";
+      sprintFormStart.value = sprint.startDate ? sprint.startDate.slice(0, 10) : "";
+      sprintFormEnd.value = sprint.endDate ? sprint.endDate.slice(0, 10) : "";
+      sprintModalSave.dataset.mode = "edit";
+      sprintModalSave.dataset.sprintId = sprint.id;
+    } else {
+      sprintModalTitle.textContent = "Create Sprint";
+    }
+    sprintModal.style.display = "flex";
+  }
+
+  function hideSprintModal() {
+    sprintModal.style.display = "none";
+  }
+
+  function hideSprintDeleteModal() {
+    sprintDeleteModal.style.display = "none";
+  }
+
+  async function submitSprintForm() {
+    var mode = sprintModalSave.dataset.mode;
+    var repoVal = repoSelect.value;
+    var colon = repoVal.indexOf(":");
+    var platform = colon >= 0 ? repoVal.slice(0, colon) : "";
+    var repoKey = colon >= 0 ? repoVal.slice(colon + 1) : repoVal;
+
+    var body = {
+      platform: platform,
+      repo: repoKey,
+      name: sprintFormName.value.trim(),
+      description: sprintFormDesc.value.trim() || undefined,
+      startDate: sprintFormStart.value || undefined,
+      endDate: sprintFormEnd.value || undefined,
+    };
+
+    if (!body.name) {
+      alert("Sprint name is required.");
+      return;
+    }
+
+    try {
+      var url = "/api/repo-dashboard/sprints";
+      var method = "POST";
+      if (mode === "edit") {
+        url += "/" + encodeURIComponent(sprintModalSave.dataset.sprintId);
+        method = "PUT";
+      }
+      var resp = await fetch(url, {
+        method: method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) {
+        var errData = await resp.json().catch(function () { return {}; });
+        throw new Error(errData.error || "HTTP " + resp.status);
+      }
+      hideSprintModal();
+      loadSprints(platform, repoKey);
+    } catch (err) {
+      alert("Failed to save sprint: " + err.message);
+    }
+  }
+
+  async function confirmDeleteSprint() {
+    var repoVal = repoSelect.value;
+    var colon = repoVal.indexOf(":");
+    var platform = colon >= 0 ? repoVal.slice(0, colon) : "";
+    var repoKey = colon >= 0 ? repoVal.slice(colon + 1) : repoVal;
+    var sprintId = sprintModalSave.dataset.deleteSprintId;
+
+    try {
+      var resp = await fetch(
+        "/api/repo-dashboard/sprints/" + encodeURIComponent(sprintId),
+        {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ platform: platform, repo: repoKey }),
+        },
+      );
+      if (!resp.ok) {
+        var errData = await resp.json().catch(function () { return {}; });
+        throw new Error(errData.error || "HTTP " + resp.status);
+      }
+      hideSprintDeleteModal();
+      currentSprintId = null;
+      destroyChart(BURNDOWN_CANVAS_ID);
+      sprintStatsBar.style.display = "none";
+      showEmpty("burndown", true);
+      loadSprints(platform, repoKey);
+      renderTable();
+    } catch (err) {
+      alert("Failed to delete sprint: " + err.message);
+    }
+  }
+
+  function getSelectedSprint() {
+    var selOpt = sprintSelect.options[sprintSelect.selectedIndex];
+    if (!selOpt || !selOpt.value) return null;
+    // sprints are stored from the last loadSprints call; find by id
+    if (!window._loadedSprints) return null;
+    for (var i = 0; i < window._loadedSprints.length; i++) {
+      if (window._loadedSprints[i].id === selOpt.value) {
+        return window._loadedSprints[i];
+      }
+    }
+    return null;
+  }
+
+  // ─── Sprint action buttons ────────────────────────────────────────────────
+
+  sprintCreateBtn.addEventListener("click", function () {
+    showSprintModal("create");
+  });
+
+  sprintEditBtn.addEventListener("click", function () {
+    var sprint = getSelectedSprint();
+    if (sprint) showSprintModal("edit", sprint);
+  });
+
+  sprintDeleteBtn.addEventListener("click", function () {
+    var sprint = getSelectedSprint();
+    if (!sprint) return;
+    sprintDeleteName.textContent = sprint.name;
+    sprintModalSave.dataset.deleteSprintId = sprint.id;
+    sprintDeleteModal.style.display = "flex";
+  });
+
+  document.getElementById("sprint-modal-close").addEventListener("click", hideSprintModal);
+  document.getElementById("sprint-modal-cancel").addEventListener("click", hideSprintModal);
+  sprintModalSave.addEventListener("click", submitSprintForm);
+
+  document.getElementById("sprint-delete-modal-close").addEventListener("click", hideSprintDeleteModal);
+  document.getElementById("sprint-delete-modal-cancel").addEventListener("click", hideSprintDeleteModal);
+  document.getElementById("sprint-delete-modal-confirm").addEventListener("click", confirmDeleteSprint);
+
+  // Close modals on overlay click
+  sprintModal.addEventListener("click", function (e) {
+    if (e.target === sprintModal) hideSprintModal();
+  });
+  sprintDeleteModal.addEventListener("click", function (e) {
+    if (e.target === sprintDeleteModal) hideSprintDeleteModal();
+  });
+
   sprintSelect.addEventListener("change", function () {
     var val = this.value;
     if (!val) {
       currentSprintId = null;
+      sprintEditBtn.disabled = true;
+      sprintDeleteBtn.disabled = true;
       destroyChart(BURNDOWN_CANVAS_ID);
       sprintStatsBar.style.display = "none";
       showEmpty("burndown", true);
@@ -1217,6 +1391,8 @@
       return;
     }
     currentSprintId = val;
+    sprintEditBtn.disabled = false;
+    sprintDeleteBtn.disabled = false;
 
     var repoVal = repoSelect.value;
     var colon = repoVal.indexOf(":");

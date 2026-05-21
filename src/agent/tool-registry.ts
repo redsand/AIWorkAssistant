@@ -6111,6 +6111,135 @@ const MUSICIAN_TOOLS: Tool[] = [
     actionType: "musician.practice.plan",
     riskLevel: "low",
   },
+
+  // GitHub milestone/sprint tools
+  {
+    name: "github.create_milestone",
+    description: "Create a new milestone in a GitHub repository for sprint planning",
+    params: {
+      owner: { type: "string", description: "Repository owner", required: false },
+      repo: { type: "string", description: "Repository name", required: false },
+      title: { type: "string", description: "Milestone title", required: true },
+      description: { type: "string", description: "Milestone description", required: false },
+      due_on: { type: "string", description: "Due date (ISO 8601)", required: false },
+    },
+    actionType: "github.milestone.create",
+    riskLevel: "medium",
+  },
+  {
+    name: "github.update_milestone",
+    description: "Update an existing GitHub milestone (title, description, due date, state)",
+    params: {
+      owner: { type: "string", description: "Repository owner", required: false },
+      repo: { type: "string", description: "Repository name", required: false },
+      number: { type: "number", description: "Milestone number", required: true },
+      title: { type: "string", description: "New title", required: false },
+      description: { type: "string", description: "New description", required: false },
+      due_on: { type: "string", description: "Due date (ISO 8601)", required: false },
+      state: { type: "string", description: "open or closed", required: false },
+    },
+    actionType: "github.milestone.update",
+    riskLevel: "medium",
+  },
+  {
+    name: "github.delete_milestone",
+    description: "Delete a GitHub milestone. This is irreversible. Requires approval.",
+    params: {
+      owner: { type: "string", description: "Repository owner", required: false },
+      repo: { type: "string", description: "Repository name", required: false },
+      number: { type: "number", description: "Milestone number", required: true },
+    },
+    actionType: "github.milestone.delete",
+    riskLevel: "high",
+  },
+
+  // GitLab milestone tools
+  {
+    name: "gitlab.list_milestones",
+    description: "List milestones in a GitLab project for sprint planning",
+    params: {
+      projectId: { type: "string", description: "Project ID or path", required: false },
+      state: { type: "string", description: "Filter: active or closed", required: false },
+    },
+    actionType: "gitlab.milestone.read",
+    riskLevel: "low",
+  },
+  {
+    name: "gitlab.create_milestone",
+    description: "Create a new milestone in a GitLab project for sprint planning",
+    params: {
+      projectId: { type: "string", description: "Project ID or path", required: false },
+      title: { type: "string", description: "Milestone title", required: true },
+      description: { type: "string", description: "Milestone description", required: false },
+      due_date: { type: "string", description: "Due date (ISO 8601)", required: false },
+      start_date: { type: "string", description: "Start date (ISO 8601)", required: false },
+    },
+    actionType: "gitlab.milestone.create",
+    riskLevel: "medium",
+  },
+  {
+    name: "gitlab.update_milestone",
+    description: "Update an existing GitLab milestone (title, description, dates, state)",
+    params: {
+      projectId: { type: "string", description: "Project ID or path", required: false },
+      milestoneId: { type: "number", description: "Milestone ID", required: true },
+      title: { type: "string", description: "New title", required: false },
+      description: { type: "string", description: "New description", required: false },
+      due_date: { type: "string", description: "Due date (ISO 8601)", required: false },
+      start_date: { type: "string", description: "Start date (ISO 8601)", required: false },
+      state_event: { type: "string", description: "close or activate", required: false },
+    },
+    actionType: "gitlab.milestone.update",
+    riskLevel: "medium",
+  },
+  {
+    name: "gitlab.delete_milestone",
+    description: "Delete a GitLab milestone. This is irreversible. Requires approval.",
+    params: {
+      projectId: { type: "string", description: "Project ID or path", required: false },
+      milestoneId: { type: "number", description: "Milestone ID", required: true },
+    },
+    actionType: "gitlab.milestone.delete",
+    riskLevel: "high",
+  },
+
+  // Jira sprint tools
+  {
+    name: "jira.create_sprint",
+    description: "Create a new sprint in a Jira project for sprint planning",
+    params: {
+      projectKey: { type: "string", description: "Jira project key (e.g., SIEM)", required: true },
+      name: { type: "string", description: "Sprint name", required: true },
+      goal: { type: "string", description: "Sprint goal", required: false },
+      startDate: { type: "string", description: "Start date (ISO 8601)", required: false },
+      endDate: { type: "string", description: "End date (ISO 8601)", required: false },
+    },
+    actionType: "jira.sprint.create",
+    riskLevel: "medium",
+  },
+  {
+    name: "jira.update_sprint",
+    description: "Update an existing Jira sprint (name, goal, dates, state)",
+    params: {
+      sprintId: { type: "number", description: "Sprint ID", required: true },
+      name: { type: "string", description: "New sprint name", required: false },
+      goal: { type: "string", description: "New sprint goal", required: false },
+      startDate: { type: "string", description: "Start date (ISO 8601)", required: false },
+      endDate: { type: "string", description: "End date (ISO 8601)", required: false },
+      state: { type: "string", description: "New state: active or closed", required: false },
+    },
+    actionType: "jira.sprint.update",
+    riskLevel: "medium",
+  },
+  {
+    name: "jira.delete_sprint",
+    description: "Close/delete a Jira sprint. This will close the sprint. Requires approval.",
+    params: {
+      sprintId: { type: "number", description: "Sprint ID", required: true },
+    },
+    actionType: "jira.sprint.delete",
+    riskLevel: "high",
+  },
 ];
 
 /**

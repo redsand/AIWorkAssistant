@@ -781,6 +781,65 @@ export class GithubClient {
     console.log(`[GitHub] Found ${response.data.length} milestones`);
     return response.data;
   }
+
+  async createMilestone(
+    params: {
+      title: string;
+      state?: "open" | "closed";
+      description?: string;
+      due_on?: string;
+    },
+    owner?: string,
+    repo?: string,
+  ): Promise<any> {
+    const { owner: o, repo: r } = this.resolveRepo(owner, repo);
+    console.log(`[GitHub] Creating milestone "${params.title}" in ${o}/${r}`);
+    const body: Record<string, unknown> = { title: params.title };
+    if (params.state) body.state = params.state;
+    if (params.description) body.description = params.description;
+    if (params.due_on) body.due_on = params.due_on;
+    const response = await this.client.post(`/repos/${o}/${r}/milestones`, body);
+    console.log(`[GitHub] Milestone #${response.data.number} created`);
+    return response.data;
+  }
+
+  async updateMilestone(
+    number: number,
+    params: {
+      title?: string;
+      state?: "open" | "closed";
+      description?: string;
+      due_on?: string;
+    },
+    owner?: string,
+    repo?: string,
+  ): Promise<any> {
+    const { owner: o, repo: r } = this.resolveRepo(owner, repo);
+    console.log(`[GitHub] Updating milestone #${number} in ${o}/${r}`);
+    const body: Record<string, unknown> = {};
+    if (params.title !== undefined) body.title = params.title;
+    if (params.state !== undefined) body.state = params.state;
+    if (params.description !== undefined) body.description = params.description;
+    if (params.due_on !== undefined) body.due_on = params.due_on;
+    const response = await this.client.patch(
+      `/repos/${o}/${r}/milestones/${number}`,
+      body,
+    );
+    console.log(`[GitHub] Milestone #${number} updated`);
+    return response.data;
+  }
+
+  async deleteMilestone(
+    number: number,
+    owner?: string,
+    repo?: string,
+  ): Promise<void> {
+    const { owner: o, repo: r } = this.resolveRepo(owner, repo);
+    console.log(`[GitHub] Deleting milestone #${number} in ${o}/${r}`);
+    await this.client.delete(`/repos/${o}/${r}/milestones/${number}`);
+    console.log(`[GitHub] Milestone #${number} deleted`);
+  }
+
   async createRelease(
     params: {
       tagName: string;

@@ -6127,6 +6127,290 @@ async function handleCodeReviewCreateWorkItem(
   return { success: true, data: item };
 }
 
+// ── GitHub Milestone Handlers ──────────────────────────────────
+
+async function handleGithubCreateMilestone(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!githubClient.isConfigured()) {
+    return { success: false, error: "GitHub client not configured" };
+  }
+  const title = params.title as string;
+  if (!title) {
+    return { success: false, error: "title is required" };
+  }
+  const milestone = await githubClient.createMilestone(
+    {
+      title,
+      description: params.description as string | undefined,
+      due_on: params.due_on as string | undefined,
+    },
+    params.owner as string | undefined,
+    params.repo as string | undefined,
+  );
+  return {
+    success: true,
+    data: {
+      number: milestone.number,
+      title: milestone.title,
+      state: milestone.state,
+      due_on: milestone.due_on,
+      url: milestone.html_url,
+    },
+  };
+}
+
+async function handleGithubUpdateMilestone(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!githubClient.isConfigured()) {
+    return { success: false, error: "GitHub client not configured" };
+  }
+  const number = params.number as number;
+  if (!number) {
+    return { success: false, error: "number is required" };
+  }
+  const updates: Record<string, unknown> = {};
+  if (params.title !== undefined) updates.title = params.title;
+  if (params.description !== undefined) updates.description = params.description;
+  if (params.due_on !== undefined) updates.due_on = params.due_on;
+  if (params.state !== undefined) updates.state = params.state;
+  if (Object.keys(updates).length === 0) {
+    return { success: false, error: "No fields to update" };
+  }
+  const milestone = await githubClient.updateMilestone(
+    number,
+    updates,
+    params.owner as string | undefined,
+    params.repo as string | undefined,
+  );
+  return {
+    success: true,
+    data: {
+      number: milestone.number,
+      title: milestone.title,
+      state: milestone.state,
+      due_on: milestone.due_on,
+      url: milestone.html_url,
+    },
+  };
+}
+
+async function handleGithubDeleteMilestone(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!githubClient.isConfigured()) {
+    return { success: false, error: "GitHub client not configured" };
+  }
+  const number = params.number as number;
+  if (!number) {
+    return { success: false, error: "number is required" };
+  }
+  await githubClient.deleteMilestone(
+    number,
+    params.owner as string | undefined,
+    params.repo as string | undefined,
+  );
+  return { success: true, data: { deleted: true, number } };
+}
+
+// ── GitLab Milestone Handlers ──────────────────────────────────
+
+async function handleGitlabListMilestones(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!gitlabClient.isConfigured()) {
+    return { success: false, error: "GitLab client not configured" };
+  }
+  const milestones = await gitlabClient.listMilestones(
+    (params.projectId as string) || undefined,
+    params.state as string | undefined,
+  );
+  return {
+    success: true,
+    data: milestones.map((m) => ({
+      id: m.id,
+      iid: m.iid,
+      title: m.title,
+      description: m.description,
+      state: m.state,
+      due_date: m.due_date,
+      start_date: m.start_date,
+      web_url: m.web_url,
+    })),
+  };
+}
+
+async function handleGitlabCreateMilestone(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!gitlabClient.isConfigured()) {
+    return { success: false, error: "GitLab client not configured" };
+  }
+  const title = params.title as string;
+  if (!title) {
+    return { success: false, error: "title is required" };
+  }
+  const milestone = await gitlabClient.createMilestone(
+    (params.projectId as string) || undefined,
+    {
+      title,
+      description: params.description as string | undefined,
+      due_date: params.due_date as string | undefined,
+      start_date: params.start_date as string | undefined,
+    },
+  );
+  return {
+    success: true,
+    data: {
+      id: milestone.id,
+      iid: milestone.iid,
+      title: milestone.title,
+      state: milestone.state,
+      due_date: milestone.due_date,
+      web_url: milestone.web_url,
+    },
+  };
+}
+
+async function handleGitlabUpdateMilestone(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!gitlabClient.isConfigured()) {
+    return { success: false, error: "GitLab client not configured" };
+  }
+  const milestoneId = params.milestoneId as number;
+  if (!milestoneId) {
+    return { success: false, error: "milestoneId is required" };
+  }
+  const updates: Record<string, unknown> = {};
+  if (params.title !== undefined) updates.title = params.title;
+  if (params.description !== undefined) updates.description = params.description;
+  if (params.due_date !== undefined) updates.due_date = params.due_date;
+  if (params.start_date !== undefined) updates.start_date = params.start_date;
+  if (params.state_event !== undefined) updates.state_event = params.state_event;
+  if (Object.keys(updates).length === 0) {
+    return { success: false, error: "No fields to update" };
+  }
+  const milestone = await gitlabClient.updateMilestone(
+    (params.projectId as string) || undefined,
+    milestoneId,
+    updates,
+  );
+  return {
+    success: true,
+    data: {
+      id: milestone.id,
+      iid: milestone.iid,
+      title: milestone.title,
+      state: milestone.state,
+      due_date: milestone.due_date,
+      web_url: milestone.web_url,
+    },
+  };
+}
+
+async function handleGitlabDeleteMilestone(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!gitlabClient.isConfigured()) {
+    return { success: false, error: "GitLab client not configured" };
+  }
+  const milestoneId = params.milestoneId as number;
+  if (!milestoneId) {
+    return { success: false, error: "milestoneId is required" };
+  }
+  await gitlabClient.deleteMilestone(
+    (params.projectId as string) || undefined,
+    milestoneId,
+  );
+  return { success: true, data: { deleted: true, milestoneId } };
+}
+
+// ── Jira Sprint Handlers ─────────────────────────────────────
+
+async function handleJiraCreateSprint(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jiraClient.isConfigured()) {
+    return { success: false, error: "Jira client not configured" };
+  }
+  const projectKey = params.projectKey as string;
+  const name = params.name as string;
+  if (!projectKey || !name) {
+    return { success: false, error: "projectKey and name are required" };
+  }
+  const sprint = await jiraClient.createSprint({
+    projectKey,
+    name,
+    goal: params.goal as string | undefined,
+    startDate: params.startDate as string | undefined,
+    endDate: params.endDate as string | undefined,
+  });
+  return {
+    success: true,
+    data: {
+      id: sprint.id,
+      name: sprint.name,
+      state: sprint.state,
+      goal: sprint.goal,
+      startDate: sprint.startDate,
+      endDate: sprint.endDate,
+    },
+  };
+}
+
+async function handleJiraUpdateSprint(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jiraClient.isConfigured()) {
+    return { success: false, error: "Jira client not configured" };
+  }
+  const sprintId = params.sprintId as number;
+  if (!sprintId) {
+    return { success: false, error: "sprintId is required" };
+  }
+  const updates: Record<string, unknown> = {};
+  if (params.name !== undefined) updates.name = params.name;
+  if (params.goal !== undefined) updates.goal = params.goal;
+  if (params.startDate !== undefined) updates.startDate = params.startDate;
+  if (params.endDate !== undefined) updates.endDate = params.endDate;
+  if (params.state !== undefined) updates.state = params.state;
+  if (Object.keys(updates).length === 0) {
+    return { success: false, error: "No fields to update" };
+  }
+  const sprint = await jiraClient.updateSprint(sprintId, updates);
+  return {
+    success: true,
+    data: {
+      id: sprint.id,
+      name: sprint.name,
+      state: sprint.state,
+      goal: sprint.goal,
+      startDate: sprint.startDate,
+      endDate: sprint.endDate,
+    },
+  };
+}
+
+async function handleJiraDeleteSprint(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  if (!jiraClient.isConfigured()) {
+    return { success: false, error: "Jira client not configured" };
+  }
+  const sprintId = params.sprintId as number;
+  if (!sprintId) {
+    return { success: false, error: "sprintId is required" };
+  }
+  // Jira doesn't truly delete sprints; we close them
+  const sprint = await jiraClient.updateSprint(sprintId, { state: "closed" });
+  return {
+    success: true,
+    data: { id: sprint.id, name: sprint.name, state: sprint.state, closed: true },
+  };
+}
+
 const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "calendar.list_events": handleCalendarListEvents,
   "calendar.create_focus_block": handleCalendarCreateFocusBlock,
@@ -6150,6 +6434,9 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "jira.delete_comment": handleJiraDeleteComment,
   "jira.get_project": handleJiraGetProject,
   "jira.list_projects": handleJiraListProjects,
+  "jira.create_sprint": handleJiraCreateSprint,
+  "jira.update_sprint": handleJiraUpdateSprint,
+  "jira.delete_sprint": handleJiraDeleteSprint,
   "gitlab.list_projects": handleGitlabListProjects,
   "gitlab.get_project": handleGitlabGetProject,
   "gitlab.list_merge_requests": handleGitlabListMergeRequests,
@@ -6179,6 +6466,10 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "gitlab.retry_pipeline": handleGitlabRetryPipeline,
   "gitlab.compare_refs": handleGitlabCompareRefs,
   "gitlab.get_file_blame": handleGitlabGetFileBlame,
+  "gitlab.list_milestones": handleGitlabListMilestones,
+  "gitlab.create_milestone": handleGitlabCreateMilestone,
+  "gitlab.update_milestone": handleGitlabUpdateMilestone,
+  "gitlab.delete_milestone": handleGitlabDeleteMilestone,
   "github.list_repos": handleGithubListRepos,
   "github.get_repo": handleGithubGetRepo,
   "github.list_tree": handleGithubListTree,
@@ -6214,6 +6505,9 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "github.rerun_workflow": handleGithubRerunWorkflow,
   "github.list_releases": handleGithubListReleases,
   "github.create_release": handleGithubCreateRelease,
+  "github.create_milestone": handleGithubCreateMilestone,
+  "github.update_milestone": handleGithubUpdateMilestone,
+  "github.delete_milestone": handleGithubDeleteMilestone,
   "jitbit.search_tickets": handleJitbitSearchTickets,
   "jitbit.get_ticket": handleJitbitGetTicket,
   "jitbit.list_recent_tickets": handleJitbitListRecentTickets,
