@@ -6224,7 +6224,7 @@ async function handleGitlabListMilestones(
   }
   const milestones = await gitlabClient.listMilestones(
     (params.projectId as string) || undefined,
-    params.state as string | undefined,
+    (params.state as "active" | "closed" | "all") || undefined,
   );
   return {
     success: true,

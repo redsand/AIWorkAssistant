@@ -1,5 +1,5 @@
 /**
- * Kibana-style issue dashboard API.
+ * Kanban-style issue dashboard API.
  *
  * GET /api/repo-dashboard/repos — list repos with non-zero issue counts
  * GET /api/repo-dashboard/issues — fetch issues for a repo

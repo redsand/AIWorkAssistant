@@ -1,5 +1,5 @@
 /**
- * Issue Dashboard — Kibana-style board per repository
+ * Issue Dashboard — Kanban-style board per repository
  *
  * Fetches data from /api/repo-dashboard/repos, /issues, /dependencies
  * Renders charts with Chart.js and dependency graph with vis-network.

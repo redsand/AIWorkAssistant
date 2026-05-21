@@ -854,6 +854,7 @@ export class JiraClient {
         startDate: s.startDate,
         endDate: s.endDate,
         boardId: s.originBoardId,
+        goal: s.goal,
       }));
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -932,6 +933,7 @@ export class JiraClient {
         startDate: s.startDate,
         endDate: s.endDate,
         boardId: s.originBoardId,
+        goal: s.goal,
       };
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -983,6 +985,7 @@ export class JiraClient {
         startDate: s.startDate,
         endDate: s.endDate,
         boardId: s.originBoardId,
+        goal: s.goal,
       };
     } catch (error) {
       throw new Error(
@@ -1087,6 +1090,7 @@ export interface JiraSprint {
   startDate?: string;
   endDate?: string;
   boardId?: number;
+  goal?: string;
 }
 
 export interface JiraSprintIssue {
