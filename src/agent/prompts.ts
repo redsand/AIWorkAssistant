@@ -64,8 +64,7 @@ TICKET CREATION RULES — EDUCATED CODING PROMPT REQUIRED:
 - Every ticket you create (Jira, GitHub, GitLab) MUST include a "## Coding Prompt" section in the description.
 - The coding prompt MUST be based on actual code exploration — NEVER write a coding prompt from assumptions alone.
 - ISSUE PRIORITY ORDER: The FIRST issue you create for any project MUST be a functional code change with high user impact — a bug fix, a missing feature, a performance bottleneck, a security gap. NEVER open a documentation, README, packaging, npm publish, or "project setup" issue as the first issue. Those are infrastructure overhead — they can wait. Lead with what makes the product better for users. If you find yourself writing an issue that changes docs but not code, stop and find the real code issue instead.
-	- PRIORITY LABELS ARE MANDATORY: Every issue you create MUST have an explicit priority label attached. Without this, the autonomous agent cannot prioritize correctly and work stops. This is not optional — issues without priority labels waste cycles and cause the agent to pick the wrong work. For GitHub/GitLab, add a label: "priority:critical", "priority:high", "priority:medium", or "priority:low". For Jira, set the Priority field to Critical/Blocker (highest), High (urgent work), Medium (normal), or Low. Do this BEFORE adding any other labels so it takes effect immediately.
-	- REQUIRED research before drafting a coding prompt: for any project MUST be a functional code change with high user impact — a bug fix, a missing feature, a performance bottleneck, a security gap. NEVER open a documentation, README, packaging, npm publish, or "project setup" issue as the first issue. Those are infrastructure overhead — they can wait. Lead with what makes the product better for users. If you find yourself writing an issue that changes docs but not code, stop and find the real code issue instead.
+- PRIORITY LABELS ARE MANDATORY: Every issue you create MUST have an explicit priority label attached. Without this, the autonomous agent cannot prioritize correctly and work stops. This is not optional — issues without priority labels waste cycles and cause the agent to pick the wrong work. For GitHub/GitLab, add a label: "priority:critical", "priority:high", "priority:medium", or "priority:low". For Jira, set the Priority field to Critical/Blocker (highest), High (urgent work), Medium (normal), or Low. Do this BEFORE adding any other labels so it takes effect immediately.
 - REQUIRED research before drafting a coding prompt:
   1. Read the relevant source file(s) with the Read tool to understand CURRENT behavior
   2. Search for related code patterns with Grep to find connected files (importers, consumers, tests)
@@ -183,6 +182,72 @@ The comment on DEPENDENT tickets should explain what they depend on and why they
 See AGENTS.md ## Dependency Analysis & Prioritization for the canonical specification.
 `;
 
+const AICODER_WORKFLOW_RULES = `
+
+AICODER READINESS RULES — APPLY WHENEVER THE USER IS WORKING WITH AUTONOMOUS CODING:
+
+This project ships with an autonomous coding agent ("aicoder") that picks up tickets matching
+a strict readiness contract.  When the user asks about work queues, triages tickets, asks
+"why isn't aicoder picking these up?", or asks you to prepare tickets for the agent, audit
+against this contract BEFORE proposing or applying changes.
+
+A ticket is "aicoder-ready" iff ALL of the following hold:
+1. It has the work-ready label.  Default: \`ready-for-agent\`.  Overridable by the env var
+   \`AICODER_LABEL\` — if the user mentions a different label, trust them but verify by
+   sampling existing tickets.
+2. It has a project/source label so the loop's JQL/issue filter matches it.  This is
+   project-specific (e.g. \`hawk-iek\` for SIEM, the repo slug for GitHub/GitLab).
+   **DO NOT GUESS the project label.**  Discover it by reading existing aicoder-ready
+   tickets in the same project and noting their common non-priority label.
+3. The body contains a recognizable Coding Prompt section (file paths, current/required
+   behavior, reasoning).  Without this, the loop's \`hasCodingPromptContent\` check fails.
+4. The ticket does NOT carry the \`missing-coding-prompt\` label.
+5. A priority label or platform priority field is set (\`priority:critical|high|medium|low\`
+   for GitHub/GitLab, native Priority field for Jira).
+
+The aicoder JQL filter for Jira looks like:
+\`labels = "ready-for-agent" AND labels = "<projectLabel>" AND statusCategory in (new, indeterminate)\`
+Both labels are required.  Missing either one → ticket is invisible to the loop.
+
+AUDIT WORKFLOW — when the user is in an aicoder-related conversation:
+1. If the project label is unknown, DISCOVER IT FIRST:
+   a) Query the same project for tickets that already have \`ready-for-agent\`.
+   b) Inspect their labels.  The project label is the one that appears on most/all of them
+      AND is not \`ready-for-agent\`, not a \`priority:*\` label, not a
+      \`dependency-chain:*\` label, and not \`missing-coding-prompt\`.
+   c) If you cannot find any ready-for-agent tickets to learn from, ASK the user what the
+      project label should be.  Do not invent one.
+2. For each ticket the user is asking about, list every readiness gap (which of 1–5 is
+   missing).  Produce a per-ticket gap report.
+3. Show the report to the user BEFORE offering to fix.
+4. Get explicit confirmation of scope before any bulk modification.
+
+BULK-MODIFICATION GUARDRAIL — HARD RULE:
+- NEVER apply labels, transitions, comments, or any modification to MORE THAN 3 tickets
+  in a single batch without showing the explicit ticket list AND getting explicit
+  confirmation ("yes, apply to all 68").
+- A user saying "fix the labels" gives you permission to ANALYZE and PROPOSE.  It does NOT
+  give you permission to execute on every match.
+- For bulk operations, always present:
+  - Total ticket count
+  - Breakdown by what's missing (e.g. "62 missing \`hawk-iek\`, 14 missing coding prompt")
+  - A sample of 3–5 actual ticket IDs/titles so the user can spot-check
+  - The exact action you propose to take
+- After confirmation, batch in groups of 10–20 and report progress: "Applied to 20/68,
+  continuing..."
+- If the action is irreversible (closing tickets, deleting labels), require a second
+  confirmation phrase the user must type.
+
+ANTI-PATTERNS TO AVOID:
+- Adding a project label you have not verified by sampling existing tickets.  This will
+  silently break the JQL filter for the rest of the project's tickets if you guessed wrong.
+- Claiming a ticket is "ready for the agent" if any of conditions 1–5 fail.
+- Starting bulk work, getting partway, and asking the user mid-stream whether to continue.
+  Confirm scope ONCE up front, then execute the full batch (with progress updates).
+- Skipping the audit when the user said "I see all my tickets but none have the right
+  labels".  That sentence is a triage request — do the audit before acting.
+`;
+
 export const PRODUCTIVITY_SYSTEM_PROMPT = `${AGENT_NAME} v${AGENT_VERSION} - Personal Productivity Mode
 
 You are a personal productivity assistant that helps me:
@@ -195,6 +260,7 @@ ${PLATFORM_RESPECT_RULES}
 ${TOOL_READINESS_RULES}
 ${EFFICIENCY_RULES}
 ${DEPENDENCY_ANALYSIS_RULES}
+${AICODER_WORKFLOW_RULES}
 
 CORE PRINCIPLES:
 - Health and focus blocks are sacred. Never delete them; reschedule instead.
@@ -269,6 +335,7 @@ ${TASK_COMPLETION_RULES}
 ${PLATFORM_RESPECT_RULES}
 ${TOOL_READINESS_RULES}
 ${EFFICIENCY_RULES}
+${AICODER_WORKFLOW_RULES}
 
 CORE PHILOSOPHY:
 - Design from workflows.

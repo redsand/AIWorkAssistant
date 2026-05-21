@@ -26,6 +26,7 @@ import {
   RESUME_RUN, DISCARD_RUN, FORCE_REPROCESS, WATCH_ISSUE, MODEL, OLLAMA_URL,
   TARGET_ISSUE_KEY, PUBLISH_BRANCH, BASE_BRANCH_CANDIDATES, FOCUSED_MODE,
   SKIP_POLL, MAX_REWORK, REVIEW_POLL_MS, WAIT_FOR_DEPS, DRY_RUN_PUSH, FORCE_DONE,
+  CLEANUP_MERGED,
   POLL_MS, MAX_CYCLES, UNIT_TEST_TIMEOUT, INTEGRATION_TEST_TIMEOUT, API_PROVIDER,
 } from "./autonomous-loop/arg-parser";
 import { getProjectConfig as _getProjectConfig } from "./autonomous-loop/project-detect";
@@ -41,6 +42,8 @@ import {
   getConflictFiles as _getConflictFiles,
   getBranchModifiedFiles as _getBranchModifiedFiles,
   pullAndUpdateBase as _pullAndUpdateBase,
+  cleanupMergedBranch,
+  cleanupAllMergedBranches,
 } from "./autonomous-loop/git-ops";
 import { runTestSuite as _runTestSuite, checkCoverage as _checkCoverage } from "./autonomous-loop/test-runner";
 import { runAgent as _runAgent } from "./autonomous-loop/agent-runner";
@@ -3227,6 +3230,14 @@ async function runReviewLoop(
       clearReviewGateState(); // All findings resolved — clear the gate
       forceCheckout(getBaseBranch(), WORKSPACE);
       gitRun(["pull", "--ff-only", "origin", getBaseBranch()], WORKSPACE);
+
+      // Delete the merged local AI branch + stale remote-tracking ref so the
+      // repo does not accumulate stale ai/issue-* branches over time.
+      const cleanup = cleanupMergedBranch(WORKSPACE, item.suggestedBranch, getBaseBranch(), runLogger);
+      if (!cleanup.deletedLocal && cleanup.reason && cleanup.reason !== "branch_not_found") {
+        runLogger.logGit("Branch cleanup skipped", `${item.suggestedBranch}: ${cleanup.reason}`);
+      }
+
       // Issue closing is the reviewer's responsibility after the MR is actually merged.
       return;
     }
@@ -3685,6 +3696,24 @@ try {
   }
 } catch {
   // Non-fatal
+}
+
+// --cleanup-merged: one-shot sweep — delete every local ai/* branch already
+// merged into origin/<base> and exit.  Runs before any other mode dispatch.
+if (CLEANUP_MERGED) {
+  const base = getBaseBranch();
+  runLogger.logConfig(`Cleaning up merged ai/* branches against origin/${base}`);
+  const sweep = cleanupAllMergedBranches(WORKSPACE, base, runLogger);
+  runLogger.logConfig(
+    `Cleanup complete — deleted ${sweep.cleaned.length}, skipped ${sweep.skipped.length}`,
+  );
+  if (sweep.cleaned.length) {
+    runLogger.logConfig(`Deleted: ${sweep.cleaned.join(", ")}`);
+  }
+  for (const s of sweep.skipped) {
+    runLogger.logConfig(`  skipped ${s.branch}: ${s.reason}`);
+  }
+  process.exit(EXIT_SUCCESS);
 }
 
 // --discard-run: clear any saved run state and start fresh

@@ -57,6 +57,7 @@ Options:
   --wait-for-deps       Wait for unresolved dependencies instead of skipping
   --dry-run-push        Show what would be pushed without actually pushing (for debugging)
   --force-done          Override review gate — allow Done transition with unresolved findings (audited)
+  --cleanup-merged      One-shot sweep: delete every local ai/* branch already merged into base and exit
   --help                Show this help
 
 Remote config (fetches everything else from AIWorkAssistant):
@@ -95,6 +96,8 @@ Remote config (fetches everything else from AIWorkAssistant):
       out["dry-run-push"] = "true";
     } else if (argv[i] === "--force-done") {
       out["force-done"] = "true";
+    } else if (argv[i] === "--cleanup-merged") {
+      out["cleanup-merged"] = "true";
     } else if (argv[i] === "--resume-run") {
       out["resume-run"] = "true";
     } else if (argv[i] === "--discard-run") {
@@ -175,6 +178,7 @@ export const REVIEW_POLL_MS = parseInt(ARGV["review-poll-ms"] || process.env.AIC
 export const WAIT_FOR_DEPS = "wait-for-deps" in ARGV || process.env.AICODER_WAIT_FOR_DEPS === "true";
 export const DRY_RUN_PUSH = "dry-run-push" in ARGV || process.env.AICODER_DRY_RUN_PUSH === "true";
 export const FORCE_DONE = "force-done" in ARGV || process.env.AICODER_FORCE_DONE === "true";
+export const CLEANUP_MERGED = "cleanup-merged" in ARGV;
 
 export const UNIT_TEST_TIMEOUT = parseInt(process.env.AICODER_UNIT_TEST_TIMEOUT || "300000", 10);
 export const INTEGRATION_TEST_TIMEOUT = parseInt(process.env.AICODER_INTEGRATION_TEST_TIMEOUT || "600000", 10);
