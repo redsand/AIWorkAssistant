@@ -252,6 +252,8 @@
   var safeFindByDataKey = KanbanDepUtils.safeFindByDataKey;
 
   function drawDepArrows() {
+    if (!depOverlay) return;
+
     // Clear existing paths (keep <defs>)
     var existing = depOverlay.querySelectorAll(".dep-path");
     for (var i = 0; i < existing.length; i++) {
@@ -292,10 +294,12 @@
 
       // Set stroke-dasharray to actual path length for correct draw animation
       depOverlay.appendChild(path);
-      var totalLen = path.getTotalLength();
-      if (!edge.fromGhost) {
-        path.style.strokeDasharray = totalLen;
-        path.style.strokeDashoffset = totalLen;
+      if (typeof path.getTotalLength === "function") {
+        var totalLen = path.getTotalLength();
+        if (!edge.fromGhost) {
+          path.style.strokeDasharray = totalLen;
+          path.style.strokeDashoffset = totalLen;
+        }
       }
 
       // Hover highlighting
