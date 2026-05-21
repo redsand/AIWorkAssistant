@@ -30,16 +30,12 @@ const mockUnlinkSync = vi.mocked(fs.unlinkSync);
 
 describe("review-gate-state", () => {
   beforeEach(() => {
-    // Reset call history but keep mock implementations
     vi.clearAllMocks();
-    // Set default return values for fs mocks
     (fs.existsSync as any).mockReturnValue(false);
     (fs.readFileSync as any).mockReturnValue("{}");
     (fs.writeFileSync as any).mockReturnValue(undefined);
     (fs.mkdirSync as any).mockReturnValue(undefined);
     (fs.unlinkSync as any).mockReturnValue(undefined);
-    // Reset the in-memory cache between tests
-    clearReviewGateState();
   });
 
   // ── loadReviewGateState ───────────────────────────────────────────────────────
@@ -48,7 +44,7 @@ describe("review-gate-state", () => {
     it("returns initReviewGateState when file does not exist", () => {
       mockExistsSync.mockReturnValue(false);
 
-      const state = loadReviewGateState();
+      const state = loadReviewGateState("TEST-1");
 
       expect(state.lastFindings).toEqual([]);
       expect(state.reviewOccurred).toBe(false);
@@ -64,7 +60,7 @@ describe("review-gate-state", () => {
       mockExistsSync.mockReturnValue(true);
       mockReadFileSync.mockReturnValue(JSON.stringify(fileState));
 
-      const state = loadReviewGateState();
+      const state = loadReviewGateState("TEST-1");
 
       expect(state.lastFindings).toHaveLength(1);
       expect(state.reviewOccurred).toBe(true);
@@ -74,7 +70,7 @@ describe("review-gate-state", () => {
       mockExistsSync.mockReturnValue(true);
       mockReadFileSync.mockReturnValue("not-json{{{");
 
-      const state = loadReviewGateState();
+      const state = loadReviewGateState("TEST-1");
 
       expect(state.lastFindings).toEqual([]);
       expect(state.reviewOccurred).toBe(false);
@@ -84,25 +80,24 @@ describe("review-gate-state", () => {
       mockExistsSync.mockReturnValue(true);
       mockReadFileSync.mockReturnValue(JSON.stringify({ foo: "bar" }));
 
-      const state = loadReviewGateState();
+      const state = loadReviewGateState("TEST-1");
 
       expect(state.lastFindings).toEqual([]);
     });
 
-    it("caches the state in memory on subsequent calls", () => {
-      const fileState = {
+    it("uses per-issue file path with issueKey", () => {
+      mockExistsSync.mockReturnValue(true);
+      mockReadFileSync.mockReturnValue(JSON.stringify({
         lastFindings: [],
         reviewOccurred: true,
         forceDoneUsed: false,
-      };
-      mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(JSON.stringify(fileState));
+      }));
 
-      loadReviewGateState();
-      loadReviewGateState();
+      loadReviewGateState("MY-PROJECT-42");
 
-      // File should only be read once (second call uses cache)
-      expect(mockReadFileSync).toHaveBeenCalledTimes(1);
+      expect(mockExistsSync).toHaveBeenCalledWith(
+        expect.stringContaining("review-gate-state-MY-PROJECT-42.json"),
+      );
     });
   });
 
@@ -116,31 +111,30 @@ describe("review-gate-state", () => {
         forceDoneUsed: false,
       };
 
-      saveReviewGateState(state);
+      saveReviewGateState(state, "TEST-1");
 
       expect(mockMkdirSync).toHaveBeenCalled();
       expect(mockWriteFileSync).toHaveBeenCalledWith(
-        expect.any(String),
+        expect.stringContaining("review-gate-state-TEST-1.json"),
         JSON.stringify(state, null, 2),
         "utf-8",
       );
     });
 
-    it("caches the saved state for subsequent loads", () => {
+    it("saves to per-issue file when issueKey is provided", () => {
       const state = {
-        lastFindings: [{ severity: "critical", category: "security", file: "x.ts", message: "bad" }],
-        reviewOccurred: true,
+        lastFindings: [],
+        reviewOccurred: false,
         forceDoneUsed: false,
       };
 
-      saveReviewGateState(state);
+      saveReviewGateState(state, "ISSUE-42");
 
-      // Now load should return the saved state without reading from disk
-      mockExistsSync.mockReturnValue(false);
-      const loaded = loadReviewGateState();
-
-      expect(loaded.lastFindings).toHaveLength(1);
-      expect(mockReadFileSync).not.toHaveBeenCalled();
+      expect(mockWriteFileSync).toHaveBeenCalledWith(
+        expect.stringContaining("review-gate-state-ISSUE-42.json"),
+        expect.any(String),
+        "utf-8",
+      );
     });
 
     it("does not throw when write fails", () => {
@@ -152,7 +146,7 @@ describe("review-gate-state", () => {
         lastFindings: [],
         reviewOccurred: false,
         forceDoneUsed: false,
-      })).not.toThrow();
+      }, "TEST-1")).not.toThrow();
     });
   });
 
@@ -162,15 +156,17 @@ describe("review-gate-state", () => {
     it("deletes the state file when it exists", () => {
       mockExistsSync.mockReturnValue(true);
 
-      clearReviewGateState();
+      clearReviewGateState("TEST-1");
 
-      expect(mockUnlinkSync).toHaveBeenCalled();
+      expect(mockUnlinkSync).toHaveBeenCalledWith(
+        expect.stringContaining("review-gate-state-TEST-1.json"),
+      );
     });
 
     it("does not attempt to delete when the file does not exist", () => {
       mockExistsSync.mockReturnValue(false);
 
-      clearReviewGateState();
+      clearReviewGateState("TEST-1");
 
       expect(mockUnlinkSync).not.toHaveBeenCalled();
     });
@@ -181,26 +177,7 @@ describe("review-gate-state", () => {
         throw new Error("permission denied");
       });
 
-      expect(() => clearReviewGateState()).not.toThrow();
-    });
-
-    it("clears the in-memory cache so next load reads from disk", () => {
-      // First, populate the cache
-      mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(JSON.stringify({
-        lastFindings: [],
-        reviewOccurred: true,
-        forceDoneUsed: false,
-      }));
-      loadReviewGateState();
-
-      // Now clear
-      clearReviewGateState();
-
-      // Next load should return default state (file doesn't exist)
-      mockExistsSync.mockReturnValue(false);
-      const state = loadReviewGateState();
-      expect(state.reviewOccurred).toBe(false);
+      expect(() => clearReviewGateState("TEST-1")).not.toThrow();
     });
   });
 
@@ -212,61 +189,69 @@ describe("review-gate-state", () => {
         { severity: "critical", category: "security", file: "a.ts", message: "bad" },
       ];
 
-      recordGateFindings(findings);
+      recordGateFindings(findings, "TEST-1");
 
-      const state = loadReviewGateState();
-      expect(state.lastFindings).toHaveLength(1);
-      expect(state.reviewOccurred).toBe(true);
+      expect(mockWriteFileSync).toHaveBeenCalledWith(
+        expect.stringContaining("review-gate-state-TEST-1.json"),
+        expect.any(String),
+        "utf-8",
+      );
+      const saved = JSON.parse((mockWriteFileSync as any).mock.calls[0][1]);
+      expect(saved.lastFindings).toHaveLength(1);
+      expect(saved.reviewOccurred).toBe(true);
     });
 
-    it("preserves forceDoneUsed from existing state", () => {
-      mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(JSON.stringify({
-        lastFindings: [],
-        reviewOccurred: true,
-        forceDoneUsed: true,
-        forceDoneAt: "2025-01-01T00:00:00.000Z",
-      }));
+    it("writes to distinct files for distinct issue keys", () => {
+      const findingsA = [
+        { severity: "critical", category: "security", file: "a.ts", message: "bad" },
+      ];
+      const findingsB = [
+        { severity: "high", category: "quality", file: "b.ts", message: "warn" },
+      ];
 
-      loadReviewGateState();
+      recordGateFindings(findingsA, "ISSUE-1");
+      recordGateFindings(findingsB, "ISSUE-2");
 
-      recordGateFindings([
-        { severity: "high", category: "quality", file: "b.ts", message: "issue" },
-      ]);
-
-      const state = loadReviewGateState();
-      expect(state.forceDoneUsed).toBe(true);
-      expect(state.forceDoneAt).toBe("2025-01-01T00:00:00.000Z");
+      const calls = (mockWriteFileSync as any).mock.calls;
+      expect(calls[0][0]).toContain("review-gate-state-ISSUE-1.json");
+      expect(calls[1][0]).toContain("review-gate-state-ISSUE-2.json");
     });
   });
 
   describe("markForceDone", () => {
     it("sets forceDoneUsed to true and records timestamp", () => {
-      markForceDone();
+      markForceDone("TEST-1");
 
-      const state = loadReviewGateState();
-      expect(state.forceDoneUsed).toBe(true);
-      expect(state.forceDoneAt).not.toBeUndefined();
+      expect(mockWriteFileSync).toHaveBeenCalledWith(
+        expect.stringContaining("review-gate-state-TEST-1.json"),
+        expect.any(String),
+        "utf-8",
+      );
+      const saved = JSON.parse((mockWriteFileSync as any).mock.calls[0][1]);
+      expect(saved.forceDoneUsed).toBe(true);
+      expect(saved.forceDoneAt).not.toBeUndefined();
     });
   });
 
   // ── getLastFindings ───────────────────────────────────────────────────────────
 
   describe("getLastFindings", () => {
-    it("returns lastFindings from the current state", () => {
-      const findings = [
-        { severity: "medium", category: "quality", file: "c.ts", message: "warning" },
-      ];
-      recordGateFindings(findings);
+    it("returns lastFindings from the loaded state", () => {
+      mockExistsSync.mockReturnValue(true);
+      mockReadFileSync.mockReturnValue(JSON.stringify({
+        lastFindings: [{ severity: "medium", category: "quality", file: "c.ts", message: "warning" }],
+        reviewOccurred: true,
+        forceDoneUsed: false,
+      }));
 
-      const last = getLastFindings();
+      const last = getLastFindings("TEST-1");
       expect(last).toHaveLength(1);
       expect(last[0].file).toBe("c.ts");
     });
 
     it("returns empty array when no findings have been recorded", () => {
-      clearReviewGateState();
-      const last = getLastFindings();
+      mockExistsSync.mockReturnValue(false);
+      const last = getLastFindings("TEST-1");
       expect(last).toEqual([]);
     });
   });

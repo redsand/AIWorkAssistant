@@ -1875,31 +1875,23 @@ const processedIssues = new Set<string>();
 const failedAttempts = new Map<string, number>(); // Track consecutive failures per issue
 const MAX_FAILED_ATTEMPTS = 3;
 
-// Persist processed issues across restarts
-const PROCESSED_FILE = path.join(WORKSPACE || process.cwd(), ".aicoder", "processed-issues.json");
-
+// Persist processed issues across restarts via SQLite (concurrency-safe)
 function loadProcessedIssues(): void {
   try {
-    if (fs.existsSync(PROCESSED_FILE)) {
-      const data = JSON.parse(fs.readFileSync(PROCESSED_FILE, "utf-8"));
-      if (Array.isArray(data)) {
-        data.forEach((id: string) => processedIssues.add(id));
-        if (processedIssues.size > 0) {
-          runLogger.logConfig(`Resumed with ${processedIssues.size} previously processed issue(s)`);
-        }
-      }
+    const keys = agentRunDatabase.listProcessedIssues(WORKSPACE);
+    keys.forEach((id) => processedIssues.add(id));
+    if (processedIssues.size > 0) {
+      runLogger.logConfig(`Resumed with ${processedIssues.size} previously processed issue(s)`);
     }
   } catch {
-    // File doesn't exist or is corrupt — start fresh
+    // DB not available — start fresh
   }
 }
 
 function saveProcessedIssue(issueKey: string): void {
   processedIssues.add(issueKey);
   try {
-    const dir = path.dirname(PROCESSED_FILE);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(PROCESSED_FILE, JSON.stringify([...processedIssues], null, 2), "utf-8");
+    agentRunDatabase.markIssueProcessed(issueKey, WORKSPACE);
   } catch (err) {
     // Persistence failure is non-fatal
     runLogger.logWork(`Could not persist processed issue: ${err instanceof Error ? err.message : err}`);
@@ -1907,15 +1899,21 @@ function saveProcessedIssue(issueKey: string): void {
 }
 
 // ─── Run state persistence ──────────────────────────────────────────────────
-// Saves pipeline checkpoint state to .aicoder/run-state.json so the aicoder
-// can resume an interrupted run from the last checkpoint.
+// Saves pipeline checkpoint state to .aicoder/run-state-<issueKey>.json so the
+// aicoder can resume an interrupted run from the last checkpoint. Per-issue
+// file isolation allows concurrent aicoder processes on different issues.
 
-const RUN_STATE_FILE = path.join(WORKSPACE || process.cwd(), ".aicoder", "run-state.json");
+function getRunStateFile(issueKey?: string): string {
+  const base = path.join(WORKSPACE || process.cwd(), ".aicoder");
+  const name = issueKey ? `run-state-${issueKey}.json` : "run-state.json";
+  return path.join(base, name);
+}
 
-function loadRunState(): RunState | null {
+function loadRunState(issueKey?: string): RunState | null {
+  const filePath = getRunStateFile(issueKey);
   try {
-    if (fs.existsSync(RUN_STATE_FILE)) {
-      const data = JSON.parse(fs.readFileSync(RUN_STATE_FILE, "utf-8"));
+    if (fs.existsSync(filePath)) {
+      const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
       if (data && data.checkpoint && data.issueKey) {
         return data as RunState;
       }
@@ -1923,24 +1921,55 @@ function loadRunState(): RunState | null {
   } catch {
     // File doesn't exist or is corrupt — start fresh
   }
+  // Legacy fallback: if no per-issue file found, try the old unkeyed file
+  if (issueKey) {
+    return loadRunState();
+  }
   return null;
 }
 
-function saveRunState(state: RunState): void {
+/** Scan .aicoder/ for any existing run-state-*.json and return the first valid one. */
+function findExistingRunState(): RunState | null {
+  // Try TARGET_ISSUE_KEY first if available
+  if (TARGET_ISSUE_KEY) {
+    const state = loadRunState(TARGET_ISSUE_KEY);
+    if (state) return state;
+  }
+  const dir = path.join(WORKSPACE || process.cwd(), ".aicoder");
   try {
-    const dir = path.dirname(RUN_STATE_FILE);
+    if (!fs.existsSync(dir)) return null;
+    for (const entry of fs.readdirSync(dir)) {
+      if (entry.startsWith("run-state-") && entry.endsWith(".json")) {
+        const key = entry.slice("run-state-".length, -".json".length);
+        const state = loadRunState(key);
+        if (state) return state;
+      }
+    }
+  } catch {
+    // Non-fatal
+  }
+  // Legacy fallback
+  return loadRunState();
+}
+
+function saveRunState(state: RunState, issueKey?: string): void {
+  const key = issueKey || state.issueKey;
+  const filePath = getRunStateFile(key);
+  try {
+    const dir = path.dirname(filePath);
     fs.mkdirSync(dir, { recursive: true });
     state.updatedAt = new Date().toISOString();
-    fs.writeFileSync(RUN_STATE_FILE, JSON.stringify(state, null, 2), "utf-8");
+    fs.writeFileSync(filePath, JSON.stringify(state, null, 2), "utf-8");
   } catch (err) {
     runLogger.logWork(`Could not persist run state: ${err instanceof Error ? err.message : err}`);
   }
 }
 
-function clearRunState(): void {
+function clearRunState(issueKey?: string): void {
+  const filePath = getRunStateFile(issueKey);
   try {
-    if (fs.existsSync(RUN_STATE_FILE)) {
-      fs.unlinkSync(RUN_STATE_FILE);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
     }
   } catch {
     // Non-fatal
@@ -2030,6 +2059,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   if (FORCE_REPROCESS && processedIssues.has(issueKey)) {
     runLogger.logConfig(`Force re-processing issue ${issueKey} (--force)`);
     processedIssues.delete(issueKey);
+    agentRunDatabase.unmarkIssueProcessed(issueKey);
   }
 
   runLogger.startRun(item.number, item.title);
@@ -2503,6 +2533,7 @@ async function resumeFromCheckpoint(state: RunState): Promise<void> {
 
   // Remove from processed issues so processWorkItem won't skip it
   processedIssues.delete(state.issueKey);
+  agentRunDatabase.unmarkIssueProcessed(state.issueKey);
 
   // Ensure workspace is clean and on the correct branch
   ensureCleanWorkspace();
@@ -2546,7 +2577,7 @@ async function resumeFromCheckpoint(state: RunState): Promise<void> {
       break;
     default:
       runLogger.logError(`Unknown checkpoint: ${state.checkpoint} — starting fresh`);
-      clearRunState();
+      clearRunState(state.issueKey);
   }
 }
 
@@ -2554,14 +2585,14 @@ async function resumeFromCheckpoint(state: RunState): Promise<void> {
 async function continueFromBranchCheckout(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
   if (!forceCheckout(item.suggestedBranch, WORKSPACE)) {
     runLogger.logError(`Cannot checkout branch ${item.suggestedBranch} for resume`);
-    clearRunState();
+    clearRunState(state.issueKey);
     return;
   }
 
   // Baseline tests
   if (!SKIP_BASELINE && !(await fixBaselineTests(cfg, item))) {
     runLogger.logError("Baseline tests could not be fixed on resume — aborting");
-    clearRunState();
+    clearRunState(state.issueKey);
     return;
   }
   saveRunState({ ...state, checkpoint: "baseline_tests_pass" });
@@ -2573,7 +2604,7 @@ async function continueFromBaselineTestsPass(cfg: ServerConfig, item: WorkItem, 
   const generated = await generatePrompt(cfg, item);
   if (generated.skipped) {
     runLogger.logError(`Cannot generate prompt on resume: ${generated.skipReason}`);
-    clearRunState();
+    clearRunState(state.issueKey);
     return;
   }
 
@@ -2588,32 +2619,32 @@ async function continueFromBaselineTestsPass(cfg: ServerConfig, item: WorkItem, 
       if (!freshResult.finDetected && freshResult.exitCode !== 0) {
         runLogger.logError(`Agent exited with code ${freshResult.exitCode} on retry — aborting`);
         if (freshResult.stderr) runLogger.logError(`Agent stderr: ${freshResult.stderr.slice(-1000)}`);
-        clearRunState();
+        clearRunState(state.issueKey);
         return;
       }
       saveRunState({ ...state, checkpoint: "agent_complete", sessionId: freshResult.sessionId, agentRanTests: freshResult.ranTests });
     } else {
       runLogger.logError(`Agent exited with code ${agentResult.exitCode} — aborting`);
       if (agentResult.stderr) runLogger.logError(`Agent stderr: ${agentResult.stderr.slice(-1000)}`);
-      clearRunState();
+      clearRunState(state.issueKey);
       return;
     }
   } else {
     saveRunState({ ...state, checkpoint: "agent_complete", sessionId: agentResult.sessionId, agentRanTests: agentResult.ranTests });
   }
 
-  await continueFromAgentComplete(cfg, item, loadRunState()!);
+  await continueFromAgentComplete(cfg, item, loadRunState(state.issueKey)!);
 }
 
 async function continueFromAgentComplete(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
   forceCheckout(item.suggestedBranch, WORKSPACE);
   if (!stageAndCommit(`[AI] ${item.title}`)) {
     runLogger.logError("Stage/commit failed on resume — aborting");
-    clearRunState();
+    clearRunState(state.issueKey);
     return;
   }
   saveRunState({ ...state, checkpoint: "changes_committed" });
-  await continueFromChangesCommitted(cfg, item, loadRunState()!);
+  await continueFromChangesCommitted(cfg, item, loadRunState(state.issueKey)!);
 }
 
 async function continueFromChangesCommitted(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
@@ -2629,7 +2660,7 @@ async function continueFromChangesCommitted(cfg: ServerConfig, item: WorkItem, s
       runLogger.logConfig("Unit tests could not start on resume — proceeding without tests");
     } else if (!unitResult.passed) {
       runLogger.logError(`Unit tests ${unitResult.kind} on resume — aborting`);
-      clearRunState();
+      clearRunState(state.issueKey);
       return;
     }
     const integrationResult = runTestSuite("integration");
@@ -2637,7 +2668,7 @@ async function continueFromChangesCommitted(cfg: ServerConfig, item: WorkItem, s
       runLogger.logConfig("Integration tests could not start on resume — skipping");
     } else if (!integrationResult.passed) {
       runLogger.logError(`Integration tests ${integrationResult.kind} on resume — aborting`);
-      clearRunState();
+      clearRunState(state.issueKey);
       return;
     }
     const coverageResult = checkCoverage();
@@ -2646,7 +2677,7 @@ async function continueFromChangesCommitted(cfg: ServerConfig, item: WorkItem, s
     }
   }
   saveRunState({ ...state, checkpoint: "tests_passed" });
-  await continueFromTestsPassed(cfg, item, loadRunState()!);
+  await continueFromTestsPassed(cfg, item, loadRunState(state.issueKey)!);
 }
 
 async function continueFromTestsPassed(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
@@ -2654,12 +2685,12 @@ async function continueFromTestsPassed(cfg: ServerConfig, item: WorkItem, state:
     runLogger.logGit(`Push rejected — rebasing on remote and retrying`);
     if (!gitRun(["pull", "--rebase", "origin", item.suggestedBranch], WORKSPACE) || !pushBranch(item.suggestedBranch)) {
       runLogger.logError("Push failed after rebase on resume — aborting");
-      clearRunState();
+      clearRunState(state.issueKey);
       return;
     }
   }
   saveRunState({ ...state, checkpoint: "branch_pushed" });
-  await continueFromBranchPushed(cfg, item, loadRunState()!);
+  await continueFromBranchPushed(cfg, item, loadRunState(state.issueKey)!);
 }
 
 async function continueFromBranchPushed(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
@@ -2669,10 +2700,10 @@ async function continueFromBranchPushed(cfg: ServerConfig, item: WorkItem, state
     const label = platform === "gitlab" ? "MR" : "PR";
     runLogger.logPR(`Opened ${label} #${pr.prNumber}: ${pr.url}`);
     saveRunState({ ...state, checkpoint: "pr_created", prNumber: pr.prNumber });
-    await continueFromReviewLoop(cfg, item, loadRunState()!);
+    await continueFromReviewLoop(cfg, item, loadRunState(state.issueKey)!);
   } else {
     runLogger.logError("PR/MR creation failed on resume — aborting");
-    clearRunState();
+    clearRunState(state.issueKey);
   }
 }
 
@@ -2683,7 +2714,7 @@ async function continueFromReviewLoop(cfg: ServerConfig, item: WorkItem, state: 
 
   if (!state.prNumber) {
     runLogger.logError("Run state has no prNumber — cannot resume review loop");
-    clearRunState();
+    clearRunState(state.issueKey);
     return;
   }
 
@@ -2695,12 +2726,12 @@ async function continueFromReworkAgentComplete(cfg: ServerConfig, item: WorkItem
   forceCheckout(item.suggestedBranch, WORKSPACE);
   if (!stageAndCommit(`[AI] rework: ${item.title}`)) {
     runLogger.logError("Rework stage/commit failed on resume — aborting");
-    clearRunState();
+    clearRunState(state.issueKey);
     return;
   }
   saveRunState({ ...state, checkpoint: "rework_committed" });
   // Continue with test gate and push
-  await continueFromReworkCommitted(cfg, item, loadRunState()!);
+  await continueFromReworkCommitted(cfg, item, loadRunState(state.issueKey)!);
 }
 
 async function continueFromReworkCommitted(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
@@ -2710,13 +2741,13 @@ async function continueFromReworkCommitted(cfg: ServerConfig, item: WorkItem, st
     const unitResult = runTestSuite("unit");
     if (!unitResult.passed) {
       runLogger.logError(`Rework unit tests ${unitResult.kind} on resume — aborting`);
-      clearRunState();
+      clearRunState(state.issueKey);
       return;
     }
     const integrationResult = runTestSuite("integration");
     if (!integrationResult.passed) {
       runLogger.logError(`Rework integration tests ${integrationResult.kind} on resume — aborting`);
-      clearRunState();
+      clearRunState(state.issueKey);
       return;
     }
     const coverageResult = checkCoverage();
@@ -2725,19 +2756,19 @@ async function continueFromReworkCommitted(cfg: ServerConfig, item: WorkItem, st
     }
   }
   saveRunState({ ...state, checkpoint: "rework_tests_passed" });
-  await continueFromReworkTestsPassed(cfg, item, loadRunState()!);
+  await continueFromReworkTestsPassed(cfg, item, loadRunState(state.issueKey)!);
 }
 
 async function continueFromReworkTestsPassed(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
   if (!pushBranch(item.suggestedBranch, { forceWithLease: true })) {
     runLogger.logError("Rework push failed on resume — aborting");
-    clearRunState();
+    clearRunState(state.issueKey);
     return;
   }
   const sinceTimestamp = new Date().toISOString();
   const reworkCount = (state.reworkCount ?? 0);
   saveRunState({ ...state, checkpoint: "rework_pushed", sinceTimestamp, reworkCount });
-  await continueFromReviewLoop(cfg, item, loadRunState()!);
+  await continueFromReviewLoop(cfg, item, loadRunState(state.issueKey)!);
 }
 
 async function focusedLoop(cfg: ServerConfig): Promise<void> {
@@ -2875,7 +2906,7 @@ async function watchIssue(cfg: ServerConfig, issueKey: string): Promise<void> {
   }
 
   // Clear any stale run state and enter the review loop
-  clearRunState();
+  clearRunState(issueKey);
   await runReviewLoop(cfg, item, ghToken, owner, repo, prNumber);
 }
 
@@ -3092,7 +3123,7 @@ async function runReviewLoop(
   const label = platform === "gitlab" ? "MR" : "PR";
 
   // Load run state for review loop (may have reworkCount/sinceTimestamp from a resumed run)
-  const reviewState = loadRunState();
+  const reviewState = loadRunState(item.id);
   let reworkCount = reviewState?.reworkCount ?? 0;
   let postponeTimeout = 0;
   const POSTPONE_MAX_MS = 30 * 60 * 1000; // 30 min max wait for service restoration
@@ -3227,8 +3258,8 @@ async function runReviewLoop(
 
     if (reviewResult === "passed" || reviewResult === "merged") {
       runLogger.logConfig(`${label} #${prNumber} passed review — pulling latest ${getBaseBranch()}`);
-      clearRunState(); // Run completed successfully
-      clearReviewGateState(); // All findings resolved — clear the gate
+      clearRunState(item.id); // Run completed successfully
+      clearReviewGateState(item.id); // All findings resolved — clear the gate
       forceCheckout(getBaseBranch(), WORKSPACE);
       gitRun(["pull", "--ff-only", "origin", getBaseBranch()], WORKSPACE);
 
@@ -3245,14 +3276,14 @@ async function runReviewLoop(
 
     if (reviewResult === "closed") {
       runLogger.logError(`${label} #${prNumber} was closed without merge`);
-      clearRunState();
+      clearRunState(item.id);
       return;
     }
 
     if (reviewResult === "human_review") {
       runLogger.logConfig(`${label} #${prNumber} flagged for human review — stopping rework loop`);
       lastPipelineExitCode = EXIT_REVIEW_FAILED;
-      clearRunState();
+      clearRunState(item.id);
       return;
     }
 
@@ -3272,7 +3303,7 @@ async function runReviewLoop(
       if (reworkCount > MAX_REWORK) {
         runLogger.logError(`${label} #${prNumber} exceeded max rework cycles (${MAX_REWORK}) after conflict resolution attempts`);
         lastPipelineExitCode = EXIT_MAX_REWORK;
-        clearRunState();
+        clearRunState(item.id);
         return;
       }
 
@@ -3300,7 +3331,7 @@ async function runReviewLoop(
       if (reworkCount > MAX_REWORK) {
         runLogger.logError(`${label} #${prNumber} exceeded max rework cycles (${MAX_REWORK})`);
         lastPipelineExitCode = EXIT_MAX_REWORK;
-        clearRunState();
+        clearRunState(item.id);
         return;
       }
 
@@ -3334,7 +3365,7 @@ async function runReviewLoop(
 
       // Convergence: record findings from this round and check if loop should stop.
       // Prefer structured findings persisted by the reviewer; fall back to regex extraction.
-      const persistedGateFindings = loadReviewGateState().lastFindings;
+      const persistedGateFindings = loadReviewGateState(item.id).lastFindings;
       const regexFindings = extractFindingsFromPrompt(reworkPrompt);
       const roundFindings = persistedGateFindings.length > 0
         ? persistedGateFindings.map((f) => ({ file: f.file, severity: f.severity, category: f.category }))
@@ -3349,8 +3380,8 @@ async function runReviewLoop(
         file: f.file || "",
         message: `Finding in ${f.file || "unknown file"}`,
       }));
-      const currentGateState = loadReviewGateState();
-      saveReviewGateState({ ...currentGateState, lastFindings: [...currentGateState.lastFindings, ...gateFindings] });
+      const currentGateState = loadReviewGateState(item.id);
+      saveReviewGateState({ ...currentGateState, lastFindings: [...currentGateState.lastFindings, ...gateFindings] }, item.id);
 
       const semanticFindings = toSemanticFindings(roundFindings);
       const detectedFailures = detectFailurePatterns({
@@ -3376,7 +3407,7 @@ async function runReviewLoop(
           } else {
             runLogger.logError(decision.prompt);
             lastPipelineExitCode = EXIT_MAX_REWORK;
-            clearRunState();
+            clearRunState(item.id);
             return;
           }
         } else {
@@ -3394,7 +3425,7 @@ async function runReviewLoop(
         }
         // Prevent re-pickup on next poll — ready-for-agent label stays but we've escalated
         saveProcessedIssue(item.id);
-        clearRunState();
+        clearRunState(item.id);
         return;
         }
       }
@@ -3410,7 +3441,7 @@ async function runReviewLoop(
           runLogger.logError(escalationPrompt);
           lastPipelineExitCode = EXIT_REVIEW_FAILED;
           saveProcessedIssue(item.id);
-          clearRunState();
+          clearRunState(item.id);
           return;
         }
         if (strategy !== "rework_with_feedback") {
@@ -3469,7 +3500,7 @@ async function runReviewLoop(
         if (emptyConvergence.shouldStop) {
           runLogger.logError(`Convergence detected (${emptyConvergence.reason}): ${emptyConvergence.message}`);
           lastPipelineExitCode = EXIT_NO_CHANGES;
-          clearRunState();
+          clearRunState(item.id);
           return;
         }
         continue; // Poll again — reviewer still has the old SHA, next rework attempt will try again
@@ -3537,7 +3568,7 @@ async function runReviewLoop(
           if (jiraClient.isConfigured()) {
             try { await jiraClient.addComment(item.id, report); } catch { /* best-effort */ }
           }
-          clearRunState();
+          clearRunState(item.id);
           return;
           }
         }
@@ -3725,25 +3756,25 @@ if (DISCARD_RUN) {
 
 // Check for interrupted run state and resume if appropriate
 // Skip auto-resume when --watch or --publish is specified — these are explicit one-shot commands
-const existingRunState = loadRunState();
+const existingRunState = findExistingRunState();
 if (existingRunState && !DISCARD_RUN && !WATCH_ISSUE && !PUBLISH_BRANCH) {
   const stateAge = Date.now() - new Date(existingRunState.updatedAt).getTime();
   const STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
   if (stateAge > STALE_MS && !RESUME_RUN) {
     runLogger.logConfig(`Found stale run state (older than 24h) for issue ${existingRunState.issueKey} — clearing`);
-    clearRunState();
+    clearRunState(existingRunState.issueKey);
   } else {
     runLogger.logConfig(`Found interrupted run for issue ${existingRunState.issueKey} at checkpoint '${existingRunState.checkpoint}'`);
     runLogger.logConfig("Resuming from saved state...");
     resumeFromCheckpoint(existingRunState)
       .then(() => {
-        clearRunState();
+        clearRunState(existingRunState.issueKey);
         process.exit(lastPipelineExitCode);
       })
       .catch((err) => {
         console.error("Resume failed:", err);
-        clearRunState();
+        clearRunState(existingRunState.issueKey);
         process.exit(1);
       });
     // Do not fall through to focusedLoop/pollLoop — resume handles everything and exits
@@ -3757,8 +3788,7 @@ if (!existingRunState || DISCARD_RUN || WATCH_ISSUE || PUBLISH_BRANCH) {
     // Clear any saved run state — watch is explicit control, don't auto-resume
     if (existingRunState) {
       runLogger.logConfig("Clearing saved run state (--watch takes priority over auto-resume)");
-      clearRunState();
-    }
+      clearRunState(existingRunState.issueKey);    }
     watchIssue(loadServerConfig(), WATCH_ISSUE)
       .then(() => process.exit(lastPipelineExitCode))
       .catch((err) => {
