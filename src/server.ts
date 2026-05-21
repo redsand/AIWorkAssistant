@@ -40,6 +40,7 @@ import { digestRoutes } from "./routes/digests";
 import { musicianRoutes } from "./routes/musician";
 import { recipeRoutes } from "./routes/recipes";
 import { repoDashboardRoutes } from "./routes/repo-dashboard";
+import { kanbanRoutes } from "./routes/kanban";
 import { claimKitAdapter } from "./context-engine/adapters/claimkit-adapter";
 import { comparisonRoutes } from "./comparison-runs/api";
 import { ingestKnowledgeStore, ingestCodebaseStore, ingestGraphStore } from "./context-engine/claimkit-ingestion";
@@ -121,6 +122,7 @@ export async function buildServer() {
   await server.register(recipeRoutes);
   await server.register(comparisonRoutes, { prefix: "/api/comparison" });
   await server.register(repoDashboardRoutes, { prefix: "/api/repo-dashboard" });
+  await server.register(kanbanRoutes, { prefix: "/api/kanban" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 
