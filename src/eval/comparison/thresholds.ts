@@ -1,4 +1,24 @@
+import type { ComparisonEvalCategory } from "../types";
 import type { ComparisonRunResult, ThresholdEvaluation } from "./reportTypes";
+
+export interface ThresholdCheck {
+  name: string;
+  value: number;
+  threshold: number;
+  comparison: "min" | "max";
+  passed: boolean;
+}
+
+export interface RetrievalReadinessResult {
+  productReady: boolean;
+  checks: ThresholdCheck[];
+}
+
+export const NO_RAG_WIN_CATEGORIES: ComparisonEvalCategory[] = [
+  "citation_laundering",
+  "direct_fact",
+  "staleness",
+];
 
 export interface ThresholdConfig {
   minClaimKitWinRate: number;
@@ -53,4 +73,52 @@ export function evaluateThresholds(
   }
 
   return { passed: failures.length === 0, failures };
+}
+
+export function countCategoryCases(
+  result: ComparisonRunResult,
+  category: ComparisonEvalCategory,
+): number {
+  return result.cases.filter(c => c.category === category).length;
+}
+
+export function countRagWins(
+  result: ComparisonRunResult,
+  category: ComparisonEvalCategory,
+): number {
+  return result.cases.filter(
+    c => c.category === category && c.overallWinner === "rag",
+  ).length;
+}
+
+export function evaluateRetrievalReadiness(
+  result: ComparisonRunResult,
+): RetrievalReadinessResult {
+  const checks: ThresholdCheck[] = [];
+
+  for (const category of NO_RAG_WIN_CATEGORIES) {
+    const caseCount = countCategoryCases(result, category);
+    const ragWins = countRagWins(result, category);
+
+    checks.push({
+      name: `Retrieval product-ready: ${category} coverage`,
+      value: caseCount,
+      threshold: 1,
+      comparison: "min",
+      passed: caseCount >= 1,
+    });
+
+    checks.push({
+      name: `Retrieval product-ready: ${category} RAG wins`,
+      value: ragWins,
+      threshold: 0,
+      comparison: "max",
+      passed: caseCount > 0 && ragWins <= 0,
+    });
+  }
+
+  return {
+    productReady: checks.every(c => c.passed),
+    checks,
+  };
 }
