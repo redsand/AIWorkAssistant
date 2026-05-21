@@ -278,7 +278,6 @@ async function fetchGitHubWork(
     const issueLabels: string[] = (issue.labels || []).map((l: any) =>
       typeof l === "string" ? l : l.name,
     );
-    if (issueLabels.includes("missing-coding-prompt")) continue;
     if (skipPromptCheck) { filtered.push(issue); continue; }
     if (ticketToTaskGenerator.hasCodingPromptContent(issue.body || "")) {
       filtered.push(issue);
@@ -293,6 +292,8 @@ async function fetchGitHubWork(
       if (hasPromptInComments) {
         console.log(`[GitHub] Issue #${issue.number}: coding prompt found in comments (not body)`);
         filtered.push(issue);
+      } else if (issueLabels.includes("missing-coding-prompt")) {
+        console.log(`[GitHub] Skipping issue #${issue.number}: has "missing-coding-prompt" label and no coding prompt in body/comments`);
       }
     } catch {
       // Comments unavailable — skip issue
@@ -335,7 +336,6 @@ async function fetchGitLabWork(
   const filtered: any[] = [];
   for (const issue of issues) {
     const issueLabels: string[] = (issue.labels || []);
-    if (issueLabels.includes("missing-coding-prompt")) continue;
     if (skipPromptCheck) { filtered.push(issue); continue; }
     if (ticketToTaskGenerator.hasCodingPromptContent(issue.description || "")) {
       filtered.push(issue);
@@ -350,6 +350,8 @@ async function fetchGitLabWork(
       if (hasPromptInNotes) {
         console.log(`[GitLab] Issue !${issue.iid}: coding prompt found in notes (not description)`);
         filtered.push(issue);
+      } else if (issueLabels.includes("missing-coding-prompt")) {
+        console.log(`[GitLab] Skipping issue !${issue.iid}: has "missing-coding-prompt" label and no coding prompt in description/notes`);
       }
     } catch {
       // Notes unavailable — skip issue
@@ -401,10 +403,6 @@ async function fetchJiraWork(
   const filtered: any[] = [];
   for (const issue of issues) {
     const issueLabels: string[] = issue.fields?.labels || [];
-    if (issueLabels.includes("missing-coding-prompt")) {
-      console.log(`[Jira] Skipping ${issue.key}: has "missing-coding-prompt" label`);
-      continue;
-    }
     if (skipPromptCheck) {
       filtered.push(issue);
       continue;
@@ -423,6 +421,8 @@ async function fetchJiraWork(
       if (hasPromptInComments) {
         console.log(`[Jira] ${issue.key}: coding prompt found in comments (not description)`);
         filtered.push(issue);
+      } else if (issueLabels.includes("missing-coding-prompt")) {
+        console.log(`[Jira] Skipping ${issue.key}: has "missing-coding-prompt" label and no coding prompt in description/comments`);
       } else {
         console.log(`[Jira] Skipping ${issue.key} ("${issue.fields?.summary || ""}"): no coding prompt content in description or comments (desc first 200 chars: ${body.slice(0, 200).replace(/\n/g, " ")})`);
       }

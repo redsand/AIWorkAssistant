@@ -1578,15 +1578,65 @@ async function llmEvaluateTestFailure(testOutput: string, _item: WorkItem): Prom
 // --- Dependency resolution ---
 
 const DEPENDENCY_RE = /\b(?:depends\s+on|blocked\s+by|requires|prerequisite\s*:\s*)\s*#(\d+)/gi;
+const JIRA_DEPENDENCY_RE = /\b(?:depends\s+on|blocked\s+by|requires|prerequisite\s*:\s*)\s*:?\s*([A-Z][A-Z0-9]+-\d+(?:\s*,\s*[A-Z][A-Z0-9]+-\d+)*)/gi;
+const DO_NOT_START_UNTIL_RE = /\bdo\s+not\s+start\b[\s\S]{0,160}?\buntil\b[\s\S]{0,80}?([A-Z][A-Z0-9]+-\d+|#\d+)/gi;
+const JIRA_KEY_RE = /\b[A-Z][A-Z0-9]+-\d+\b/g;
 
-function parseDependencies(body: string): number[] {
-  const nums = new Set<number>();
+function jiraDescriptionToText(value: unknown): string {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(jiraDescriptionToText).filter(Boolean).join("\n");
+  if (typeof value === "object") {
+    const node = value as { text?: unknown; content?: unknown };
+    return [
+      typeof node.text === "string" ? node.text : "",
+      jiraDescriptionToText(node.content),
+    ].filter(Boolean).join("\n");
+  }
+  return "";
+}
+
+function parseDependencies(body: string): string[] {
+  const refs = new Set<string>();
   let match: RegExpExecArray | null;
   const re = new RegExp(DEPENDENCY_RE.source, DEPENDENCY_RE.flags);
   while ((match = re.exec(body)) !== null) {
-    nums.add(parseInt(match[1], 10));
+    refs.add(match[1]);
   }
-  return [...nums];
+
+  const jiraRe = new RegExp(JIRA_DEPENDENCY_RE.source, JIRA_DEPENDENCY_RE.flags);
+  while ((match = jiraRe.exec(body)) !== null) {
+    const keys = match[1].match(JIRA_KEY_RE) || [];
+    for (const key of keys) refs.add(key.toUpperCase());
+  }
+
+  const doNotStartRe = new RegExp(DO_NOT_START_UNTIL_RE.source, DO_NOT_START_UNTIL_RE.flags);
+  while ((match = doNotStartRe.exec(body)) !== null) {
+    const ref = match[1];
+    refs.add(ref.startsWith("#") ? ref.slice(1) : ref.toUpperCase());
+  }
+
+  return [...refs];
+}
+
+function isDoneStatus(status: string | undefined): boolean {
+  return /done|closed|resolved|completed/i.test(status || "");
+}
+
+async function getUnresolvedJiraDependencies(issueKeys: string[]): Promise<string[]> {
+  const unresolved: string[] = [];
+  for (const issueKey of issueKeys) {
+    try {
+      const depIssue = await jiraClient.getIssue(issueKey);
+      const status = depIssue.fields.status?.name ?? "";
+      if (!isDoneStatus(status)) {
+        unresolved.push(`${issueKey} (${status || "unknown status"})`);
+      }
+    } catch (err) {
+      unresolved.push(`${issueKey} (${err instanceof Error ? err.message : "could not verify status"})`);
+    }
+  }
+  return unresolved;
 }
 
 async function fetchIssueBody(
@@ -1652,11 +1702,15 @@ async function resolveDependencyBranch(
   ghToken: string,
   owner: string,
   repo: string,
-  depIssueNumbers: number[],
+  depIssueRefs: string[],
 ): Promise<{ branch: string; source: "merged" | "open_pr" } | null> {
   const platform = detectRemotePlatform(WORKSPACE);
   let openBranch: string | null = null;
-  for (const depNum of depIssueNumbers) {
+  for (const depRef of depIssueRefs) {
+    const depNum = parseInt(depRef, 10);
+    if (!Number.isFinite(depNum)) {
+      continue;
+    }
     if (platform === "gitlab") {
       const projectId = repo || process.env.GITLAB_DEFAULT_PROJECT || "";
       if (!projectId) continue;
@@ -2088,9 +2142,62 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
 
   const startTime = Date.now();
 
-  // Mark issue as "In Progress" so escalation doesn't pick it up
   const isJiraIssue = /^[A-Z]+-\d+$/.test(item.id);
   const ghToken = process.env.GITHUB_TOKEN;
+  const owner = cfg.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand";
+  const repo = cfg.repo || process.env.AICODER_REPO || "";
+
+  // Resolve dependencies before changing source status or starting the agent.
+  let fromBranch: string | undefined;
+  let depBody = "";
+  if (isJiraIssue && jiraClient.isConfigured()) {
+    try {
+      const jiraIssue = await jiraClient.getIssue(item.id);
+      depBody = jiraDescriptionToText(jiraIssue?.fields?.description);
+      const comments = await jiraClient.getComments(item.id).catch(() => []);
+      depBody = [depBody, ...comments.map((comment) => comment.body)].filter(Boolean).join("\n");
+    } catch { /* Jira fetch failed, skip dependency resolution */ }
+  } else if (ghToken && repo) {
+    depBody = await fetchIssueBody(ghToken, owner, repo, item.number);
+  }
+
+  const allDeps = [...new Set(parseDependencies(depBody))];
+  if (allDeps.length > 0) {
+    runLogger.logGit("Found dependencies", allDeps.join(", "));
+    const jiraDeps = allDeps.filter((dep) => /^[A-Z]+-\d+$/.test(dep));
+    if (jiraDeps.length > 0 && jiraClient.isConfigured()) {
+      const unresolved = await getUnresolvedJiraDependencies(jiraDeps);
+      if (unresolved.length > 0) {
+        const message = `Blocked by unresolved Jira dependencies: ${unresolved.join(", ")}`;
+        runLogger.logSkip(`${issueKey}: ${message}`);
+        trackStep(run.id, "note", message);
+        runLogger.endRun(null);
+        completeRunTrack(run.id, { model: MODEL, toolLoopCount: 0, totalTokens: 0 });
+        return null;
+      }
+    }
+
+    const numericDeps = allDeps.filter((dep) => /^\d+$/.test(dep));
+    if (numericDeps.length > 0) {
+      const resolved = await resolveDependencyBranch(ghToken || "", owner, repo, numericDeps);
+      if (!resolved) {
+        if (WAIT_FOR_DEPS) {
+          runLogger.logGit("Waiting for dependencies", "will retry later");
+          runLogger.endRun(null);
+          completeRunTrack(run.id, { model: MODEL, toolLoopCount: 0, totalTokens: 0 });
+          return null;
+        }
+        runLogger.logSkip(`${issueKey}: blocked by unresolved dependencies ${numericDeps.join(", ")}`);
+        runLogger.endRun(null);
+        completeRunTrack(run.id, { model: MODEL, toolLoopCount: 0, totalTokens: 0 });
+        return null;
+      }
+      fromBranch = resolved.source === "open_pr" ? resolved.branch : undefined;
+      runLogger.logGit("Base branch resolved", fromBranch || getBaseBranch());
+    }
+  }
+
+  // Mark issue as "In Progress" so escalation doesn't pick it up
   if (cfg.source === "work_items") {
     try {
       const currentResp = await axios.get<{ status: string }>(
@@ -2210,43 +2317,6 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
 
   // Checkpoint: issue transitioned
   saveRunState({ ...currentState, checkpoint: "issue_transitioned" });
-
-  // Resolve dependencies
-  const owner = cfg.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand";
-  const repo = cfg.repo || process.env.AICODER_REPO || "";
-  let fromBranch: string | undefined;
-
-  // Parse dependencies from issue body
-  let depBody = "";
-  if (isJiraIssue && jiraClient.isConfigured()) {
-    try {
-      const jiraIssue = await jiraClient.getIssue(item.id);
-      depBody = jiraIssue?.fields?.description || "";
-    } catch { /* Jira fetch failed, skip dependency resolution */ }
-  } else if (ghToken && repo) {
-    depBody = await fetchIssueBody(ghToken, owner, repo, item.number);
-  }
-
-  const keywordDeps = parseDependencies(depBody);
-  const allDeps = [...new Set(keywordDeps)];
-
-  if (allDeps.length > 0) {
-    runLogger.logGit("Found dependencies", allDeps.map((n) => `#${n}`).join(", "));
-    const resolved = await resolveDependencyBranch(ghToken || "", owner, repo, allDeps);
-    if (!resolved) {
-      if (WAIT_FOR_DEPS) {
-        runLogger.logGit("Waiting for dependencies", `will retry later`);
-        runLogger.endRun(null);
-        return null; // don't add to processedIssues so it retries
-      }
-      runLogger.logError(`Unresolved dependencies for #${item.number} — skipping`);
-      runLogger.endRun(1);
-      saveProcessedIssue(issueKey);
-      return null;
-    }
-    fromBranch = resolved.source === "open_pr" ? resolved.branch : undefined;
-    runLogger.logGit("Base branch resolved", fromBranch || getBaseBranch());
-  }
 
   const generated = await generatePrompt(cfg, item);
   if (generated.skipped) {
