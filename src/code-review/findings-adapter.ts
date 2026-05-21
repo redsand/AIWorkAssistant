@@ -82,9 +82,20 @@ export function codeReviewToFindings(review: {
     }
   };
 
+  const addMigrationRisks = (items: string[]) => {
+    for (const text of items) {
+      const finding = findingFromText(text, "high", "quality");
+      if (finding.file === "unknown") {
+        findings.push({ ...finding, severity: "low" });
+      } else {
+        findings.push(finding);
+      }
+    }
+  };
+
   add(review.mustFix ?? [], "critical", "quality");
   add(review.securityConcerns ?? [], "high", "security");
-  add(review.migrationRisks ?? [], "high", "quality");
+  addMigrationRisks(review.migrationRisks ?? []);
   add(review.shouldFix ?? [], "medium", "quality");
   add(review.testGaps ?? [], "medium", "qa");
   add(review.observabilityConcerns ?? [], "medium", "quality");

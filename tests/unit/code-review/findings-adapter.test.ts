@@ -139,6 +139,16 @@ describe("codeReviewToFindings", () => {
     expect(findings[0].category).toBe("quality");
   });
 
+  it("maps migrationRisks without a file as non-blocking quality findings", () => {
+    const findings = codeReviewToFindings({
+      migrationRisks: ["This PR contains migration files — review rollback strategy"],
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe("low");
+    expect(findings[0].category).toBe("quality");
+    expect(findings[0].file).toBe("unknown");
+  });
+
   it("maps shouldFix items as medium quality findings", () => {
     const findings = codeReviewToFindings({
       shouldFix: ["utils.ts — Missing error handling"],

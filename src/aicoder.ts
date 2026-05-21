@@ -1845,7 +1845,26 @@ async function fetchGitLabReworkPrompt(
   projectId: string,
   mrIid: number,
   sinceTimestamp?: string,
+  issueKey?: string,
 ): Promise<string | null> {
+  if (issueKey && /^[A-Z]+-\d+$/.test(issueKey) && jiraClient.isConfigured()) {
+    try {
+      const comments = await jiraClient.getComments(issueKey);
+      const since = sinceTimestamp ? new Date(sinceTimestamp) : null;
+      const newestFirst = [...comments].sort((a, b) => new Date(b.created).getTime() - new Date(a.created).getTime());
+      for (const comment of newestFirst) {
+        const body = comment.body || "";
+        const created = comment.created ? new Date(comment.created) : null;
+        if (since && created && created < since) continue;
+        if (body.includes("Rework from PR Review")) {
+          return body;
+        }
+      }
+    } catch {
+      // Fall back to MR notes below.
+    }
+  }
+
   try {
     const notes = await gitlabClient.listMergeRequestNotes(projectId, mrIid, "desc");
     const since = sinceTimestamp ? new Date(sinceTimestamp) : null;
@@ -3314,7 +3333,7 @@ async function runReviewLoop(
       if (platform === "gitlab") {
         const projectId = getGitLabProjectFromRemote(WORKSPACE) || item.repo || cfg.repo || process.env.GITLAB_DEFAULT_PROJECT || "";
         if (projectId) {
-          reworkPrompt = await fetchGitLabReworkPrompt(projectId, prNumber, sinceTimestamp);
+          reworkPrompt = await fetchGitLabReworkPrompt(projectId, prNumber, sinceTimestamp, item.id);
         }
       } else if (ghToken && owner && repo) {
         reworkPrompt = await fetchReworkPrompt(ghToken, owner, repo, prNumber, issueNumber, sinceTimestamp);
