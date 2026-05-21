@@ -31,6 +31,16 @@ export interface TicketToTaskOptions {
   skipIfMissingPrompt?: boolean;
 }
 
+export interface DependencyRef {
+  platform: "github" | "jira" | "gitlab" | "unknown";
+  owner?: string;
+  repo?: string;
+  projectKey?: string;
+  issueNumber?: number;
+  issueKey?: string;
+  raw: string;
+}
+
 export interface ImplementationPrompt {
   title: string;
   body: string;
@@ -47,6 +57,9 @@ export interface ImplementationPrompt {
     roadmapItemId: string | null;
     hasCodingPrompt: boolean;
     codingPrompt: string | null;
+    dependsOn: string[];
+    blocks: string[];
+    dependencyChainLabel: string | null;
   };
 }
 
@@ -98,8 +111,17 @@ class TicketToTaskGenerator {
 
     const body = issue.body || "";
     const codingPrompt = this.extractCodingPrompt(body);
-    const relatedIssues = this.extractRelatedIssues(body, comments, options.issueNumber);
+    const dependencyRefs = this.extractDependencyRefs(body, comments);
+    const relatedIssues = [...new Set(
+      dependencyRefs
+        .filter(r => r.platform === "github" && !r.owner && r.issueNumber !== undefined && r.issueNumber !== options.issueNumber)
+        .map(r => r.issueNumber!)
+    )].sort((a, b) => a - b);
     const acceptanceCriteria = this.extractAcceptanceCriteria(body);
+    const { dependsOn, blocks } = this.extractDependencyMetadata(body);
+    const dependencyChainLabel = labels
+      .map(l => l.match(/^dependency-chain:(.+)$/)?.[1])
+      .find(Boolean) || null;
     const roadmapMatch = includeRoadmap ? this.findRoadmapMatch(issue, relatedIssues) : null;
     const relevantFiles = includeCodebase
       ? await this.findRelevantFiles(issue, comments, resolved.owner, resolved.repo, maxCodebaseFiles)
@@ -112,6 +134,9 @@ class TicketToTaskGenerator {
       comments: includeComments ? comments : [],
       acceptanceCriteria,
       relatedIssues,
+      dependencyRefs,
+      dependsOn,
+      blocks,
       roadmapMatch,
       relevantFiles,
       agent,
@@ -134,6 +159,9 @@ class TicketToTaskGenerator {
         roadmapItemId: roadmapMatch?.item.id || null,
         hasCodingPrompt: codingPrompt !== null,
         codingPrompt,
+        dependsOn,
+        blocks,
+        dependencyChainLabel,
       },
     };
 
@@ -218,12 +246,67 @@ class TicketToTaskGenerator {
     return [...new Set(criteria)];
   }
 
-  private extractRelatedIssues(body: string, comments: any[], currentIssue: number): number[] {
+  private extractDependencyRefs(body: string, comments: any[]): DependencyRef[] {
     const text = [body, ...comments.map((c) => c.body || "")].join("\n");
-    const numbers = [...text.matchAll(/(?<![\w/-])#(\d+)\b/g)]
-      .map((match) => Number(match[1]))
-      .filter((n) => Number.isInteger(n) && n !== currentIssue);
-    return [...new Set(numbers)].sort((a, b) => a - b);
+    const refs: DependencyRef[] = [];
+
+    // GitHub cross-repo: GH:owner/repo#123 or GitHub:owner/repo#123
+    for (const m of text.matchAll(/\b(?:GH|GitHub)\s*:\s*([\w.-]+)\/([\w.-]+)#(\d+)\b/gi)) {
+      refs.push({ platform: "github", owner: m[1], repo: m[2], issueNumber: Number(m[3]), raw: m[0] });
+    }
+
+    // Jira: JIRA:KEY-123 or Jira:KEY-123
+    for (const m of text.matchAll(/\b(?:JIRA|Jira)\s*:\s*([A-Z][A-Z]+-\d+)\b/g)) {
+      refs.push({ platform: "jira", issueKey: m[1], raw: m[0] });
+    }
+
+    // GitLab: GL:project#123 or GitLab:project#123
+    for (const m of text.matchAll(/\b(?:GL|GitLab)\s*:\s*([\w./-]+)#(\d+)\b/gi)) {
+      refs.push({ platform: "gitlab", projectKey: m[1], issueNumber: Number(m[2]), raw: m[0] });
+    }
+
+    // Same-repo GitHub: #NNN
+    for (const m of text.matchAll(/(?<![\w/-])#(\d+)\b/g)) {
+      refs.push({ platform: "github", issueNumber: Number(m[1]), raw: m[0] });
+    }
+
+    // Deduplicate by raw match
+    return [...new Map(refs.map(r => [r.raw, r])).values()];
+  }
+
+  private extractDependencyMetadata(body: string): { dependsOn: string[]; blocks: string[] } {
+    const dependsOn: string[] = [];
+    const blocks: string[] = [];
+
+    // Parse "## Depends on:" section
+    const dependsMatch = body.match(/##\s+Depends\s+on\s*:?\s*\n([\s\S]*?)(?=\n##\s|\n---|$)/i);
+    if (dependsMatch) {
+      this.parseDependencyItems(dependsMatch[1], dependsOn);
+    }
+
+    // Parse "## Blocks:" section
+    const blocksMatch = body.match(/##\s+Blocks\s*:?\s*\n([\s\S]*?)(?=\n##\s|\n---|$)/i);
+    if (blocksMatch) {
+      this.parseDependencyItems(blocksMatch[1], blocks);
+    }
+
+    return { dependsOn, blocks };
+  }
+
+  private parseDependencyItems(sectionText: string, output: string[]): void {
+    for (const item of sectionText.matchAll(/[-*]\s+(.+)/g)) {
+      const line = item[1].trim();
+      const hashNum = line.match(/^#(\d+)$/);
+      if (hashNum) { output.push(hashNum[1]); continue; }
+      const jiraPrefixed = line.match(/^(?:JIRA|Jira)\s*:\s*([A-Z][A-Z]+-\d+)$/);
+      if (jiraPrefixed) { output.push(`JIRA:${jiraPrefixed[1]}`); continue; }
+      const bareKey = line.match(/^([A-Z][A-Z]+-\d+)$/);
+      if (bareKey) { output.push(bareKey[1]); continue; }
+      const ghRef = line.match(/^((?:GH|GitHub)\s*:\s*[\w./-]+\/[\w./-]+#\d+)$/i);
+      if (ghRef) { output.push(ghRef[1]); continue; }
+      const glRef = line.match(/^((?:GL|GitLab)\s*:\s*[\w./-]+#\d+)$/i);
+      if (glRef) { output.push(glRef[1]); continue; }
+    }
   }
 
   private findRoadmapMatch(issue: any, relatedIssues: number[]): RoadmapMatch | null {
@@ -376,6 +459,9 @@ class TicketToTaskGenerator {
     comments: any[];
     acceptanceCriteria: string[];
     relatedIssues: number[];
+    dependencyRefs: DependencyRef[];
+    dependsOn: string[];
+    blocks: string[];
     roadmapMatch: RoadmapMatch | null;
     relevantFiles: RelevantFile[];
     agent: TicketToTaskAgent;
@@ -405,6 +491,21 @@ class TicketToTaskGenerator {
       ? `\n## ⚡ Coding Prompt (Authoritative — Follow Exactly)\n\n${input.codingPrompt}\n`
       : `\n## ⚠️ Coding Prompt Missing\n\nNo \`## Coding Prompt\` section was found in this issue. The agent should derive implementation intent from the full spec above, but precision may be reduced.\n`;
 
+    const crossPlatformRefs = input.dependencyRefs.filter(r => r.platform !== "github" || r.owner);
+    const crossPlatformSection = crossPlatformRefs.length > 0
+      ? crossPlatformRefs.map(r => `- ${r.raw}`).join("\n")
+      : "- None detected";
+
+    const dependsOnList = input.dependsOn.length > 0
+      ? input.dependsOn.map(d => `- ${d.startsWith("#") ? d : `#${d}`}`).join("\n")
+      : "Nothing — this is a foundational task";
+    const blocksList = input.blocks.length > 0
+      ? input.blocks.map(b => `- ${b.startsWith("#") ? b : `#${b}`}`).join("\n")
+      : "Nothing — no other tasks depend on this";
+    const executionNote = input.dependsOn.length > 0
+      ? "DO NOT start this task until the above dependencies are merged."
+      : "This task can be started immediately.";
+
     return `# Implementation Task: ${input.issue.title}
 
 ## Source
@@ -432,6 +533,14 @@ ${files}
 
 ## Related Issues
 ${related}
+
+## Cross-Platform References
+${crossPlatformSection}
+
+## Dependency Order
+- **Depends on:** ${dependsOnList}
+- **Blocks:** ${blocksList}
+- **Execution note:** ${executionNote}
 
 ## Roadmap Context
 ${roadmap ? this.roadmapText(roadmap) : "No matching roadmap item was found. Continue using the issue spec as the source of truth."}
