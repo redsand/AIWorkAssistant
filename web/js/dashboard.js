@@ -47,6 +47,15 @@
   const tablePriorityFilter = document.getElementById("table-priority-filter");
   const refreshBtn = document.getElementById("refresh-btn");
 
+  // Board
+  const boardContent = document.getElementById("board-content");
+  const viewToggle = document.getElementById("view-toggle");
+  const viewChartsBtn = document.getElementById("view-charts");
+  const viewBoardBtn = document.getElementById("view-board");
+  const boardSearch = document.getElementById("board-search");
+  const boardStatusFilter = document.getElementById("board-status-filter");
+  const boardPriorityFilter = document.getElementById("board-priority-filter");
+
   // ─── State ─────────────────────────────────────────────────────────────────
 
   let allIssues = [];
@@ -56,6 +65,7 @@
   let networkInstance = null;
   let lastFetchedAt = null;
   let lastFetchedPlatformKey = null;
+  let currentView = "charts"; // "charts" or "board"
 
   const STATUS_COLORS = {
     open: "#3b82f6",
@@ -155,6 +165,41 @@
       if (pDiff !== 0) return pDiff;
       return (STATUS_ORDER[a.status] || 4) - (STATUS_ORDER[b.status] || 4);
     });
+  }
+
+  /** Shared filter logic used by both table and board. */
+  function getFilteredIssues(searchEl, statusEl, priorityEl) {
+    var search = (searchEl.value || "").toLowerCase().trim();
+    var statusFilter = statusEl.value;
+    var priorityFilter = priorityEl.value;
+    var filtered = currentSprintId
+      ? allIssues.filter(function (i) { return i.sprint === currentSprintId; })
+      : allIssues;
+    if (search)
+      filtered = filtered.filter(function (i) {
+        return i.title.toLowerCase().includes(search);
+      });
+    if (statusFilter)
+      filtered = filtered.filter(function (i) {
+        return i.status === statusFilter;
+      });
+    if (priorityFilter)
+      filtered = filtered.filter(function (i) {
+        return i.priority === priorityFilter;
+      });
+    return sortIssues(filtered);
+  }
+
+  /** Platform icon abbreviation. */
+  function platformIcon(platform) {
+    var map = { github: "GH", gitlab: "GL", jira: "JR", work_items: "WI" };
+    return map[platform] || "?";
+  }
+
+  /** Truncate string to maxLen. */
+  function truncate(str, maxLen) {
+    if (!str) return "";
+    return str.length > maxLen ? str.slice(0, maxLen) + "…" : str;
   }
 
   // ─── Chart helpers ─────────────────────────────────────────────────────────
@@ -470,26 +515,7 @@
   }
 
   function renderTable() {
-    var search = (tableSearch.value || "").toLowerCase().trim();
-    var statusFilter = tableStatusFilter.value;
-    var priorityFilter = tablePriorityFilter.value;
-
-    var filtered = allIssues;
-    if (search)
-      filtered = filtered.filter(function (i) {
-        return i.title.toLowerCase().includes(search);
-      });
-    if (statusFilter)
-      filtered = filtered.filter(function (i) {
-        return i.status === statusFilter;
-      });
-    if (priorityFilter)
-      filtered = filtered.filter(function (i) {
-        return i.priority === priorityFilter;
-      });
-
-    // Sort by priority within status groups
-    filtered = sortIssues(filtered);
+    var filtered = getFilteredIssues(tableSearch, tableStatusFilter, tablePriorityFilter);
 
     if (filtered.length === 0) {
       issuesTable.style.display = "none";
@@ -576,6 +602,182 @@
       "</span>"
     );
   }
+
+  // ─── Board rendering ────────────────────────────────────────────────────────
+
+  function renderBoard() {
+    var filtered = getFilteredIssues(boardSearch, boardStatusFilter, boardPriorityFilter);
+    var columns = { open: [], in_progress: [], blocked: [], done: [] };
+
+    for (var idx = 0; idx < filtered.length; idx++) {
+      var issue = filtered[idx];
+      var s = issue.status;
+      if (columns[s]) columns[s].push(issue);
+      else columns.open.push(issue);
+    }
+
+    var colEls = document.querySelectorAll(".board-col");
+    for (var ci = 0; ci < colEls.length; ci++) {
+      var col = colEls[ci];
+      var status = col.getAttribute("data-status");
+      var items = columns[status] || [];
+      col.querySelector(".count").textContent = items.length;
+      var container = col.querySelector(".board-col-items");
+      container.innerHTML = "";
+
+      for (var ii = 0; ii < items.length; ii++) {
+        var i = items[ii];
+        var card = document.createElement("div");
+        card.className = "board-card";
+        card.setAttribute("data-issue-id", i.id);
+        card.setAttribute("data-platform", i.platform);
+        card.setAttribute("data-repo", i.repo);
+        card.setAttribute("data-status", i.status);
+        card.draggable = true;
+        card.innerHTML =
+          '<div class="board-card-header">' +
+            '<span class="platform-icon" title="' + i.platform + '">' + platformIcon(i.platform) + "</span>" +
+            '<a href="' + i.url + '" target="_blank" rel="noopener">' + i.externalId + "</a>" +
+            priorityBadgeHtml(i.priority) +
+          "</div>" +
+          '<div class="board-card-title">' + truncate(i.title, 80).replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</div>" +
+          '<div class="board-card-footer">' +
+            "<span>" + (i.assignee || "—") + "</span>" +
+            (i.labels || []).map(function (l) {
+              return '<span class="badge badge-low">' + l.replace(/</g, "&lt;") + "</span>";
+            }).join("") +
+          "</div>";
+        container.appendChild(card);
+      }
+    }
+
+    attachBoardDragListeners();
+  }
+
+  function priorityBadgeHtml(p) {
+    return '<span class="badge badge-' + p + '">' + p + "</span>";
+  }
+
+  function attachBoardDragListeners() {
+    var cards = document.querySelectorAll(".board-card");
+    for (var ci = 0; ci < cards.length; ci++) {
+      cards[ci].addEventListener("dragstart", onCardDragStart);
+      cards[ci].addEventListener("dragend", onCardDragEnd);
+    }
+
+    var cols = document.querySelectorAll(".board-col");
+    for (var di = 0; di < cols.length; di++) {
+      cols[di].addEventListener("dragover", onColDragOver);
+      cols[di].addEventListener("dragleave", onColDragLeave);
+      cols[di].addEventListener("drop", onColDrop);
+    }
+  }
+
+  var draggedCard = null;
+
+  function onCardDragStart(e) {
+    draggedCard = this;
+    this.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", JSON.stringify({
+      issueId: this.getAttribute("data-issue-id"),
+      platform: this.getAttribute("data-platform"),
+      repo: this.getAttribute("data-repo"),
+      sourceStatus: this.getAttribute("data-status"),
+    }));
+  }
+
+  function onCardDragEnd() {
+    this.classList.remove("dragging");
+    draggedCard = null;
+    var cols = document.querySelectorAll(".board-col");
+    for (var i = 0; i < cols.length; i++) {
+      cols[i].classList.remove("drag-over");
+    }
+  }
+
+  function onColDragOver(e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    this.classList.add("drag-over");
+  }
+
+  function onColDragLeave() {
+    this.classList.remove("drag-over");
+  }
+
+  function onColDrop(e) {
+    e.preventDefault();
+    this.classList.remove("drag-over");
+    var targetStatus = this.getAttribute("data-status");
+
+    var data;
+    try {
+      data = JSON.parse(e.dataTransfer.getData("text/plain"));
+    } catch {
+      return;
+    }
+
+    if (data.sourceStatus === targetStatus) return;
+
+    updateIssueStatus(data.issueId, data.platform, data.repo, targetStatus);
+  }
+
+  async function updateIssueStatus(issueId, platform, repo, newStatus) {
+    try {
+      var resp = await fetch("/api/repo-dashboard/transition", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ issueId: issueId, platform: platform, repo: repo, status: newStatus }),
+      });
+      var result = await resp.json();
+
+      if (!result.success) {
+        showError(result.error || "Failed to transition issue");
+        renderBoard();
+        return;
+      }
+
+      // Update local state
+      for (var i = 0; i < allIssues.length; i++) {
+        if (allIssues[i].id === issueId && allIssues[i].platform === platform && allIssues[i].repo === repo) {
+          allIssues[i].status = newStatus;
+          break;
+        }
+      }
+
+      renderBoard();
+      renderStats(allIssues);
+    } catch (err) {
+      showError("Failed to update issue status: " + err.message);
+      renderBoard();
+    }
+  }
+
+  // ─── View toggle ────────────────────────────────────────────────────────────
+
+  viewChartsBtn.addEventListener("click", function () {
+    currentView = "charts";
+    viewChartsBtn.classList.add("active");
+    viewBoardBtn.classList.remove("active");
+    dashboardContent.style.display = "block";
+    boardContent.style.display = "none";
+  });
+
+  viewBoardBtn.addEventListener("click", function () {
+    currentView = "board";
+    viewBoardBtn.classList.add("active");
+    viewChartsBtn.classList.remove("active");
+    dashboardContent.style.display = "none";
+    boardContent.style.display = "block";
+    renderBoard();
+  });
+
+  // ─── Board filter event handlers ────────────────────────────────────────────
+
+  boardSearch.addEventListener("input", renderBoard);
+  boardStatusFilter.addEventListener("change", renderBoard);
+  boardPriorityFilter.addEventListener("change", renderBoard);
   // ─── Filter event handlers ─────────────────────────────────────────────────
 
   tableSearch.addEventListener("input", renderTable);
@@ -717,7 +919,13 @@
       updateLastUpdatedDisplay();
 
       hideDashboardLoading();
-      dashboardContent.style.display = "block";
+      if (currentView === "charts") {
+        dashboardContent.style.display = "block";
+        boardContent.style.display = "none";
+      } else {
+        dashboardContent.style.display = "none";
+        boardContent.style.display = "block";
+      }
 
       renderStats(allIssues);
       renderStatusChart(allIssues);
@@ -730,6 +938,15 @@
       tableStatusFilter.value = "in_progress";
       tablePriorityFilter.value = "";
       renderTable();
+
+      // Sync board filters and show view toggle
+      viewToggle.style.display = "flex";
+      boardSearch.value = "";
+      boardStatusFilter.value = "";
+      boardPriorityFilter.value = "";
+      if (currentView === "board") {
+        renderBoard();
+      }
 
       // Load sprint data for platforms that support sprints
       if (platform === "github" || platform === "jira") {
@@ -747,6 +964,8 @@
     var val = this.value;
     if (!val) {
       dashboardContent.style.display = "none";
+      boardContent.style.display = "none";
+      viewToggle.style.display = "none";
       emptyState.style.display = "block";
       return;
     }
@@ -908,27 +1127,7 @@
       return;
     }
 
-    var filtered = allIssues.filter(function (i) {
-      return i.sprint === currentSprintId;
-    });
-
-    var search = (tableSearch.value || "").toLowerCase().trim();
-    var statusFilter = tableStatusFilter.value;
-    var priorityFilter = tablePriorityFilter.value;
-    if (search)
-      filtered = filtered.filter(function (i) {
-        return i.title.toLowerCase().includes(search);
-      });
-    if (statusFilter)
-      filtered = filtered.filter(function (i) {
-        return i.status === statusFilter;
-      });
-    if (priorityFilter)
-      filtered = filtered.filter(function (i) {
-        return i.priority === priorityFilter;
-      });
-
-    filtered = sortIssues(filtered);
+    var filtered = getFilteredIssues(tableSearch, tableStatusFilter, tablePriorityFilter);
 
     if (filtered.length === 0) {
       issuesTable.style.display = "none";
