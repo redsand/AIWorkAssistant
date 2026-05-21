@@ -1878,6 +1878,13 @@ const MAX_FAILED_ATTEMPTS = 3;
 // Persist processed issues across restarts via SQLite (concurrency-safe)
 function loadProcessedIssues(): void {
   try {
+    // Migrate from legacy JSON file if it exists
+    const legacyJsonPath = path.join(WORKSPACE || process.cwd(), ".aicoder", "processed-issues.json");
+    const migrated = agentRunDatabase.migrateProcessedIssuesFromJson(legacyJsonPath, WORKSPACE);
+    if (migrated > 0) {
+      runLogger.logConfig(`Migrated ${migrated} processed issue(s) from legacy JSON to SQLite`);
+    }
+
     const keys = agentRunDatabase.listProcessedIssues(WORKSPACE);
     keys.forEach((id) => processedIssues.add(id));
     if (processedIssues.size > 0) {
@@ -1903,7 +1910,16 @@ function saveProcessedIssue(issueKey: string): void {
 // aicoder can resume an interrupted run from the last checkpoint. Per-issue
 // file isolation allows concurrent aicoder processes on different issues.
 
+const INVALID_KEY_RE = /[/\\]|\.\./;
+
+function validateIssueKey(issueKey: string): void {
+  if (INVALID_KEY_RE.test(issueKey)) {
+    throw new Error(`Invalid issueKey "${issueKey}": must not contain /, \\, or ..`);
+  }
+}
+
 function getRunStateFile(issueKey?: string): string {
+  if (issueKey) validateIssueKey(issueKey);
   const base = path.join(WORKSPACE || process.cwd(), ".aicoder");
   const name = issueKey ? `run-state-${issueKey}.json` : "run-state.json";
   return path.join(base, name);
@@ -1966,6 +1982,7 @@ function saveRunState(state: RunState, issueKey?: string): void {
 }
 
 function clearRunState(issueKey?: string): void {
+  // Delete the per-issue keyed file
   const filePath = getRunStateFile(issueKey);
   try {
     if (fs.existsSync(filePath)) {
@@ -1974,7 +1991,28 @@ function clearRunState(issueKey?: string): void {
   } catch {
     // Non-fatal
   }
+  // Also delete the legacy unkeyed file so old state doesn't linger
+  if (issueKey) {
+    const legacyPath = getRunStateFile();
+    try {
+      if (fs.existsSync(legacyPath)) {
+        fs.unlinkSync(legacyPath);
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
 }
+
+// Export run-state functions for testing
+export const _runStateInternals = {
+  getRunStateFile,
+  loadRunState,
+  findExistingRunState,
+  saveRunState,
+  clearRunState,
+  validateIssueKey,
+};
 
 // Agent-runs tracking: record aicoder steps via API (preferred) or direct DB (fallback)
 let currentRunStepOrder = 0;
@@ -2059,7 +2097,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   if (FORCE_REPROCESS && processedIssues.has(issueKey)) {
     runLogger.logConfig(`Force re-processing issue ${issueKey} (--force)`);
     processedIssues.delete(issueKey);
-    agentRunDatabase.unmarkIssueProcessed(issueKey);
+    agentRunDatabase.unmarkIssueProcessed(issueKey, WORKSPACE);
   }
 
   runLogger.startRun(item.number, item.title);
@@ -2533,7 +2571,7 @@ async function resumeFromCheckpoint(state: RunState): Promise<void> {
 
   // Remove from processed issues so processWorkItem won't skip it
   processedIssues.delete(state.issueKey);
-  agentRunDatabase.unmarkIssueProcessed(state.issueKey);
+  agentRunDatabase.unmarkIssueProcessed(state.issueKey, WORKSPACE);
 
   // Ensure workspace is clean and on the correct branch
   ensureCleanWorkspace();

@@ -1,120 +1,291 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
-// We test the per-issue isolation logic directly by using temp directories
-// and the file path construction functions.
+let tmpDir: string;
 
-// Since the module imports WORKSPACE from arg-parser at module load time,
-// we test the file-level behavior by manipulating .aicoder/ directories
-// directly and verifying per-issue file isolation.
+// Mock arg-parser so WORKSPACE points to our temp dir
+vi.mock("../arg-parser", () => ({
+  get WORKSPACE() {
+    return tmpDir;
+  },
+}));
 
-describe("review-gate-state per-issue isolation", () => {
-  let tmpDir: string;
+// Import AFTER mock is set up so the module captures our mock WORKSPACE
+import {
+  loadReviewGateState,
+  saveReviewGateState,
+  clearReviewGateState,
+  recordGateFindings,
+  markForceDone,
+  getLastFindings,
+} from "../review-gate-state";
+import type { ReviewGateFinding } from "../review-gate";
 
+const SAMPLE_FINDING: ReviewGateFinding = {
+  severity: "high",
+  category: "review",
+  file: "src/a.ts",
+  message: "Something wrong",
+};
+
+const ANOTHER_FINDING: ReviewGateFinding = {
+  severity: "low",
+  category: "style",
+  file: "src/b.ts",
+  message: "Minor issue",
+};
+
+describe("review-gate-state", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aicoder-rgs-test-"));
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
   });
 
-  function aicoderDir(): string {
-    const dir = path.join(tmpDir, ".aicoder");
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    return dir;
-  }
+  // ── loadReviewGateState ─────────────────────────────────────────────────────
 
-  function stateFile(issueKey: string): string {
-    return path.join(aicoderDir(), `review-gate-state-${issueKey}.json`);
-  }
+  describe("loadReviewGateState", () => {
+    it("returns initial state when no file exists", () => {
+      const state = loadReviewGateState("ISSUE-1");
+      expect(state.lastFindings).toEqual([]);
+      expect(state.reviewOccurred).toBe(false);
+      expect(state.forceDoneUsed).toBe(false);
+    });
 
-  function writeState(issueKey: string, findings: string[]): void {
-    const filePath = stateFile(issueKey);
-    fs.writeFileSync(
-      filePath,
-      JSON.stringify(
+    it("reads saved state from disk", () => {
+      saveReviewGateState(
         {
-          lastFindings: findings.map((f) => ({
-            severity: "high" as const,
-            category: "review",
-            file: f,
-            message: `Finding in ${f}`,
-          })),
+          lastFindings: [SAMPLE_FINDING],
           reviewOccurred: true,
           forceDoneUsed: false,
         },
-        null,
-        2,
-      ),
-      "utf-8",
-    );
-  }
+        "ISSUE-1",
+      );
+      const state = loadReviewGateState("ISSUE-1");
+      expect(state.lastFindings).toHaveLength(1);
+      expect(state.lastFindings[0].file).toBe("src/a.ts");
+      expect(state.reviewOccurred).toBe(true);
+    });
 
-  function readState(issueKey: string): { lastFindings: string[] } | null {
-    const filePath = stateFile(issueKey);
-    if (!fs.existsSync(filePath)) return null;
-    const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-    return {
-      lastFindings: data.lastFindings.map(
-        (f: { file: string }) => f.file,
-      ),
-    };
-  }
+    it("returns initial state for corrupt file", () => {
+      const dir = path.join(tmpDir, ".aicoder");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, "review-gate-state-ISSUE-1.json"),
+        "not-json",
+        "utf-8",
+      );
+      const state = loadReviewGateState("ISSUE-1");
+      expect(state.lastFindings).toEqual([]);
+    });
 
-  it("produces distinct files for distinct issue keys", () => {
-    writeState("ISSUE-1", ["src/a.ts"]);
-    writeState("ISSUE-2", ["src/b.ts"]);
+    it("returns initial state for file missing lastFindings", () => {
+      const dir = path.join(tmpDir, ".aicoder");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, "review-gate-state-ISSUE-1.json"),
+        JSON.stringify({ reviewOccurred: true }),
+        "utf-8",
+      );
+      const state = loadReviewGateState("ISSUE-1");
+      expect(state.lastFindings).toEqual([]);
+    });
 
-    expect(fs.existsSync(stateFile("ISSUE-1"))).toBe(true);
-    expect(fs.existsSync(stateFile("ISSUE-2"))).toBe(true);
-
-    const state1 = readState("ISSUE-1");
-    const state2 = readState("ISSUE-2");
-
-    expect(state1?.lastFindings).toEqual(["src/a.ts"]);
-    expect(state2?.lastFindings).toEqual(["src/b.ts"]);
-    expect(state1?.lastFindings).not.toEqual(state2?.lastFindings);
+    it("uses default key when no issueKey provided", () => {
+      saveReviewGateState(
+        {
+          lastFindings: [SAMPLE_FINDING],
+          reviewOccurred: true,
+          forceDoneUsed: false,
+        },
+      );
+      const state = loadReviewGateState();
+      expect(state.lastFindings).toHaveLength(1);
+    });
   });
 
-  it("overwriting one issue does not affect another", () => {
-    writeState("ISSUE-1", ["src/original.ts"]);
-    writeState("ISSUE-2", ["src/other.ts"]);
+  // ── saveReviewGateState ─────────────────────────────────────────────────────
 
-    writeState("ISSUE-1", ["src/updated.ts"]);
+  describe("saveReviewGateState", () => {
+    it("persists state to disk", () => {
+      saveReviewGateState(
+        {
+          lastFindings: [SAMPLE_FINDING],
+          reviewOccurred: true,
+          forceDoneUsed: false,
+        },
+        "ISSUE-1",
+      );
+      const filePath = path.join(
+        tmpDir,
+        ".aicoder",
+        "review-gate-state-ISSUE-1.json",
+      );
+      expect(fs.existsSync(filePath)).toBe(true);
+      const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      expect(data.lastFindings).toHaveLength(1);
+    });
 
-    const state1 = readState("ISSUE-1");
-    const state2 = readState("ISSUE-2");
-
-    expect(state1?.lastFindings).toEqual(["src/updated.ts"]);
-    expect(state2?.lastFindings).toEqual(["src/other.ts"]);
+    it("creates .aicoder directory if missing", () => {
+      saveReviewGateState(
+        {
+          lastFindings: [],
+          reviewOccurred: false,
+          forceDoneUsed: false,
+        },
+        "ISSUE-1",
+      );
+      expect(
+        fs.existsSync(path.join(tmpDir, ".aicoder")),
+      ).toBe(true);
+    });
   });
 
-  it("clearing one issue does not affect another", () => {
-    writeState("ISSUE-1", ["src/a.ts"]);
-    writeState("ISSUE-2", ["src/b.ts"]);
+  // ── clearReviewGateState ────────────────────────────────────────────────────
 
-    const filePath1 = stateFile("ISSUE-1");
-    fs.unlinkSync(filePath1);
+  describe("clearReviewGateState", () => {
+    it("removes the state file", () => {
+      saveReviewGateState(
+        {
+          lastFindings: [SAMPLE_FINDING],
+          reviewOccurred: true,
+          forceDoneUsed: false,
+        },
+        "ISSUE-1",
+      );
+      clearReviewGateState("ISSUE-1");
+      expect(loadReviewGateState("ISSUE-1").lastFindings).toEqual([]);
+    });
 
-    expect(fs.existsSync(filePath1)).toBe(false);
-    expect(fs.existsSync(stateFile("ISSUE-2"))).toBe(true);
-    expect(readState("ISSUE-2")?.lastFindings).toEqual(["src/b.ts"]);
+    it("does not affect other issue keys", () => {
+      saveReviewGateState(
+        { lastFindings: [SAMPLE_FINDING], reviewOccurred: true, forceDoneUsed: false },
+        "ISSUE-1",
+      );
+      saveReviewGateState(
+        { lastFindings: [ANOTHER_FINDING], reviewOccurred: true, forceDoneUsed: false },
+        "ISSUE-2",
+      );
+
+      clearReviewGateState("ISSUE-1");
+      expect(loadReviewGateState("ISSUE-1").lastFindings).toEqual([]);
+      expect(loadReviewGateState("ISSUE-2").lastFindings).toHaveLength(1);
+    });
+
+    it("does not throw when file does not exist", () => {
+      expect(() => clearReviewGateState("ISSUE-999")).not.toThrow();
+    });
   });
 
-  it("supports many concurrent issues", () => {
-    for (let i = 1; i <= 10; i++) {
-      writeState(`ISSUE-${i}`, [`src/file${i}.ts`]);
-    }
+  // ── recordGateFindings ──────────────────────────────────────────────────────
 
-    for (let i = 1; i <= 10; i++) {
-      const state = readState(`ISSUE-${i}`);
-      expect(state?.lastFindings).toEqual([`src/file${i}.ts`]);
-    }
+  describe("recordGateFindings", () => {
+    it("records findings and sets reviewOccurred", () => {
+      recordGateFindings([SAMPLE_FINDING], "ISSUE-1");
+      const state = loadReviewGateState("ISSUE-1");
+      expect(state.lastFindings).toHaveLength(1);
+      expect(state.reviewOccurred).toBe(true);
+    });
 
-    const files = fs.readdirSync(aicoderDir());
-    expect(files.length).toBe(10);
+    it("preserves forceDone flag from previous state", () => {
+      saveReviewGateState(
+        {
+          lastFindings: [],
+          reviewOccurred: true,
+          forceDoneUsed: true,
+          forceDoneAt: "2026-01-01T00:00:00Z",
+        },
+        "ISSUE-1",
+      );
+      recordGateFindings([SAMPLE_FINDING], "ISSUE-1");
+      const state = loadReviewGateState("ISSUE-1");
+      expect(state.forceDoneUsed).toBe(true);
+      expect(state.lastFindings).toHaveLength(1);
+    });
+
+    it("overwrites previous findings", () => {
+      recordGateFindings([SAMPLE_FINDING], "ISSUE-1");
+      recordGateFindings([ANOTHER_FINDING], "ISSUE-1");
+      const state = loadReviewGateState("ISSUE-1");
+      expect(state.lastFindings).toHaveLength(1);
+      expect(state.lastFindings[0].file).toBe("src/b.ts");
+    });
+  });
+
+  // ── markForceDone ───────────────────────────────────────────────────────────
+
+  describe("markForceDone", () => {
+    it("sets forceDoneUsed and forceDoneAt", () => {
+      recordGateFindings([SAMPLE_FINDING], "ISSUE-1");
+      markForceDone("ISSUE-1");
+      const state = loadReviewGateState("ISSUE-1");
+      expect(state.forceDoneUsed).toBe(true);
+      expect(state.forceDoneAt).toBeDefined();
+      expect(new Date(state.forceDoneAt!).getTime()).not.toBeNaN();
+    });
+  });
+
+  // ── getLastFindings ─────────────────────────────────────────────────────────
+
+  describe("getLastFindings", () => {
+    it("returns empty array when no findings recorded", () => {
+      expect(getLastFindings("ISSUE-1")).toEqual([]);
+    });
+
+    it("returns the last recorded findings", () => {
+      recordGateFindings([SAMPLE_FINDING, ANOTHER_FINDING], "ISSUE-1");
+      const findings = getLastFindings("ISSUE-1");
+      expect(findings).toHaveLength(2);
+      expect(findings[0].file).toBe("src/a.ts");
+      expect(findings[1].file).toBe("src/b.ts");
+    });
+  });
+
+  // ── path traversal validation ───────────────────────────────────────────────
+
+  describe("path traversal protection", () => {
+    it("rejects issueKey with forward slash", () => {
+      expect(() =>
+        saveReviewGateState(
+          { lastFindings: [], reviewOccurred: false, forceDoneUsed: false },
+          "PROJ/123",
+        ),
+      ).toThrow(/Invalid issueKey/);
+    });
+
+    it("rejects issueKey with ..", () => {
+      expect(() =>
+        loadReviewGateState("../etc/passwd"),
+      ).toThrow(/Invalid issueKey/);
+    });
+
+    it("rejects issueKey with backslash", () => {
+      expect(() =>
+        clearReviewGateState("PROJ\\123"),
+      ).toThrow(/Invalid issueKey/);
+    });
+  });
+
+  // ── concurrency isolation ───────────────────────────────────────────────────
+
+  describe("per-issue isolation", () => {
+    it("supports many concurrent issues independently", () => {
+      for (let i = 1; i <= 10; i++) {
+        recordGateFindings(
+          [{ severity: "low", category: "test", file: `f${i}.ts`, message: `m${i}` }],
+          `ISSUE-${i}`,
+        );
+      }
+      for (let i = 1; i <= 10; i++) {
+        const findings = getLastFindings(`ISSUE-${i}`);
+        expect(findings).toHaveLength(1);
+        expect(findings[0].file).toBe(`f${i}.ts`);
+      }
+    });
   });
 });

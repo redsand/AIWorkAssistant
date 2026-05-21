@@ -87,11 +87,14 @@ class AgentRunDatabase {
       .run();
 
     // Processed issues ledger — idempotent, concurrency-safe alternative to JSON file
+    // Composite primary key (issue_key, workspace) so the same issue can be
+    // tracked independently across multiple workspaces.
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS processed_issues (
-        issue_key TEXT PRIMARY KEY,
+        issue_key TEXT NOT NULL,
         workspace TEXT NOT NULL,
-        processed_at TEXT NOT NULL
+        processed_at TEXT NOT NULL,
+        PRIMARY KEY (issue_key, workspace)
       );
       CREATE INDEX IF NOT EXISTS idx_processed_issues_workspace ON processed_issues(workspace);
     `);
@@ -382,6 +385,37 @@ class AgentRunDatabase {
   // ── Processed issues ledger ──────────────────────────────────────────────────
 
   /**
+   * Migrate processed issues from a legacy JSON file into SQLite.
+   * Safe to call repeatedly — already-migrated keys are skipped (INSERT OR IGNORE).
+   * Returns the number of keys migrated.
+   */
+  migrateProcessedIssuesFromJson(jsonPath: string, workspace: string): number {
+    if (!fs.existsSync(jsonPath)) return 0;
+    try {
+      const raw = fs.readFileSync(jsonPath, "utf-8");
+      const keys: string[] = JSON.parse(raw);
+      if (!Array.isArray(keys)) return 0;
+      const now = new Date().toISOString();
+      const stmt = this.db.prepare(
+        `INSERT OR IGNORE INTO processed_issues (issue_key, workspace, processed_at) VALUES (?, ?, ?)`,
+      );
+      let count = 0;
+      for (const key of keys) {
+        if (typeof key === "string" && key.length > 0) {
+          stmt.run(key, workspace, now);
+          count++;
+        }
+      }
+      if (count > 0) {
+        fs.renameSync(jsonPath, jsonPath + ".migrated");
+      }
+      return count;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
    * Record that an issue has been processed. Idempotent — safe to call concurrently.
    */
   markIssueProcessed(issueKey: string, workspace: string): void {
@@ -394,22 +428,32 @@ class AgentRunDatabase {
   }
 
   /**
-   * Check whether an issue has already been processed.
+   * Check whether an issue has already been processed (optionally scoped to a workspace).
    */
-  isIssueProcessed(issueKey: string): boolean {
-    const row = this.db
-      .prepare(`SELECT 1 FROM processed_issues WHERE issue_key = ?`)
-      .get(issueKey);
+  isIssueProcessed(issueKey: string, workspace?: string): boolean {
+    const row = workspace
+      ? this.db
+          .prepare(`SELECT 1 FROM processed_issues WHERE issue_key = ? AND workspace = ?`)
+          .get(issueKey, workspace)
+      : this.db
+          .prepare(`SELECT 1 FROM processed_issues WHERE issue_key = ?`)
+          .get(issueKey);
     return row !== undefined;
   }
 
   /**
-   * Remove an issue from the processed set (e.g. for --force re-processing).
+   * Remove an issue from the processed set (optionally scoped to a workspace).
    */
-  unmarkIssueProcessed(issueKey: string): void {
-    this.db
-      .prepare(`DELETE FROM processed_issues WHERE issue_key = ?`)
-      .run(issueKey);
+  unmarkIssueProcessed(issueKey: string, workspace?: string): void {
+    if (workspace) {
+      this.db
+        .prepare(`DELETE FROM processed_issues WHERE issue_key = ? AND workspace = ?`)
+        .run(issueKey, workspace);
+    } else {
+      this.db
+        .prepare(`DELETE FROM processed_issues WHERE issue_key = ?`)
+        .run(issueKey);
+    }
   }
 
   /**

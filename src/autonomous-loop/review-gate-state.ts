@@ -16,7 +16,16 @@ import type { ReviewGateFinding, ReviewGateState } from "./review-gate";
 import { initReviewGateState } from "./review-gate";
 import { WORKSPACE } from "./arg-parser";
 
+const INVALID_KEY_RE = /[/\\]|\.\./;
+
+function validateIssueKey(issueKey: string): void {
+  if (INVALID_KEY_RE.test(issueKey)) {
+    throw new Error(`Invalid issueKey "${issueKey}": must not contain /, \\, or ..`);
+  }
+}
+
 function getStateFile(issueKey: string): string {
+  validateIssueKey(issueKey);
   return path.join(WORKSPACE, ".aicoder", `review-gate-state-${issueKey}.json`);
 }
 

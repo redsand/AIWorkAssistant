@@ -81,6 +81,132 @@ describe('AgentRunDatabase', () => {
       expect(stats.runningRuns).toBe(0);
     });
   });
+
+  describe('processed issues', () => {
+    it('should mark an issue as processed', () => {
+      db.markIssueProcessed('PROJ-1', 'ws-1');
+      expect(db.isIssueProcessed('PROJ-1')).toBe(true);
+      expect(db.isIssueProcessed('PROJ-1', 'ws-1')).toBe(true);
+    });
+
+    it('should return false for unprocessed issue', () => {
+      expect(db.isIssueProcessed('PROJ-999')).toBe(false);
+      expect(db.isIssueProcessed('PROJ-999', 'ws-1')).toBe(false);
+    });
+
+    it('should be idempotent — marking twice does not throw', () => {
+      db.markIssueProcessed('PROJ-1', 'ws-1');
+      db.markIssueProcessed('PROJ-1', 'ws-1');
+      expect(db.isIssueProcessed('PROJ-1')).toBe(true);
+    });
+
+    it('should filter isIssueProcessed by workspace', () => {
+      db.markIssueProcessed('PROJ-1', 'ws-1');
+      db.markIssueProcessed('PROJ-1', 'ws-2');
+      expect(db.isIssueProcessed('PROJ-1', 'ws-1')).toBe(true);
+      expect(db.isIssueProcessed('PROJ-1', 'ws-2')).toBe(true);
+      expect(db.isIssueProcessed('PROJ-1', 'ws-3')).toBe(false);
+    });
+
+    it('should unmark an issue (no workspace filter removes all workspaces)', () => {
+      db.markIssueProcessed('PROJ-1', 'ws-1');
+      db.markIssueProcessed('PROJ-1', 'ws-2');
+      db.unmarkIssueProcessed('PROJ-1');
+      expect(db.isIssueProcessed('PROJ-1')).toBe(false);
+    });
+
+    it('should unmark an issue scoped to a specific workspace', () => {
+      db.markIssueProcessed('PROJ-1', 'ws-1');
+      db.markIssueProcessed('PROJ-1', 'ws-2');
+      db.unmarkIssueProcessed('PROJ-1', 'ws-1');
+      expect(db.isIssueProcessed('PROJ-1', 'ws-1')).toBe(false);
+      expect(db.isIssueProcessed('PROJ-1', 'ws-2')).toBe(true);
+    });
+
+    it('should list processed issues for a specific workspace', () => {
+      db.markIssueProcessed('PROJ-1', 'ws-1');
+      db.markIssueProcessed('PROJ-2', 'ws-1');
+      db.markIssueProcessed('PROJ-3', 'ws-2');
+      const ws1 = db.listProcessedIssues('ws-1');
+      expect(ws1).toEqual(expect.arrayContaining(['PROJ-1', 'PROJ-2']));
+      expect(ws1).not.toContain('PROJ-3');
+    });
+
+    it('should list all processed issues when no workspace given', () => {
+      db.markIssueProcessed('PROJ-1', 'ws-1');
+      db.markIssueProcessed('PROJ-2', 'ws-2');
+      const all = db.listProcessedIssues();
+      expect(all).toEqual(expect.arrayContaining(['PROJ-1', 'PROJ-2']));
+    });
+
+    it('should return empty list when no issues processed', () => {
+      expect(db.listProcessedIssues()).toEqual([]);
+      expect(db.listProcessedIssues('ws-1')).toEqual([]);
+    });
+
+    it('should not interfere across workspaces', () => {
+      db.markIssueProcessed('PROJ-1', 'ws-1');
+      db.markIssueProcessed('PROJ-2', 'ws-2');
+      db.unmarkIssueProcessed('PROJ-1', 'ws-1');
+      expect(db.isIssueProcessed('PROJ-1', 'ws-1')).toBe(false);
+      expect(db.isIssueProcessed('PROJ-2', 'ws-2')).toBe(true);
+    });
+  });
+
+  describe('migrateProcessedIssuesFromJson', () => {
+    let tmpDir: string;
+    let fs: typeof import('fs');
+    let path: typeof import('path');
+
+    beforeEach(async () => {
+      fs = await import('fs');
+      path = await import('path');
+      tmpDir = fs.mkdtempSync(path.join(process.cwd(), 'tmp-migrate-'));
+    });
+
+    afterEach(() => {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    });
+
+    it('should migrate keys from a legacy JSON file', () => {
+      const jsonPath = path.join(tmpDir, 'processed-issues.json');
+      fs.writeFileSync(jsonPath, JSON.stringify(['PROJ-1', 'PROJ-2']), 'utf-8');
+      const count = db.migrateProcessedIssuesFromJson(jsonPath, 'ws-1');
+      expect(count).toBe(2);
+      expect(db.isIssueProcessed('PROJ-1', 'ws-1')).toBe(true);
+      expect(db.isIssueProcessed('PROJ-2', 'ws-1')).toBe(true);
+      expect(fs.existsSync(jsonPath)).toBe(false);
+      expect(fs.existsSync(jsonPath + '.migrated')).toBe(true);
+    });
+
+    it('should return 0 when file does not exist', () => {
+      const count = db.migrateProcessedIssuesFromJson('/nonexistent/path.json', 'ws-1');
+      expect(count).toBe(0);
+    });
+
+    it('should return 0 for invalid JSON content', () => {
+      const jsonPath = path.join(tmpDir, 'processed-issues.json');
+      fs.writeFileSync(jsonPath, 'not-json', 'utf-8');
+      const count = db.migrateProcessedIssuesFromJson(jsonPath, 'ws-1');
+      expect(count).toBe(0);
+    });
+
+    it('should skip non-string entries in the array', () => {
+      const jsonPath = path.join(tmpDir, 'processed-issues.json');
+      fs.writeFileSync(jsonPath, JSON.stringify(['PROJ-1', 123, null, '', 'PROJ-2']), 'utf-8');
+      const count = db.migrateProcessedIssuesFromJson(jsonPath, 'ws-1');
+      expect(count).toBe(2);
+    });
+
+    it('should be idempotent — re-migrating does not duplicate', () => {
+      const jsonPath = path.join(tmpDir, 'processed-issues.json');
+      fs.writeFileSync(jsonPath, JSON.stringify(['PROJ-1']), 'utf-8');
+      db.migrateProcessedIssuesFromJson(jsonPath, 'ws-1');
+      // File was renamed, so re-running finds nothing
+      const count2 = db.migrateProcessedIssuesFromJson(jsonPath, 'ws-1');
+      expect(count2).toBe(0);
+    });
+  });
 });
 
 // File: src/agent-runs/__tests__/sanitizer.test.ts
