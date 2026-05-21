@@ -520,8 +520,6 @@ body {
   stroke-width: 2;
   pointer-events: stroke;
   cursor: pointer;
-  stroke-dasharray: 1000;
-  stroke-dashoffset: 1000;
   animation: dep-draw 0.6s ease forwards;
 }
 

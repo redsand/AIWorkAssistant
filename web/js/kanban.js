@@ -247,21 +247,9 @@
     });
   }
 
-  function getCardCenter(el, boardRect) {
-    var r = el.getBoundingClientRect();
-    return {
-      x: r.left - boardRect.left + r.width / 2,
-      y: r.top - boardRect.top + r.height / 2,
-    };
-  }
-
-  function buildEdgePath(from, to) {
-    var H = (to.x - from.x) / 2;
-    return "M " + from.x + "," + from.y +
-      " C " + (from.x + H) + "," + from.y +
-      " " + (from.x + H) + "," + to.y +
-      " " + to.x + "," + to.y;
-  }
+  var getCardCenter = KanbanDepUtils.getCardCenter;
+  var buildEdgePath = KanbanDepUtils.buildEdgePath;
+  var safeFindByDataKey = KanbanDepUtils.safeFindByDataKey;
 
   function drawDepArrows() {
     // Clear existing paths (keep <defs>)
@@ -280,10 +268,10 @@
       if (edge.fromGhost) {
         fromEl = ghostAnchorMap[edge.fromKey];
       } else {
-        fromEl = cardIndex.get(edge.fromKey) || boardEl.querySelector('[data-key="' + edge.fromKey + '"]');
+        fromEl = cardIndex.get(edge.fromKey) || safeFindByDataKey(boardEl, edge.fromKey);
       }
 
-      toEl = cardIndex.get(edge.toKey) || boardEl.querySelector('[data-key="' + edge.toKey + '"]');
+      toEl = cardIndex.get(edge.toKey) || safeFindByDataKey(boardEl, edge.toKey);
 
       // Skip if both endpoints are missing
       if (!fromEl && !toEl) return;
@@ -296,11 +284,19 @@
 
       var path = document.createElementNS("http://www.w3.org/2000/svg", "path");
       path.setAttribute("d", buildEdgePath(from, to));
-      path.setAttribute("marker-end", "url(#dep-arrowhead)");
+      path.setAttribute("marker-end", edge.fromGhost ? "url(#dep-arrowhead-ghost)" : "url(#dep-arrowhead)");
       path.classList.add("dep-path");
       if (edge.fromGhost) path.classList.add("dep-path--ghost");
       path.setAttribute("data-from", edge.fromKey);
       path.setAttribute("data-to", edge.toKey);
+
+      // Set stroke-dasharray to actual path length for correct draw animation
+      depOverlay.appendChild(path);
+      var totalLen = path.getTotalLength();
+      if (!edge.fromGhost) {
+        path.style.strokeDasharray = totalLen;
+        path.style.strokeDashoffset = totalLen;
+      }
 
       // Hover highlighting
       path.addEventListener("mouseenter", function () {
@@ -315,8 +311,6 @@
         if (fromCard) fromCard.classList.remove("kcard--edge-hover");
         if (toCard) toCard.classList.remove("kcard--edge-hover");
       });
-
-      depOverlay.appendChild(path);
     });
   }
 
@@ -427,7 +421,7 @@
 
   function scrollToCard(cardKey) {
     if (!cardKey) return;
-    var card = cardIndex.get(cardKey) || document.querySelector('[data-key="' + cardKey + '"]');
+    var card = cardIndex.get(cardKey) || safeFindByDataKey(document.body, cardKey);
     if (card) {
       card.scrollIntoView({ behavior: "smooth", block: "center" });
       card.classList.add("kcard--highlight");
