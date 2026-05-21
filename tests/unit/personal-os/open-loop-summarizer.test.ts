@@ -105,4 +105,89 @@ describe("OpenLoopSummarizer", () => {
     expect(result.openLoops).toHaveLength(0);
     expect(result.decisionsWaiting).toHaveLength(0);
   });
+
+  it("detects in-progress Jira issues as open loops", () => {
+    const data = makeBriefData({
+      jira: [
+        { key: "PROJ-123", id: "10001", self: "https://jira.example.com/rest/api/2/issue/10001", fields: { status: { name: "In Progress" }, summary: "Active task", priority: { name: "High" } } } as any,
+      ],
+    });
+    const { openLoops } = openLoopSummarizer.summarizeOpenLoops(data);
+    expect(openLoops).toHaveLength(1);
+    expect(openLoops[0].title).toBe("Active task");
+    expect(openLoops[0].source).toBe("jira");
+    expect(openLoops[0].urgency).toBe("high");
+  });
+
+  it("maps Jira priority names correctly", () => {
+    const makeJira = (priorityName: string) => makeBriefData({
+      jira: [{ key: "P-1", id: "1", self: "", fields: { status: { name: "In Progress" }, summary: "Task", priority: { name: priorityName } } } as any],
+    });
+    expect(openLoopSummarizer.summarizeOpenLoops(makeJira("Highest")).openLoops[0].urgency).toBe("critical");
+    expect(openLoopSummarizer.summarizeOpenLoops(makeJira("Critical")).openLoops[0].urgency).toBe("critical");
+    expect(openLoopSummarizer.summarizeOpenLoops(makeJira("Low")).openLoops[0].urgency).toBe("low");
+    expect(openLoopSummarizer.summarizeOpenLoops(makeJira("Lowest")).openLoops[0].urgency).toBe("low");
+    expect(openLoopSummarizer.summarizeOpenLoops(makeJira("Medium")).openLoops[0].urgency).toBe("medium");
+  });
+
+  it("maps undefined Jira priority to medium", () => {
+    const data = makeBriefData({
+      jira: [{ key: "P-1", id: "1", self: "", fields: { status: { name: "In Progress" }, summary: "Task", priority: undefined } } as any],
+    });
+    const { openLoops } = openLoopSummarizer.summarizeOpenLoops(data);
+    expect(openLoops[0].urgency).toBe("medium");
+  });
+
+  it("detects blocked roadmap items as decisions waiting", () => {
+    const data = makeBriefData({
+      roadmaps: [
+        {
+          name: "Q1 Roadmap",
+          milestones: [
+            {
+              name: "Phase 1",
+              items: [
+                { title: "Build API", status: "blocked" },
+                { title: "Build UI", status: "in_progress" },
+              ],
+            },
+          ],
+        } as any,
+      ],
+    });
+    const { decisionsWaiting } = openLoopSummarizer.summarizeOpenLoops(data);
+    expect(decisionsWaiting).toHaveLength(1);
+    expect(decisionsWaiting[0].title).toBe("Build API");
+    expect(decisionsWaiting[0].source).toBe("roadmap");
+  });
+
+  it("maps critical blocked work item urgency", () => {
+    const data = makeBriefData({
+      workItems: [
+        { id: "w3", title: "Critical blocked", status: "blocked", priority: "critical" } as any,
+      ],
+    });
+    const { openLoops } = openLoopSummarizer.summarizeOpenLoops(data);
+    expect(openLoops[0].urgency).toBe("critical");
+  });
+
+  it("maps low/default blocked work item urgency", () => {
+    const data = makeBriefData({
+      workItems: [
+        { id: "w4", title: "Low blocked", status: "blocked", priority: "low" } as any,
+      ],
+    });
+    const { openLoops } = openLoopSummarizer.summarizeOpenLoops(data);
+    expect(openLoops[0].urgency).toBe("medium");
+  });
+
+  it("maps waiting work item priorities correctly", () => {
+    const data = makeBriefData({
+      workItems: [
+        { id: "w5", title: "Critical waiting", status: "waiting", priority: "critical" } as any,
+      ],
+    });
+    const { openLoops } = openLoopSummarizer.summarizeOpenLoops(data);
+    expect(openLoops[0].urgency).toBe("critical");
+  });
 });
