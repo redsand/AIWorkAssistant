@@ -73,6 +73,13 @@
 
       <!-- Board -->
       <div id="kanban-board" class="k-board" style="display: none">
+        <svg id="dep-overlay" class="dep-overlay" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="dep-arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#667eea" />
+            </marker>
+          </defs>
+        </svg>
         <div class="k-col" data-column="backlog">
           <h3 class="k-col-title">Backlog <span class="k-col-count" id="count-backlog">0</span></h3>
           <div class="k-col-items" id="col-backlog"></div>
