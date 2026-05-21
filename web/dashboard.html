@@ -179,16 +179,21 @@
         <!-- Row 3: Dependency Graph -->
         <div class="section" id="graph-section">
           <div class="section-title">Dependency Graph</div>
-          <div class="graph-legend">
+          <div class="graph-legend" id="graph-legend" style="display:none">
             <span class="legend-dot critical"></span> Critical
             <span class="legend-dot high"></span> High
             <span class="legend-dot medium"></span> Medium
             <span class="legend-dot low"></span> Low
-            <span class="legend-item">&rarr; depends on</span>
+            <span class="legend-sep">|</span>
+            <span class="legend-line internal"></span> Internal
+            <span class="legend-sep">·</span>
+            <span class="legend-line external"></span> Cross-repo
+            <span class="legend-sep">·</span>
+            <span class="legend-dot ghost"></span> Ghost node (external)
           </div>
           <div id="dependency-graph" class="graph-container"></div>
           <div class="state-msg" id="graph-empty" style="display: none">
-            <p>No dependencies found between issues in this repository</p>
+            <p>No dependencies found within this repository. Cross-repo dependencies may exist.</p>
           </div>
         </div>
 

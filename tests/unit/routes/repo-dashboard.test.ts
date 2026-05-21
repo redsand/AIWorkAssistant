@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import Fastify, { FastifyInstance } from "fastify";
 import {
   parseDependencies,
+  constructExternalUrl,
   normalizeStatus,
   normalizePriority,
   calculateBurndown,
@@ -13,6 +14,7 @@ import {
   invalidateIssueCache,
 } from "../../../src/routes/repo-dashboard";
 import type {
+  DependencyRef,
   DashboardSprint,
   DashboardIssue,
 } from "../../../src/routes/repo-dashboard";
@@ -30,7 +32,7 @@ vi.mock("../../../src/work-items/database", () => ({
   workItemDatabase: { listWorkItems: vi.fn() },
 }));
 vi.mock("../../../src/config/env", () => ({
-  env: { GITHUB_TOKEN: "gh-test-token", GITHUB_DEFAULT_OWNER: "test-org", GITHUB_DEFAULT_REPO: "test-repo", GITLAB_TOKEN: "gl-test-token", JIRA_BASE_URL: "https://test.atlassian.net", JIRA_API_TOKEN: "jira-test-token" },
+  env: { GITHUB_TOKEN: "gh-test-token", GITHUB_DEFAULT_OWNER: "test-org", GITHUB_DEFAULT_REPO: "test-repo", GITLAB_TOKEN: "gl-test-token", GITLAB_BASE_URL: "https://gitlab.com", GITLAB_DEFAULT_PROJECT: "", JIRA_BASE_URL: "https://test.atlassian.net", JIRA_API_TOKEN: "jira-test-token" },
 }));
 
 import { githubClient } from "../../../src/integrations/github/github-client";
@@ -41,14 +43,72 @@ import { workItemDatabase } from "../../../src/work-items/database";
 describe("parseDependencies", () => {
   it("should return empty array for empty body", () => { expect(parseDependencies("")).toEqual([]); });
   it("should return empty array for null", () => { expect(parseDependencies(null as any)).toEqual([]); });
-  it("should parse depends on", () => { expect(parseDependencies("depends on #123")).toEqual([{ id: "123", label: "depends on #123" }]); });
-  it("should parse blocked by", () => { expect(parseDependencies("blocked by #456")).toEqual([{ id: "456", label: "blocked by #456" }]); });
-  it("should parse requires", () => { expect(parseDependencies("Requires #789")).toEqual([{ id: "789", label: "Requires #789" }]); });
-  it("should parse prerequisite", () => { expect(parseDependencies("prerequisite: #321")).toEqual([{ id: "321", label: "prerequisite: #321" }]); });
-  it("should deduplicate same id", () => { expect(parseDependencies("depends on #100 and depends on #100")).toEqual([{ id: "100", label: "depends on #100" }]); });
+  it("should parse depends on", () => { expect(parseDependencies("depends on #123")).toEqual([{ id: "123", label: "depends on #123", external: false }]); });
+  it("should parse blocked by", () => { expect(parseDependencies("blocked by #456")).toEqual([{ id: "456", label: "blocked by #456", external: false }]); });
+  it("should parse requires", () => { expect(parseDependencies("Requires #789")).toEqual([{ id: "789", label: "Requires #789", external: false }]); });
+  it("should parse prerequisite", () => { expect(parseDependencies("prerequisite: #321")).toEqual([{ id: "321", label: "prerequisite: #321", external: false }]); });
+  it("should deduplicate same id", () => { expect(parseDependencies("depends on #100 and depends on #100")).toEqual([{ id: "100", label: "depends on #100", external: false }]); });
   it("should parse multiple deps", () => { const r = parseDependencies("depends on #1 and blocked by #2"); expect(r).toHaveLength(2); });
-  it("should be case insensitive", () => { expect(parseDependencies("DEPENDS ON #5")).toEqual([{ id: "5", label: "DEPENDS ON #5" }]); });
+  it("should be case insensitive", () => { expect(parseDependencies("DEPENDS ON #5")).toEqual([{ id: "5", label: "DEPENDS ON #5", external: false }]); });
   it("should return empty for no match", () => { expect(parseDependencies("Just a task")).toEqual([]); });
+
+  // Cross-platform Jira references
+  it("should parse JIRA: prefix", () => {
+    const r = parseDependencies("depends on JIRA:PROJ-42");
+    expect(r).toEqual([{ id: "PROJ-42", label: "depends on JIRA:PROJ-42", platform: "jira", external: true }]);
+  });
+  it("should parse Jira: prefix (lowercase)", () => {
+    const r = parseDependencies("blocked by Jira:DEV-7");
+    expect(r).toEqual([{ id: "DEV-7", label: "blocked by Jira:DEV-7", platform: "jira", external: true }]);
+  });
+  it("should parse JIRA: without keyword prefix", () => {
+    const r = parseDependencies("requires JIRA:ABC-123");
+    expect(r).toEqual([{ id: "ABC-123", label: "requires JIRA:ABC-123", platform: "jira", external: true }]);
+  });
+
+  // Cross-platform GitHub references
+  it("should parse GH: with owner/repo", () => {
+    const r = parseDependencies("depends on GH:redsand/OtherRepo#5");
+    expect(r).toEqual([{ id: "5", label: "depends on GH:redsand/OtherRepo#5", platform: "github", repo: "redsand/OtherRepo", external: true }]);
+  });
+  it("should parse GitHub: with owner/repo", () => {
+    const r = parseDependencies("blocked by GitHub:org/foo#42");
+    expect(r).toEqual([{ id: "42", label: "blocked by GitHub:org/foo#42", platform: "github", repo: "org/foo", external: true }]);
+  });
+
+  // Cross-platform GitLab references
+  it("should parse GL: with project", () => {
+    const r = parseDependencies("depends on GL:mygroup/myproject#15");
+    expect(r).toEqual([{ id: "15", label: "depends on GL:mygroup/myproject#15", platform: "gitlab", repo: "mygroup/myproject", external: true }]);
+  });
+  it("should parse GitLab: with project", () => {
+    const r = parseDependencies("blocked by GitLab:anotherproject#99");
+    expect(r).toEqual([{ id: "99", label: "blocked by GitLab:anotherproject#99", platform: "gitlab", repo: "anotherproject", external: true }]);
+  });
+
+  // Mixed same-repo and cross-platform
+  it("should parse mixed same-repo and cross-platform deps", () => {
+    const r = parseDependencies("depends on #1 and requires JIRA:PROJ-5 and blocked by GH:org/r#10");
+    expect(r).toHaveLength(3);
+    const internal = r.find(d => !d.external);
+    const jira = r.find(d => d.platform === "jira");
+    const github = r.find(d => d.platform === "github");
+    expect(internal?.id).toBe("1");
+    expect(internal?.external).toBe(false);
+    expect(jira?.id).toBe("PROJ-5");
+    expect(jira?.external).toBe(true);
+    expect(github?.id).toBe("10");
+    expect(github?.repo).toBe("org/r");
+    expect(github?.external).toBe(true);
+  });
+
+  // Deduplication across cross-platform refs
+  it("should deduplicate cross-platform references with same id", () => {
+    const r = parseDependencies("depends on JIRA:PROJ-1 and blocked by JIRA:PROJ-1");
+    expect(r).toHaveLength(1);
+    expect(r[0].id).toBe("PROJ-1");
+    expect(r[0].external).toBe(true);
+  });
 });
 
 describe("normalizeStatus", () => {
@@ -352,6 +412,90 @@ describe("repoDashboardRoutes", () => {
       const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/dependencies?platform=jira&repo=PROJ" });
       expect(res.json().nodes).toEqual([]);
       expect(res.json().edges).toEqual([]);
+    });
+
+    // Cross-platform dependency tests with includeExternal
+    it("should include ghost nodes for cross-platform Jira deps when includeExternal=true", async () => {
+      vi.mocked(githubClient.listIssues).mockResolvedValue([
+        { number: 1, state: "open", title: "I1", pull_request: null, labels: [], assignee: null, html_url: "https://github.com/org/repo/issues/1", created_at: "", updated_at: "", body: "depends on JIRA:PROJ-42", milestone: null },
+      ]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/dependencies?platform=github&repo=org/repo&includeExternal=true" });
+      const json = res.json();
+      expect(json.nodes).toHaveLength(2);
+      const ghostNode = json.nodes.find((n: any) => n.id === "PROJ-42");
+      expect(ghostNode).toBeDefined();
+      expect(ghostNode.status).toBe("unknown");
+      expect(ghostNode.priority).toBe("unknown");
+      expect(ghostNode.url).toBe("https://test.atlassian.net/browse/PROJ-42");
+      expect(json.edges).toHaveLength(1);
+      const extEdge = json.edges[0];
+      expect(extEdge.from).toBe("1");
+      expect(extEdge.to).toBe("PROJ-42");
+      expect(extEdge.dashes).toBe(true);
+      expect(extEdge.color.color).toBe("#f59e0b");
+    });
+
+    it("should include ghost nodes for cross-platform GH deps when includeExternal=true", async () => {
+      vi.mocked(jiraClient.searchIssues).mockResolvedValue([
+        { key: "PROJ-1", fields: { summary: "J1", status: { name: "To Do" }, priority: { name: "High" }, assignee: null, labels: [], created: "", updated: "", description: "blocked by GH:other/repo#5" } },
+      ]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/dependencies?platform=jira&repo=PROJ&includeExternal=true" });
+      const json = res.json();
+      expect(json.nodes).toHaveLength(2);
+      const ghostNode = json.nodes.find((n: any) => n.id === "5");
+      expect(ghostNode).toBeDefined();
+      expect(ghostNode.status).toBe("unknown");
+      expect(ghostNode.priority).toBe("unknown");
+      expect(ghostNode.url).toBe("https://github.com/other/repo/issues/5");
+      const extEdge = json.edges[0];
+      expect(extEdge.dashes).toBe(true);
+    });
+
+    it("should include ghost nodes for cross-platform GL deps when includeExternal=true", async () => {
+      vi.mocked(githubClient.listIssues).mockResolvedValue([
+        { number: 1, state: "open", title: "I1", pull_request: null, labels: [], assignee: null, html_url: "https://github.com/org/repo/issues/1", created_at: "", updated_at: "", body: "requires GitLab:myproj#99", milestone: null },
+      ]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/dependencies?platform=github&repo=org/repo&includeExternal=true" });
+      const json = res.json();
+      const ghostNode = json.nodes.find((n: any) => n.id === "99");
+      expect(ghostNode).toBeDefined();
+      expect(ghostNode.url).toBe("https://gitlab.com/myproj/-/issues/99");
+    });
+
+    it("should deduplicate ghost nodes for same external id", async () => {
+      vi.mocked(githubClient.listIssues).mockResolvedValue([
+        { number: 1, state: "open", title: "I1", pull_request: null, labels: [], assignee: null, html_url: "https://github.com/org/repo/issues/1", created_at: "", updated_at: "", body: "depends on JIRA:PROJ-42", milestone: null },
+        { number: 2, state: "open", title: "I2", pull_request: null, labels: [], assignee: null, html_url: "https://github.com/org/repo/issues/2", created_at: "", updated_at: "", body: "blocked by JIRA:PROJ-42", milestone: null },
+      ]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/dependencies?platform=github&repo=org/repo&includeExternal=true" });
+      const json = res.json();
+      const ghostNodes = json.nodes.filter((n: any) => n.id === "PROJ-42");
+      expect(ghostNodes).toHaveLength(1);
+      // Both issues should have edges to the same ghost node
+      const extEdges = json.edges.filter((e: any) => e.to === "PROJ-42");
+      expect(extEdges).toHaveLength(2);
+    });
+
+    it("should NOT include external nodes when includeExternal is false (default)", async () => {
+      vi.mocked(githubClient.listIssues).mockResolvedValue([
+        { number: 1, state: "open", title: "I1", pull_request: null, labels: [], assignee: null, html_url: "https://github.com/org/repo/issues/1", created_at: "", updated_at: "", body: "depends on JIRA:PROJ-42", milestone: null },
+      ]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/dependencies?platform=github&repo=org/repo" });
+      const json = res.json();
+      // Should still have the source node but no ghost node and no edges
+      expect(json.nodes).toHaveLength(1);
+      expect(json.edges).toHaveLength(0);
+    });
+
+    it("should handle GH: with owner/repo in GitLab issue context with includeExternal", async () => {
+      vi.mocked(gitlabClient.listIssues).mockResolvedValue([
+        { iid: 1, id: 101, state: "opened", title: "GL1", labels: [], assignee: null, web_url: "https://gitlab.com/org/repo/-/issues/1", created_at: "", updated_at: "", description: "depends on GitHub:cross/other#7" },
+      ]);
+      const res = await server.inject({ method: "GET", url: "/api/repo-dashboard/dependencies?platform=gitlab&repo=org/repo&includeExternal=true" });
+      const json = res.json();
+      const ghost = json.nodes.find((n: any) => n.id === "7");
+      expect(ghost).toBeDefined();
+      expect(ghost.url).toBe("https://github.com/cross/other/issues/7");
     });
   });
 

@@ -35,6 +35,14 @@ export interface RepoInfo {
   openCount: number;
 }
 
+export interface DependencyRef {
+  id: string;
+  label: string;
+  platform?: string;
+  repo?: string;
+  external: boolean;
+}
+
 export interface DashboardIssue {
   id: string;
   externalId: string;
@@ -48,7 +56,7 @@ export interface DashboardIssue {
   repo: string;
   createdAt: string;
   updatedAt: string;
-  dependencies: Array<{ id: string; label: string }>;
+  dependencies: DependencyRef[];
   sprint?: string;
 }
 
@@ -85,28 +93,72 @@ export interface DependencyGraph {
     from: string;
     to: string;
     label: string;
+    dashes?: boolean;
+    color?: { color: string; hover?: string };
   }>;
 }
 
 // ─── Normalization helpers ───────────────────────────────────────────────────
 
 const DEP_RE =
-  /\b(?:depends\s+on|blocked\s+by|requires|prerequisite\s*:\s*)\s*#(\d+)/gi;
+  /\b(?:depends\s+on|blocked\s+by|requires|prerequisite\s*:\s*)\s*(?:(?:JIRA:|Jira:)([A-Z]+-\d+)|(?:GH:|GitHub:)(?:([\w.-]+\/[\w.-]+))?#(\d+)|(?:GL:|GitLab:)(?:([\w.-]+(?:\/[\w.-]+)?))?#(\d+)|#(\d+))\b/gi;
 
-export function parseDependencies(body: string): Array<{ id: string; label: string }> {
+export function parseDependencies(body: string): DependencyRef[] {
   if (!body) return [];
   const seen = new Set<string>();
-  const result: Array<{ id: string; label: string }> = [];
+  const result: DependencyRef[] = [];
   const matches = body.matchAll(DEP_RE);
   for (const m of matches) {
-    const id = m[1];
     const label = m[0].trim();
+    let id: string;
+    let platform: string | undefined;
+    let repo: string | undefined;
+    let external = false;
+
+    if (m[1]) {
+      id = m[1];
+      platform = "jira";
+      external = true;
+    } else if (m[3]) {
+      id = m[3];
+      platform = "github";
+      repo = m[2] || undefined;
+      external = true;
+    } else if (m[5]) {
+      id = m[5];
+      platform = "gitlab";
+      repo = m[4] || undefined;
+      external = true;
+    } else if (m[6]) {
+      id = m[6];
+    } else {
+      continue;
+    }
+
     if (!seen.has(id)) {
       seen.add(id);
-      result.push({ id, label });
+      result.push({ id, label, platform, repo, external });
     }
   }
   return result;
+}
+
+export function constructExternalUrl(dep: DependencyRef): string {
+  if (dep.platform === "jira") {
+    const base = env.JIRA_BASE_URL;
+    if (base) return `${base}/browse/${dep.id}`;
+  }
+  if (dep.platform === "github") {
+    const ownerRepo = dep.repo || `${env.GITHUB_DEFAULT_OWNER}/${env.GITHUB_DEFAULT_REPO}`;
+    return `https://github.com/${ownerRepo}/issues/${dep.id}`;
+  }
+  if (dep.platform === "gitlab") {
+    const project = dep.repo || env.GITLAB_DEFAULT_PROJECT || "";
+    const base = (env.GITLAB_BASE_URL || "https://gitlab.com").replace(/\/api\/v4$/, "");
+    const encodedProject = encodeURIComponent(project);
+    return `${base}/${encodedProject}/-/issues/${dep.id}`;
+  }
+  return "";
 }
 
 export function normalizeStatus(
@@ -761,9 +813,10 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
   });
 
   fastify.get<{
-    Querystring: { repo: string; platform: string };
+    Querystring: { repo: string; platform: string; includeExternal?: string };
   }>("/dependencies", async (request) => {
-    const { repo, platform } = request.query;
+    const { repo, platform, includeExternal } = request.query;
+    const showExternal = includeExternal === "true";
 
     let issues: DashboardIssue[] = [];
     try {
@@ -802,13 +855,44 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
     const edges: DependencyGraph["edges"] = [];
     for (const issue of issues) {
       for (const dep of issue.dependencies) {
-        if (issueIds.has(dep.id)) {
+        if (!dep.external && issueIds.has(dep.id)) {
           edges.push({
             from: issue.id,
             to: dep.id,
             label: dep.label,
           });
         }
+      }
+    }
+
+    if (showExternal) {
+      try {
+        const ghostNodeIds = new Set<string>();
+        for (const issue of issues) {
+          for (const dep of issue.dependencies) {
+            if (!dep.external) continue;
+            if (!ghostNodeIds.has(dep.id)) {
+              ghostNodeIds.add(dep.id);
+              nodes.push({
+                id: dep.id,
+                label: dep.label,
+                title: dep.label,
+                status: "unknown",
+                priority: "unknown",
+                url: constructExternalUrl(dep),
+              });
+            }
+            edges.push({
+              from: issue.id,
+              to: dep.id,
+              label: dep.label,
+              dashes: true,
+              color: { color: "#f59e0b" },
+            });
+          }
+        }
+      } catch {
+        // External dep building failed, return internal graph only
       }
     }
 
