@@ -13,6 +13,7 @@ import { RunLogger } from "../run-logger";
 import {
   extractPriority,
   extractTrackingNumber,
+  extractSprintNumber,
   sortByLabelPriority,
   enforceDependencyOrder,
   prioritizeItems,
@@ -499,6 +500,64 @@ describe("enforceDependencyOrder", () => {
     ];
     const sorted = enforceDependencyOrder(items);
     expect(sorted.map((i) => i.number)).toEqual([10, 20]);
+  });
+});
+
+describe("extractSprintNumber", () => {
+  it("extracts from [SPRINT-N] title prefix", () => {
+    expect(extractSprintNumber({ number: 1, title: "[SPRINT-2] Migrate foo", url: "" })).toBe(2);
+    expect(extractSprintNumber({ number: 1, title: "[Sprint 1] Foo", url: "" })).toBe(1);
+    expect(extractSprintNumber({ number: 1, title: "[sprint-10] Foo", url: "" })).toBe(10);
+  });
+
+  it("extracts from labels when title has no marker", () => {
+    expect(extractSprintNumber({ number: 1, title: "Foo", url: "", labels: ["sprint-3"] })).toBe(3);
+    expect(extractSprintNumber({ number: 1, title: "Foo", url: "", labels: ["sprint:4"] })).toBe(4);
+    expect(extractSprintNumber({ number: 1, title: "Foo", url: "", labels: ["s5"] })).toBe(5);
+  });
+
+  it("returns null when no sprint marker is present", () => {
+    expect(extractSprintNumber({ number: 1, title: "Foo", url: "" })).toBe(null);
+    expect(extractSprintNumber({ number: 1, title: "Foo", url: "", labels: ["random"] })).toBe(null);
+  });
+});
+
+describe("sprint-aware ordering in prioritizeItems", () => {
+  it("sprint-1 ticket beats sprint-2 ticket even with lower priority", async () => {
+    const items = [
+      { number: 28, title: "[SPRINT-2] Migrate", url: "", labels: ["medium", "ready-for-agent"] },
+      { number: 43, title: "[SPRINT-1] Foundation", url: "", labels: ["low", "ready-for-agent"] },
+      { number: 46, title: "[SPRINT-3] Polish", url: "", labels: ["high", "ready-for-agent"] },
+    ];
+    const result = await prioritizeItems(items, "label", "http://localhost:3050", "key");
+    expect(result.map((i) => i.number)).toEqual([43, 28, 46]);
+  });
+
+  it("priority still wins inside the same sprint", async () => {
+    const items = [
+      { number: 1, title: "[SPRINT-1] Low priority", url: "", labels: ["low"] },
+      { number: 2, title: "[SPRINT-1] Critical priority", url: "", labels: ["critical"] },
+    ];
+    const result = await prioritizeItems(items, "label", "http://localhost:3050", "key");
+    expect(result.map((i) => i.number)).toEqual([2, 1]);
+  });
+
+  it("unsprinted item beats sprinted item only on priority — sprint does not penalize", async () => {
+    const items = [
+      { number: 1, title: "[SPRINT-3] Sprinted medium", url: "", labels: ["medium"] },
+      { number: 2, title: "Unsprinted critical hotfix", url: "", labels: ["critical"] },
+    ];
+    const result = await prioritizeItems(items, "label", "http://localhost:3050", "key");
+    expect(result.map((i) => i.number)).toEqual([2, 1]);
+  });
+
+  it("label-based sprint marker also works", async () => {
+    const items = [
+      { number: 28, title: "Migrate", url: "", labels: ["sprint-2", "medium"] },
+      { number: 43, title: "Foundation", url: "", labels: ["sprint-1", "low"] },
+    ];
+    const result = await prioritizeItems(items, "label", "http://localhost:3050", "key");
+    expect(result.map((i) => i.number)).toEqual([43, 28]);
   });
 });
 
