@@ -244,4 +244,34 @@ describe("Policy Engine", () => {
       expect(approval.requestedAt).toBeInstanceOf(Date);
     });
   });
+
+  describe("executeApproval", () => {
+    it("should execute successfully and mark request as executed", async () => {
+      testAction.type = "jira.issue.delete";
+      const decision = await policyEngine.evaluate(testAction);
+      const approval = await policyEngine.createApprovalRequest(testAction, decision);
+
+      const result = await policyEngine.executeApproval(approval, async () => ({
+        success: true,
+        message: "Deleted",
+      }));
+
+      expect(result.status).toBe("executed");
+      expect(result.executionResult?.success).toBe(true);
+    });
+
+    it("should mark request as failed when executor throws", async () => {
+      testAction.type = "jira.issue.delete";
+      const decision = await policyEngine.evaluate(testAction);
+      const approval = await policyEngine.createApprovalRequest(testAction, decision);
+
+      await expect(
+        policyEngine.executeApproval(approval, async () => {
+          throw new Error("Execution failed");
+        }),
+      ).rejects.toThrow("Execution failed");
+
+      expect(approval.status).toBe("failed");
+    });
+  });
 });
