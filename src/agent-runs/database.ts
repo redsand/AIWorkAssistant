@@ -85,6 +85,16 @@ class AgentRunDatabase {
         "UPDATE agent_runs SET last_activity_at = started_at WHERE last_activity_at IS NULL",
       )
       .run();
+
+    // Processed issues ledger — idempotent, concurrency-safe alternative to JSON file
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS processed_issues (
+        issue_key TEXT PRIMARY KEY,
+        workspace TEXT NOT NULL,
+        processed_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_processed_issues_workspace ON processed_issues(workspace);
+    `);
   }
 
   startRun(params: AgentRunCreateParams): AgentRun {
@@ -367,6 +377,53 @@ class AgentRunDatabase {
     if (!rows.some((row) => row.name === column)) {
       this.db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`).run();
     }
+  }
+
+  // ── Processed issues ledger ──────────────────────────────────────────────────
+
+  /**
+   * Record that an issue has been processed. Idempotent — safe to call concurrently.
+   */
+  markIssueProcessed(issueKey: string, workspace: string): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO processed_issues (issue_key, workspace, processed_at) VALUES (?, ?, ?)`,
+      )
+      .run(issueKey, workspace, now);
+  }
+
+  /**
+   * Check whether an issue has already been processed.
+   */
+  isIssueProcessed(issueKey: string): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 FROM processed_issues WHERE issue_key = ?`)
+      .get(issueKey);
+    return row !== undefined;
+  }
+
+  /**
+   * Remove an issue from the processed set (e.g. for --force re-processing).
+   */
+  unmarkIssueProcessed(issueKey: string): void {
+    this.db
+      .prepare(`DELETE FROM processed_issues WHERE issue_key = ?`)
+      .run(issueKey);
+  }
+
+  /**
+   * List all processed issue keys for a workspace.
+   */
+  listProcessedIssues(workspace?: string): string[] {
+    const rows = workspace
+      ? this.db
+          .prepare(`SELECT issue_key FROM processed_issues WHERE workspace = ? ORDER BY processed_at DESC`)
+          .all(workspace)
+      : this.db
+          .prepare(`SELECT issue_key FROM processed_issues ORDER BY processed_at DESC`)
+          .all();
+    return (rows as Array<{ issue_key: string }>).map((r) => r.issue_key);
   }
 
   close(): void {
