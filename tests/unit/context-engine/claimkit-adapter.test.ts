@@ -25,9 +25,16 @@ vi.doMock("@redsand/claimkit", () => ({
   MemoryEmbeddingAdapter: MockMemoryEmbeddingAdapter,
 }));
 
+vi.doMock("../../../src/agent/providers/factory", () => ({
+  getProvider: () => ({ chat: vi.fn(), name: "mock-provider" }),
+  resetProvider: vi.fn(),
+}));
+
 vi.doMock("../../../src/config/env", () => ({
   env: {
     CLAIMKIT_ENABLED: true,
+    CLAIMKIT_LLM_PROVIDER: "memory",
+    CLAIMKIT_LLM_MODEL: "",
     CLAIMKIT_TOP_K: 10,
     CLAIMKIT_MIN_SCORE: 0.0,
     CLAIMKIT_MAX_EVIDENCE_ITEMS: 20,
@@ -62,6 +69,8 @@ describe("ClaimKitAdapter", () => {
     vi.doMock("../../../src/config/env", () => ({
       env: {
         CLAIMKIT_ENABLED: true,
+        CLAIMKIT_LLM_PROVIDER: "memory",
+        CLAIMKIT_LLM_MODEL: "",
         CLAIMKIT_TOP_K: 10,
         CLAIMKIT_MIN_SCORE: 0.0,
         CLAIMKIT_MAX_EVIDENCE_ITEMS: 20,
@@ -83,6 +92,8 @@ describe("ClaimKitAdapter", () => {
       vi.doMock("../../../src/config/env", () => ({
         env: {
           CLAIMKIT_ENABLED: false,
+          CLAIMKIT_LLM_PROVIDER: "memory",
+          CLAIMKIT_LLM_MODEL: "",
           CLAIMKIT_TOP_K: 10,
           CLAIMKIT_MIN_SCORE: 0.0,
           CLAIMKIT_MAX_EVIDENCE_ITEMS: 20,
@@ -130,6 +141,55 @@ describe("ClaimKitAdapter", () => {
       const result = await adapter.initialize();
       expect(result).toBe(true);
       expect(mockClaimKitConstructor).toHaveBeenCalledTimes(1);
+    });
+
+    it("should route to MemoryLLMAdapter when CLAIMKIT_LLM_PROVIDER is 'memory'", async () => {
+      await adapter.initialize();
+      expect(mockClaimKitConstructor).toHaveBeenCalled();
+      const ctorArgs = mockClaimKitConstructor.mock.calls[0][0];
+      expect(ctorArgs.llm).toBeInstanceOf(MockMemoryLLMAdapter);
+    });
+
+    it("should route to AIProviderLLMAdapter when CLAIMKIT_LLM_PROVIDER is not 'memory'", async () => {
+      vi.doMock("../../../src/config/env", () => ({
+        env: {
+          CLAIMKIT_ENABLED: true,
+          CLAIMKIT_LLM_PROVIDER: "ollama",
+          CLAIMKIT_LLM_MODEL: "llama3",
+          CLAIMKIT_TOP_K: 10,
+          CLAIMKIT_MIN_SCORE: 0.0,
+          CLAIMKIT_MAX_EVIDENCE_ITEMS: 20,
+        },
+      }));
+      vi.resetModules();
+      const mod = await import("../../../src/context-engine/adapters/claimkit-adapter");
+      const ollamaAdapter = mod.claimKitAdapter as unknown as typeof adapter;
+
+      await ollamaAdapter.initialize();
+      expect(mockClaimKitConstructor).toHaveBeenCalled();
+      const ctorArgs = mockClaimKitConstructor.mock.calls[0][0];
+      expect(ctorArgs.llm).not.toBeInstanceOf(MockMemoryLLMAdapter);
+    });
+
+    it("should route to AIProviderLLMAdapter for 'comparison' provider", async () => {
+      vi.doMock("../../../src/config/env", () => ({
+        env: {
+          CLAIMKIT_ENABLED: true,
+          CLAIMKIT_LLM_PROVIDER: "comparison",
+          CLAIMKIT_LLM_MODEL: "",
+          CLAIMKIT_TOP_K: 10,
+          CLAIMKIT_MIN_SCORE: 0.0,
+          CLAIMKIT_MAX_EVIDENCE_ITEMS: 20,
+        },
+      }));
+      vi.resetModules();
+      const mod = await import("../../../src/context-engine/adapters/claimkit-adapter");
+      const comparisonAdapter = mod.claimKitAdapter as unknown as typeof adapter;
+
+      await comparisonAdapter.initialize();
+      expect(mockClaimKitConstructor).toHaveBeenCalled();
+      const ctorArgs = mockClaimKitConstructor.mock.calls[0][0];
+      expect(ctorArgs.llm).not.toBeInstanceOf(MockMemoryLLMAdapter);
     });
   });
 
