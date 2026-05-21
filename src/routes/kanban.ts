@@ -1,4 +1,5 @@
 import { FastifyInstance } from "fastify";
+import type { ChildProcess } from "child_process";
 import { githubClient } from "../integrations/github/github-client";
 import { gitlabClient } from "../integrations/gitlab/gitlab-client";
 import { jiraClient } from "../integrations/jira/jira-client";
@@ -12,6 +13,8 @@ import {
   type DashboardIssue,
   type DependencyRef,
 } from "./repo-dashboard";
+import { makeBranchName } from "./autonomous-loop";
+import { runAgent, type AgentConfig } from "../autonomous-loop/agent-runner";
 import type {
   KanbanCard,
   KanbanAgent,
@@ -21,6 +24,7 @@ import type {
 } from "../kanban/types";
 import { resolveEdges } from "../kanban/edges.js";
 import { kanbanEvents } from "../kanban/events.js";
+import { createWorktree } from "../kanban/worktree-manager.js";
 
 const MAX_ISSUES = 200;
 
@@ -438,4 +442,319 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
 
     request.raw.on("close", cleanup);
   });
+
+  // ─── In-memory child process registry for stop ─────────────────────────────
+
+  const activeChildren = new Map<string, ChildProcess>();
+  const VALID_PLATFORMS = new Set(["github", "gitlab", "jira", "work_items"]);
+  const VALID_AGENTS = new Set(["claude", "codex", "opencode"]);
+  const REPO_PATH_RE = /^[a-zA-Z0-9._\-/]+$/;
+
+  // Note: authentication is enforced by the global authMiddleware registered
+  // in the app setup — these routes are NOT in PUBLIC_PATHS.
+
+  function sanitizeRepo(repo: string): string | null {
+    const trimmed = repo.trim();
+    if (!trimmed || !REPO_PATH_RE.test(trimmed) || trimmed.includes("..")) {
+      return null;
+    }
+    return trimmed;
+  }
+
+  // ─── POST /cards/:platform/:id/start ──────────────────────────────────
+  // Repo is passed in the body since it may contain "/" (e.g. "owner/repo").
+
+  fastify.post<{
+    Params: { platform: string; id: string };
+    Body: {
+      repo: string;
+      agent?: "claude" | "codex" | "opencode";
+      model?: string;
+      apiProvider?: "opencode" | "zai";
+      baseBranch?: string;
+    };
+  }>("/cards/:platform/:id/start", async (request, reply) => {
+    const { platform, id } = request.params;
+    const body = request.body ?? {};
+    const rawRepo = body.repo ?? "";
+    const agent = body.agent ?? "claude";
+
+    // Input validation
+    if (!VALID_PLATFORMS.has(platform)) {
+      return reply.status(400).send({ error: `Invalid platform: ${platform}` });
+    }
+    if (!VALID_AGENTS.has(agent)) {
+      return reply.status(400).send({ error: `Invalid agent: ${agent}` });
+    }
+    const repo = sanitizeRepo(rawRepo);
+    if (!repo) {
+      return reply.status(400).send({ error: "Missing or invalid repo" });
+    }
+
+    // Duplicate-run guard
+    const runningRuns = agentRunDatabase.listRuns({ status: "running", limit: 1000 });
+    const existing = runningRuns.runs.find(
+      (r) => r.issuePlatform === platform && r.issueRepo === repo && r.issueId === id,
+    );
+    if (existing) {
+      return reply.status(409).send({ error: "Agent already running for this card", agentRunId: existing.id });
+    }
+
+    // 1. Look up the card
+    const card = await findCard(platform, repo, id);
+    if (!card) {
+      return reply.status(404).send({ error: "Card not found" });
+    }
+
+    // 2. Derive branch name
+    const issueNumber = parseInt(id, 10);
+    const branch = makeBranchName(isNaN(issueNumber) ? 0 : issueNumber, card.title);
+
+    // 3. Determine repo path for worktree creation
+    const repoPath = resolveRepoPath(platform, repo);
+
+    // 4. Create worktree
+    let worktreePath: string;
+    try {
+      worktreePath = await createWorktree({
+        repoPath,
+        branch,
+        baseBranch: body.baseBranch ?? "main",
+      });
+    } catch (err) {
+      return reply.status(500).send({ error: `Worktree creation failed: ${(err as Error).message}` });
+    }
+
+    // 5. Create agent run with linkage
+    const run = agentRunDatabase.startRun({
+      userId: "kanban",
+      mode: "interactive",
+      issueId: id,
+      issuePlatform: platform,
+      issueRepo: repo,
+      worktreePath,
+      branch,
+    });
+
+    request.log.info({ agentRunId: run.id, platform, repo, id, agent }, "Agent started");
+
+    // 6. Build prompt
+    const prompt = [
+      `# ${card.title}`,
+      "",
+      card.description ?? "",
+      "",
+      "Read AGENTS.md",
+    ].join("\n");
+
+    // 7. Spawn agent
+    const cfg: AgentConfig = {
+      agent,
+      workspace: worktreePath,
+      model: body.model,
+      apiProvider: body.apiProvider ?? null,
+    };
+
+    let stepCounter = 0;
+    let lastStepEmit = 0;
+
+    runAgent(prompt, cfg, null, undefined, undefined, (child) => {
+      activeChildren.set(run.id, child);
+    }, (_stepInfo) => {
+      stepCounter++;
+      const now = Date.now();
+      if (now - lastStepEmit >= 1000) {
+        lastStepEmit = now;
+        kanbanEvents.emitEvent({
+          type: "agent.step",
+          agentRunId: run.id,
+          toolName: "output",
+          stepOrder: stepCounter,
+        });
+      }
+    })
+      .then((result) => {
+        activeChildren.delete(run.id);
+        if (result.exitCode === 0 || result.finDetected) {
+          agentRunDatabase.completeRun(run.id, {
+            toolLoopCount: stepCounter,
+            model: body.model,
+          });
+          kanbanEvents.emitEvent({
+            type: "agent.completed",
+            agentRunId: run.id,
+            status: "completed",
+          });
+          request.log.info({ agentRunId: run.id, steps: stepCounter }, "Agent completed");
+        } else {
+          agentRunDatabase.failRun(run.id, result.stderr || `Agent exited with code ${result.exitCode}`);
+          kanbanEvents.emitEvent({
+            type: "agent.completed",
+            agentRunId: run.id,
+            status: "failed",
+            errorMessage: result.stderr || `Agent exited with code ${result.exitCode}`,
+          });
+          request.log.info({ agentRunId: run.id, exitCode: result.exitCode }, "Agent failed");
+        }
+        kanbanEvents.emitEvent({
+          type: "worktree.changed",
+          path: worktreePath,
+          status: "active",
+        });
+      })
+      .catch((err) => {
+        activeChildren.delete(run.id);
+        agentRunDatabase.failRun(run.id, (err as Error).message);
+        kanbanEvents.emitEvent({
+          type: "agent.completed",
+          agentRunId: run.id,
+          status: "failed",
+          errorMessage: (err as Error).message,
+        });
+        request.log.error({ agentRunId: run.id, err }, "Agent threw");
+      });
+
+    // 8. Emit agent.started
+    kanbanEvents.emitEvent({
+      type: "agent.started",
+      agent: {
+        agentRunId: run.id,
+        agent,
+        model: body.model ?? null,
+        status: "running",
+        cardKey: `${platform}:${repo}:${id}`,
+        startedAt: run.startedAt,
+        lastActivityAt: run.lastActivityAt,
+        toolLoopCount: 0,
+        lastTool: null,
+      },
+    });
+
+    invalidateBoardCache();
+
+    return reply.send({
+      agentRunId: run.id,
+      worktreePath,
+      branch,
+      status: "started",
+    });
+  });
+
+  // ─── POST /cards/:platform/:id/stop ───────────────────────────────────
+  // Repo is passed in the body since it may contain "/" (e.g. "owner/repo").
+
+  fastify.post<{
+    Params: { platform: string; id: string };
+    Body: { repo: string };
+  }>("/cards/:platform/:id/stop", async (request, reply) => {
+    const { platform, id } = request.params;
+    const rawRepo = request.body?.repo ?? "";
+
+    const repo = sanitizeRepo(rawRepo);
+    if (!repo) {
+      return reply.status(400).send({ error: "Missing or invalid repo" });
+    }
+
+    // Find running agent run for this card
+    const runningRuns = agentRunDatabase.listRuns({ status: "running", limit: 1000 });
+    const match = runningRuns.runs.find(
+      (r) => r.issuePlatform === platform && r.issueRepo === repo && r.issueId === id,
+    );
+
+    if (!match) {
+      return reply.status(404).send({ error: "No running agent found for this card" });
+    }
+
+    // SIGTERM the child if still alive
+    const child = activeChildren.get(match.id);
+    if (child && !child.killed) {
+      child.kill("SIGTERM");
+    }
+    activeChildren.delete(match.id);
+
+    agentRunDatabase.failRun(match.id, "stopped_by_user");
+
+    request.log.info({ agentRunId: match.id, platform, repo, id }, "Agent stopped by user");
+
+    kanbanEvents.emitEvent({
+      type: "agent.completed",
+      agentRunId: match.id,
+      status: "failed",
+      errorMessage: "stopped_by_user",
+    });
+
+    if (match.worktreePath) {
+      kanbanEvents.emitEvent({
+        type: "worktree.changed",
+        path: match.worktreePath,
+        status: "active",
+      });
+    }
+
+    invalidateBoardCache();
+
+    return reply.send({ agentRunId: match.id, status: "stopped" });
+  });
+}
+
+// ─── Helpers for start/stop ────────────────────────────────────────────────────
+
+interface CardInfo {
+  title: string;
+  description?: string;
+}
+
+async function findCard(platform: string, repo: string, id: string): Promise<CardInfo | null> {
+  try {
+    switch (platform) {
+      case "github": {
+        const [owner, repoName] = repo.split("/");
+        if (!owner || !repoName) return null;
+        const issue = await githubClient.getIssue(parseInt(id, 10), owner, repoName);
+        if (!issue) return null;
+        return { title: issue.title || "", description: issue.body || "" };
+      }
+      case "gitlab": {
+        const issue = await gitlabClient.getIssue(repo, parseInt(id, 10));
+        if (!issue) return null;
+        return { title: issue.title || "", description: issue.description || "" };
+      }
+      case "jira": {
+        const issue = await jiraClient.getIssue(id);
+        if (!issue) return null;
+        const title = issue.fields?.summary || "";
+        const desc = typeof issue.fields?.description === "string"
+          ? issue.fields.description
+          : issue.fields?.description?.content
+              ?.map((c: any) => c.content?.map((cc: any) => cc.text).join(""))
+              .join("\n") || "";
+        return { title, description: desc };
+      }
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+function resolveRepoPath(platform: string, repo: string): string {
+  // For now, resolve local repo path from env + platform conventions.
+  // GitHub repos use owner/repo format and map to a local clone.
+  if (platform === "github") {
+    const repoName = repo.includes("/") ? repo.split("/")[1] : repo;
+    // Common local clone locations
+    const candidates = [
+      `./${repoName}`,
+      `../${repoName}`,
+    ];
+    for (const c of candidates) {
+      try {
+        const fs = require("fs");
+        if (fs.existsSync(c)) return require("path").resolve(c);
+      } catch { /* skip */ }
+    }
+  }
+  // Fallback: use cwd
+  return process.cwd();
 }
