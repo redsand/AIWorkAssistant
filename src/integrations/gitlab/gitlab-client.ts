@@ -112,6 +112,22 @@ export class GitlabClient {
   private client: AxiosInstance;
   private baseUrl: string;
   private token: string;
+  private _lastLog = "";
+  private _lastLogRepeat = 0;
+
+  /** Log a message, suppressing consecutive duplicates (shows count on change). */
+  private log(msg: string): void {
+    if (msg === this._lastLog) {
+      this._lastLogRepeat++;
+      return;
+    }
+    if (this._lastLogRepeat > 0) {
+      console.log(`[GitLab] (last message repeated ${this._lastLogRepeat}x)`);
+    }
+    this._lastLog = msg;
+    this._lastLogRepeat = 0;
+    console.log(msg);
+  }
 
   constructor() {
     this.baseUrl = env.GITLAB_BASE_URL.replace(/\/$/, "");
@@ -244,7 +260,7 @@ export class GitlabClient {
         : projectId;
 
     try {
-      console.log(`[GitLab] Fetching project ${resolvedId}`);
+      this.log(`[GitLab] Fetching project ${resolvedId}`);
       const response = await this.client.get(`/api/v4/projects/${resolvedId}`);
       return response.data;
     } catch (error) {
@@ -277,7 +293,7 @@ export class GitlabClient {
       });
 
       const projects = response.data || [];
-      console.log(`[GitLab] Found ${projects.length} projects`);
+      this.log(`[GitLab] Found ${projects.length} projects`);
       return projects;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -303,7 +319,7 @@ export class GitlabClient {
     const resolvedId = this.resolveProjectId(projectId);
 
     try {
-      console.log(`[GitLab] Fetching MRs for project ${resolvedId}`);
+      this.log(`[GitLab] Fetching MRs for project ${resolvedId}`);
       const allMrs: any[] = [];
       let page = 1;
       let hasMore = true;
@@ -325,7 +341,7 @@ export class GitlabClient {
         hasMore = batch.length === 100;
         page++;
       }
-      console.log(`[GitLab] Found ${allMrs.length} MRs`);
+      this.log(`[GitLab] Found ${allMrs.length} MRs`);
       return allMrs;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -353,7 +369,7 @@ export class GitlabClient {
     const resolvedId = this.resolveProjectId(projectId);
 
     try {
-      console.log(`[GitLab] Fetching MR !${mrIid}`);
+      this.log(`[GitLab] Fetching MR !${mrIid}`);
       const response = await this.client.get(
         `/api/v4/projects/${resolvedId}/merge_requests/${mrIid}`,
       );
@@ -442,7 +458,7 @@ export class GitlabClient {
         `/api/v4/projects/${resolvedId}/merge_requests/${mrIid}`,
         { state_event: "close" },
       );
-      console.log(`[GitLab] MR !${mrIid} closed`);
+      this.log(`[GitLab] MR !${mrIid} closed`);
       return response.data;
     } catch (error) {
       throw new Error(
@@ -478,12 +494,12 @@ export class GitlabClient {
 
     // First attempt: merge immediately (or with existing options)
     try {
-      console.log(`[GitLab] Accepting MR !${mrIid}`);
+      this.log(`[GitLab] Accepting MR !${mrIid}`);
       const response = await this.client.put(
         `/api/v4/projects/${resolvedId}/merge_requests/${mrIid}/merge`,
         buildBody(options?.mergeWhenPipelineSucceeds ?? false),
       );
-      console.log(`[GitLab] MR !${mrIid} merged`);
+      this.log(`[GitLab] MR !${mrIid} merged`);
       return response.data;
     } catch (error) {
       if (!axios.isAxiosError(error)) {
@@ -502,13 +518,13 @@ export class GitlabClient {
       if (status === 405) {
         // 405 usually means pipeline is running or merge is temporarily blocked.
         // Retry with merge_when_pipeline_succeeds as a fallback.
-        console.log(`[GitLab] MR !${mrIid} merge returned 405 — retrying with merge_when_pipeline_succeeds`);
+        this.log(`[GitLab] MR !${mrIid} merge returned 405 — retrying with merge_when_pipeline_succeeds`);
         try {
           const retryResponse = await this.client.put(
             `/api/v4/projects/${resolvedId}/merge_requests/${mrIid}/merge`,
             buildBody(true),
           );
-          console.log(`[GitLab] MR !${mrIid} will merge when pipeline succeeds`);
+          this.log(`[GitLab] MR !${mrIid} will merge when pipeline succeeds`);
           return retryResponse.data;
         } catch (retryError) {
           if (axios.isAxiosError(retryError)) {
@@ -548,11 +564,11 @@ export class GitlabClient {
     const resolvedId = this.resolveProjectId(projectId);
 
     try {
-      console.log(`[GitLab] Rebasing MR !${mrIid}`);
+      this.log(`[GitLab] Rebasing MR !${mrIid}`);
       const response = await this.client.put(
         `/api/v4/projects/${resolvedId}/merge_requests/${mrIid}/rebase`,
       );
-      console.log(`[GitLab] MR !${mrIid} rebase initiated`);
+      this.log(`[GitLab] MR !${mrIid} rebase initiated`);
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -616,7 +632,7 @@ export class GitlabClient {
     const resolvedId = this.resolveProjectId(projectId);
 
     try {
-      console.log(`[GitLab] Fetching commit ${sha} from project ${resolvedId}`);
+      this.log(`[GitLab] Fetching commit ${sha} from project ${resolvedId}`);
       const response = await this.client.get(
         `/api/v4/projects/${resolvedId}/repository/commits/${sha}`,
       );
@@ -661,7 +677,7 @@ export class GitlabClient {
       );
 
       const commits = response.data || [];
-      console.log(`[GitLab] Found ${commits.length} commits`);
+      this.log(`[GitLab] Found ${commits.length} commits`);
       return commits;
     } catch (error) {
       throw new Error(
@@ -682,14 +698,14 @@ export class GitlabClient {
     const resolvedId = this.resolveProjectId(projectId);
 
     try {
-      console.log(`[GitLab] Adding comment to MR !${mrIid}`);
+      this.log(`[GitLab] Adding comment to MR !${mrIid}`);
       const response = await this.client.post(
         `/api/v4/projects/${resolvedId}/merge_requests/${mrIid}/notes`,
         {
           body,
         },
       );
-      console.log(`[GitLab] Comment added to MR !${mrIid}`);
+      this.log(`[GitLab] Comment added to MR !${mrIid}`);
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -712,7 +728,7 @@ export class GitlabClient {
     const resolvedId = this.resolveProjectId(projectId);
 
     try {
-      console.log(`[GitLab] Fetching branches for project ${resolvedId}`);
+      this.log(`[GitLab] Fetching branches for project ${resolvedId}`);
       const response = await this.client.get(
         `/api/v4/projects/${resolvedId}/repository/branches`,
         {
@@ -723,7 +739,7 @@ export class GitlabClient {
       );
 
       const branches = response.data || [];
-      console.log(`[GitLab] Found ${branches.length} branches`);
+      this.log(`[GitLab] Found ${branches.length} branches`);
       return branches;
     } catch (error) {
       throw new Error(
@@ -743,7 +759,7 @@ export class GitlabClient {
     const resolvedId = this.resolveProjectId(projectId);
 
     try {
-      console.log(`[GitLab] Fetching pipelines for project ${resolvedId}`);
+      this.log(`[GitLab] Fetching pipelines for project ${resolvedId}`);
       const params: Record<string, unknown> = {
         per_page: 20,
         order_by: "id",
@@ -756,7 +772,7 @@ export class GitlabClient {
         { params },
       );
       const pipelines = response.data || [];
-      console.log(`[GitLab] Found ${pipelines.length} pipelines`);
+      this.log(`[GitLab] Found ${pipelines.length} pipelines`);
       return pipelines;
     } catch (error) {
       throw new Error(
@@ -874,7 +890,7 @@ export class GitlabClient {
         }
       }
 
-      console.log(`[GitLab] Found ${allItems.length} items in repository tree`);
+      this.log(`[GitLab] Found ${allItems.length} items in repository tree`);
       return allItems;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -930,7 +946,7 @@ export class GitlabClient {
         startline: item.startline,
         data: item.data,
       }));
-      console.log(`[GitLab] Found ${results.length} search results`);
+      this.log(`[GitLab] Found ${results.length} search results`);
       return results;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -966,7 +982,7 @@ export class GitlabClient {
           ref,
         },
       );
-      console.log(`[GitLab] Branch ${branchName} created`);
+      this.log(`[GitLab] Branch ${branchName} created`);
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -1099,7 +1115,7 @@ export class GitlabClient {
         page++;
       }
       const notes = allNotes.filter((n: any) => !n.system);
-      console.log(`[GitLab] Found ${notes.length} notes for MR !${mrIid}`);
+      this.log(`[GitLab] Found ${notes.length} notes for MR !${mrIid}`);
       return notes.map((n: any) => ({
         id: n.id,
         body: n.body,
@@ -1148,7 +1164,7 @@ export class GitlabClient {
           encoding: encoding || "text",
         },
       );
-      console.log(`[GitLab] File ${filePath} created`);
+      this.log(`[GitLab] File ${filePath} created`);
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -1196,7 +1212,7 @@ export class GitlabClient {
           encoding: encoding || "text",
         },
       );
-      console.log(`[GitLab] File ${filePath} updated`);
+      this.log(`[GitLab] File ${filePath} updated`);
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -1229,7 +1245,7 @@ export class GitlabClient {
     const resolvedId = this.resolveProjectId(projectId);
 
     try {
-      console.log(`[GitLab] Fetching issues for project ${resolvedId}`);
+      this.log(`[GitLab] Fetching issues for project ${resolvedId}`);
       const params: Record<string, unknown> = {
         per_page: 50,
         order_by: "updated_at",
@@ -1244,7 +1260,7 @@ export class GitlabClient {
         { params },
       );
       const issues = response.data || [];
-      console.log(`[GitLab] Found ${issues.length} issues`);
+      this.log(`[GitLab] Found ${issues.length} issues`);
       return issues;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -1374,7 +1390,7 @@ export class GitlabClient {
         `/api/v4/projects/${resolvedId}/issues/${issueIid}`,
         body,
       );
-      console.log(`[GitLab] Issue #${issueIid} updated`);
+      this.log(`[GitLab] Issue #${issueIid} updated`);
       return response.data;
     } catch (error) {
       throw new Error(
@@ -1399,7 +1415,7 @@ export class GitlabClient {
     const resolvedId = this.resolveProjectId(projectId);
 
     try {
-      console.log(`[GitLab] Fetching members for project ${resolvedId}`);
+      this.log(`[GitLab] Fetching members for project ${resolvedId}`);
       const response = await this.client.get(
         `/api/v4/projects/${resolvedId}/members`,
         { params: { per_page: 100 } },
@@ -1411,7 +1427,7 @@ export class GitlabClient {
         access_level: m.access_level,
         avatar_url: m.avatar_url,
       }));
-      console.log(`[GitLab] Found ${members.length} members`);
+      this.log(`[GitLab] Found ${members.length} members`);
       return members;
     } catch (error) {
       throw new Error(
@@ -1432,12 +1448,12 @@ export class GitlabClient {
     const resolvedId = this.resolveProjectId(projectId);
 
     try {
-      console.log(`[GitLab] Adding note to issue #${issueIid} in project ${resolvedId}`);
+      this.log(`[GitLab] Adding note to issue #${issueIid} in project ${resolvedId}`);
       await this.client.post(
         `/api/v4/projects/${resolvedId}/issues/${issueIid}/notes`,
         { body },
       );
-      console.log(`[GitLab] Note added to issue #${issueIid}`);
+      this.log(`[GitLab] Note added to issue #${issueIid}`);
     } catch (error) {
       throw new Error(
         `Failed to add note to issue #${issueIid}: ${error instanceof Error ? error.message : "Unknown error"}`,
@@ -1482,13 +1498,13 @@ export class GitlabClient {
     const resolvedId = this.resolveProjectId(projectId);
 
     try {
-      console.log(`[GitLab] Fetching tags for project ${resolvedId}`);
+      this.log(`[GitLab] Fetching tags for project ${resolvedId}`);
       const response = await this.client.get(
         `/api/v4/projects/${resolvedId}/repository/tags`,
         { params: { per_page: 50, order_by: "updated", sort: "desc" } },
       );
       const tags = response.data || [];
-      console.log(`[GitLab] Found ${tags.length} tags`);
+      this.log(`[GitLab] Found ${tags.length} tags`);
       return tags;
     } catch (error) {
       throw new Error(
@@ -1546,7 +1562,7 @@ export class GitlabClient {
         `/api/v4/projects/${resolvedId}/pipelines/${pipelineId}/jobs`,
       );
       const jobs = response.data || [];
-      console.log(`[GitLab] Found ${jobs.length} jobs`);
+      this.log(`[GitLab] Found ${jobs.length} jobs`);
       return jobs;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -1578,7 +1594,7 @@ export class GitlabClient {
       const response = await this.client.post(
         `/api/v4/projects/${resolvedId}/pipelines/${pipelineId}/retry`,
       );
-      console.log(`[GitLab] Pipeline ${pipelineId} retried`);
+      this.log(`[GitLab] Pipeline ${pipelineId} retried`);
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {

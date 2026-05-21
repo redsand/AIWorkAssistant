@@ -634,7 +634,7 @@
         var repo = data.repos[ri];
         var opt = document.createElement("option");
         opt.value = repo.platform + ":" + repo.repoKey;
-        opt.textContent = repo.repoName + " (" + repo.issueCount + " issues)";
+        opt.textContent = repo.repoName + " (" + (repo.openCount ?? repo.issueCount) + " open)";
         repoSelect.appendChild(opt);
       }
     } catch (err) {

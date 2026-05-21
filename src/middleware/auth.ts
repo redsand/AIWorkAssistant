@@ -23,6 +23,8 @@ const PUBLIC_PATHS = new Set([
   "/api/repo-dashboard/repos",
   "/api/repo-dashboard/issues",
   "/api/repo-dashboard/dependencies",
+  "/api/repo-dashboard/sprints",
+  "/api/repo-dashboard/burndown",
   "/api/tools",
   "/api/tools/categories",
   "/api/agents",
