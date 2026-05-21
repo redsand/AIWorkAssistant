@@ -196,6 +196,8 @@ describe('Kanban POST /start and /stop', () => {
           issueId: '135',
           issuePlatform: 'github',
           issueRepo: TEST_REPO,
+          worktreePath: '/tmp/kanban-wt-test',
+          branch: expect.stringContaining('ai/issue-135'),
         }),
       );
     });
