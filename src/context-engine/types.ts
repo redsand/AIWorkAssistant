@@ -66,11 +66,16 @@ export interface ClaimKitContextSection {
   confidence: number;
 }
 
+export type PreferredSource = "claimkit" | "rag" | "blended";
+export type RoutingTier = "ck_primary" | "rag_primary" | "blended";
+
 export interface ContextPacket {
   sections: ContextSection[];
   messages: ChatMessage[];
   totalTokens: number;
   claimkitSection?: ClaimKitContextSection;
+  preferredSource?: PreferredSource;
+  routingReason?: string;
   budgetBreakdown: BudgetSlot[];
   diagnostics: {
     mode: ContextMode;
