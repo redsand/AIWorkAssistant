@@ -309,17 +309,27 @@ function ensureOriginRemote(workspace: string, logger: PipelineLogger): boolean 
   return true;
 }
 
+export interface PushBranchOptions {
+  force?: boolean;
+  forceWithLease?: boolean;
+}
+
 export function pushBranch(
   branchName: string,
   workspace: string,
   logger: PipelineLogger = noop,
-  force = false,
+  options: PushBranchOptions = {},
 ): boolean {
   ensureOriginRemote(workspace, logger);
-  const args = force
-    ? ["push", "--force", "origin", branchName]
-    : ["push", "origin", branchName];
-  logger.logGit(force ? "Force pushing to origin" : "Pushing to origin", branchName);
+  const args = options.forceWithLease
+    ? ["push", "--force-with-lease", "origin", branchName]
+    : options.force
+      ? ["push", "--force", "origin", branchName]
+      : ["push", "origin", branchName];
+  logger.logGit(
+    options.forceWithLease ? "Force pushing with lease to origin" : options.force ? "Force pushing to origin" : "Pushing to origin",
+    branchName,
+  );
   return gitRun(args, workspace, logger);
 }
 

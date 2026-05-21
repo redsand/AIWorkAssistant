@@ -44,6 +44,7 @@ import {
   pullAndUpdateBase as _pullAndUpdateBase,
   cleanupMergedBranch,
   cleanupAllMergedBranches,
+  type PushBranchOptions,
 } from "./autonomous-loop/git-ops";
 import { runTestSuite as _runTestSuite, checkCoverage as _checkCoverage } from "./autonomous-loop/test-runner";
 import { runAgent as _runAgent } from "./autonomous-loop/agent-runner";
@@ -210,7 +211,7 @@ const gitRunWithOutput = (args: string[], cwd: string) => _gitRunWithOutput(args
 const getCurrentBranch = () => _getCurrentBranch(WORKSPACE);
 const recoverFromRebase = (cwd: string) => _recoverFromRebase(cwd, runLogger);
 const stageAndCommit = (message: string) => _stageAndCommit(message, WORKSPACE, runLogger);
-const pushBranch = (branchName: string, force = false) => _pushBranch(branchName, WORKSPACE, runLogger, force);
+const pushBranch = (branchName: string, options: PushBranchOptions = {}) => _pushBranch(branchName, WORKSPACE, runLogger, options);
 const getBaseBranch = () => _getBaseBranch(WORKSPACE, BASE_BRANCH_CANDIDATES, runLogger);
 const getConflictFiles = () => _getConflictFiles(WORKSPACE);
 const getBranchModifiedFiles = () => _getBranchModifiedFiles(WORKSPACE, getBaseBranch(), runLogger);
@@ -372,7 +373,7 @@ async function publishBranch(cfg: ServerConfig, branchName: string): Promise<voi
   }
 
   // 3. Force-push branch to origin — AI branches are always authoritative
-  if (!pushBranch(branchName, true)) {
+  if (!pushBranch(branchName, { forceWithLease: true })) {
     runLogger.logError(`Cannot push branch ${branchName} to origin`);
     process.exit(1);
   }
@@ -2429,7 +2430,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
       // The aicoder owns ai/issue-* branches exclusively, so force push is safe.
       runLogger.logGit(`Rebase failed — aborting and force pushing to replace stale remote branch`);
       gitRun(["rebase", "--abort"], WORKSPACE);
-      if (pushBranch(branchName, true)) {
+      if (pushBranch(branchName, { forceWithLease: true })) {
         trackStep(run.id, "tool_call", `Force pushed branch after rebase failure: ${branchName}`, { toolName: "git_push" });
       } else {
         runLogger.logError(`Force push failed after rebase failure — PR not created`);
@@ -2728,7 +2729,7 @@ async function continueFromReworkCommitted(cfg: ServerConfig, item: WorkItem, st
 }
 
 async function continueFromReworkTestsPassed(cfg: ServerConfig, item: WorkItem, state: RunState): Promise<void> {
-  if (!pushBranch(item.suggestedBranch, true)) {
+  if (!pushBranch(item.suggestedBranch, { forceWithLease: true })) {
     runLogger.logError("Rework push failed on resume — aborting");
     clearRunState();
     return;
@@ -3284,7 +3285,7 @@ async function runReviewLoop(
       }
 
       // Force-push the rebased branch
-      if (!pushBranch(item.suggestedBranch, true)) {
+      if (!pushBranch(item.suggestedBranch, { forceWithLease: true })) {
         runLogger.logError("Force push after rebase failed");
         return;
       }
@@ -3556,7 +3557,7 @@ async function runReviewLoop(
       // Checkpoint: rework tests passed
       saveRunState({ ...currentState, checkpoint: "rework_tests_passed", reworkCount, convergenceState: serializeConvergence(convergenceState), promptStrategiesTried: [...promptStrategiesTried] });
 
-      if (!pushBranch(item.suggestedBranch, true)) {
+      if (!pushBranch(item.suggestedBranch, { forceWithLease: true })) {
         runLogger.logError("Rework push failed");
         return;
       }
