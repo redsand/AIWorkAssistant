@@ -45,7 +45,7 @@ beforeEach(() => {
   git(["add", "-A"], localDir);
   git(["commit", "-m", "init"], localDir);
   git(["push", "origin", "HEAD"], localDir);
-});
+}, 30_000);
 
 afterEach(() => {
   for (const dir of [remoteDir, localDir]) {
