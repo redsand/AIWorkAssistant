@@ -1,10 +1,8 @@
 import {
   ClaimKit,
   createMemoryStores,
-  MemoryLLMAdapter,
 } from "@redsand/claimkit";
 import type {
-  LLMAdapter,
   QueryOptions,
   Json,
   SourceInput,
@@ -43,10 +41,7 @@ export class ClaimKitAdapter {
       return false;
     }
     try {
-      const llm: LLMAdapter =
-        env.CLAIMKIT_LLM_PROVIDER === "memory"
-          ? new MemoryLLMAdapter()
-          : new AIProviderLLMAdapter(undefined, env.CLAIMKIT_LLM_MODEL || undefined);
+      const llm = new AIProviderLLMAdapter(undefined, env.CLAIMKIT_LLM_MODEL || undefined);
       const embeddings = new ClaimKitEmbeddingAdapter();
       const stores = createMemoryStores();
       this.claimKit = new ClaimKit({
