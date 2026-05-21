@@ -35,6 +35,16 @@ export const WEIGHTS = {
   evaluatorValidity: 0.20,
 } as const;
 
+const METRIC_FIELDS: (keyof MetricSet)[] = [
+  "retrievalScore",
+  "generationScore",
+  "safetyScore",
+  "efficiencyScore",
+  "promptEchoRate",
+  "malformedAnswerRate",
+  "emptyAnswerRate",
+];
+
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
@@ -44,11 +54,21 @@ function average(values: number[]): number {
   return values.reduce((sum, v) => sum + v, 0) / values.length;
 }
 
+function assertFiniteMetricSet(metricSet: MetricSet): void {
+  for (const field of METRIC_FIELDS) {
+    if (!Number.isFinite(metricSet[field])) {
+      throw new Error(`Metric field ${field} must be finite`);
+    }
+  }
+}
+
 /**
  * Compute individual group scores from raw metrics.
  * evaluatorValidityScore is the average of (1 - rate) for each validity metric.
  */
 export function buildGroupedScores(metricSet: MetricSet): GroupedScores {
+  assertFiniteMetricSet(metricSet);
+
   const evaluatorValidityScore = average([
     1 - metricSet.promptEchoRate,
     1 - metricSet.malformedAnswerRate,

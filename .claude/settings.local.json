@@ -34,7 +34,12 @@
       "Bash(rtk npx *)",
       "Bash(rtk npm *)",
       "Bash(opencode --help)",
-      "Bash(opencode run *)"
+      "Bash(opencode run *)",
+      "Bash(rtk git *)",
+      "WebFetch(domain:docs.cline.bot)",
+      "Bash(grep -E \"register|fastify\\\\\\\\.\" src/server.ts)",
+      "Bash(gh auth *)",
+      "Bash(gh repo *)"
     ]
   }
 }

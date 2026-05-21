@@ -143,7 +143,7 @@ describe("overallScore", () => {
     expect(sum).toBeCloseTo(1.0, 10);
   });
 
-  it("handles NaN inputs — documents propagation behavior", () => {
+  it("throws on NaN inputs before scoring", () => {
     const ms: MetricSet = {
       retrievalScore: NaN,
       generationScore: 0.9,
@@ -153,8 +153,16 @@ describe("overallScore", () => {
       malformedAnswerRate: 0,
       emptyAnswerRate: 0,
     };
-    const score = overallScore(ms);
-    expect(score).toBeNaN();
+    expect(() => overallScore(ms)).toThrow(
+      "Metric field retrievalScore must be finite",
+    );
+  });
+
+  it("throws on Infinity inputs before scoring", () => {
+    const ms = makeMetricSet({ promptEchoRate: Infinity });
+    expect(() => overallScore(ms)).toThrow(
+      "Metric field promptEchoRate must be finite",
+    );
   });
 
   it("handles negative rate values by clamping evaluatorValidityScore", () => {
