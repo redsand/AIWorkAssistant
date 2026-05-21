@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   overallScore,
   buildGroupedScores,
+  WEIGHTS,
   type MetricSet,
 } from "../../../../src/eval/comparison/compareMetrics";
 
@@ -138,9 +139,28 @@ describe("overallScore", () => {
   });
 
   it("weights sum to exactly 1.0", () => {
-    // 0.20 + 0.30 + 0.20 + 0.10 + 0.20 = 1.0
-    const weights = [0.20, 0.30, 0.20, 0.10, 0.20];
-    const sum = weights.reduce((a, b) => a + b, 0);
-    expect(sum).toBe(1.0);
+    const sum = Object.values(WEIGHTS).reduce((a, b) => a + b, 0);
+    expect(sum).toBeCloseTo(1.0, 10);
+  });
+
+  it("handles NaN inputs — documents propagation behavior", () => {
+    const ms: MetricSet = {
+      retrievalScore: NaN,
+      generationScore: 0.9,
+      safetyScore: 0.7,
+      efficiencyScore: 0.6,
+      promptEchoRate: 0,
+      malformedAnswerRate: 0,
+      emptyAnswerRate: 0,
+    };
+    const score = overallScore(ms);
+    expect(score).toBeNaN();
+  });
+
+  it("handles negative rate values by clamping evaluatorValidityScore", () => {
+    const ms = makeMetricSet({ promptEchoRate: -0.1 });
+    const scores = buildGroupedScores(ms);
+    // 1 - (-0.1) = 1.1, clamped to 1.0
+    expect(scores.evaluatorValidityScore).toBe(1);
   });
 });

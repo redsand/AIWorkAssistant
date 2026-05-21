@@ -27,7 +27,7 @@ export interface GroupedScores {
   evaluatorValidityScore: number;
 }
 
-const WEIGHTS = {
+export const WEIGHTS = {
   retrieval: 0.20,
   generation: 0.30,
   safety: 0.20,
