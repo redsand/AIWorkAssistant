@@ -155,6 +155,11 @@ export async function buildServer() {
     return reply.sendFile("dashboard.html");
   });
 
+  // Serve the kanban board at /kanban (no .html extension)
+  server.get("/kanban", async (_request, reply) => {
+    return reply.sendFile("kanban.html");
+  });
+
   // Force no-cache on static assets so Cloudflare doesn't cache them
   server.addHook("onSend", async (_request, reply) => {
     const route = reply.request.url;
