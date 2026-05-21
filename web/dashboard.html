@@ -56,6 +56,12 @@
 
       <div id="error-banner" class="error-banner" style="display: none"></div>
 
+      <!-- View Toggle -->
+      <div class="view-toggle" id="view-toggle" style="display: none">
+        <button id="view-charts" class="btn btn-sm active">Charts &amp; Table</button>
+        <button id="view-board" class="btn btn-sm">Board</button>
+      </div>
+
       <!-- Empty state -->
       <div id="empty-state" class="state-msg">
         <p>
@@ -242,6 +248,50 @@
             <div class="state-msg" id="issues-empty" style="display: none">
               <p>No issues found for this repository</p>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Board content (hidden until Board view selected) -->
+      <div id="board-content" class="section" style="display: none">
+        <div class="table-toolbar">
+          <input
+            type="text"
+            id="board-search"
+            class="table-search"
+            placeholder="Filter by title…"
+          />
+          <select id="board-status-filter" class="table-filter">
+            <option value="">All Statuses</option>
+            <option value="open">Open</option>
+            <option value="in_progress">In Progress</option>
+            <option value="blocked">Blocked</option>
+            <option value="done">Done</option>
+          </select>
+          <select id="board-priority-filter" class="table-filter">
+            <option value="">All Priorities</option>
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+        </div>
+        <div class="board-columns">
+          <div class="board-col" data-status="open">
+            <h3>Open <span class="count">0</span></h3>
+            <div class="board-col-items"></div>
+          </div>
+          <div class="board-col" data-status="in_progress">
+            <h3>In Progress <span class="count">0</span></h3>
+            <div class="board-col-items"></div>
+          </div>
+          <div class="board-col" data-status="blocked">
+            <h3>Blocked <span class="count">0</span></h3>
+            <div class="board-col-items"></div>
+          </div>
+          <div class="board-col" data-status="done">
+            <h3>Done <span class="count">0</span></h3>
+            <div class="board-col-items"></div>
           </div>
         </div>
       </div>
