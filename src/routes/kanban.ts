@@ -448,8 +448,20 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
   const activeChildren = new Map<string, ChildProcess>();
   const VALID_PLATFORMS = new Set(["github", "gitlab", "jira", "work_items"]);
   const VALID_AGENTS = new Set(["claude", "codex", "opencode"]);
+  const REPO_PATH_RE = /^[a-zA-Z0-9._\-/]+$/;
 
-  // ─── POST /cards/:platform/:repo/:id/start ──────────────────────────────────
+  // Note: authentication is enforced by the global authMiddleware registered
+  // in the app setup — these routes are NOT in PUBLIC_PATHS.
+
+  function sanitizeRepo(repo: string): string | null {
+    const trimmed = repo.trim();
+    if (!trimmed || !REPO_PATH_RE.test(trimmed) || trimmed.includes("..")) {
+      return null;
+    }
+    return trimmed;
+  }
+
+  // ─── POST /cards/:platform/:id/start ──────────────────────────────────
   // Repo is passed in the body since it may contain "/" (e.g. "owner/repo").
 
   fastify.post<{
@@ -464,7 +476,7 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
   }>("/cards/:platform/:id/start", async (request, reply) => {
     const { platform, id } = request.params;
     const body = request.body ?? {};
-    const repo = body.repo ?? "";
+    const rawRepo = body.repo ?? "";
     const agent = body.agent ?? "claude";
 
     // Input validation
@@ -473,6 +485,10 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
     }
     if (!VALID_AGENTS.has(agent)) {
       return reply.status(400).send({ error: `Invalid agent: ${agent}` });
+    }
+    const repo = sanitizeRepo(rawRepo);
+    if (!repo) {
+      return reply.status(400).send({ error: "Missing or invalid repo" });
     }
 
     // Duplicate-run guard
@@ -520,6 +536,8 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
       branch,
     });
 
+    request.log.info({ agentRunId: run.id, platform, repo, id, agent }, "Agent started");
+
     // 6. Build prompt
     const prompt = [
       `# ${card.title}`,
@@ -538,23 +556,28 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
     };
 
     let stepCounter = 0;
+    let lastStepEmit = 0;
 
     runAgent(prompt, cfg, null, undefined, undefined, (child) => {
       activeChildren.set(run.id, child);
     }, (_stepInfo) => {
       stepCounter++;
-      kanbanEvents.emitEvent({
-        type: "agent.step",
-        agentRunId: run.id,
-        toolName: "output",
-        stepOrder: stepCounter,
-      });
+      const now = Date.now();
+      if (now - lastStepEmit >= 1000) {
+        lastStepEmit = now;
+        kanbanEvents.emitEvent({
+          type: "agent.step",
+          agentRunId: run.id,
+          toolName: "output",
+          stepOrder: stepCounter,
+        });
+      }
     })
       .then((result) => {
         activeChildren.delete(run.id);
         if (result.exitCode === 0 || result.finDetected) {
           agentRunDatabase.completeRun(run.id, {
-            toolLoopCount: 0,
+            toolLoopCount: stepCounter,
             model: body.model,
           });
           kanbanEvents.emitEvent({
@@ -562,6 +585,7 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
             agentRunId: run.id,
             status: "completed",
           });
+          request.log.info({ agentRunId: run.id, steps: stepCounter }, "Agent completed");
         } else {
           agentRunDatabase.failRun(run.id, result.stderr || `Agent exited with code ${result.exitCode}`);
           kanbanEvents.emitEvent({
@@ -570,6 +594,7 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
             status: "failed",
             errorMessage: result.stderr || `Agent exited with code ${result.exitCode}`,
           });
+          request.log.info({ agentRunId: run.id, exitCode: result.exitCode }, "Agent failed");
         }
         kanbanEvents.emitEvent({
           type: "worktree.changed",
@@ -586,6 +611,7 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
           status: "failed",
           errorMessage: (err as Error).message,
         });
+        request.log.error({ agentRunId: run.id, err }, "Agent threw");
       });
 
     // 8. Emit agent.started
@@ -622,7 +648,12 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
     Body: { repo: string };
   }>("/cards/:platform/:id/stop", async (request, reply) => {
     const { platform, id } = request.params;
-    const repo = request.body?.repo ?? "";
+    const rawRepo = request.body?.repo ?? "";
+
+    const repo = sanitizeRepo(rawRepo);
+    if (!repo) {
+      return reply.status(400).send({ error: "Missing or invalid repo" });
+    }
 
     // Find running agent run for this card
     const runningRuns = agentRunDatabase.listRuns({ status: "running", limit: 1000 });
@@ -642,6 +673,8 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
     activeChildren.delete(match.id);
 
     agentRunDatabase.failRun(match.id, "stopped_by_user");
+
+    request.log.info({ agentRunId: match.id, platform, repo, id }, "Agent stopped by user");
 
     kanbanEvents.emitEvent({
       type: "agent.completed",

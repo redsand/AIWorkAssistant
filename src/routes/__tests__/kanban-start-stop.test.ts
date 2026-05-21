@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
+import { EventEmitter } from 'events';
 import { kanbanEvents } from '../../kanban/events';
 import type { KanbanSSEEvent } from '../../kanban/types';
 
@@ -342,6 +343,39 @@ describe('Kanban POST /start and /stop', () => {
       expect(res.json().error).toContain('Invalid agent');
     });
 
+    it('should return 400 when repo is missing', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/kanban/cards/github/135/start',
+        payload: { agent: 'claude' },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe('Missing or invalid repo');
+    });
+
+    it('should return 400 when repo is empty string', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/kanban/cards/github/135/start',
+        payload: { repo: '', agent: 'claude' },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe('Missing or invalid repo');
+    });
+
+    it('should return 400 when repo contains path traversal', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/kanban/cards/github/135/start',
+        payload: { repo: '../../../etc/passwd', agent: 'claude' },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe('Missing or invalid repo');
+    });
+
     it('should call completeRun when agent succeeds asynchronously', async () => {
       mockGetIssue.mockResolvedValueOnce({
         number: 135,
@@ -507,6 +541,81 @@ describe('Kanban POST /start and /stop', () => {
         expect(completed.status).toBe('failed');
         expect(completed.errorMessage).toBe('stopped_by_user');
       }
+    });
+
+    it('should SIGTERM the child process on stop', async () => {
+      // First, start an agent so a child process is registered
+      mockGetIssue.mockResolvedValueOnce({
+        number: 135,
+        title: 'Kill test',
+        body: 'desc',
+        state: 'open',
+      });
+
+      const mockChild = new EventEmitter() as any;
+      mockChild.kill = vi.fn().mockReturnValue(true);
+      mockChild.killed = false;
+      mockChild.stdin = { write: vi.fn(), end: vi.fn() };
+      mockChild.stdout = new EventEmitter();
+      mockChild.stderr = new EventEmitter();
+
+      // Capture the onChildReady callback from runAgent
+      let onChildReady: ((child: any) => void) | undefined;
+      let resolveRunPromise: (value: any) => void;
+      const runPromise = new Promise((resolve) => { resolveRunPromise = resolve; });
+
+      mockRunAgent.mockImplementationOnce((_prompt, _cfg, _launcher, _resume, _logger, onChild, _onStep) => {
+        onChildReady = onChild;
+        // Simulate child process registration
+        if (onChildReady) onChildReady(mockChild);
+        return runPromise;
+      });
+
+      // Start the agent
+      const startRes = await app.inject({
+        method: 'POST',
+        url: '/api/kanban/cards/github/135/start',
+        payload: { repo: TEST_REPO, agent: 'claude' },
+      });
+      expect(startRes.statusCode).toBe(200);
+
+      // Now stop it
+      mockListRuns.mockReturnValueOnce({
+        runs: [{
+          id: 'test-run-id',
+          issuePlatform: 'github',
+          issueRepo: TEST_REPO,
+          issueId: '135',
+          status: 'running',
+          worktreePath: '/tmp/wt-test',
+        }],
+        total: 1,
+      });
+
+      const stopRes = await app.inject({
+        method: 'POST',
+        url: '/api/kanban/cards/github/135/stop',
+        payload: { repo: TEST_REPO },
+      });
+
+      expect(stopRes.statusCode).toBe(200);
+      expect(mockChild.kill).toHaveBeenCalledWith('SIGTERM');
+
+      // Clean up the pending promise so the test doesn't hang
+      resolveRunPromise!({ finDetected: false, exitCode: 0, ranTests: false });
+      await runPromise;
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    it('should return 400 when stop is called with invalid repo', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/kanban/cards/github/135/stop',
+        payload: { repo: '' },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe('Missing or invalid repo');
     });
   });
 });
