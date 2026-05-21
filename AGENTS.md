@@ -145,6 +145,111 @@ This requirement is enforced through:
 
 See `docs/creating-tickets.md` for detailed guidance and examples.
 
+## ⚠️ MANDATORY: Dependency Analysis & Prioritization
+
+**Every ticket MUST include dependency metadata and every agent MUST analyze dependencies across a batch of tickets before execution.**
+
+### 1. Mandatory Metadata Fields
+
+Every ticket MUST include these sections before the Coding Prompt:
+
+```markdown
+## Depends on: #ISSUE or None
+## Blocks: #ISSUE or None
+```
+
+- **Depends on** ➔ "This ticket cannot start until that one is done." The listed issue must be merged/closed before work begins.
+- **Blocks** ➔ "This ticket must be done before that one can start." Completing this ticket unblocks the listed issue.
+- Use `None` when a ticket has no dependency relationships.
+
+### 2. Dependency Chain Labels
+
+Apply these labels to every ticket in a dependency chain:
+
+| Label | Applied to | Meaning |
+|---|---|---|
+| `dependency-chain:NAME` | All tickets in the chain | Groups related tickets (e.g., `dependency-chain:safe-eval`) |
+| `blocks:#ISSUE` | The foundational/blocking ticket | Signals this issue blocks another |
+| `depends-on:#ISSUE` | The dependent ticket | Signals this issue depends on another |
+| `standalone` | Tickets with no dependencies | Can be worked in any order |
+
+### 3. The `ready-for-agent` Label
+
+The `ready-for-agent` label signals: **"This ticket has a complete Coding Prompt, proper Depends on/Blocks metadata, and is ready for an AI agent to pick up."**
+
+⚠️ Agents MUST skip any ticket that lacks the `ready-for-agent` label.
+
+### 4. Dependency Analysis Workflow
+
+When creating or analyzing a batch of tickets:
+
+1. **Read all ticket descriptions** ➔ Look for shared files, shared concepts, shared patterns
+2. **Identify thematic clusters** ➔ Group tickets that touch related code (e.g., two tickets both fixing `eval()` in different files)
+3. **Determine ordering** ➔ Which ticket establishes a pattern/helper that the other reuses? That one goes first.
+4. **Label the chain** ➔ Apply `dependency-chain:X` to all tickets in the group
+5. **Mark relationships** ➔ Add `blocks:#X` on the foundational ticket, `depends-on:#X` on the dependent one
+6. **Post dependency comments** ➔ Leave a comment on each ticket explaining the relationship and recommended order (see format below)
+
+### 5. Execution Order Rules
+
+⚠️ Always follow these rules when picking execution order:
+
+- **Foundational first** ➔ If ticket A establishes a pattern/helper that ticket B reuses, A goes first
+- **Security first** ➔ Security fixes take priority over features
+- **Bug fixes before enhancements** ➔ Fix broken things before adding new things
+- **Standalone anytime** ➔ Tickets with no dependencies can be worked in any order
+- **Respect the chain** ➔ Never start a dependent ticket before its blocker is merged
+
+### 6. Dependency Comment Format
+
+Every ticket in a chain should receive a comment like:
+
+```markdown
+## Dependency Analysis (AI Assistant)
+
+**Chain: [NAME]** — #A → #B → #C
+
+[Brief explanation of why these tickets are related and what order they should be done in.]
+
+**Recommendation:** Implement in order: A → B → C.
+```
+
+### 7. Concrete Example
+
+Three tickets in the `dependency-chain:auth-hardening` chain:
+
+**#201 — Fix timing-unsafe token comparison in auth.ts**
+- Labels: `dependency-chain:auth-hardening`, `blocks:#202`, `ready-for-agent`
+- Metadata: `Depends on: None` / `Blocks: #202`
+- Rationale: Establishes the secure comparison utility that #202 reuses
+
+**#202 — Enforce MFA on all admin endpoints**
+- Labels: `dependency-chain:auth-hardening`, `depends-on:#201`, `blocks:#203`, `ready-for-agent`
+- Metadata: `Depends on: #201` / `Blocks: #203`
+- Rationale: Needs the secure comparison from #201; must land before #203 can test against it
+
+**#203 — Add auth analytics dashboard**
+- Labels: `dependency-chain:auth-hardening`, `depends-on:#202`, `ready-for-agent`
+- Metadata: `Depends on: #202` / `Blocks: None`
+- Rationale: Feature work that displays data produced by #202
+
+**Execution order:** #201 → #202 → #203 (foundational security fix → enforcement → analytics)
+
+**Comments posted on each issue:**
+
+On #201:
+> ## Dependency Analysis (AI Assistant)
+> **Chain: auth-hardening** — #201 → #202 → #203
+> #201 establishes the secure comparison utility. #202 (MFA enforcement) reuses it. #203 (dashboard) displays results.
+> **Recommendation:** Implement in order: #201 → #202 → #203.
+
+On #202 and #203: same comment (mirrored).
+
+### 8. Cross-Reference
+
+- **Coding Prompts** ➔ See [⚠️ MANDATORY: Coding Prompts in Tickets](#️-mandatory-coding-prompts-in-tickets) above — dependency metadata must appear before the Coding Prompt in every ticket
+- **Ticket creation guide** ➔ See `docs/creating-tickets.md` for detailed guidance on writing Coding Prompts and the enforced format
+
 ## Current Priority: Version 0.2.0
 
 See `docs/roadmap.md` for the full roadmap. Current priorities:
