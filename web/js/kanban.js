@@ -160,6 +160,12 @@
   var tileMap = {};      // agentRunId → { el, startedAt, interval }
   var cardTitleMap = {}; // cardKey → title (populated from board data)
 
+  // ─── Card live-status state ────────────────────────────────────────────────
+
+  var cardIndex = new Map();       // cardKey → HTMLElement (O(1) lookup)
+  var agentRunToCardKey = {};      // agentRunId → cardKey (for step/completed events)
+  var pendingMoves = new Map();    // cardKey → timeoutId (debounce optimistic moves)
+
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
   function showError(msg) {
@@ -294,12 +300,45 @@
 
   function scrollToCard(cardKey) {
     if (!cardKey) return;
-    var card = document.querySelector('[data-key="' + cardKey + '"]');
+    var card = cardIndex.get(cardKey) || document.querySelector('[data-key="' + cardKey + '"]');
     if (card) {
       card.scrollIntoView({ behavior: "smooth", block: "center" });
       card.classList.add("kcard--highlight");
       setTimeout(function () { card.classList.remove("kcard--highlight"); }, 2000);
     }
+  }
+
+  // ─── Card live-status helpers ───────────────────────────────────────────────
+
+  function updateColumnCounts() {
+    Object.keys(columns).forEach(function (col) {
+      counts[col].textContent = columns[col].children.length;
+    });
+  }
+
+  function moveCardToColumn(cardEl, targetCol) {
+    var currentParent = cardEl.parentElement;
+    if (!currentParent) return;
+    var currentCol = currentParent.getAttribute("data-column");
+    if (currentCol === targetCol) return;
+
+    cardEl.classList.add("kcard--moving");
+    setTimeout(function () {
+      columns[targetCol].appendChild(cardEl);
+      cardEl.classList.remove("kcard--moving");
+      updateColumnCounts();
+    }, 250);
+  }
+
+  function debounceMoveCard(cardKey, targetCol) {
+    if (pendingMoves.has(cardKey)) {
+      clearTimeout(pendingMoves.get(cardKey));
+    }
+    pendingMoves.set(cardKey, setTimeout(function () {
+      pendingMoves.delete(cardKey);
+      var cardEl = cardIndex.get(cardKey);
+      if (cardEl) moveCardToColumn(cardEl, targetCol);
+    }, 50));
   }
 
   function openSSE() {
@@ -309,7 +348,21 @@
     source.addEventListener("agent.started", function (e) {
       try {
         var data = JSON.parse(e.data);
-        if (data.agent) addTile(data.agent);
+        if (data.agent) {
+          addTile(data.agent);
+
+          // Card live-status: pulse + optimistic move
+          var agent = data.agent;
+          var cardKey = agent.cardKey;
+          if (cardKey) {
+            agentRunToCardKey[agent.agentRunId] = cardKey;
+            var cardEl = cardIndex.get(cardKey);
+            if (cardEl) {
+              cardEl.classList.add("kcard--running");
+              debounceMoveCard(cardKey, "in_flight");
+            }
+          }
+        }
       } catch (ex) { /* ignore */ }
     });
 
@@ -317,6 +370,16 @@
       try {
         var data = JSON.parse(e.data);
         updateTile(data.agentRunId, data.toolName, data.stepOrder);
+
+        // Card live-status: update tool chip
+        var cardKey = agentRunToCardKey[data.agentRunId];
+        if (cardKey) {
+          var cardEl = cardIndex.get(cardKey);
+          if (cardEl) {
+            var toolEl = cardEl.querySelector(".kcard-tool");
+            if (toolEl) toolEl.textContent = data.toolName;
+          }
+        }
       } catch (ex) { /* ignore */ }
     });
 
@@ -324,6 +387,34 @@
       try {
         var data = JSON.parse(e.data);
         removeTile(data.agentRunId);
+
+        // Card live-status: remove pulse, optimistic move to Done
+        var cardKey = agentRunToCardKey[data.agentRunId];
+        if (cardKey) {
+          var cardEl = cardIndex.get(cardKey);
+          if (cardEl) {
+            cardEl.classList.remove("kcard--running");
+            var toolEl = cardEl.querySelector(".kcard-tool");
+            if (toolEl) toolEl.textContent = "";
+            if (data.status === "completed") {
+              debounceMoveCard(cardKey, "done");
+            }
+          }
+          delete agentRunToCardKey[data.agentRunId];
+        }
+      } catch (ex) { /* ignore */ }
+    });
+
+    source.addEventListener("card.updated", function (e) {
+      try {
+        var data = JSON.parse(e.data);
+        if (data.card) {
+          var card = data.card;
+          var cardEl = cardIndex.get(card.key);
+          if (cardEl) {
+            debounceMoveCard(card.key, card.column || "backlog");
+          }
+        }
       } catch (ex) { /* ignore */ }
     });
 
@@ -361,10 +452,13 @@
       '<h3 class="kcard-title">' + title + '</h3>' +
       '<footer>' +
         '<span class="kcard-assignee">@' + assignee + '</span>' +
+        '<span class="kcard-tool"></span>' +
         '<span class="kcard-deps" title="' + escapeHtml(depTitle) + '">' +
           (depCount > 0 ? depCount + ' deps' : 'no deps') +
         '</span>' +
       '</footer>';
+
+    cardIndex.set(card.key, article);
 
     return article;
   }
@@ -373,6 +467,7 @@
 
   function renderBoard(data) {
     clearColumns();
+    cardIndex.clear();
 
     var cards = data.cards || [];
     var columnCounts = { backlog: 0, in_flight: 0, blocked: 0, done: 0 };
