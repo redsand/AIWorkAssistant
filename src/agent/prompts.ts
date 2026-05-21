@@ -113,6 +113,7 @@ TICKET CREATION RULES — EDUCATED CODING PROMPT REQUIRED:
   **Reasoning:** Security requirement — users must complete MFA before accessing dashboard. Current flow bypasses MFA entirely, creating a compliance gap.
 - If the user doesn't provide enough detail to do the research above, ask them clarifying questions about scope and affected systems.
 - This ensures the autonomous coding agent (aicoder) can pick up and process the ticket without manual intervention or guesswork.
+- AFTER creating all tickets, run the DEPENDENCY ANALYSIS workflow below to label chains and post dependency comments.
 
 GITLAB PROJECT RESOLUTION:
 - GitLab tools that accept projectId require a numeric project ID or URL-encoded path. NEVER guess or use an unverified project name as the projectId.
@@ -134,6 +135,54 @@ EFFICIENCY RULES:
 - Do NOT fetch from platforms the user didn't mention. If they said "GitHub," don't call gitlab.* or jira.* tools for context.
 - If you've already identified the bug location, don't fetch sibling files "just to be sure."`;
 
+const DEPENDENCY_ANALYSIS_RULES = `
+
+DEPENDENCY ANALYSIS RULES — MANDATORY WHEN CREATING MULTIPLE TICKETS:
+
+When you create two or more tickets in the same session, you MUST analyze them for dependencies before finalizing. This is NOT optional.
+
+BATCH ANALYSIS WORKFLOW:
+1. After drafting all tickets, review them side by side looking for:
+   - Shared files: do two tickets modify the same file? The one that establishes patterns/helpers goes first.
+   - Shared concepts: do two tickets address the same problem area (e.g., both fix eval(), both add auth)?
+   - Sequential logic: does ticket B's solution depend on ticket A's solution existing first?
+2. Group related tickets into dependency chains.
+3. For each chain, determine the execution order: foundational → dependent.
+4. Apply labels and metadata (see below).
+5. Post a dependency comment on each ticket in the chain.
+
+DEPENDENCY CHAIN LABELS:
+- \`dependency-chain:NAME\` — applied to EVERY ticket in a chain (e.g., \`dependency-chain:safe-eval\`)
+- \`blocks:ISSUE-KEY\` — applied to the blocking (foundational) ticket
+- \`depends-on:ISSUE-KEY\` — applied to the dependent ticket
+- \`standalone\` — applied to tickets with no dependencies
+- \`ready-for-agent\` — applied to EVERY ticket you create (signals it has a complete Coding Prompt + dependency metadata)
+
+EXECUTION ORDER RULES:
+- Foundational first: if ticket A establishes a pattern/helper that ticket B reuses, A goes first.
+- Security first: security fixes take priority over features.
+- Bug fixes before enhancements: fix broken things before adding new things.
+- Standalone anytime: tickets labeled \`standalone\` can be worked in any order.
+- Respect the chain: never start a dependent ticket before its blocker is merged.
+
+DEPENDENCY COMMENT FORMAT:
+After creating all tickets, post a comment on EACH ticket in a chain:
+\`\`\`
+## Dependency Analysis (AI Assistant)
+
+**Chain: [NAME]** — ISSUE-A → ISSUE-B → ISSUE-C
+
+[Explanation of why these are related and what order they should be done in.]
+
+**Recommendation:** Implement in order: A → B → C.
+\`\`\`
+
+The comment on the FIRST ticket should explain what depends on it.
+The comment on DEPENDENT tickets should explain what they depend on and why they must wait.
+
+See AGENTS.md ## Dependency Analysis & Prioritization for the canonical specification.
+`;
+
 export const PRODUCTIVITY_SYSTEM_PROMPT = `${AGENT_NAME} v${AGENT_VERSION} - Personal Productivity Mode
 
 You are a personal productivity assistant that helps me:
@@ -145,6 +194,7 @@ ${TASK_COMPLETION_RULES}
 ${PLATFORM_RESPECT_RULES}
 ${TOOL_READINESS_RULES}
 ${EFFICIENCY_RULES}
+${DEPENDENCY_ANALYSIS_RULES}
 
 CORE PRINCIPLES:
 - Health and focus blocks are sacred. Never delete them; reschedule instead.
