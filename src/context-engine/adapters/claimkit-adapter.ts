@@ -4,6 +4,7 @@ import {
   MemoryLLMAdapter,
 } from "@redsand/claimkit";
 import type {
+  LLMAdapter,
   QueryOptions,
   Json,
   SourceInput,
@@ -11,6 +12,7 @@ import type {
 } from "@redsand/claimkit";
 import { env } from "../../config/env";
 import { ClaimKitEmbeddingAdapter } from "./claimkit-embedding";
+import { AIProviderLLMAdapter } from "./claimkit-llm-adapter";
 
 export type { AnswerabilityStatus };
 
@@ -41,7 +43,10 @@ export class ClaimKitAdapter {
       return false;
     }
     try {
-      const llm = new MemoryLLMAdapter();
+      const llm: LLMAdapter =
+        env.CLAIMKIT_LLM_PROVIDER === "memory"
+          ? new MemoryLLMAdapter()
+          : new AIProviderLLMAdapter(undefined, env.CLAIMKIT_LLM_MODEL || undefined);
       const embeddings = new ClaimKitEmbeddingAdapter();
       const stores = createMemoryStores();
       this.claimKit = new ClaimKit({
