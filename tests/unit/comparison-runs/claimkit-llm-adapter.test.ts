@@ -27,7 +27,7 @@ const mockProvider = {
   name: "test-provider",
 };
 
-import { AIProviderLLMAdapter } from "../../../src/context-engine/adapters/claimkit-llm-adapter";
+import { AIProviderLLMAdapter, stripJsonFromLlmResponse } from "../../../src/context-engine/adapters/claimkit-llm-adapter";
 
 describe("AIProviderLLMAdapter", () => {
   let adapter: AIProviderLLMAdapter;
@@ -123,6 +123,50 @@ describe("AIProviderLLMAdapter", () => {
       await expect(
         adapter.generateJson([{ role: "user", content: "test" }], {}),
       ).rejects.toThrow();
+    });
+
+    it("strips markdown code fences with json label before parsing", async () => {
+      const payload = { answer: "yes" };
+      mockChat.mockResolvedValue({
+        content: "```json\n" + JSON.stringify(payload, null, 2) + "\n```",
+        model: "test-model",
+      });
+
+      const result = await adapter.generateJson([{ role: "user", content: "test" }], {});
+      expect(result).toEqual(payload);
+    });
+
+    it("strips markdown code fences without language label before parsing", async () => {
+      const payload = { answer: "no" };
+      mockChat.mockResolvedValue({
+        content: "```\n" + JSON.stringify(payload) + "\n```",
+        model: "test-model",
+      });
+
+      const result = await adapter.generateJson([{ role: "user", content: "test" }], {});
+      expect(result).toEqual(payload);
+    });
+
+    it("extracts JSON from surrounding text", async () => {
+      const payload = { claims: [] };
+      mockChat.mockResolvedValue({
+        content: "Here is the result:\n" + JSON.stringify(payload) + "\nDone.",
+        model: "test-model",
+      });
+
+      const result = await adapter.generateJson([{ role: "user", content: "test" }], {});
+      expect(result).toEqual(payload);
+    });
+
+    it("extracts JSON array from surrounding text", async () => {
+      const payload = [1, 2, 3];
+      mockChat.mockResolvedValue({
+        content: "Results: " + JSON.stringify(payload) + " End",
+        model: "test-model",
+      });
+
+      const result = await adapter.generateJson([{ role: "user", content: "test" }], {});
+      expect(result).toEqual(payload);
     });
   });
 
@@ -220,6 +264,18 @@ describe("AIProviderLLMAdapter", () => {
         undefined,
       );
       expect(result).toEqual(fallbackClaims);
+    });
+
+    it("returns empty array for empty chunkText", async () => {
+      const result = await adapter.extractClaims("", "s1", "c1");
+      expect(result).toEqual([]);
+      expect(mockChat).not.toHaveBeenCalled();
+    });
+
+    it("returns empty array for whitespace-only chunkText", async () => {
+      const result = await adapter.extractClaims("   \n\t  ", "s1", "c1");
+      expect(result).toEqual([]);
+      expect(mockChat).not.toHaveBeenCalled();
     });
   });
 
@@ -422,5 +478,38 @@ describe("AIProviderLLMAdapter", () => {
       const a = new AIProviderLLMAdapter(mockProvider as any);
       expect(a).toBeDefined();
     });
+  });
+});
+
+// ── stripJsonFromLlmResponse ───────────────────────────────────────────────────
+
+describe("stripJsonFromLlmResponse", () => {
+  it("returns content unchanged when it is plain JSON", () => {
+    const json = '{"a":1}';
+    expect(stripJsonFromLlmResponse(json)).toBe(json);
+  });
+
+  it("strips ```json code fences", () => {
+    const inner = '{"a":1}';
+    expect(stripJsonFromLlmResponse("```json\n" + inner + "\n```")).toBe(inner);
+  });
+
+  it("strips ``` code fences without language label", () => {
+    const inner = '{"b":2}';
+    expect(stripJsonFromLlmResponse("```\n" + inner + "\n```")).toBe(inner);
+  });
+
+  it("extracts JSON object from surrounding text", () => {
+    const json = '{"result":true}';
+    expect(stripJsonFromLlmResponse("Here:\n" + json + "\nEnd.")).toBe(json);
+  });
+
+  it("extracts JSON array from surrounding text", () => {
+    const json = '[1,2,3]';
+    expect(stripJsonFromLlmResponse("prefix " + json + " suffix")).toBe(json);
+  });
+
+  it("returns original content when no JSON found", () => {
+    expect(stripJsonFromLlmResponse("no json here")).toBe("no json here");
   });
 });
