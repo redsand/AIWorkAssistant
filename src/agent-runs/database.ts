@@ -77,8 +77,14 @@ class AgentRunDatabase {
     `);
     this.ensureColumn("agent_runs", "last_activity_at", "TEXT");
     this.ensureColumn("agent_runs", "cancelled_at", "TEXT");
+    this.ensureColumn("agent_runs", "issue_id", "TEXT");
+    this.ensureColumn("agent_runs", "issue_platform", "TEXT");
+    this.ensureColumn("agent_runs", "issue_repo", "TEXT");
+    this.ensureColumn("agent_runs", "worktree_path", "TEXT");
+    this.ensureColumn("agent_runs", "branch", "TEXT");
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_agent_runs_last_activity_at ON agent_runs(last_activity_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_runs_issue ON agent_runs(issue_platform, issue_repo, issue_id);
     `);
     this.db
       .prepare(
@@ -102,10 +108,22 @@ class AgentRunDatabase {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO agent_runs (id, session_id, user_id, mode, status, started_at, last_activity_at)
-         VALUES (?, ?, ?, ?, 'running', ?, ?)`,
+        `INSERT INTO agent_runs (id, session_id, user_id, mode, status, started_at, last_activity_at, issue_id, issue_platform, issue_repo, worktree_path, branch)
+         VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, params.sessionId ?? null, params.userId, params.mode, now, now);
+      .run(
+        id,
+        params.sessionId ?? null,
+        params.userId,
+        params.mode,
+        now,
+        now,
+        params.issueId ?? null,
+        params.issuePlatform ?? null,
+        params.issueRepo ?? null,
+        params.worktreePath ?? null,
+        params.branch ?? null,
+      );
 
     return {
       id,
@@ -123,6 +141,11 @@ class AgentRunDatabase {
       lastActivityAt: now,
       completedAt: null,
       cancelledAt: null,
+      issueId: params.issueId ?? null,
+      issuePlatform: params.issuePlatform ?? null,
+      issueRepo: params.issueRepo ?? null,
+      worktreePath: params.worktreePath ?? null,
+      branch: params.branch ?? null,
     };
   }
 
@@ -367,6 +390,11 @@ class AgentRunDatabase {
         (row.last_activity_at as string | null) ?? (row.started_at as string),
       completedAt: row.completed_at as string | null,
       cancelledAt: row.cancelled_at as string | null,
+      issueId: (row.issue_id as string | null) ?? null,
+      issuePlatform: (row.issue_platform as string | null) ?? null,
+      issueRepo: (row.issue_repo as string | null) ?? null,
+      worktreePath: (row.worktree_path as string | null) ?? null,
+      branch: (row.branch as string | null) ?? null,
     };
   }
 

@@ -14,6 +14,11 @@ export interface AgentRun {
   lastActivityAt: string;
   completedAt: string | null;
   cancelledAt: string | null;
+  issueId: string | null;
+  issuePlatform: string | null;
+  issueRepo: string | null;
+  worktreePath: string | null;
+  branch: string | null;
 }
 
 export interface AgentRunStep {
@@ -57,6 +62,11 @@ export interface AgentRunCreateParams {
   sessionId?: string | null;
   userId: string;
   mode: string;
+  issueId?: string | null;
+  issuePlatform?: string | null;
+  issueRepo?: string | null;
+  worktreePath?: string | null;
+  branch?: string | null;
 }
 
 export interface AgentRunCompleteParams {
