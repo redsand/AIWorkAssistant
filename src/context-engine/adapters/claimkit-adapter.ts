@@ -9,7 +9,14 @@ import type {
   Json,
   SourceInput,
   AnswerabilityStatus,
+  Stores,
 } from "@redsand/claimkit";
+import {
+  createRedisClient,
+  connectRedis,
+  createRedisStores,
+  closeRedis,
+} from "@redsand/claimkit/redis";
 import { env } from "../../config/env";
 import { ClaimKitEmbeddingAdapter } from "./claimkit-embedding";
 import { AIProviderLLMAdapter } from "./claimkit-llm-adapter";
@@ -35,6 +42,7 @@ export class ClaimKitAdapter {
   private claimKit: ClaimKit | null = null;
   private initialized = false;
   private initError: string | null = null;
+  private redisClient: ReturnType<typeof createRedisClient> | null = null;
 
   async initialize(): Promise<boolean> {
     if (this.initialized) return true;
@@ -48,7 +56,40 @@ export class ClaimKitAdapter {
           ? new MemoryLLMAdapter()
           : new AIProviderLLMAdapter(undefined, env.CLAIMKIT_LLM_MODEL || undefined);
       const embeddings = new ClaimKitEmbeddingAdapter();
-      const stores = createMemoryStores();
+
+      let stores: Stores;
+      const redisUrl = env.CLAIMKIT_REDIS_URL;
+
+      if (redisUrl) {
+        try {
+          const client = createRedisClient({ url: redisUrl });
+          await connectRedis(client);
+          this.redisClient = client;
+          const prefix = env.CLAIMKIT_REDIS_PREFIX || "aiworkassistant";
+          const dim = embeddings.dimensions;
+          stores = createRedisStores({
+            client,
+            prefix,
+            vectorMode: "bruteForce",
+            vectorOptions: { vectorDim: dim },
+          });
+          console.log(
+            `[ClaimKit] Stores: redis (prefix: ${prefix}, dim: ${dim})`,
+          );
+        } catch (redisErr) {
+          console.warn(
+            `[ClaimKit] Redis connection failed, falling back to memory stores: ${
+              redisErr instanceof Error ? redisErr.message : String(redisErr)
+            }`,
+          );
+          stores = createMemoryStores();
+          console.log(`[ClaimKit] Stores: memory`);
+        }
+      } else {
+        stores = createMemoryStores();
+        console.log(`[ClaimKit] Stores: memory`);
+      }
+
       this.claimKit = new ClaimKit({
         llm,
         embeddings,
@@ -69,6 +110,13 @@ export class ClaimKitAdapter {
     } catch (err) {
       this.initError = err instanceof Error ? err.message : String(err);
       return false;
+    }
+  }
+
+  async close(): Promise<void> {
+    if (this.redisClient) {
+      await closeRedis(this.redisClient);
+      this.redisClient = null;
     }
   }
 
