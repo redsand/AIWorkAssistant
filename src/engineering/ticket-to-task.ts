@@ -497,10 +497,10 @@ class TicketToTaskGenerator {
       : "- None detected";
 
     const dependsOnList = input.dependsOn.length > 0
-      ? input.dependsOn.map(d => `- ${d.startsWith("#") ? d : `#${d}`}`).join("\n")
+      ? "\n" + input.dependsOn.map(d => `  - ${/^\d+$/.test(d) ? `#${d}` : d}`).join("\n")
       : "Nothing — this is a foundational task";
     const blocksList = input.blocks.length > 0
-      ? input.blocks.map(b => `- ${b.startsWith("#") ? b : `#${b}`}`).join("\n")
+      ? "\n" + input.blocks.map(b => `  - ${/^\d+$/.test(b) ? `#${b}` : b}`).join("\n")
       : "Nothing — no other tasks depend on this";
     const executionNote = input.dependsOn.length > 0
       ? "DO NOT start this task until the above dependencies are merged."

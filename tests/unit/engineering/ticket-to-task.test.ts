@@ -317,18 +317,31 @@ describe("extractDependencyMetadata", () => {
     expect(result.dependsOn.length).toBeGreaterThanOrEqual(0);
   });
 
+  it("parses GL: prefixed items in Depends on section", () => {
+    const body = "## Depends on:\n- GL:hawkio/soc-agent#142\n\n## Next";
+    const result = generator.extractDependencyMetadata(body);
+    expect(result.dependsOn).toContain("GL:hawkio/soc-agent#142");
+  });
+
+  it("parses GitLab: prefixed items in Blocks section", () => {
+    const body = "## Blocks:\n- GitLab:infra/terraform#7\n\n## Next";
+    const result = generator.extractDependencyMetadata(body);
+    expect(result.blocks).toContain("GitLab:infra/terraform#7");
+  });
+
   it("parses mixed format items in Depends on", () => {
     const body = [
       "## Depends on:",
       "- #110",
       "- IR-41",
       "- GH:redsand/lib#3",
+      "- GL:hawkio/soc-agent#142",
       "",
       "## Blocks:",
       "- #115",
     ].join("\n");
     const result = generator.extractDependencyMetadata(body);
-    expect(result.dependsOn).toEqual(["110", "IR-41", "GH:redsand/lib#3"]);
+    expect(result.dependsOn).toEqual(["110", "IR-41", "GH:redsand/lib#3", "GL:hawkio/soc-agent#142"]);
     expect(result.blocks).toEqual(["115"]);
   });
 });
@@ -493,5 +506,100 @@ describe("dependency metadata in generated prompt", () => {
     });
 
     expect(result.body).toContain("DO NOT start");
+  });
+
+  it("formats numeric dependencies with # prefix and cross-platform refs without #", async () => {
+    const { ticketToTaskGenerator } = await import(
+      "../../../src/engineering/ticket-to-task"
+    );
+
+    const result = await ticketToTaskGenerator.generate({
+      owner: "redsand",
+      repo: "AIWorkAssistant",
+      issueNumber: 112,
+      agent: "generic",
+    });
+
+    // Numeric deps should have # prefix
+    expect(result.body).toContain("  - #110");
+    expect(result.body).toContain("  - #115");
+
+    // Cross-platform refs should NOT get an extra # prefix
+    expect(result.body).not.toContain("#GH:");
+    expect(result.body).not.toContain("#JIRA:");
+    expect(result.body).not.toContain("#IR-");
+    expect(result.body).not.toContain("#GL:");
+
+    // They should appear as-is
+    expect(result.body).toContain("  - GH:redsand/OtherRepo#5");
+    expect(result.body).toContain("  - JIRA:SEC-10");
+  });
+
+  it("renders each dependency as a separate indented list item", async () => {
+    const { ticketToTaskGenerator } = await import(
+      "../../../src/engineering/ticket-to-task"
+    );
+
+    const result = await ticketToTaskGenerator.generate({
+      owner: "redsand",
+      repo: "AIWorkAssistant",
+      issueNumber: 112,
+      agent: "generic",
+    });
+
+    // Each item should be on its own line with "  - " indentation
+    const depSection = result.body.substring(
+      result.body.indexOf("## Dependency Order"),
+      result.body.indexOf("## Roadmap Context"),
+    );
+    expect(depSection).toContain("  - #110");
+    expect(depSection).toContain("  - GH:redsand/OtherRepo#5");
+    expect(depSection).toContain("  - #115");
+    expect(depSection).toContain("  - JIRA:SEC-10");
+
+    // Should NOT have double-bullet like "- **Depends on:** -"
+    expect(result.body).not.toContain("**Depends on:** -");
+    expect(result.body).not.toContain("**Blocks:** -");
+  });
+
+  it("formats GL: dependencies in prompt without # prefix", async () => {
+    mockGithubClient.getIssue.mockResolvedValue({
+      number: 120,
+      title: "GitLab dependency test",
+      body: [
+        "## Depends on:",
+        "- GL:hawkio/soc-agent#142",
+        "- GitLab:infra/terraform#7",
+        "",
+        "## Blocks:",
+        "- #200",
+      ].join("\n"),
+      html_url: "https://github.com/redsand/AIWorkAssistant/issues/120",
+      labels: [],
+      milestone: null,
+      assignee: null,
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: "2026-05-02T00:00:00Z",
+    });
+
+    const { ticketToTaskGenerator } = await import(
+      "../../../src/engineering/ticket-to-task"
+    );
+
+    const result = await ticketToTaskGenerator.generate({
+      owner: "redsand",
+      repo: "AIWorkAssistant",
+      issueNumber: 120,
+      agent: "generic",
+    });
+
+    // GL refs should appear without extra # prefix
+    expect(result.body).toContain("  - GL:hawkio/soc-agent#142");
+    expect(result.body).toContain("  - GitLab:infra/terraform#7");
+    expect(result.body).not.toContain("#GL:");
+    expect(result.body).not.toContain("#GitLab:");
+
+    // Numeric dep should have # prefix
+    expect(result.body).toContain("  - #200");
   });
 });
