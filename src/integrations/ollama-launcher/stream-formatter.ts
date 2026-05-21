@@ -209,6 +209,18 @@ function formatReadableValue(raw: string, maxLen: number = 200): string {
   }
 }
 
+function formatOutputExcerpt(raw: string, maxLines: number = 8, maxLen: number = 1200): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  const lines = trimmed.split(/\r?\n/);
+  if (lines.length <= 3 && trimmed.length <= 500) {
+    return formatReadableValue(trimmed, 500);
+  }
+  const shown = lines.slice(0, maxLines).join("\n");
+  const hidden = lines.length > maxLines ? `\n... (${lines.length - maxLines} more lines)` : "";
+  return truncate(`${shown}${hidden}`, maxLen);
+}
+
 /**
  * Extract text content from a content block, checking multiple fields
  * that different providers use for thinking/reasoning content.
@@ -714,10 +726,7 @@ function createCodexFormatter(
   }
 
   function summarizeCommandOutput(output: string): string {
-    if (!output || output.length <= 200) return truncate(output, 200);
-    const lines = output.trim().split("\n");
-    if (lines.length <= 1) return truncate(output, 200);
-    return `${lines.length} lines`;
+    return formatOutputExcerpt(output);
   }
 
   return {
@@ -864,10 +873,7 @@ function createOpenCodeFormatter(debugMode: boolean, debugWorkspace?: string): S
       const error = formatOpenCodeDiagnostic(event.error) || formatOpenCodeDiagnostic(part?.error);
       if (output.trim() || error.trim()) {
         const resultText = error.trim() || output.trim();
-        const lineCount = resultText.split("\n").length;
-        return lineCount <= 3
-          ? `  ${gray("◀")} ${formatReadableValue(resultText, 200)}`
-          : `  ${gray("◀")} ${lineCount} lines`;
+        return `  ${gray("◀")} ${formatOutputExcerpt(resultText)}`;
       }
       if (toolName) {
         const canonicalName = canonicalToolName(toolName);
@@ -903,10 +909,7 @@ function createOpenCodeFormatter(debugMode: boolean, debugWorkspace?: string): S
         : typeof event.output === "string" ? event.output
         : "";
       if (resultText.trim()) {
-        const lineCount = resultText.trim().split("\n").length;
-        return lineCount <= 3
-          ? `  ${gray("◀")} ${formatReadableValue(resultText.trim(), 200)}`
-          : `  ${gray("◀")} ${lineCount} lines`;
+        return `  ${gray("◀")} ${formatOutputExcerpt(resultText)}`;
       }
       return `  ${gray("◀")} (empty)`;
     }

@@ -26,6 +26,7 @@ Options:
   --source <type>      Issue source: github | gitlab | jira | jitbit | work_items | auto (default: auto)
   --owner <name>       GitHub/GitLab owner (overrides server default)
   --repo <name>        Repository/project name (overrides server default)
+  --sprint <n>         Limit autonomous pickup to a sprint (e.g. 1, sprint-1)
   --agent <name>       Coding agent: codex | opencode | claude (default: claude)
   --claude             Shorthand for --agent claude
   --codex              Shorthand for --agent codex
@@ -137,6 +138,7 @@ function normalizeAgentName(value: string): ProviderType {
 
 export const AGENT = normalizeAgentName(ARGV.agent || process.env.AICODER_AGENT || "claude");
 export const LABEL = ARGV.label || process.env.AICODER_LABEL || "ready-for-agent";
+export const SPRINT = ARGV.sprint || process.env.AICODER_SPRINT || "";
 export const PRIORITY = (ARGV.priority || process.env.AICODER_PRIORITY || "label") as PriorityMode;
 export const SOURCE = (ARGV.source || process.env.AICODER_SOURCE || "auto") as TicketSourceType | "auto";
 export const LOOKUP = (ARGV.lookup || process.env.AICODER_LOOKUP || "memory") as LookupMode;

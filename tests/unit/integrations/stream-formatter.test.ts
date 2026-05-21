@@ -417,6 +417,37 @@ describe("createStreamFormatter — opencode events", () => {
     expect(plain).toContain("TypeScript compilation completed");
   });
 
+  it("includes OpenCode multi-line tool output excerpts", () => {
+    const output = formatEvent({
+      type: "tool_result",
+      result: [
+        "test_caching.py::test_sha_sidecar PASSED",
+        "test_caching.py::test_existing_rev_failure FAILED",
+        "AssertionError: pre-existing rev variable",
+        "short test summary info",
+        "FAILED test_caching.py::test_existing_rev_failure",
+        "1 failed, 60 passed",
+      ].join("\n"),
+    }, "opencode");
+
+    const plain = stripAnsi(output);
+    expect(plain).toContain("test_sha_sidecar PASSED");
+    expect(plain).toContain("pre-existing rev variable");
+    expect(plain).not.toContain("6 lines");
+  });
+
+  it("marks omitted OpenCode output lines after the excerpt", () => {
+    const output = formatEvent({
+      type: "tool_result",
+      result: Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join("\n"),
+    }, "opencode");
+
+    const plain = stripAnsi(output);
+    expect(plain).toContain("line 1");
+    expect(plain).toContain("line 8");
+    expect(plain).toContain("... (2 more lines)");
+  });
+
   it("formats OpenCode tools with sanitized fallback details", () => {
     const output = formatEvent({
       type: "tool_call",
@@ -757,6 +788,32 @@ describe("createStreamFormatter — codex diagnostics", () => {
     expect(plain).toContain("turn.failed");
     expect(plain).toContain("provider_error");
     expect(plain).toContain("502");
+  });
+
+  it("includes Codex command output excerpts instead of only line counts", () => {
+    const formatter = createStreamFormatter("codex");
+    const output = formatter.push(JSON.stringify({
+      type: "item.completed",
+      item: {
+        id: "cmd-1",
+        type: "command_execution",
+        command: "pytest",
+        exit_code: 1,
+        aggregated_output: [
+          "test_caching.py::test_sha_sidecar PASSED",
+          "test_caching.py::test_existing_rev_failure FAILED",
+          "AssertionError: pre-existing rev variable",
+          "short test summary info",
+          "FAILED test_caching.py::test_existing_rev_failure",
+          "1 failed, 60 passed",
+        ].join("\n"),
+      },
+    }) + "\n");
+
+    const plain = stripAnsi(output);
+    expect(plain).toContain("test_sha_sidecar PASSED");
+    expect(plain).toContain("pre-existing rev variable");
+    expect(plain).not.toContain("6 lines");
   });
 });
 

@@ -10,6 +10,12 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { WorkItemDatabase } from "../../../src/work-items/database";
 import { hashUuidToNumber, parseWorkItemTagsJson } from "../../../src/autonomous-loop/work-item-utils";
 import { ticketToTaskGenerator } from "../../../src/engineering/ticket-to-task";
+import {
+  extractJiraSprintNumber,
+  getEarliestSprintNumber,
+  matchesSprintFocus,
+  normalizeSprintFocus,
+} from "../../../src/routes/autonomous-loop";
 
 describe("Work Items — autonomous loop integration", () => {
   let db: WorkItemDatabase;
@@ -192,5 +198,39 @@ describe("Work Items — autonomous loop integration", () => {
 
       expect(filtered).toHaveLength(0);
     });
+  });
+});
+
+describe("Jira sprint focus helpers", () => {
+  const issue = (key: string, summary: string, labels: string[] = []) => ({
+    key,
+    fields: { summary, labels },
+  });
+
+  it("extracts sprint numbers from Jira summaries and labels", () => {
+    expect(extractJiraSprintNumber(issue("SIEM-31", "[SPRINT-4] Cleanup"))).toBe(4);
+    expect(extractJiraSprintNumber(issue("SIEM-15", "Vue scaffold", ["ready-for-agent", "sprint-1"]))).toBe(1);
+  });
+
+  it("normalizes explicit sprint focus values", () => {
+    expect(normalizeSprintFocus("1")).toEqual({ number: 1, label: "sprint-1" });
+    expect(normalizeSprintFocus("sprint-2")).toEqual({ number: 2, label: "sprint-2" });
+  });
+
+  it("auto-focuses the earliest sprint present", () => {
+    const issues = [
+      issue("SIEM-31", "[SPRINT-4] Cleanup"),
+      issue("SIEM-15", "[SPRINT-1] Scaffold"),
+      issue("SIEM-46", "[SPRINT-3] Additional views"),
+    ];
+
+    expect(getEarliestSprintNumber(issues)).toBe(1);
+  });
+
+  it("rejects later sprint Jira issues when sprint focus is earlier", () => {
+    const focus = normalizeSprintFocus("sprint-1");
+    expect(focus).not.toBeNull();
+    expect(matchesSprintFocus(issue("SIEM-15", "[SPRINT-1] Scaffold"), focus!)).toBe(true);
+    expect(matchesSprintFocus(issue("SIEM-31", "[SPRINT-4] Cleanup"), focus!)).toBe(false);
   });
 });

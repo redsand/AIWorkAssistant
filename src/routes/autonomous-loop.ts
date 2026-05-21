@@ -11,6 +11,9 @@ import type { TicketSourceType } from "../integrations/source-resolver";
 
 const AI_BRANCH_PREFIX = "ai/issue-";
 const DEFAULT_WORK_LABEL = "ready-for-agent";
+const JIRA_DEPENDENCY_RE = /\b(?:depends\s+on|blocked\s+by|requires|prerequisite\s*:\s*)\s*:?\s*([A-Z][A-Z0-9]+-\d+(?:\s*,\s*[A-Z][A-Z0-9]+-\d+)*)/gi;
+const DO_NOT_START_UNTIL_RE = /\bdo\s+not\s+start\b[\s\S]{0,160}?\buntil\b[\s\S]{0,80}?([A-Z][A-Z0-9]+-\d+)/gi;
+const JIRA_KEY_RE = /\b[A-Z][A-Z0-9]+-\d+\b/g;
 
 interface NormalizedWorkItem {
   id: string;
@@ -33,6 +36,7 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
       label?: string;
       limit?: string;
       source?: string;
+      sprint?: string;
       skipPromptCheck?: string;
     };
 
@@ -54,7 +58,7 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
           items = await fetchGitLabWork(label, limit, skipPromptCheck);
           break;
         case "jira":
-          items = await fetchJiraWork(label, limit, query.repo, skipPromptCheck);
+          items = await fetchJiraWork(label, limit, query.repo, skipPromptCheck, query.sprint);
           break;
         case "jitbit":
           items = await fetchJitbitWork(label, limit, skipPromptCheck);
@@ -379,6 +383,7 @@ async function fetchJiraWork(
   limit: number,
   repoFilter?: string,
   skipPromptCheck: boolean = false,
+  sprintFocus?: string,
 ): Promise<NormalizedWorkItem[]> {
   if (!env.JIRA_BASE_URL) {
     throw new Error("JIRA_BASE_URL is required for Jira source");
@@ -396,38 +401,68 @@ async function fetchJiraWork(
   } else {
     jql = `labels = "${label}" AND statusCategory in (new, indeterminate) ORDER BY priority ASC`;
   }
-  const issues = await jiraClient.searchIssues(jql, limit);
+  const candidateLimit = Math.min(Math.max(limit * 5, 25), 100);
+  const issues = await jiraClient.searchIssues(jql, candidateLimit);
 
   console.log(`[Jira] fetchJiraWork: JQL="${jql}" returned ${issues.length} issues`);
 
+  const explicitSprint = normalizeSprintFocus(sprintFocus);
+  const autoSprint = explicitSprint === null ? getEarliestSprintNumber(issues) : null;
+  if (explicitSprint) {
+    console.log(`[Jira] Sprint focus: ${explicitSprint.label}`);
+  } else if (autoSprint !== null) {
+    console.log(`[Jira] Auto sprint focus: sprint-${autoSprint}`);
+  }
+
   const filtered: any[] = [];
   for (const issue of issues) {
+    if (explicitSprint) {
+      const issueSprint = extractJiraSprintNumber(issue);
+      if (!matchesSprintFocus(issue, explicitSprint)) {
+        console.log(`[Jira] Skipping ${issue.key}: outside sprint focus ${explicitSprint.label}${issueSprint === null ? "" : ` (issue sprint-${issueSprint})`}`);
+        continue;
+      }
+    } else if (autoSprint !== null) {
+      const issueSprint = extractJiraSprintNumber(issue);
+      if (issueSprint !== autoSprint) {
+        console.log(`[Jira] Skipping ${issue.key}: outside auto sprint focus sprint-${autoSprint}${issueSprint === null ? "" : ` (issue sprint-${issueSprint})`}`);
+        continue;
+      }
+    }
+
     const issueLabels: string[] = issue.fields?.labels || [];
     if (skipPromptCheck) {
       filtered.push(issue);
       continue;
     }
     const body = issue.fields?.description ? extractJiraBodyText(issue.fields.description) : "";
+    let comments: Array<{ body: string }> = [];
+    try {
+      comments = await jiraClient.getComments(issue.key);
+    } catch (err) {
+      console.log(`[Jira] ${issue.key}: could not fetch comments (${(err as Error).message})`);
+    }
+    const dependencyText = [body, ...comments.map((c) => c.body || "")].filter(Boolean).join("\n");
+    const unresolvedDeps = await getUnresolvedJiraDependencyRefs(issue.key, dependencyText);
+    if (unresolvedDeps.length > 0) {
+      console.log(`[Jira] Skipping ${issue.key}: blocked by unresolved dependencies ${unresolvedDeps.join(", ")}`);
+      continue;
+    }
+
     if (ticketToTaskGenerator.hasCodingPromptContent(body)) {
       filtered.push(issue);
       continue;
     }
-    // Description didn't match — check comments for coding prompt content
-    try {
-      const comments = await jiraClient.getComments(issue.key);
-      const hasPromptInComments = comments.some((c: any) =>
-        ticketToTaskGenerator.hasCodingPromptContent(c.body || ""),
-      );
-      if (hasPromptInComments) {
-        console.log(`[Jira] ${issue.key}: coding prompt found in comments (not description)`);
-        filtered.push(issue);
-      } else if (issueLabels.includes("missing-coding-prompt")) {
-        console.log(`[Jira] Skipping ${issue.key}: has "missing-coding-prompt" label and no coding prompt in description/comments`);
-      } else {
-        console.log(`[Jira] Skipping ${issue.key} ("${issue.fields?.summary || ""}"): no coding prompt content in description or comments (desc first 200 chars: ${body.slice(0, 200).replace(/\n/g, " ")})`);
-      }
-    } catch (err) {
-      console.log(`[Jira] Skipping ${issue.key}: could not fetch comments (${(err as Error).message}), description had no coding prompt`);
+    const hasPromptInComments = comments.some((c: any) =>
+      ticketToTaskGenerator.hasCodingPromptContent(c.body || ""),
+    );
+    if (hasPromptInComments) {
+      console.log(`[Jira] ${issue.key}: coding prompt found in comments (not description)`);
+      filtered.push(issue);
+    } else if (issueLabels.includes("missing-coding-prompt")) {
+      console.log(`[Jira] Skipping ${issue.key}: has "missing-coding-prompt" label and no coding prompt in description/comments`);
+    } else {
+      console.log(`[Jira] Skipping ${issue.key} ("${issue.fields?.summary || ""}"): no coding prompt content in description or comments (desc first 200 chars: ${body.slice(0, 200).replace(/\n/g, " ")})`);
     }
   }
 
@@ -498,6 +533,89 @@ function extractJiraBodyText(description: any): string {
       .join("\n");
   }
   return "";
+}
+
+function parseJiraDependencyRefs(text: string): string[] {
+  const refs = new Set<string>();
+  let match: RegExpExecArray | null;
+
+  const dependencyRe = new RegExp(JIRA_DEPENDENCY_RE.source, JIRA_DEPENDENCY_RE.flags);
+  while ((match = dependencyRe.exec(text)) !== null) {
+    const keys = match[1].match(JIRA_KEY_RE) || [];
+    for (const key of keys) refs.add(key.toUpperCase());
+  }
+
+  const doNotStartRe = new RegExp(DO_NOT_START_UNTIL_RE.source, DO_NOT_START_UNTIL_RE.flags);
+  while ((match = doNotStartRe.exec(text)) !== null) {
+    refs.add(match[1].toUpperCase());
+  }
+
+  return [...refs];
+}
+
+export function normalizeSprintFocus(value?: string): { number: number | null; label: string } | null {
+  const raw = value?.trim();
+  if (!raw) return null;
+  const match = raw.match(/^(?:sprint[\s\-_:]*)?(\d+)$/i) || raw.match(/\bsprint[\s\-_:]*(\d+)\b/i);
+  if (match) {
+    const number = parseInt(match[1], 10);
+    return Number.isFinite(number) ? { number, label: `sprint-${number}` } : null;
+  }
+  return { number: null, label: raw.toLowerCase() };
+}
+
+export function extractJiraSprintNumber(issue: any): number | null {
+  const summary = String(issue.fields?.summary || "");
+  const titleMatch = summary.match(/\[\s*sprint[\s\-]+(\d+)\s*\]/i);
+  if (titleMatch) return parseInt(titleMatch[1], 10);
+
+  const labels: string[] = issue.fields?.labels || [];
+  for (const label of labels) {
+    const labelMatch = String(label).match(/^(?:sprint[\s\-:]*|s)(\d+)$/i);
+    if (labelMatch) return parseInt(labelMatch[1], 10);
+  }
+
+  return null;
+}
+
+export function matchesSprintFocus(issue: any, focus: { number: number | null; label: string }): boolean {
+  if (focus.number !== null) {
+    return extractJiraSprintNumber(issue) === focus.number;
+  }
+
+  const haystack = [
+    issue.fields?.summary || "",
+    ...(issue.fields?.labels || []),
+  ].join(" ").toLowerCase();
+  return haystack.includes(focus.label);
+}
+
+export function getEarliestSprintNumber(issues: any[]): number | null {
+  const sprints = issues
+    .map((issue) => extractJiraSprintNumber(issue))
+    .filter((sprint): sprint is number => sprint !== null);
+  return sprints.length === 0 ? null : Math.min(...sprints);
+}
+
+function isJiraDoneStatus(status: string | undefined): boolean {
+  return /done|closed|resolved|completed/i.test(status || "");
+}
+
+async function getUnresolvedJiraDependencyRefs(issueKey: string, text: string): Promise<string[]> {
+  const deps = parseJiraDependencyRefs(text).filter((dep) => dep !== issueKey);
+  const unresolved: string[] = [];
+  for (const dep of deps) {
+    try {
+      const depIssue = await jiraClient.getIssue(dep);
+      const status = depIssue.fields.status?.name ?? "";
+      if (!isJiraDoneStatus(status)) {
+        unresolved.push(`${dep} (${status || "unknown status"})`);
+      }
+    } catch (err) {
+      unresolved.push(`${dep} (${err instanceof Error ? err.message : "could not verify status"})`);
+    }
+  }
+  return unresolved;
 }
 
 async function fetchWorkItemsWork(

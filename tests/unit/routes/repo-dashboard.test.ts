@@ -66,6 +66,25 @@ describe("parseDependencies", () => {
     expect(r).toEqual([{ id: "ABC-123", label: "requires JIRA:ABC-123", platform: "jira", external: true }]);
   });
 
+  it("should parse bare Jira keys as internal deps in Jira context", () => {
+    const r = parseDependencies("Depends on: SIEM-15, SIEM-16, SIEM-17", { platform: "jira", repo: "SIEM" });
+    expect(r).toEqual([
+      { id: "SIEM-15", label: "Depends on: SIEM-15, SIEM-16, SIEM-17", platform: undefined, external: false },
+      { id: "SIEM-16", label: "Depends on: SIEM-15, SIEM-16, SIEM-17", platform: undefined, external: false },
+      { id: "SIEM-17", label: "Depends on: SIEM-15, SIEM-16, SIEM-17", platform: undefined, external: false },
+    ]);
+  });
+
+  it("should parse do-not-start Jira dependency comments", () => {
+    const r = parseDependencies("Do not start this ticket until SIEM-46 is merged.", { platform: "jira", repo: "SIEM" });
+    expect(r).toEqual([{ id: "SIEM-46", label: "Do not start this ticket until SIEM-46", platform: undefined, external: false }]);
+  });
+
+  it("should keep bare Jira keys from other projects external in Jira context", () => {
+    const r = parseDependencies("Depends on: OTHER-1", { platform: "jira", repo: "SIEM" });
+    expect(r).toEqual([{ id: "OTHER-1", label: "Depends on: OTHER-1", platform: "jira", external: true }]);
+  });
+
   // Cross-platform GitHub references
   it("should parse GH: with owner/repo", () => {
     const r = parseDependencies("depends on GH:redsand/OtherRepo#5");

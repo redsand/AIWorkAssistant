@@ -104,11 +104,29 @@ export interface DependencyGraph {
 
 const DEP_RE =
   /\b(?:depends\s+on|blocked\s+by|requires|prerequisite\s*:\s*)\s*(?:(?:JIRA:|Jira:)([A-Z]+-\d+)|(?:GH:|GitHub:)(?:([\w.-]+\/[\w.-]+))?#(\d+)|(?:GL:|GitLab:)(?:([\w.-]+(?:\/[\w.-]+)?))?#(\d+)|#(\d+))\b/gi;
+const BARE_JIRA_DEP_RE =
+  /\b(?:depends\s+on|blocked\s+by|requires|prerequisite\s*:\s*)\s*:?\s*([A-Z][A-Z0-9]+-\d+(?:\s*,\s*[A-Z][A-Z0-9]+-\d+)*)/gi;
+const DO_NOT_START_UNTIL_DEP_RE =
+  /\bdo\s+not\s+start\b[\s\S]{0,160}?\buntil\b[\s\S]{0,80}?([A-Z][A-Z0-9]+-\d+|#\d+)/gi;
+const JIRA_KEY_RE = /\b[A-Z][A-Z0-9]+-\d+\b/g;
 
-export function parseDependencies(body: string): DependencyRef[] {
+export function parseDependencies(
+  body: string,
+  context?: { platform?: "github" | "gitlab" | "jira" | "work_items"; repo?: string },
+): DependencyRef[] {
   if (!body) return [];
   const seen = new Set<string>();
   const result: DependencyRef[] = [];
+  const currentPlatform = context?.platform;
+  const currentRepo = context?.repo;
+
+  const addRef = (dep: DependencyRef) => {
+    const key = `${dep.platform || currentPlatform || "internal"}:${dep.repo || currentRepo || ""}:${dep.id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    result.push(dep);
+  };
+
   const matches = body.matchAll(DEP_RE);
   for (const m of matches) {
     const label = m[0].trim();
@@ -137,11 +155,52 @@ export function parseDependencies(body: string): DependencyRef[] {
       continue;
     }
 
-    if (!seen.has(id)) {
-      seen.add(id);
-      result.push({ id, label, platform, repo, external });
+    if (platform === currentPlatform) {
+      const sameRepo = !repo || !currentRepo || repo.toLowerCase() === currentRepo.toLowerCase();
+      if (sameRepo) {
+        external = false;
+        repo = undefined;
+        platform = undefined;
+      }
+    }
+
+    addRef({ id, label, platform, repo, external });
+  }
+
+  if (currentPlatform === "jira") {
+    const bareMatches = body.matchAll(BARE_JIRA_DEP_RE);
+    for (const m of bareMatches) {
+      const label = m[0].trim();
+      const keys = m[1].match(JIRA_KEY_RE) || [];
+      for (const key of keys) {
+        const sameProject = !currentRepo || key.toUpperCase().startsWith(`${currentRepo.toUpperCase()}-`);
+        addRef({
+          id: key.toUpperCase(),
+          label,
+          platform: sameProject ? undefined : "jira",
+          external: !sameProject,
+        });
+      }
     }
   }
+
+  const doNotStartMatches = body.matchAll(DO_NOT_START_UNTIL_DEP_RE);
+  for (const m of doNotStartMatches) {
+    const ref = m[1];
+    if (ref.startsWith("#")) {
+      addRef({ id: ref.slice(1), label: m[0].trim(), external: false });
+    } else if (currentPlatform === "jira") {
+      const key = ref.toUpperCase();
+      const sameProject = !currentRepo || key.startsWith(`${currentRepo.toUpperCase()}-`);
+      addRef({
+        id: key,
+        label: m[0].trim(),
+        platform: sameProject ? undefined : "jira",
+        external: !sameProject,
+      });
+    }
+  }
+
   return result;
 }
 
@@ -459,7 +518,7 @@ async function fetchGitHubIssues(repo: string): Promise<DashboardIssue[]> {
       repo,
       createdAt: i.created_at || "",
       updatedAt: i.updated_at || "",
-      dependencies: parseDependencies(i.body || ""),
+      dependencies: parseDependencies(i.body || "", { platform: "github", repo }),
     }));
 }
 
@@ -480,7 +539,7 @@ async function fetchGitLabIssues(repoId: string): Promise<DashboardIssue[]> {
       repo: repoId,
       createdAt: i.created_at || "",
       updatedAt: i.updated_at || "",
-      dependencies: parseDependencies(i.description || ""),
+      dependencies: parseDependencies(i.description || "", { platform: "gitlab", repo: repoId }),
       sprint: i.milestone ? `gl-milestone-${i.milestone.id}` : undefined,
     };
   });
@@ -510,6 +569,7 @@ async function fetchJiraIssues(projectKey: string): Promise<DashboardIssue[]> {
         : i.fields?.description?.content
             ?.map((c: any) => c.content?.map((cc: any) => cc.text).join(""))
             .join("\n") || "",
+      { platform: "jira", repo: projectKey },
     ),
   }));
 }
@@ -535,7 +595,7 @@ async function fetchWorkItemIssues(
     repo: source,
     createdAt: wi.createdAt,
     updatedAt: wi.updatedAt,
-    dependencies: parseDependencies(wi.description),
+    dependencies: parseDependencies(wi.description, { platform: "work_items", repo: source }),
   }));
 }
 
@@ -612,7 +672,7 @@ async function fetchGitHubSprints(
             repo,
             createdAt: i.created_at || "",
             updatedAt: i.updated_at || "",
-            dependencies: parseDependencies(i.body || ""),
+            dependencies: parseDependencies(i.body || "", { platform: "github", repo }),
             sprint,
           };
         });
@@ -680,6 +740,7 @@ async function fetchJiraSprints(
                     c.content?.map((cc: any) => cc.text).join(""),
                   )
                   .join("\n") || "",
+            { platform: "jira", repo: projectKey },
           ),
           sprint: `jira-sprint-${sprint.id}`,
         }));
@@ -740,7 +801,7 @@ async function fetchGitLabSprints(
           repo: repoId,
           createdAt: i.created_at || "",
           updatedAt: i.updated_at || "",
-          dependencies: parseDependencies(i.description || ""),
+          dependencies: parseDependencies(i.description || "", { platform: "gitlab", repo: repoId }),
           sprint: milestone ? `gl-milestone-${milestone.id}` : undefined,
         };
       });

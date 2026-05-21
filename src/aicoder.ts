@@ -21,7 +21,7 @@ import type {
   TestSuiteKind, PipelineCheckpoint, RunState,
 } from "./autonomous-loop/types";
 import {
-  ARGV, WORKSPACE, AGENT, LABEL, PRIORITY, SOURCE, LOOKUP,
+  ARGV, WORKSPACE, AGENT, LABEL, SPRINT, PRIORITY, SOURCE, LOOKUP,
   USE_OLLAMA, DEBUG, SKIP_BASELINE, SKIP_AGENT, SKIP_TESTS, SKIP_PROMPT_CHECK,
   RESUME_RUN, DISCARD_RUN, FORCE_REPROCESS, WATCH_ISSUE, MODEL, OLLAMA_URL,
   TARGET_ISSUE_KEY, PUBLISH_BRANCH, BASE_BRANCH_CANDIDATES, FOCUSED_MODE,
@@ -251,6 +251,7 @@ async function fetchWork(cfg: ServerConfig): Promise<WorkItem[]> {
   const params: Record<string, string> = { label: LABEL, limit: "5", source: cfg.source };
   if (cfg.owner) params.owner = cfg.owner;
   if (cfg.repo) params.repo = cfg.repo;
+  if (SPRINT) params.sprint = SPRINT;
   if (SKIP_PROMPT_CHECK) params.skipPromptCheck = "true";
 
   const resp = await axios.get<{ success: boolean; items: WorkItem[]; error?: string }>(
@@ -2847,7 +2848,7 @@ async function focusedLoop(cfg: ServerConfig): Promise<void> {
   }
 
   runLogger.logConfig(`Polling ${cfg.apiUrl} for label="${LABEL}"`);
-  runLogger.logConfig(`Source: ${SOURCE}, Priority mode: ${PRIORITY}, Lookup: ${LOOKUP}`);
+  runLogger.logConfig(`Source: ${SOURCE}, Priority mode: ${PRIORITY}, Lookup: ${LOOKUP}${SPRINT ? `, Sprint: ${SPRINT}` : ""}`);
 
   let cycles = 0;
   while (true) {
@@ -3679,7 +3680,7 @@ async function pollLoop(cfg: ServerConfig): Promise<void> {
   }
 
   runLogger.logConfig(`Polling ${cfg.apiUrl} for label="${LABEL}"`);
-  runLogger.logConfig(`Source: ${SOURCE}, Priority mode: ${PRIORITY}, Lookup: ${LOOKUP}`);
+  runLogger.logConfig(`Source: ${SOURCE}, Priority mode: ${PRIORITY}, Lookup: ${LOOKUP}${SPRINT ? `, Sprint: ${SPRINT}` : ""}`);
 
   let cycles = 0;
   while (true) {
