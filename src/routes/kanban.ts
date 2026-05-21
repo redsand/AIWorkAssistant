@@ -14,12 +14,11 @@ import {
 } from "./repo-dashboard";
 import type {
   KanbanCard,
-  KanbanEdge,
-  KanbanGhostNode,
   KanbanAgent,
   KanbanBoardResponse,
   KanbanColumn,
 } from "../kanban/types";
+import { resolveEdges } from "../kanban/edges.js";
 
 const MAX_ISSUES = 200;
 
@@ -283,14 +282,16 @@ async function buildBoard(filters: {
     }
   } catch { /* agent_runs unavailable */ }
 
+  // Build deps-by-card-key map for edge resolution
+  const depsByCardKey = new Map<string, DependencyRef[]>();
+
   // Map issues to cards
-  const cardKeySet = new Set<string>();
   const cards: KanbanCard[] = deduped.map((issue) => {
     const key = `${issue.platform}:${issue.repo}:${issue.id}`;
-    cardKeySet.add(key);
     const depKeys = issue.dependencies.map((dep) =>
       buildDependencyKey(dep, { platform: issue.platform, repo: issue.repo }),
     );
+    depsByCardKey.set(key, issue.dependencies);
     return {
       key,
       platform: issue.platform as KanbanCard["platform"],
@@ -312,35 +313,8 @@ async function buildBoard(filters: {
     };
   });
 
-  // Build edges and ghost nodes from dependencies
-  const edges: KanbanEdge[] = [];
-  const ghostNodeMap = new Map<string, KanbanGhostNode>();
-
-  for (const card of cards) {
-    const issue = deduped.find((i) => `${i.platform}:${i.repo}:${i.id}` === card.key)!;
-    for (const dep of issue.dependencies) {
-      const depKey = buildDependencyKey(dep, { platform: issue.platform, repo: issue.repo });
-      const isGhost = !cardKeySet.has(depKey);
-
-      edges.push({
-        fromKey: card.key,
-        toKey: depKey,
-        fromGhost: false,
-        kind: "depends_on",
-        label: dep.label,
-      });
-
-      if (isGhost && !ghostNodeMap.has(depKey)) {
-        ghostNodeMap.set(depKey, {
-          key: depKey,
-          platform: dep.platform || issue.platform,
-          repo: dep.repo || issue.repo,
-          id: dep.id,
-          label: dep.label,
-        });
-      }
-    }
-  }
+  // Resolve edges and ghost nodes via shared helper
+  const { edges, ghostNodes } = resolveEdges(cards, depsByCardKey);
 
   // Build repo summary
   const repoCounts = new Map<string, { platform: string; count: number }>();
@@ -362,7 +336,7 @@ async function buildBoard(filters: {
   return {
     cards,
     edges,
-    ghostNodes: Array.from(ghostNodeMap.values()),
+    ghostNodes,
     agents: [] as KanbanAgent[],
     repos: reposSummary,
     generatedAt: new Date().toISOString(),
