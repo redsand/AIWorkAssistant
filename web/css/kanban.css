@@ -151,6 +151,102 @@ body {
   gap: 10px;
   margin-bottom: 16px;
   min-height: 0;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: inherit;
+}
+
+/* ─── Agent Tile (.krun) ────────────────────────────────────────────────── */
+
+.krun {
+  flex: 0 0 auto;
+  width: 200px;
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-left: 3px solid #667eea;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+
+.krun--fading {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+.krun-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.krun-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+}
+
+.krun-card {
+  font-size: 12px;
+  color: #667eea;
+  text-decoration: none;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.krun-card:hover {
+  text-decoration: underline;
+}
+
+.krun-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #6b7280;
+}
+
+.krun-elapsed {
+  font-variant-numeric: tabular-nums;
+}
+
+.krun-tool {
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.krun-stop {
+  align-self: flex-end;
+  padding: 3px 10px;
+  border: 1px solid #fca5a5;
+  border-radius: 4px;
+  background: #fff5f5;
+  color: #991b1b;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.krun-stop:hover {
+  background: #fee2e2;
+  border-color: #f87171;
+}
+
+.krun-stop:active {
+  transform: scale(0.95);
 }
 
 /* ─── Loading / Empty States ──────────────────────────────────────────────── */
@@ -248,6 +344,19 @@ body {
 
 .kcard:hover {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.kcard--highlight {
+  animation: kcard-flash 2s ease-out;
+}
+
+@keyframes kcard-flash {
+  0%, 30% {
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.5);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(102, 126, 234, 0);
+  }
 }
 
 .kcard header {

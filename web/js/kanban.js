@@ -120,7 +120,7 @@
  * Kanban Board — portfolio-level view
  *
  * Fetches data from /api/kanban/board and renders cards into four columns.
- * Read-only for now — no drag-drop, no live updates.
+ * Agents Rail renders running agents with live SSE updates.
  */
 (function () {
   "use strict";
@@ -132,6 +132,7 @@
   var boardEl = document.getElementById("kanban-board");
   var errorBanner = document.getElementById("error-banner");
   var refreshBtn = document.getElementById("refresh-btn");
+  var agentsRail = document.getElementById("agents-rail");
 
   var columns = {
     backlog: document.getElementById("col-backlog"),
@@ -153,6 +154,11 @@
     jira: "JI",
     work_items: "WI",
   };
+
+  // ─── Agents Rail state ─────────────────────────────────────────────────────
+
+  var tileMap = {};      // agentRunId → { el, startedAt, interval }
+  var cardTitleMap = {}; // cardKey → title (populated from board data)
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -182,6 +188,151 @@
     return div.innerHTML;
   }
 
+  function formatElapsed(ms) {
+    var totalSec = Math.floor(ms / 1000);
+    var m = Math.floor(totalSec / 60);
+    var s = totalSec % 60;
+    return m + "m " + (s < 10 ? "0" : "") + s + "s";
+  }
+
+  // ─── Agents Rail ───────────────────────────────────────────────────────────
+
+  function fetchAgents() {
+    fetch("/api/kanban/agents")
+      .then(function (res) { return res.ok ? res.json() : []; })
+      .then(function (agents) {
+        agents.forEach(function (a) { addTile(a); });
+      })
+      .catch(function () { /* non-critical */ });
+  }
+
+  function addTile(agent) {
+    if (tileMap[agent.agentRunId]) return;
+
+    var cardTitle = cardTitleMap[agent.cardKey] || agent.cardKey || "Unknown";
+    var modelLabel = agent.model || "";
+    var elapsed = Date.now() - new Date(agent.startedAt).getTime();
+
+    var tile = document.createElement("div");
+    tile.className = "krun";
+    tile.setAttribute("data-run-id", agent.agentRunId);
+    tile.setAttribute("data-card-key", agent.cardKey || "");
+
+    tile.innerHTML =
+      '<div class="krun-head">' +
+        '<img class="krun-icon" src="/img/agent-' + escapeHtml(agent.agent) + '.svg" alt="" onerror="this.style.display=\'none\'">' +
+        escapeHtml(agent.agent) + (modelLabel ? " · " + escapeHtml(modelLabel) : "") +
+      '</div>' +
+      '<a class="krun-card" href="#card-' + escapeHtml(agent.cardKey || "") + '">' + escapeHtml(cardTitle) + '</a>' +
+      '<div class="krun-meta">' +
+        '<span class="krun-elapsed">' + formatElapsed(elapsed) + '</span>' +
+        '<span class="krun-tool">' + (agent.lastTool ? escapeHtml(agent.lastTool) + " · " + agent.toolLoopCount : "—") + '</span>' +
+      '</div>' +
+      '<button class="krun-stop">Stop</button>';
+
+    tile.querySelector(".krun-stop").addEventListener("click", function () {
+      stopAgent(agent);
+    });
+
+    tile.querySelector(".krun-card").addEventListener("click", function (e) {
+      e.preventDefault();
+      scrollToCard(agent.cardKey);
+    });
+
+    agentsRail.appendChild(tile);
+
+    var state = {
+      el: tile,
+      startedAt: new Date(agent.startedAt).getTime(),
+      lastTool: agent.lastTool,
+      toolLoopCount: agent.toolLoopCount || 0,
+      interval: null,
+    };
+
+    state.interval = setInterval(function () {
+      var el = state.el.querySelector(".krun-elapsed");
+      if (el) el.textContent = formatElapsed(Date.now() - state.startedAt);
+    }, 1000);
+
+    tileMap[agent.agentRunId] = state;
+  }
+
+  function updateTile(agentRunId, toolName, stepOrder) {
+    var state = tileMap[agentRunId];
+    if (!state) return;
+    state.lastTool = toolName;
+    state.toolLoopCount = stepOrder;
+    var toolEl = state.el.querySelector(".krun-tool");
+    if (toolEl) toolEl.textContent = toolName + " · " + stepOrder;
+  }
+
+  function removeTile(agentRunId) {
+    var state = tileMap[agentRunId];
+    if (!state) return;
+    clearInterval(state.interval);
+    state.el.classList.add("krun--fading");
+    setTimeout(function () {
+      if (state.el.parentNode) state.el.parentNode.removeChild(state.el);
+      delete tileMap[agentRunId];
+    }, 5000);
+  }
+
+  function stopAgent(agent) {
+    var cardKey = agent.cardKey || "";
+    var parts = cardKey.split(":");
+    if (parts.length < 3) return;
+    var platform = parts[0];
+    var id = parts.slice(2).join(":");
+    var repo = parts.slice(1, -1).join(":");
+
+    fetch("/api/kanban/cards/" + encodeURIComponent(platform) + "/" + encodeURIComponent(id) + "/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: repo }),
+    }).catch(function () { /* UI will update via SSE */ });
+  }
+
+  function scrollToCard(cardKey) {
+    if (!cardKey) return;
+    var card = document.querySelector('[data-key="' + cardKey + '"]');
+    if (card) {
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+      card.classList.add("kcard--highlight");
+      setTimeout(function () { card.classList.remove("kcard--highlight"); }, 2000);
+    }
+  }
+
+  function openSSE() {
+    if (typeof EventSource === "undefined") return;
+    var source = new EventSource("/api/kanban/stream");
+
+    source.addEventListener("agent.started", function (e) {
+      try {
+        var data = JSON.parse(e.data);
+        if (data.agent) addTile(data.agent);
+      } catch (ex) { /* ignore */ }
+    });
+
+    source.addEventListener("agent.step", function (e) {
+      try {
+        var data = JSON.parse(e.data);
+        updateTile(data.agentRunId, data.toolName, data.stepOrder);
+      } catch (ex) { /* ignore */ }
+    });
+
+    source.addEventListener("agent.completed", function (e) {
+      try {
+        var data = JSON.parse(e.data);
+        removeTile(data.agentRunId);
+      } catch (ex) { /* ignore */ }
+    });
+
+    source.onerror = function () {
+      source.close();
+      setTimeout(openSSE, 5000);
+    };
+  }
+
   // ─── Card rendering ────────────────────────────────────────────────────────
 
   function renderCard(card) {
@@ -193,9 +344,13 @@
     var externalId = escapeHtml(card.externalId || card.id);
     var title = escapeHtml(card.title);
 
+    // Track card titles for the agents rail
+    cardTitleMap[card.key] = card.title;
+
     var article = document.createElement("article");
     article.className = "kcard";
     article.setAttribute("data-key", card.key);
+    article.setAttribute("id", "card-" + card.key);
 
     article.innerHTML =
       '<header>' +
@@ -276,4 +431,6 @@
   refreshBtn.addEventListener("click", fetchBoard);
 
   fetchBoard();
+  fetchAgents();
+  openSSE();
 })();
