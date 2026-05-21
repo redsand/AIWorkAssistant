@@ -371,11 +371,33 @@
     destroyNetwork();
     if (nodes.length === 0) {
       document.getElementById("graph-empty").style.display = "block";
+      document.getElementById("graph-legend").style.display = "none";
       return;
     }
     document.getElementById("graph-empty").style.display = "none";
+    document.getElementById("graph-legend").style.display = "";
+
+    var isGhostNode = function (n) {
+      return n.status === "unknown" && n.priority === "unknown";
+    };
 
     var visNodes = nodes.map(function (n) {
+      if (isGhostNode(n)) {
+        return {
+          id: n.id,
+          label: n.label,
+          title:
+            "<b>" +
+            n.label +
+            "</b><br>" +
+            n.title.replace(/</g, "&lt;").replace(/>/g, "&gt;"),
+          shape: "dot",
+          size: 8,
+          color: { background: "#d1d5db", border: "#f59e0b" },
+          borderWidth: 1,
+          font: { size: 9, color: "#6b7280" },
+        };
+      }
       return {
         id: n.id,
         label: n.label,
@@ -403,14 +425,18 @@
     });
 
     var visEdges = edges.map(function (e) {
+      var isExternal = e.dashes === true;
       return {
         from: e.from,
         to: e.to,
         arrows: "to",
         label: e.label,
         font: { size: 9, color: "#6b7280", align: "middle" },
-        color: { color: "#c4b5fd", hover: "#a78bfa" },
+        color: isExternal
+          ? e.color || { color: "#f59e0b", hover: "#f59e0b" }
+          : { color: "#c4b5fd", hover: "#a78bfa" },
         smooth: { type: "curvedCW", roundness: 0.2 },
+        dashes: isExternal ? [8, 4] : false,
       };
     });
 
@@ -660,7 +686,8 @@
           "/api/repo-dashboard/dependencies?platform=" +
             encodeURIComponent(platform) +
             "&repo=" +
-            encodeURIComponent(repoKey),
+            encodeURIComponent(repoKey) +
+            "&includeExternal=true",
         ),
       ]);
 
