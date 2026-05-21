@@ -317,6 +317,7 @@
   }
 
   function moveCardToColumn(cardEl, targetCol) {
+    if (!columns[targetCol]) return;
     var currentParent = cardEl.parentElement;
     if (!currentParent) return;
     var currentCol = currentParent.getAttribute("data-column");
@@ -363,7 +364,7 @@
             }
           }
         }
-      } catch (ex) { /* ignore */ }
+      } catch (ex) { console.warn("kanban SSE agent.started:", ex); }
     });
 
     source.addEventListener("agent.step", function (e) {
@@ -380,7 +381,7 @@
             if (toolEl) toolEl.textContent = data.toolName;
           }
         }
-      } catch (ex) { /* ignore */ }
+      } catch (ex) { console.warn("kanban SSE agent.step:", ex); }
     });
 
     source.addEventListener("agent.completed", function (e) {
@@ -398,11 +399,13 @@
             if (toolEl) toolEl.textContent = "";
             if (data.status === "completed") {
               debounceMoveCard(cardKey, "done");
+            } else {
+              cardEl.classList.add("kcard--failed");
             }
           }
           delete agentRunToCardKey[data.agentRunId];
         }
-      } catch (ex) { /* ignore */ }
+      } catch (ex) { console.warn("kanban SSE agent.completed:", ex); }
     });
 
     source.addEventListener("card.updated", function (e) {
@@ -415,7 +418,7 @@
             debounceMoveCard(card.key, card.column || "backlog");
           }
         }
-      } catch (ex) { /* ignore */ }
+      } catch (ex) { console.warn("kanban SSE card.updated:", ex); }
     });
 
     source.onerror = function () {
@@ -467,6 +470,8 @@
 
   function renderBoard(data) {
     clearColumns();
+    pendingMoves.forEach(function (tid) { clearTimeout(tid); });
+    pendingMoves.clear();
     cardIndex.clear();
 
     var cards = data.cards || [];

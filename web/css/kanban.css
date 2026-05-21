@@ -390,6 +390,17 @@ body {
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .kcard--running::before {
+    animation: none;
+  }
+}
+
+/* Failed card — red left border indicator */
+.kcard--failed {
+  border-left: 3px solid #ef4444;
+}
+
 /* Tool chip in card footer */
 .kcard-tool {
   display: none;
