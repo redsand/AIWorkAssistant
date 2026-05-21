@@ -746,9 +746,87 @@ describe("Regression: direct Claude provider routing", () => {
     expect(args).not.toContain("--model");
     expect(args).not.toContain("gpt-5.5");
   });
+
+  it("uses a Claude alias for Z.ai-backed models in direct mode", () => {
+    const args = buildAgentArgs("claude", undefined, "GLM-5.1", "zai");
+
+    expect(args).toContain("--model");
+    expect(args).toContain("opus");
+    expect(args).not.toContain("GLM-5.1");
+  });
 });
 
 describe("Regression: direct Codex provider routing", () => {
+  it("uses a supported Responses provider config for Z.ai", () => {
+    const previousCodeUrl = process.env.ZAI_CODEX_API_URL;
+    const previousResponsesUrl = process.env.ZAI_RESPONSES_API_URL;
+    const previousApiUrl = process.env.ZAI_API_URL;
+    process.env.ZAI_CODEX_API_URL = "https://zai-codex.example/v1";
+    delete process.env.ZAI_RESPONSES_API_URL;
+    delete process.env.ZAI_API_URL;
+
+    try {
+      const args = buildAgentArgs("codex", undefined, "GLM-5.1", "zai");
+
+      expect(args).not.toContain("--ignore-user-config");
+      expect(args).toContain("model_provider=\"z_ai\"");
+      expect(args).toContain("model_providers.z_ai.base_url=\"https://zai-codex.example/v1\"");
+      expect(args).toContain("model_providers.z_ai.env_key=\"ZAI_API_KEY\"");
+      expect(args).toContain("model_providers.z_ai.wire_api=\"chat\"");
+      expect(args).toContain("model_providers.z_ai.requires_openai_auth=false");
+      expect(args).toContain("forced_login_method=\"api\"");
+      expect(args).toContain("GLM-5.1");
+    } finally {
+      if (previousCodeUrl === undefined) {
+        delete process.env.ZAI_CODEX_API_URL;
+      } else {
+        process.env.ZAI_CODEX_API_URL = previousCodeUrl;
+      }
+      if (previousResponsesUrl === undefined) {
+        delete process.env.ZAI_RESPONSES_API_URL;
+      } else {
+        process.env.ZAI_RESPONSES_API_URL = previousResponsesUrl;
+      }
+      if (previousApiUrl === undefined) {
+        delete process.env.ZAI_API_URL;
+      } else {
+        process.env.ZAI_API_URL = previousApiUrl;
+      }
+    }
+  });
+
+  it("falls back to ZAI_API_URL for Z.ai Codex routing", () => {
+    const previousCodeUrl = process.env.ZAI_CODEX_API_URL;
+    const previousResponsesUrl = process.env.ZAI_RESPONSES_API_URL;
+    const previousApiUrl = process.env.ZAI_API_URL;
+    delete process.env.ZAI_CODEX_API_URL;
+    delete process.env.ZAI_RESPONSES_API_URL;
+    process.env.ZAI_API_URL = "https://api.z.ai/api/coding/paas/v4";
+
+    try {
+      const args = buildAgentArgs("codex", undefined, "GLM-5.1", "zai");
+
+      expect(args).toContain("model_providers.z_ai.base_url=\"https://api.z.ai/api/coding/paas/v4\"");
+      expect(args).toContain("model_providers.z_ai.wire_api=\"chat\"");
+    } finally {
+      if (previousCodeUrl === undefined) {
+        delete process.env.ZAI_CODEX_API_URL;
+      } else {
+        process.env.ZAI_CODEX_API_URL = previousCodeUrl;
+      }
+      if (previousResponsesUrl === undefined) {
+        delete process.env.ZAI_RESPONSES_API_URL;
+      } else {
+        process.env.ZAI_RESPONSES_API_URL = previousResponsesUrl;
+      }
+      if (previousApiUrl === undefined) {
+        delete process.env.ZAI_API_URL;
+      } else {
+        process.env.ZAI_API_URL = previousApiUrl;
+      }
+    }
+  });
+
   it("does not invent a Responses endpoint for OpenCode Go", () => {
     const previousCodeUrl = process.env.OPENCODE_CODEX_API_URL;
     const previousResponsesUrl = process.env.OPENCODE_RESPONSES_API_URL;

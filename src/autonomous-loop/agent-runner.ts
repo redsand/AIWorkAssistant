@@ -114,7 +114,11 @@ export function buildAgentArgs(
           );
         }
       } else if (apiProvider === "zai") {
-        const base = process.env.ZAI_API_URL || process.env.OPENAI_BASE_URL || "https://api.z.ai/api/coding/paas/v4";
+        const base = process.env.ZAI_CODEX_API_URL
+          || process.env.ZAI_RESPONSES_API_URL
+          || process.env.ZAI_API_URL
+          || process.env.OPENAI_BASE_URL
+          || "https://api.z.ai/api/coding/paas/v4";
         args.splice(1, 0,
           "-c", "model_provider=\"z_ai\"",
           "-c", "model_providers.z_ai.name=\"z.ai - GLM Coding Plan\"",

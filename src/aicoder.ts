@@ -45,6 +45,7 @@ import {
 import { runTestSuite as _runTestSuite, checkCoverage as _checkCoverage } from "./autonomous-loop/test-runner";
 import { runAgent as _runAgent } from "./autonomous-loop/agent-runner";
 import type { AgentConfig } from "./autonomous-loop/agent-runner";
+import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
 import { enrichPrompt } from "./autonomous-loop/prompt-enricher";
 import {
   detectRemotePlatform,
@@ -177,61 +178,14 @@ process.env.AICODER_AGENT = AGENT;
 process.env.AICODER_MODEL = MODEL;
 process.env.AICODER_OLLAMA = USE_OLLAMA ? "true" : "false";
 
-function stripTrailingV1(url: string): string {
-  return url.replace(/\/v1\/?$/, "");
-}
-
-function hasSecret(value: string): string {
-  return value ? "present" : "missing";
-}
-
-if (API_PROVIDER === "opencode") {
-  const base = process.env.OPENCODE_API_URL || process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen/go/v1";
-  const key = process.env.OPENCODE_API_KEY || "";
-  const anthropicBase = process.env.OPENCODE_ANTHROPIC_BASE_URL || stripTrailingV1(base);
-  process.env.OPENAI_BASE_URL = base;
-  process.env.OPENCODE_API_URL = base;
-  process.env.OPENCODE_BASE_URL = base;
-  if (key) {
-    process.env.OPENAI_API_KEY = key;
-    process.env.CODEX_API_KEY = key;
-    process.env.OPENCODE_API_KEY = key;
-  }
-  process.env.OPENCODE_MODEL = MODEL;
-  if (AGENT === "claude") {
-    process.env.ANTHROPIC_BASE_URL = anthropicBase;
-    if (key) {
-      process.env.ANTHROPIC_API_KEY = key;
-      process.env.ANTHROPIC_AUTH_TOKEN = key;
-    }
-    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = MODEL;
-    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = MODEL;
-    process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = MODEL;
-  }
-  console.log(`[aicoder] provider routing openaiBase=${base} anthropicBase=${AGENT === "claude" ? anthropicBase : "n/a"} key=${hasSecret(key)} codexKey=${hasSecret(process.env.CODEX_API_KEY || "")}`);
-} else if (API_PROVIDER === "zai") {
-  const base = process.env.ZAI_API_URL || process.env.ZAI_BASE_URL || "https://api.z.ai/api/coding/paas/v4";
-  const anthropicBase = process.env.ZAI_ANTHROPIC_BASE_URL || "https://api.z.ai/api/anthropic";
-  const key = process.env.ZAI_API_KEY || "";
-  process.env.OPENAI_BASE_URL = base;
-  if (key) {
-    process.env.OPENAI_API_KEY = key;
-    process.env.CODEX_API_KEY = key;
-    process.env.ZAI_API_KEY = key;
-    process.env.Z_AI_API_KEY = key;
-  }
-  process.env.ZAI_MODEL = MODEL;
-  if (AGENT === "claude") {
-    process.env.ANTHROPIC_BASE_URL = anthropicBase;
-    if (key) {
-      process.env.ANTHROPIC_API_KEY = key;
-      process.env.ANTHROPIC_AUTH_TOKEN = key;
-    }
-    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = MODEL;
-    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = MODEL;
-    process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = MODEL;
-  }
-  console.log(`[aicoder] provider routing openaiBase=${base} anthropicBase=${AGENT === "claude" ? anthropicBase : "n/a"} key=${hasSecret(key)} codexKey=${hasSecret(process.env.CODEX_API_KEY || "")}`);
+const providerRouting = applyProviderRouting({
+  apiProvider: API_PROVIDER,
+  agent: AGENT,
+  model: MODEL,
+  env: process.env,
+});
+if (providerRouting) {
+  console.log(`[aicoder] provider routing openaiBase=${providerRouting.base} anthropicBase=${AGENT === "claude" ? providerRouting.anthropicBase : "n/a"} key=${hasSecret(process.env.OPENAI_API_KEY)} codexKey=${hasSecret(process.env.CODEX_API_KEY)}`);
 }
 
 console.log(`[aicoder] agent=${AGENT} model=${MODEL} api=${API_PROVIDER ?? "default"} ollama=${USE_OLLAMA} workspace=${WORKSPACE}`);

@@ -112,17 +112,24 @@ export function parseDependencies(body: string): Array<{ id: string; label: stri
 export function normalizeStatus(
   raw: string | null | undefined,
   platform: string,
+  labels?: string[],
 ): string {
   if (!raw) return "unknown";
   const s = raw.toLowerCase().trim();
 
   if (platform === "github") {
-    if (s === "open") return "open";
+    if (s === "open") {
+      if (labels?.some((l) => l.toLowerCase() === "in progress")) return "in_progress";
+      return "open";
+    }
     if (s === "closed") return "done";
     return "unknown";
   }
   if (platform === "gitlab") {
-    if (s === "opened") return "open";
+    if (s === "opened") {
+      if (labels?.some((l) => l.toLowerCase() === "in progress")) return "in_progress";
+      return "open";
+    }
     if (s === "closed") return "done";
     return "unknown";
   }
@@ -367,7 +374,7 @@ async function fetchGitHubIssues(repo: string): Promise<DashboardIssue[]> {
       externalId: `#${i.number}`,
       title: i.title || "",
       url: i.html_url || "",
-      status: normalizeStatus(i.state, "github"),
+      status: normalizeStatus(i.state, "github", (i.labels || []).map((l: any) => (typeof l === "string" ? l : l.name))),
       priority: normalizePriority(
         null,
         (i.labels || []).map((l: any) => (typeof l === "string" ? l : l.name)),
@@ -393,7 +400,7 @@ async function fetchGitLabIssues(repoId: string): Promise<DashboardIssue[]> {
       externalId: `!${i.iid || i.id}`,
       title: i.title || "",
       url: webUrl,
-      status: normalizeStatus(i.state, "gitlab"),
+      status: normalizeStatus(i.state, "gitlab", i.labels || []),
       priority: normalizePriority(null, i.labels || []),
       assignee: i.assignee?.username || i.assignee?.name || null,
       labels: i.labels || [],
@@ -516,7 +523,7 @@ async function fetchGitHubSprints(
             externalId: `#${i.number}`,
             title: i.title || "",
             url: i.html_url || "",
-            status: normalizeStatus(i.state, "github"),
+            status: normalizeStatus(i.state, "github", (i.labels || []).map((l: any) => typeof l === "string" ? l : l.name)),
             priority: normalizePriority(
               null,
               (i.labels || []).map((l: any) =>

@@ -367,6 +367,70 @@ describe("createStreamFormatter — opencode events", () => {
     expect(plain).toContain("crossRepoEdges");
   });
 
+  it("formats OpenCode tools when payload is nested under state", () => {
+    const output = formatEvent({
+      type: "tool_call",
+      tool: "read",
+      state: { input: { path: "src/lib/graph.ts" } },
+    }, "opencode");
+
+    const plain = stripAnsi(output);
+    expect(plain).toContain("read");
+    expect(plain).toContain("src/lib/graph.ts");
+  });
+
+  it("formats actual OpenCode part.state input shape", () => {
+    const output = formatEvent({
+      type: "tool_use",
+      part: {
+        type: "tool",
+        tool: "read",
+        state: {
+          status: "completed",
+          input: { filePath: "C:\\Users\\TimShelton\\source\\repos\\AIWorkAssistant\\src\\routes\\repo-dashboard.ts" },
+          title: "repo-dashboard.ts",
+        },
+      },
+    }, "opencode");
+
+    const plain = stripAnsi(output);
+    expect(plain).toContain("read");
+    expect(plain).toContain("repo-dashboard.ts");
+  });
+
+  it("summarizes actual OpenCode part.state output shape", () => {
+    const output = formatEvent({
+      type: "tool_use",
+      part: {
+        type: "tool",
+        tool: "bash",
+        state: {
+          status: "completed",
+          input: { command: "rtk tsc --noEmit" },
+          output: "TypeScript compilation completed\n",
+          title: "TypeScript typecheck",
+        },
+      },
+    }, "opencode");
+
+    const plain = stripAnsi(output);
+    expect(plain).toContain("TypeScript compilation completed");
+  });
+
+  it("formats OpenCode tools with sanitized fallback details", () => {
+    const output = formatEvent({
+      type: "tool_call",
+      tool: "read",
+      metadata: { file: "src/graph.ts" },
+      apiKey: "secret-value",
+    }, "opencode");
+
+    const plain = stripAnsi(output);
+    expect(plain).toContain("read");
+    expect(plain).toContain("metadata");
+    expect(plain).not.toContain("secret-value");
+  });
+
   it("formats OpenCode todo writes with task details", () => {
     const output = formatEvent({
       type: "tool_call",

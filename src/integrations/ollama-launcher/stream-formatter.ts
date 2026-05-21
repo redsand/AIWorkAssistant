@@ -377,19 +377,23 @@ function formatToolUse(name: string, input?: Record<string, unknown>, color?: (s
     }
     case "Read": {
       const fp = String(input.file_path ?? input.filePath ?? input.path ?? input.target ?? "");
-      return `${prefix}\n    ${ANSI.dim}${fp}${ANSI.reset}`;
+      const summary = summarizeToolInput(input);
+      return fp ? `${prefix}\n    ${ANSI.dim}${fp}${ANSI.reset}` : summary ? `${prefix}\n    ${ANSI.dim}${summary}${ANSI.reset}` : prefix;
     }
     case "Write": {
       const fp = String(input.file_path ?? input.filePath ?? input.path ?? input.target ?? "");
-      return `${prefix}\n    ${ANSI.dim}${fp}${ANSI.reset}`;
+      const summary = summarizeToolInput(input);
+      return fp ? `${prefix}\n    ${ANSI.dim}${fp}${ANSI.reset}` : summary ? `${prefix}\n    ${ANSI.dim}${summary}${ANSI.reset}` : prefix;
     }
     case "Edit": {
       const fp = String(input.file_path ?? input.filePath ?? input.path ?? input.target ?? "");
-      return `${prefix}\n    ${ANSI.dim}${fp}${ANSI.reset}`;
+      const summary = summarizeToolInput(input);
+      return fp ? `${prefix}\n    ${ANSI.dim}${fp}${ANSI.reset}` : summary ? `${prefix}\n    ${ANSI.dim}${summary}${ANSI.reset}` : prefix;
     }
     case "MultiEdit": {
       const fp = String(input.file_path ?? input.filePath ?? input.path ?? input.target ?? "");
-      return `${prefix}\n    ${ANSI.dim}${fp}${ANSI.reset}`;
+      const summary = summarizeToolInput(input);
+      return fp ? `${prefix}\n    ${ANSI.dim}${fp}${ANSI.reset}` : summary ? `${prefix}\n    ${ANSI.dim}${summary}${ANSI.reset}` : prefix;
     }
     case "Glob": {
       const pat = String(input.pattern ?? "");
@@ -439,7 +443,7 @@ function summarizeToolInput(input: Record<string, unknown>): string {
     if (typeof value === "string" && value.trim()) return truncate(value.trim(), 160);
   }
   const entries = Object.entries(input)
-    .filter(([key, value]) => value !== undefined && value !== null && !["type", "tool", "name", "id", "callID", "call_id"].includes(key))
+    .filter(([key, value]) => value !== undefined && value !== null && !["type", "tool", "name", "id", "callID", "call_id"].includes(key) && !isSensitiveKey(key))
     .slice(0, 4);
   if (entries.length === 0) return "";
   const summary = entries.map(([key, value]) => {
@@ -449,6 +453,10 @@ function summarizeToolInput(input: Record<string, unknown>): string {
     return `${key}: ${truncate(JSON.stringify(value), 80)}`;
   }).join(", ");
   return truncate(summary, 180);
+}
+
+function isSensitiveKey(key: string): boolean {
+  return /(?:key|token|secret|password|credential|authorization|auth)/iu.test(key);
 }
 
 // ─── Debug logging ───────────────────────────────────────────────────────────
@@ -773,6 +781,9 @@ interface OpenCodeEvent {
     params?: Record<string, unknown>;
     parameters?: Record<string, unknown>;
     data?: Record<string, unknown>;
+    state?: Record<string, unknown>;
+    call?: Record<string, unknown>;
+    toolCall?: Record<string, unknown>;
     output?: string;
     result?: string;
     error?: string;
@@ -786,6 +797,9 @@ interface OpenCodeEvent {
   params?: Record<string, unknown>;
   parameters?: Record<string, unknown>;
   data?: Record<string, unknown>;
+  state?: Record<string, unknown>;
+  call?: Record<string, unknown>;
+  toolCall?: Record<string, unknown>;
   // tool result
   result?: string | unknown;
   output?: string;
@@ -825,6 +839,7 @@ function createOpenCodeFormatter(debugMode: boolean, debugWorkspace?: string): S
     const type = event.type ?? "";
     const part = event.part;
     const partType = part?.type ?? "";
+    const state = part?.state;
 
     if (type === "step_start" || type === "step.started" || type === "step.start") {
       const label = openCodeEventLabel(event) || "step started";
@@ -844,6 +859,7 @@ function createOpenCodeFormatter(debugMode: boolean, debugWorkspace?: string): S
         : typeof event.output === "string" ? event.output
         : typeof part?.result === "string" ? part.result
         : typeof part?.output === "string" ? part.output
+        : typeof state?.output === "string" ? state.output
         : "";
       const error = formatOpenCodeDiagnostic(event.error) || formatOpenCodeDiagnostic(part?.error);
       if (output.trim() || error.trim()) {
@@ -857,7 +873,11 @@ function createOpenCodeFormatter(debugMode: boolean, debugWorkspace?: string): S
         const canonicalName = canonicalToolName(toolName);
         if (TEST_RE.test(String(input?.command ?? input?.cmd ?? toolName))) agentRanTests = true;
         if (canonicalName === "Bash" && TEST_RE.test(String(input?.command ?? input?.cmd ?? ""))) agentRanTests = true;
-        return formatToolUse(toolName, input, green);
+        const title = openCodeToolTitle(event);
+        const formatted = formatToolUse(toolName, input, green);
+        return title && formatted.trim() === `▶ ${toolDisplayName(canonicalName)}`
+          ? `${formatted}\n    ${dim(title)}`
+          : formatted;
       }
       return `  ${green("▶")} ${dim("tool_use")}`;
     }
@@ -957,19 +977,67 @@ function createOpenCodeFormatter(debugMode: boolean, debugWorkspace?: string): S
       event.params,
       event.parameters,
       event.data,
+      event.state,
+      event.call,
+      event.toolCall,
       part?.input,
       part?.args,
       part?.arguments,
       part?.params,
       part?.parameters,
       part?.data,
+      part?.state,
+      part?.state?.input,
+      part?.state?.metadata,
+      part?.call,
+      part?.toolCall,
     ]) {
-      if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+      const found = findOpenCodeToolPayload(value);
+      if (found) return found;
     }
     const toolName = event.name || event.tool || part?.name || part?.tool;
     const derived = omitOpenCodeMetadata(event);
+    const partDerived = part ? omitOpenCodeMetadata(part as OpenCodeEvent) : {};
+    const merged = { ...partDerived, ...derived };
+    delete merged.input;
+    delete merged.args;
+    delete merged.arguments;
+    delete merged.params;
+    delete merged.parameters;
+    delete merged.data;
+    delete merged.state;
+    delete merged.call;
+    delete merged.toolCall;
+    if (toolName && Object.keys(merged).length > 0) return merged;
     if (toolName && Object.keys(derived).length > 0) return derived;
     return undefined;
+  }
+
+  function openCodeToolTitle(event: OpenCodeEvent): string {
+    const part = event.part;
+    const state = part?.state as Record<string, unknown> | undefined;
+    const partRecord = part as Record<string, unknown> | undefined;
+    const metadata = state?.metadata as Record<string, unknown> | undefined;
+    for (const value of [state?.title, partRecord?.title, event.title, metadata?.title]) {
+      if (typeof value === "string" && value.trim()) return truncate(value.trim(), 120);
+    }
+    return "";
+  }
+
+  function findOpenCodeToolPayload(value: unknown, depth = 0): Record<string, unknown> | undefined {
+    if (!value || typeof value !== "object" || Array.isArray(value) || depth > 3) return undefined;
+    const obj = value as Record<string, unknown>;
+    for (const key of ["input", "args", "arguments", "params", "parameters", "data"]) {
+      const nested = obj[key];
+      if (nested && typeof nested === "object" && !Array.isArray(nested)) return nested as Record<string, unknown>;
+    }
+    const direct = summarizeToolInput(obj);
+    if (direct) return obj;
+    for (const nested of Object.values(obj)) {
+      const found = findOpenCodeToolPayload(nested, depth + 1);
+      if (found) return found;
+    }
+    return Object.keys(obj).length > 0 ? obj : undefined;
   }
 
   function omitOpenCodeMetadata(event: OpenCodeEvent): Record<string, unknown> {
@@ -988,7 +1056,7 @@ function createOpenCodeFormatter(debugMode: boolean, debugWorkspace?: string): S
     ]);
     const derived: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(event)) {
-      if (!ignored.has(key) && value !== undefined && value !== null) derived[key] = value;
+      if (!ignored.has(key) && value !== undefined && value !== null && !isSensitiveKey(key)) derived[key] = value;
     }
     return derived;
   }
