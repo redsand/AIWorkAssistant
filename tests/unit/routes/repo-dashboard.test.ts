@@ -20,16 +20,16 @@ import type {
 } from "../../../src/routes/repo-dashboard";
 
 vi.mock("../../../src/integrations/github/github-client", () => ({
-  githubClient: { listRepositories: vi.fn(), listIssues: vi.fn(), listMilestones: vi.fn() },
+  githubClient: { listRepositories: vi.fn(), listIssues: vi.fn(), listMilestones: vi.fn(), updateIssue: vi.fn() },
 }));
 vi.mock("../../../src/integrations/gitlab/gitlab-client", () => ({
-  gitlabClient: { getProjects: vi.fn(), listIssues: vi.fn() },
+  gitlabClient: { getProjects: vi.fn(), listIssues: vi.fn(), editIssue: vi.fn() },
 }));
 vi.mock("../../../src/integrations/jira/jira-client", () => ({
-  jiraClient: { getProjects: vi.fn(), searchIssues: vi.fn(), getSprints: vi.fn(), getSprintIssues: vi.fn() },
+  jiraClient: { getProjects: vi.fn(), searchIssues: vi.fn(), getSprints: vi.fn(), getSprintIssues: vi.fn(), transitionIssue: vi.fn(), getTransitions: vi.fn() },
 }));
 vi.mock("../../../src/work-items/database", () => ({
-  workItemDatabase: { listWorkItems: vi.fn() },
+  workItemDatabase: { listWorkItems: vi.fn(), updateWorkItem: vi.fn() },
 }));
 vi.mock("../../../src/config/env", () => ({
   env: { GITHUB_TOKEN: "gh-test-token", GITHUB_DEFAULT_OWNER: "test-org", GITHUB_DEFAULT_REPO: "test-repo", GITLAB_TOKEN: "gl-test-token", GITLAB_BASE_URL: "https://gitlab.com", GITLAB_DEFAULT_PROJECT: "", JIRA_BASE_URL: "https://test.atlassian.net", JIRA_API_TOKEN: "jira-test-token" },
@@ -747,6 +747,193 @@ describe("repoDashboardRoutes", () => {
       // Force-refresh within TTL window should bypass cache
       await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=github&repo=org/repo&_t=1234567890" });
       expect(githubClient.listIssues).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("POST /transition", () => {
+    it("should reject missing fields", async () => {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/repo-dashboard/transition",
+        payload: {},
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().success).toBe(false);
+      expect(res.json().error).toBeDefined();
+    });
+
+    it("should reject invalid status", async () => {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/repo-dashboard/transition",
+        payload: { issueId: "1", platform: "github", repo: "org/repo", status: "invalid_status" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().success).toBe(false);
+      expect(res.json().error).toMatch(/invalid.*status/i);
+    });
+
+    it("should reject unsupported platform", async () => {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/repo-dashboard/transition",
+        payload: { issueId: "1", platform: "slack", repo: "org/repo", status: "done" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().success).toBe(false);
+      expect(res.json().error).toMatch(/unsupported.*platform/i);
+    });
+
+    it("should transition GitHub issue to done (closed)", async () => {
+      vi.mocked(githubClient.updateIssue).mockResolvedValue({});
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/repo-dashboard/transition",
+        payload: { issueId: "42", platform: "github", repo: "org/repo", status: "done" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().success).toBe(true);
+      expect(githubClient.updateIssue).toHaveBeenCalledWith(42, { state: "closed" }, "org", "repo");
+    });
+
+    it("should transition GitHub issue to open", async () => {
+      vi.mocked(githubClient.updateIssue).mockResolvedValue({});
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/repo-dashboard/transition",
+        payload: { issueId: "42", platform: "github", repo: "org/repo", status: "open" },
+      });
+      expect(res.json().success).toBe(true);
+      expect(githubClient.updateIssue).toHaveBeenCalledWith(42, { state: "open" }, "org", "repo");
+    });
+
+    it("should reject GitHub in_progress/blocked as unsupported", async () => {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/repo-dashboard/transition",
+        payload: { issueId: "42", platform: "github", repo: "org/repo", status: "in_progress" },
+      });
+      expect(res.json().success).toBe(false);
+      expect(res.json().error).toMatch(/cannot.*transition/i);
+    });
+
+    it("should transition GitLab issue to done (close)", async () => {
+      vi.mocked(gitlabClient.editIssue).mockResolvedValue({});
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/repo-dashboard/transition",
+        payload: { issueId: "15", platform: "gitlab", repo: "myproject", status: "done" },
+      });
+      expect(res.json().success).toBe(true);
+      expect(gitlabClient.editIssue).toHaveBeenCalledWith("myproject", 15, { stateEvent: "close" });
+    });
+
+    it("should transition GitLab issue to open (reopen)", async () => {
+      vi.mocked(gitlabClient.editIssue).mockResolvedValue({});
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/repo-dashboard/transition",
+        payload: { issueId: "15", platform: "gitlab", repo: "myproject", status: "open" },
+      });
+      expect(res.json().success).toBe(true);
+      expect(gitlabClient.editIssue).toHaveBeenCalledWith("myproject", 15, { stateEvent: "reopen" });
+    });
+
+    it("should transition Jira issue via getTransitions + transitionIssue", async () => {
+      vi.mocked(jiraClient.getTransitions).mockResolvedValue([
+        { id: "31", name: "Start Progress", to: { name: "In Progress", id: "3" } },
+      ]);
+      vi.mocked(jiraClient.transitionIssue).mockResolvedValue(undefined);
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/repo-dashboard/transition",
+        payload: { issueId: "PROJ-42", platform: "jira", repo: "PROJ", status: "in_progress" },
+      });
+      expect(res.json().success).toBe(true);
+      expect(jiraClient.getTransitions).toHaveBeenCalledWith("PROJ-42");
+      expect(jiraClient.transitionIssue).toHaveBeenCalledWith("PROJ-42", "31", expect.any(String));
+    });
+
+    it("should reject Jira transition when no matching transition found", async () => {
+      vi.mocked(jiraClient.getTransitions).mockResolvedValue([
+        { id: "31", name: "Start Progress", to: { name: "In Progress", id: "3" } },
+      ]);
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/repo-dashboard/transition",
+        payload: { issueId: "PROJ-42", platform: "jira", repo: "PROJ", status: "done" },
+      });
+      expect(res.json().success).toBe(false);
+      expect(res.json().error).toMatch(/no.*transition/i);
+    });
+
+    it("should transition work_items", async () => {
+      vi.mocked(workItemDatabase.updateWorkItem).mockReturnValue({
+        id: "wi-1", title: "T", status: "active", priority: "high", owner: null,
+        sourceUrl: "", sourceExternalId: "e1", source: "chat",
+        createdAt: "", updatedAt: "", description: "",
+      });
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/repo-dashboard/transition",
+        payload: { issueId: "wi-1", platform: "work_items", repo: "chat", status: "in_progress" },
+      });
+      expect(res.json().success).toBe(true);
+      expect(workItemDatabase.updateWorkItem).toHaveBeenCalledWith("wi-1", { status: "active" });
+    });
+
+    it("should invalidate cache after successful transition", async () => {
+      const transitionMockIssue = { number: 1, state: "open", title: "Cached Issue", pull_request: null, labels: [], assignee: null, html_url: "https://github.com/org/repo/issues/1", created_at: "2025-01-01T00:00:00Z", updated_at: "2025-01-02T00:00:00Z", body: "" };
+      vi.mocked(githubClient.listIssues).mockResolvedValue([transitionMockIssue]);
+      vi.mocked(githubClient.updateIssue).mockResolvedValue({});
+
+      // Populate cache
+      await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=github&repo=org/repo" });
+      expect(githubClient.listIssues).toHaveBeenCalledTimes(1);
+
+      // Transition should invalidate cache
+      await server.inject({
+        method: "POST",
+        url: "/api/repo-dashboard/transition",
+        payload: { issueId: "1", platform: "github", repo: "org/repo", status: "done" },
+      });
+
+      // Next fetch should be a cache miss (listIssues called again)
+      await server.inject({ method: "GET", url: "/api/repo-dashboard/issues?platform=github&repo=org/repo" });
+      expect(githubClient.listIssues).toHaveBeenCalledTimes(2);
+    });
+
+    it("should handle GitHub transition errors", async () => {
+      vi.mocked(githubClient.updateIssue).mockRejectedValue(new Error("API error"));
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/repo-dashboard/transition",
+        payload: { issueId: "1", platform: "github", repo: "org/repo", status: "done" },
+      });
+      expect(res.json().success).toBe(false);
+      expect(res.json().error).toBe("API error");
+    });
+
+    it("should handle Jira getTransitions errors", async () => {
+      vi.mocked(jiraClient.getTransitions).mockRejectedValue(new Error("Jira down"));
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/repo-dashboard/transition",
+        payload: { issueId: "PROJ-1", platform: "jira", repo: "PROJ", status: "in_progress" },
+      });
+      expect(res.json().success).toBe(false);
+      expect(res.json().error).toBe("Jira down");
+    });
+
+    it("should handle work_items not found", async () => {
+      vi.mocked(workItemDatabase.updateWorkItem).mockReturnValue(null);
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/repo-dashboard/transition",
+        payload: { issueId: "nonexistent", platform: "work_items", repo: "chat", status: "in_progress" },
+      });
+      expect(res.json().success).toBe(false);
+      expect(res.json().error).toMatch(/not found/i);
     });
   });
 });

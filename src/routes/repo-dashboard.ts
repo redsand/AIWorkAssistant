@@ -14,6 +14,7 @@ import { gitlabClient } from "../integrations/gitlab/gitlab-client";
 import { jiraClient } from "../integrations/jira/jira-client";
 import { workItemDatabase } from "../work-items/database";
 import { env } from "../config/env";
+import type { WorkItemStatus } from "../work-items/types";
 
 const MAX_ISSUES = 200;
 
@@ -240,6 +241,24 @@ export function normalizePriority(
 
   return "unknown";
 }
+
+// ─── Transition helpers ─────────────────────────────────────────────────────
+
+const VALID_TRANSITION_STATUSES = ["open", "in_progress", "blocked", "done"] as const;
+
+const STATUS_TO_WORK_ITEMS: Record<string, WorkItemStatus> = {
+  open: "proposed",
+  in_progress: "active",
+  blocked: "blocked",
+  done: "done",
+};
+
+const JIRA_STATUS_TARGETS: Record<string, string[]> = {
+  open: ["to do", "new", "backlog", "open", "reopened"],
+  in_progress: ["in progress", "in review"],
+  blocked: ["blocked", "on hold"],
+  done: ["done", "resolved", "closed"],
+};
 
 // ─── GitHub helpers ──────────────────────────────────────────────────────────
 
@@ -975,6 +994,125 @@ export async function repoDashboardRoutes(fastify: FastifyInstance) {
         ideal: [],
         actual: [],
         error: err.message || "Failed to calculate burndown",
+      };
+    }
+  });
+
+  fastify.post<{
+    Body: { issueId: string; platform: string; repo: string; status: string };
+  }>("/transition", async (request) => {
+    const { issueId, platform, repo, status } = request.body || {};
+
+    if (!issueId || !platform || !repo || !status) {
+      return {
+        success: false,
+        error: "issueId, platform, repo, and status are required",
+      };
+    }
+
+    if (!VALID_TRANSITION_STATUSES.includes(status as any)) {
+      return {
+        success: false,
+        error: `Invalid status "${status}". Must be one of: ${VALID_TRANSITION_STATUSES.join(", ")}`,
+      };
+    }
+
+    try {
+      switch (platform) {
+        case "github": {
+          if (status === "done") {
+            const [owner, repoName] = repo.split("/");
+            await githubClient.updateIssue(
+              Number(issueId),
+              { state: "closed" },
+              owner,
+              repoName,
+            );
+          } else if (status === "open") {
+            const [owner, repoName] = repo.split("/");
+            await githubClient.updateIssue(
+              Number(issueId),
+              { state: "open" },
+              owner,
+              repoName,
+            );
+          } else {
+            return {
+              success: false,
+              error: `Cannot transition GitHub issue to "${status}". GitHub only supports open and closed states.`,
+            };
+          }
+          break;
+        }
+        case "gitlab": {
+          if (status === "done") {
+            await gitlabClient.editIssue(repo, Number(issueId), {
+              stateEvent: "close",
+            });
+          } else if (status === "open") {
+            await gitlabClient.editIssue(repo, Number(issueId), {
+              stateEvent: "reopen",
+            });
+          } else {
+            return {
+              success: false,
+              error: `Cannot transition GitLab issue to "${status}". GitLab only supports open and closed states via this endpoint.`,
+            };
+          }
+          break;
+        }
+        case "jira": {
+          const targetNames = JIRA_STATUS_TARGETS[status] || [];
+          const transitions = await jiraClient.getTransitions(issueId);
+          const match = transitions.find((t: any) => {
+            const toName = (t.to?.name || "").toLowerCase().trim();
+            return targetNames.includes(toName);
+          });
+          if (!match) {
+            return {
+              success: false,
+              error: `No available transition to "${status}" for ${issueId}. Available: ${transitions.map((t: any) => t.name).join(", ") || "none"}`,
+            };
+          }
+          await jiraClient.transitionIssue(
+            issueId,
+            match.id,
+            `Transitioned via dashboard to ${status}`,
+          );
+          break;
+        }
+        case "work_items": {
+          const wiStatus = STATUS_TO_WORK_ITEMS[status];
+          if (!wiStatus) {
+            return {
+              success: false,
+              error: `Cannot map status "${status}" to work item status.`,
+            };
+          }
+          const result = workItemDatabase.updateWorkItem(issueId, {
+            status: wiStatus,
+          });
+          if (!result) {
+            return {
+              success: false,
+              error: `Work item ${issueId} not found`,
+            };
+          }
+          break;
+        }
+        default:
+          return {
+            success: false,
+            error: `Unsupported platform "${platform}"`,
+          };
+      }
+
+      invalidateIssueCache(platform, repo);
+      return { success: true };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err.message || "Failed to transition issue",
       };
     }
   });
