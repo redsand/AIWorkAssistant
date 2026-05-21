@@ -5,6 +5,7 @@ import {
   countRagWins,
   NO_RAG_WIN_CATEGORIES,
 } from "../../src/eval/comparison/thresholds";
+import { computeRetrievalScore } from "../../src/eval/comparison/compareMetrics";
 import type { ComparisonRunResult, ComparisonCase } from "../../src/eval/comparison/reportTypes";
 
 function makeCase(
@@ -180,5 +181,95 @@ describe("evaluateRetrievalReadiness", () => {
       expect(names).toContain(`Retrieval product-ready: ${cat} coverage`);
       expect(names).toContain(`Retrieval product-ready: ${cat} RAG wins`);
     }
+  });
+});
+
+describe("computeRetrievalScore", () => {
+  it("returns 1.0 when all sub-metrics are 1.0", () => {
+    expect(
+      computeRetrievalScore({
+        evidenceRecall: 1.0,
+        evidencePrecision: 1.0,
+        packetCompactness: 1.0,
+        citationAvailability: 1.0,
+      }),
+    ).toBeCloseTo(1.0, 10);
+  });
+
+  it("returns 0.0 when all sub-metrics are 0.0", () => {
+    expect(
+      computeRetrievalScore({
+        evidenceRecall: 0.0,
+        evidencePrecision: 0.0,
+        packetCompactness: 0.0,
+        citationAvailability: 0.0,
+      }),
+    ).toBe(0.0);
+  });
+
+  it("weights evidenceRecall at 0.30", () => {
+    expect(
+      computeRetrievalScore({
+        evidenceRecall: 1.0,
+        evidencePrecision: 0.0,
+        packetCompactness: 0.0,
+        citationAvailability: 0.0,
+      }),
+    ).toBeCloseTo(0.30, 10);
+  });
+
+  it("weights evidencePrecision at 0.35", () => {
+    expect(
+      computeRetrievalScore({
+        evidenceRecall: 0.0,
+        evidencePrecision: 1.0,
+        packetCompactness: 0.0,
+        citationAvailability: 0.0,
+      }),
+    ).toBeCloseTo(0.35, 10);
+  });
+
+  it("weights packetCompactness at 0.20", () => {
+    expect(
+      computeRetrievalScore({
+        evidenceRecall: 0.0,
+        evidencePrecision: 0.0,
+        packetCompactness: 1.0,
+        citationAvailability: 0.0,
+      }),
+    ).toBeCloseTo(0.20, 10);
+  });
+
+  it("weights citationAvailability at 0.15", () => {
+    expect(
+      computeRetrievalScore({
+        evidenceRecall: 0.0,
+        evidencePrecision: 0.0,
+        packetCompactness: 0.0,
+        citationAvailability: 1.0,
+      }),
+    ).toBeCloseTo(0.15, 10);
+  });
+
+  it("produces ~0.79 with mixed realistic values", () => {
+    expect(
+      computeRetrievalScore({
+        evidenceRecall: 0.95,
+        evidencePrecision: 0.70,
+        packetCompactness: 0.70,
+        citationAvailability: 0.80,
+      }),
+    ).toBeCloseTo(0.79, 2);
+  });
+
+  it("clamps values exceeding 1.0 back to 1.0", () => {
+    expect(
+      computeRetrievalScore({
+        evidenceRecall: 2.0,
+        evidencePrecision: 2.0,
+        packetCompactness: 2.0,
+        citationAvailability: 2.0,
+      }),
+    ).toBe(1.0);
   });
 });
