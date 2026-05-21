@@ -149,6 +149,19 @@ class AgentRunDatabase {
     };
   }
 
+  updateRun(id: string, fields: Partial<Pick<AgentRun, "issueId" | "issuePlatform" | "issueRepo" | "worktreePath" | "branch" | "model" | "status" | "errorMessage">>): void {
+    const sets: string[] = [];
+    const values: unknown[] = [];
+    for (const [key, value] of Object.entries(fields)) {
+      const col = key.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`);
+      sets.push(`${col} = ?`);
+      values.push(value);
+    }
+    if (sets.length === 0) return;
+    values.push(id);
+    this.db.prepare(`UPDATE agent_runs SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+  }
+
   completeRun(id: string, data: AgentRunCompleteParams): void {
     const now = new Date().toISOString();
     this.db
