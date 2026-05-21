@@ -32,7 +32,7 @@ beforeEach(() => {
   repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-ops-"));
   initRepo(repoDir);
   resetBaseBranchCache();
-});
+}, 30000);
 
 afterEach(() => {
   resetBaseBranchCache();

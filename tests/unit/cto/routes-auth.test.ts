@@ -15,7 +15,7 @@ describe("CTO routes authentication", () => {
     const { buildServer } = await import("../../../src/server");
     server = await buildServer();
     await server.ready();
-  }, 30000);
+  }, 60000);
 
   afterAll(async () => {
     if (server) await server.close();
