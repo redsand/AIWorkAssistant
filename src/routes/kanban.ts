@@ -17,8 +17,10 @@ import type {
   KanbanAgent,
   KanbanBoardResponse,
   KanbanColumn,
+  KanbanSSEEvent,
 } from "../kanban/types";
 import { resolveEdges } from "../kanban/edges.js";
+import { kanbanEvents } from "../kanban/events.js";
 
 const MAX_ISSUES = 200;
 
@@ -396,5 +398,44 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
     boardCache.set(cacheKey, { data: board, fetchedAt: now, lastAccessed: now });
 
     return board;
+  });
+
+  // ─── SSE stream ────────────────────────────────────────────────────────────
+
+  fastify.get("/stream", (request, reply) => {
+    reply.hijack();
+    reply.raw.setHeader("Content-Type", "text/event-stream");
+    reply.raw.setHeader("Cache-Control", "no-cache");
+    reply.raw.setHeader("Connection", "keep-alive");
+    reply.raw.setHeader("X-Accel-Buffering", "no");
+    reply.raw.flushHeaders();
+
+    // Replay missed events if client sends Last-Event-ID
+    const lastId = request.headers["last-event-id"];
+    if (lastId) {
+      const sinceId = parseInt(Array.isArray(lastId) ? lastId[0] : lastId, 10);
+      if (!isNaN(sinceId)) {
+        for (const entry of kanbanEvents.replay(sinceId)) {
+          reply.raw.write(`id: ${entry.id}\nevent: ${entry.event.type}\ndata: ${JSON.stringify(entry.event)}\n\n`);
+        }
+      }
+    }
+
+    const onEvent = (entry: { id: number; event: KanbanSSEEvent }) => {
+      reply.raw.write(`id: ${entry.id}\nevent: ${entry.event.type}\ndata: ${JSON.stringify(entry.event)}\n\n`);
+    };
+
+    kanbanEvents.on("event", onEvent);
+
+    const heartbeat = setInterval(() => {
+      reply.raw.write(": ping\n\n");
+    }, 15_000);
+
+    const cleanup = () => {
+      kanbanEvents.off("event", onEvent);
+      clearInterval(heartbeat);
+    };
+
+    request.raw.on("close", cleanup);
   });
 }
