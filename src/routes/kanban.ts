@@ -443,6 +443,38 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
     request.raw.on("close", cleanup);
   });
 
+  // ─── GET /agents — running agents for rail ──────────────────────────────
+
+  fastify.get("/agents", async () => {
+    const { runs } = agentRunDatabase.listRuns({ status: "running", limit: 50 });
+    return runs.map((run) => {
+      let lastTool: string | null = null;
+      let toolLoopCount = run.toolLoopCount;
+      try {
+        const steps = agentRunDatabase.getRunSteps(run.id);
+        const lastStep = steps[steps.length - 1];
+        if (lastStep?.toolName) {
+          lastTool = lastStep.toolName;
+          toolLoopCount = steps.length;
+        }
+      } catch { /* no steps */ }
+
+      return {
+        agentRunId: run.id,
+        agent: (run.mode === "interactive" ? "claude" : "claude") as KanbanAgent["agent"],
+        model: run.model,
+        status: "running" as const,
+        cardKey: run.issuePlatform && run.issueRepo && run.issueId
+          ? `${run.issuePlatform}:${run.issueRepo}:${run.issueId}`
+          : null,
+        startedAt: run.startedAt,
+        lastActivityAt: run.lastActivityAt,
+        toolLoopCount,
+        lastTool,
+      } satisfies KanbanAgent;
+    });
+  });
+
   // ─── In-memory child process registry for stop ─────────────────────────────
 
   const activeChildren = new Map<string, ChildProcess>();
