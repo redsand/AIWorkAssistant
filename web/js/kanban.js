@@ -408,7 +408,7 @@
     boardEl.style.display = "none";
     emptyEl.style.display = "none";
 
-    fetch("/api/kanban/board")
+    return fetch("/api/kanban/board")
       .then(function (res) {
         if (!res.ok) {
           throw new Error("HTTP " + res.status + " " + res.statusText);
@@ -428,9 +428,10 @@
 
   // ─── Init ──────────────────────────────────────────────────────────────────
 
-  refreshBtn.addEventListener("click", fetchBoard);
+  refreshBtn.addEventListener("click", function () {
+    fetchBoard().then(function () { fetchAgents(); });
+  });
 
-  fetchBoard();
-  fetchAgents();
+  fetchBoard().then(function () { fetchAgents(); });
   openSSE();
 })();

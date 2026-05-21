@@ -19,6 +19,7 @@ export interface AgentRun {
   issueRepo: string | null;
   worktreePath: string | null;
   branch: string | null;
+  agentName: string | null;
 }
 
 export interface AgentRunStep {
@@ -67,6 +68,7 @@ export interface AgentRunCreateParams {
   issueRepo?: string | null;
   worktreePath?: string | null;
   branch?: string | null;
+  agentName?: string | null;
 }
 
 export interface AgentRunCompleteParams {

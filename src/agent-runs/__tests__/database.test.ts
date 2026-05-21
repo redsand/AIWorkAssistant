@@ -23,6 +23,18 @@ describe('AgentRunDatabase', () => {
       expect(run.userId).toBe('user-1');
       expect(run.mode).toBe('productivity');
     });
+
+    it('should store agentName when provided', () => {
+      const run = db.startRun({ userId: 'user-1', mode: 'interactive', agentName: 'codex' });
+      expect(run.agentName).toBe('codex');
+      const fetched = db.getRun(run.id);
+      expect(fetched?.agentName).toBe('codex');
+    });
+
+    it('should default agentName to null when not provided', () => {
+      const run = db.startRun({ userId: 'user-1', mode: 'productivity' });
+      expect(run.agentName).toBeNull();
+    });
   });
 
   describe('completeRun', () => {

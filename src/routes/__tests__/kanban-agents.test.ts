@@ -252,4 +252,90 @@ describe('Kanban GET /agents', () => {
     const agent = res.json()[0];
     expect(agent.lastTool).toBeNull();
   });
+
+  it('should return empty array when listRuns throws', async () => {
+    mockListRuns.mockImplementation(() => {
+      throw new Error('database is locked');
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/kanban/agents' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual([]);
+  });
+
+  it('should use agentName from run when available', async () => {
+    const now = new Date().toISOString();
+    mockListRuns.mockReturnValue({
+      runs: [
+        {
+          id: 'run-5',
+          sessionId: null,
+          userId: 'kanban',
+          mode: 'interactive',
+          model: null,
+          status: 'running',
+          errorMessage: null,
+          promptTokens: null,
+          completionTokens: null,
+          totalTokens: null,
+          toolLoopCount: 0,
+          startedAt: now,
+          lastActivityAt: now,
+          completedAt: null,
+          cancelledAt: null,
+          issueId: '1',
+          issuePlatform: 'github',
+          issueRepo: 'owner/repo',
+          worktreePath: null,
+          branch: null,
+          agentName: 'codex',
+        },
+      ],
+      total: 1,
+    });
+
+    mockGetRunSteps.mockReturnValue([]);
+
+    const res = await app.inject({ method: 'GET', url: '/api/kanban/agents' });
+    const agent = res.json()[0];
+    expect(agent.agent).toBe('codex');
+  });
+
+  it('should default to claude when agentName is null', async () => {
+    const now = new Date().toISOString();
+    mockListRuns.mockReturnValue({
+      runs: [
+        {
+          id: 'run-6',
+          sessionId: null,
+          userId: 'kanban',
+          mode: 'interactive',
+          model: null,
+          status: 'running',
+          errorMessage: null,
+          promptTokens: null,
+          completionTokens: null,
+          totalTokens: null,
+          toolLoopCount: 0,
+          startedAt: now,
+          lastActivityAt: now,
+          completedAt: null,
+          cancelledAt: null,
+          issueId: '1',
+          issuePlatform: 'github',
+          issueRepo: 'owner/repo',
+          worktreePath: null,
+          branch: null,
+          agentName: null,
+        },
+      ],
+      total: 1,
+    });
+
+    mockGetRunSteps.mockReturnValue([]);
+
+    const res = await app.inject({ method: 'GET', url: '/api/kanban/agents' });
+    const agent = res.json()[0];
+    expect(agent.agent).toBe('claude');
+  });
 });

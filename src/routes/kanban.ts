@@ -446,7 +446,12 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
   // ─── GET /agents — running agents for rail ──────────────────────────────
 
   fastify.get("/agents", async () => {
-    const { runs } = agentRunDatabase.listRuns({ status: "running", limit: 50 });
+    let runs: import("../agent-runs/types").AgentRun[];
+    try {
+      ({ runs } = agentRunDatabase.listRuns({ status: "running", limit: 50 }));
+    } catch {
+      return [];
+    }
     return runs.map((run) => {
       let lastTool: string | null = null;
       let toolLoopCount = run.toolLoopCount;
@@ -461,7 +466,7 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
 
       return {
         agentRunId: run.id,
-        agent: (run.mode === "interactive" ? "claude" : "claude") as KanbanAgent["agent"],
+        agent: (run.agentName ?? "claude") as KanbanAgent["agent"],
         model: run.model,
         status: "running" as const,
         cardKey: run.issuePlatform && run.issueRepo && run.issueId
@@ -566,6 +571,7 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
       issueRepo: repo,
       worktreePath,
       branch,
+      agentName: agent,
     });
 
     request.log.info({ agentRunId: run.id, platform, repo, id, agent }, "Agent started");
