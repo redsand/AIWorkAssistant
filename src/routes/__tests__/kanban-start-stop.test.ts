@@ -293,6 +293,142 @@ describe('Kanban POST /start and /stop', () => {
       expect(res.statusCode).toBe(500);
       expect(res.json().error).toContain('Worktree creation failed');
     });
+
+    it('should return 409 when an agent is already running for the same card', async () => {
+      mockListRuns.mockReturnValueOnce({
+        runs: [{
+          id: 'existing-run-id',
+          issuePlatform: 'github',
+          issueRepo: TEST_REPO,
+          issueId: '135',
+          status: 'running',
+          worktreePath: '/tmp/wt-existing',
+        }],
+        total: 1,
+      });
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/kanban/cards/github/135/start',
+        payload: { repo: TEST_REPO, agent: 'claude' },
+      });
+
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error).toBe('Agent already running for this card');
+      expect(res.json().agentRunId).toBe('existing-run-id');
+    });
+
+    it('should return 400 for invalid platform', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/kanban/cards/invalid_platform/135/start',
+        payload: { repo: TEST_REPO, agent: 'claude' },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain('Invalid platform');
+    });
+
+    it('should return 400 for invalid agent', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/kanban/cards/github/135/start',
+        payload: { repo: TEST_REPO, agent: 'invalid_agent' },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain('Invalid agent');
+    });
+
+    it('should call completeRun when agent succeeds asynchronously', async () => {
+      mockGetIssue.mockResolvedValueOnce({
+        number: 135,
+        title: 'Async success',
+        body: 'desc',
+        state: 'open',
+      });
+
+      let resolveRun: (value: any) => void;
+      const runPromise = new Promise((resolve) => { resolveRun = resolve; });
+      mockRunAgent.mockReturnValueOnce(runPromise);
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/kanban/cards/github/135/start',
+        payload: { repo: TEST_REPO, agent: 'claude' },
+      });
+
+      expect(res.statusCode).toBe(200);
+
+      // Simulate agent completing successfully
+      resolveRun!({ finDetected: true, exitCode: 0, ranTests: false });
+      await runPromise;
+
+      // Allow microtask queue to flush
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(mockCompleteRun).toHaveBeenCalledWith('test-run-id', expect.objectContaining({ toolLoopCount: 0 }));
+    });
+
+    it('should call failRun when agent fails asynchronously', async () => {
+      mockGetIssue.mockResolvedValueOnce({
+        number: 135,
+        title: 'Async fail',
+        body: 'desc',
+        state: 'open',
+      });
+
+      let resolveRun: (value: any) => void;
+      const runPromise = new Promise((resolve) => { resolveRun = resolve; });
+      mockRunAgent.mockReturnValueOnce(runPromise);
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/kanban/cards/github/135/start',
+        payload: { repo: TEST_REPO, agent: 'claude' },
+      });
+
+      expect(res.statusCode).toBe(200);
+
+      // Simulate agent failing
+      resolveRun!({ finDetected: false, exitCode: 1, ranTests: false, stderr: 'fatal error' });
+      await runPromise;
+
+      // Allow microtask queue to flush
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(mockFailRun).toHaveBeenCalledWith('test-run-id', 'fatal error');
+    });
+
+    it('should call failRun when agent throws asynchronously', async () => {
+      mockGetIssue.mockResolvedValueOnce({
+        number: 135,
+        title: 'Async throw',
+        body: 'desc',
+        state: 'open',
+      });
+
+      let rejectRun: (reason: any) => void;
+      const runPromise = new Promise((_, reject) => { rejectRun = reject; });
+      mockRunAgent.mockReturnValueOnce(runPromise);
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/kanban/cards/github/135/start',
+        payload: { repo: TEST_REPO, agent: 'claude' },
+      });
+
+      expect(res.statusCode).toBe(200);
+
+      // Simulate agent throwing
+      rejectRun!(new Error('spawn ENOENT'));
+      await runPromise.catch(() => {});
+
+      // Allow microtask queue to flush
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(mockFailRun).toHaveBeenCalledWith('test-run-id', 'spawn ENOENT');
+    });
   });
 
   describe('POST /cards/:platform/:id/stop', () => {

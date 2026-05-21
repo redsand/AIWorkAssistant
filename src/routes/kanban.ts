@@ -446,6 +446,8 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
   // ─── In-memory child process registry for stop ─────────────────────────────
 
   const activeChildren = new Map<string, ChildProcess>();
+  const VALID_PLATFORMS = new Set(["github", "gitlab", "jira", "work_items"]);
+  const VALID_AGENTS = new Set(["claude", "codex", "opencode"]);
 
   // ─── POST /cards/:platform/:repo/:id/start ──────────────────────────────────
   // Repo is passed in the body since it may contain "/" (e.g. "owner/repo").
@@ -464,6 +466,23 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
     const body = request.body ?? {};
     const repo = body.repo ?? "";
     const agent = body.agent ?? "claude";
+
+    // Input validation
+    if (!VALID_PLATFORMS.has(platform)) {
+      return reply.status(400).send({ error: `Invalid platform: ${platform}` });
+    }
+    if (!VALID_AGENTS.has(agent)) {
+      return reply.status(400).send({ error: `Invalid agent: ${agent}` });
+    }
+
+    // Duplicate-run guard
+    const runningRuns = agentRunDatabase.listRuns({ status: "running", limit: 1000 });
+    const existing = runningRuns.runs.find(
+      (r) => r.issuePlatform === platform && r.issueRepo === repo && r.issueId === id,
+    );
+    if (existing) {
+      return reply.status(409).send({ error: "Agent already running for this card", agentRunId: existing.id });
+    }
 
     // 1. Look up the card
     const card = await findCard(platform, repo, id);
@@ -518,14 +537,17 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
       apiProvider: body.apiProvider ?? null,
     };
 
+    let stepCounter = 0;
+
     runAgent(prompt, cfg, null, undefined, undefined, (child) => {
       activeChildren.set(run.id, child);
     }, (_stepInfo) => {
+      stepCounter++;
       kanbanEvents.emitEvent({
         type: "agent.step",
         agentRunId: run.id,
         toolName: "output",
-        stepOrder: 0,
+        stepOrder: stepCounter,
       });
     })
       .then((result) => {
