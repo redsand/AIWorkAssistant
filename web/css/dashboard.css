@@ -295,10 +295,36 @@ body {
 .legend-dot.low {
   background: #9ca3af;
 }
+.legend-dot.ghost {
+  background: #d1d5db;
+  border: 1px solid #f59e0b;
+  width: 10px;
+  height: 10px;
+}
 
 .legend-item {
   color: #6b7280;
   font-style: italic;
+}
+
+.legend-line {
+  display: inline-block;
+  width: 24px;
+  height: 2px;
+  vertical-align: middle;
+  margin-right: 2px;
+}
+.legend-line.internal {
+  background: #c4b5fd;
+}
+.legend-line.external {
+  background: transparent;
+  border-top: 2px dashed #f59e0b;
+  height: 0;
+}
+.legend-sep {
+  color: #d1d5db;
+  margin: 0 2px;
 }
 
 .graph-container {
