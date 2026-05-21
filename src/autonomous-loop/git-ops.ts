@@ -364,6 +364,160 @@ export function getBranchModifiedFiles(
   return [];
 }
 
+// ── Branch cleanup ────────────────────────────────────────────────────────────
+
+const DEFAULT_CLEANUP_PREFIX = "ai/";
+
+export interface BranchCleanupResult {
+  deletedLocal: boolean;
+  deletedRemoteTracking: boolean;
+  reason?: string;
+}
+
+function getCleanupPrefix(): string {
+  return process.env.AICODER_BRANCH_CLEANUP_PREFIX ?? DEFAULT_CLEANUP_PREFIX;
+}
+
+/**
+ * Delete a local AI branch after its PR/MR has been merged, and prune the
+ * stale remote-tracking ref.  Refuses to touch: non-AI branches, the base
+ * branch, branches that aren't fully merged into origin/<baseBranch>, and
+ * branches checked out in a different worktree.
+ */
+export function cleanupMergedBranch(
+  workspace: string,
+  branchName: string,
+  baseBranch: string,
+  logger: PipelineLogger = noop,
+): BranchCleanupResult {
+  const prefix = getCleanupPrefix();
+  if (!branchName.startsWith(prefix)) {
+    return { deletedLocal: false, deletedRemoteTracking: false, reason: "not_ai_branch" };
+  }
+  if (branchName === baseBranch) {
+    return { deletedLocal: false, deletedRemoteTracking: false, reason: "branch_is_base" };
+  }
+
+  // Local branch exists?
+  const exists = spawnSync("git", ["rev-parse", "--verify", `refs/heads/${branchName}`], {
+    cwd: workspace, stdio: "pipe", encoding: "utf-8",
+  });
+  if (exists.status !== 0) {
+    return { deletedLocal: false, deletedRemoteTracking: false, reason: "branch_not_found" };
+  }
+
+  // If we're currently on the branch, switch off first.  After this, only
+  // *other* worktrees can still claim it.
+  if (getCurrentBranch(workspace) === branchName) {
+    if (!gitRun(["checkout", baseBranch], workspace, logger)) {
+      return { deletedLocal: false, deletedRemoteTracking: false, reason: "could_not_switch_to_base" };
+    }
+  }
+
+  // Checked out in another worktree?  Skip — that worktree owns cleanup.
+  const wtList = gitRunWithOutput(["worktree", "list", "--porcelain"], workspace, logger);
+  if (wtList.ok && wtList.stdout) {
+    for (const line of wtList.stdout.split("\n")) {
+      if (line === `branch refs/heads/${branchName}`) {
+        return {
+          deletedLocal: false,
+          deletedRemoteTracking: false,
+          reason: "checked_out_in_worktree",
+        };
+      }
+    }
+  }
+
+  // Capture SHA for the log line (recoverable via reflog if user wants to undo).
+  const shaRes = gitRunWithOutput(["rev-parse", branchName], workspace, logger);
+  const sha = shaRes.ok ? shaRes.stdout.slice(0, 12) : "unknown";
+
+  // Safe delete first — git refuses if branch is not fully merged into HEAD/upstream.
+  const safeDel = gitRunWithOutput(["branch", "-d", branchName], workspace, logger);
+  let deletedLocal = safeDel.ok;
+
+  if (!safeDel.ok) {
+    // Only force-delete if provably an ancestor of origin/<baseBranch>.
+    const isAncestor = spawnSync(
+      "git",
+      ["merge-base", "--is-ancestor", branchName, `origin/${baseBranch}`],
+      { cwd: workspace, stdio: "pipe", encoding: "utf-8" },
+    );
+    if (isAncestor.status === 0) {
+      logger.logGit("Force-deleting merged branch", `${branchName} (SHA ${sha})`);
+      deletedLocal = gitRun(["branch", "-D", branchName], workspace, logger);
+    } else {
+      return {
+        deletedLocal: false,
+        deletedRemoteTracking: false,
+        reason: "not_fully_merged",
+      };
+    }
+  } else {
+    logger.logGit("Deleted local branch", `${branchName} (SHA ${sha})`);
+  }
+
+  if (!deletedLocal) {
+    return { deletedLocal: false, deletedRemoteTracking: false, reason: "delete_failed" };
+  }
+
+  // Best-effort prune of remote-tracking ref.
+  let deletedRemoteTracking = false;
+  const trackingBefore = spawnSync(
+    "git", ["rev-parse", "--verify", `refs/remotes/origin/${branchName}`],
+    { cwd: workspace, stdio: "pipe", encoding: "utf-8" },
+  );
+  if (trackingBefore.status === 0) {
+    if (gitRun(["fetch", "--prune", "origin"], workspace, logger)) {
+      const trackingAfter = spawnSync(
+        "git", ["rev-parse", "--verify", `refs/remotes/origin/${branchName}`],
+        { cwd: workspace, stdio: "pipe", encoding: "utf-8" },
+      );
+      deletedRemoteTracking = trackingAfter.status !== 0;
+      if (deletedRemoteTracking) {
+        logger.logGit("Pruned remote-tracking ref", `origin/${branchName}`);
+      }
+    }
+  }
+
+  return { deletedLocal, deletedRemoteTracking };
+}
+
+/**
+ * Sweep mode: find every local branch matching the AI prefix that is already
+ * merged into origin/<baseBranch>, and clean each one up.  Used by the
+ * `--cleanup-merged` CLI flag.
+ */
+export function cleanupAllMergedBranches(
+  workspace: string,
+  baseBranch: string,
+  logger: PipelineLogger = noop,
+): { cleaned: string[]; skipped: Array<{ branch: string; reason: string }> } {
+  const prefix = getCleanupPrefix();
+  const cleaned: string[] = [];
+  const skipped: Array<{ branch: string; reason: string }> = [];
+
+  // Refresh origin so the ancestor check uses up-to-date refs.
+  gitRun(["fetch", "--prune", "origin"], workspace, logger);
+
+  const listRes = gitRunWithOutput(
+    ["for-each-ref", "--format=%(refname:short)", `refs/heads/${prefix}*`],
+    workspace, logger,
+  );
+  if (!listRes.ok) return { cleaned, skipped };
+
+  const branches = listRes.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+  for (const branch of branches) {
+    const result = cleanupMergedBranch(workspace, branch, baseBranch, logger);
+    if (result.deletedLocal) {
+      cleaned.push(branch);
+    } else {
+      skipped.push({ branch, reason: result.reason ?? "unknown" });
+    }
+  }
+  return { cleaned, skipped };
+}
+
 export function pullAndUpdateBase(
   workspace: string,
   candidates: string[],

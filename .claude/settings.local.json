@@ -39,7 +39,8 @@
       "WebFetch(domain:docs.cline.bot)",
       "Bash(grep -E \"register|fastify\\\\\\\\.\" src/server.ts)",
       "Bash(gh auth *)",
-      "Bash(gh repo *)"
+      "Bash(gh repo *)",
+      "Bash(awk -F: '$1<3225')"
     ]
   }
 }
