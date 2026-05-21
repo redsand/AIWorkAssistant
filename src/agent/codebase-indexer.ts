@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { env } from "../config/env";
 import { embeddingService, cosineSimilarity } from "./embedding-service";
+import { ingestSingleCodebaseFile } from "../context-engine/claimkit-ingestion";
 
 export interface IndexedFile {
   path: string;
@@ -540,6 +541,77 @@ class CodebaseIndexer {
 
   isIndexing(): boolean {
     return this.indexing;
+  }
+
+  addFile(absolutePath: string, projectRoot?: string): IndexedFile | null {
+    const root = projectRoot || process.cwd();
+    const relativePath = path.relative(root, absolutePath).replace(/\\/g, "/");
+    const language = this.detectLanguage(absolutePath);
+
+    let content: string;
+    try {
+      content = fs.readFileSync(absolutePath, "utf-8");
+    } catch {
+      return null;
+    }
+
+    const chunkSize = env.RAG_CHUNK_SIZE;
+    const chunkOverlap = env.RAG_CHUNK_OVERLAP;
+    const lines = content.split("\n");
+
+    const insertStmt = this.db.prepare(`
+      INSERT OR REPLACE INTO code_chunks (id, file_path, start_line, end_line, content, language, keywords, embedding, indexed_at, file_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const existingChunks = this.db.prepare(`DELETE FROM code_chunks WHERE file_path = ?`);
+    existingChunks.run(relativePath);
+
+    let charPos = 0;
+    while (charPos < content.length) {
+      const end = Math.min(charPos + chunkSize, content.length);
+      const chunkContent = content.substring(charPos, end);
+
+      let startLine = 1;
+      let endLine = 1;
+      let charsCounted = 0;
+      for (let i = 0; i < lines.length; i++) {
+        charsCounted += lines[i].length + 1;
+        if (charsCounted >= charPos && startLine === 1) {
+          startLine = i + 1;
+        }
+        if (charsCounted >= end) {
+          endLine = i + 1;
+          break;
+        }
+      }
+
+      const chunkId = `chunk-${this.hashString(`${relativePath}:${charPos}`)}`;
+      const keywords = this.extractKeywords(chunkContent);
+
+      insertStmt.run(
+        chunkId,
+        relativePath,
+        startLine,
+        endLine,
+        chunkContent,
+        language,
+        JSON.stringify(keywords),
+        null,
+        new Date().toISOString(),
+        null,
+      );
+
+      charPos += chunkSize - chunkOverlap;
+    }
+
+    const file: IndexedFile = { path: relativePath, language, content };
+
+    ingestSingleCodebaseFile(file).catch(err =>
+      console.warn(`[CodebaseIndexer] Incremental ClaimKit ingestion failed for ${relativePath}:`, err),
+    );
+
+    return file;
   }
 
   private detectLanguage(filePath: string): string {

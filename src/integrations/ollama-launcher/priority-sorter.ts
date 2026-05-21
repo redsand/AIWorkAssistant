@@ -38,6 +38,10 @@ const PRIORITY_MAP: Record<string, number> = {
 
 const TITLE_PRIORITY_RE = /\[(P(\d))\]/i;
 const TRACKING_NUMBER_RE = /\[[^\]]+#(\d+)\]/;
+// Matches `[SPRINT-2]`, `[SPRINT 2]`, `[Sprint-2]`, `[sprint 2]`, etc.
+const TITLE_SPRINT_RE = /\[\s*sprint[\s\-]+(\d+)\s*\]/i;
+// Matches Jira/GitHub label conventions: `sprint-1`, `sprint:1`, `sprint1`, `s1`.
+const LABEL_SPRINT_RE = /^(?:sprint[\s\-:]*|s)(\d+)$/i;
 
 /**
  * Extract a tracking number from title patterns like [ClaimKit #5] or [IR #82].
@@ -47,6 +51,29 @@ const TRACKING_NUMBER_RE = /\[[^\]]+#(\d+)\]/;
 export function extractTrackingNumber(title: string): number {
   const match = title.match(TRACKING_NUMBER_RE);
   return match ? parseInt(match[1], 10) : Infinity;
+}
+
+/**
+ * Extract a sprint number from a work item.  Checks the title first (e.g.
+ * `[SPRINT-2] foo`) then labels (`sprint-1`, `sprint:1`, `s1`).  Returns null
+ * when no sprint marker is present — callers must not penalize unsprinted
+ * items so that one-off hotfixes don't sink to the bottom of the queue.
+ */
+export function extractSprintNumber(item: PrioritizableItem): number | null {
+  const titleMatch = item.title.match(TITLE_SPRINT_RE);
+  if (titleMatch) {
+    return parseInt(titleMatch[1], 10);
+  }
+  const labels = (item.labels || []).map((l) =>
+    typeof l === "string" ? l : (l as { name?: string }).name ?? "",
+  );
+  for (const label of labels) {
+    const labelMatch = label.match(LABEL_SPRINT_RE);
+    if (labelMatch) {
+      return parseInt(labelMatch[1], 10);
+    }
+  }
+  return null;
 }
 
 /**
@@ -80,25 +107,37 @@ export function extractPriority(item: PrioritizableItem): number {
  * Compare two items for priority ordering.
  *
  * Ordering rules (in priority order):
- * 1. Explicit priority from [P0]–[P4] title prefix or label (lower = first)
- * 2. Tracking/sequence number from [ProjectName #N] title patterns (lower = first)
- * 3. Stable by original position
+ * 1. Sprint ordering — when BOTH items have a sprint number, lower sprint
+ *    first.  Sprints are sequential goals: Sprint N typically depends on
+ *    Sprint N-1, so a low-priority Sprint 1 ticket outranks a high-priority
+ *    Sprint 2 ticket.  Items without a sprint number fall through to step 2
+ *    so unsprinted hotfixes are not penalized.
+ * 2. Explicit priority from [P0]–[P4] title prefix or label (lower = first)
+ * 3. Tracking/sequence number from [ProjectName #N] title patterns (lower = first)
+ * 4. Stable by original position
  *
  * Dependency ordering ("depends on #X" in body) is applied separately
  * by enforceDependencyOrder() after the primary sort.
  */
 function comparePriority(a: PrioritizableItem, b: PrioritizableItem): number {
-  // 1. Explicit priority
+  // 1. Sprint — only when both items have a sprint marker
+  const sprintA = extractSprintNumber(a);
+  const sprintB = extractSprintNumber(b);
+  if (sprintA !== null && sprintB !== null && sprintA !== sprintB) {
+    return sprintA - sprintB;
+  }
+
+  // 2. Explicit priority
   const pa = extractPriority(a);
   const pb = extractPriority(b);
   if (pa !== pb) return pa - pb;
 
-  // 2. Tracking/sequence number tiebreaker
+  // 3. Tracking/sequence number tiebreaker
   const sa = extractTrackingNumber(a.title);
   const sb = extractTrackingNumber(b.title);
   if (sa !== sb) return sa - sb;
 
-  // 3. Oldest first (lowest issue number) when all priorities equal
+  // 4. Oldest first (lowest issue number) when all signals equal
   return a.number - b.number;
 }
 
