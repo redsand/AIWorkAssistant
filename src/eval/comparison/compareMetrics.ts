@@ -62,6 +62,29 @@ function assertFiniteMetricSet(metricSet: MetricSet): void {
   }
 }
 
+export interface RetrievalSubMetrics {
+  evidenceRecall: number;
+  evidencePrecision: number;
+  packetCompactness: number;
+  citationAvailability: number;
+}
+
+const RETRIEVAL_WEIGHTS = {
+  evidenceRecall: 0.30,
+  evidencePrecision: 0.35,
+  packetCompactness: 0.20,
+  citationAvailability: 0.15,
+} as const;
+
+export function computeRetrievalScore(m: RetrievalSubMetrics): number {
+  const raw =
+    m.evidenceRecall * RETRIEVAL_WEIGHTS.evidenceRecall +
+    m.evidencePrecision * RETRIEVAL_WEIGHTS.evidencePrecision +
+    m.packetCompactness * RETRIEVAL_WEIGHTS.packetCompactness +
+    m.citationAvailability * RETRIEVAL_WEIGHTS.citationAvailability;
+  return clamp01(raw);
+}
+
 /**
  * Compute individual group scores from raw metrics.
  * evaluatorValidityScore is the average of (1 - rate) for each validity metric.
