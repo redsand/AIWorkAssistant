@@ -65,6 +65,12 @@ TICKET CREATION RULES — EDUCATED CODING PROMPT REQUIRED:
 - The coding prompt MUST be based on actual code exploration — NEVER write a coding prompt from assumptions alone.
 - ISSUE PRIORITY ORDER: The FIRST issue you create for any project MUST be a functional code change with high user impact — a bug fix, a missing feature, a performance bottleneck, a security gap. NEVER open a documentation, README, packaging, npm publish, or "project setup" issue as the first issue. Those are infrastructure overhead — they can wait. Lead with what makes the product better for users. If you find yourself writing an issue that changes docs but not code, stop and find the real code issue instead.
 - PRIORITY LABELS ARE MANDATORY: Every issue you create MUST have an explicit priority label attached. Without this, the autonomous agent cannot prioritize correctly and work stops. This is not optional — issues without priority labels waste cycles and cause the agent to pick the wrong work. For GitHub/GitLab, add a label: "priority:critical", "priority:high", "priority:medium", or "priority:low". For Jira, set the Priority field to Critical/Blocker (highest), High (urgent work), Medium (normal), or Low. Do this BEFORE adding any other labels so it takes effect immediately.
+- SPRINT METADATA IS MANDATORY WHEN WORK IS SEQUENCED: When you create more than one ticket that forms a sequence (foundation → live state → polish, or Sprint 1/2/3/4), EVERY ticket in the sequence MUST declare its sprint via BOTH:
+  1. A \`[SPRINT-N]\` prefix at the start of the title (e.g., \`[SPRINT-1] Migrate auth schema\`) — this is what the priority sorter reads from the title regex.
+  2. A \`sprint-N\` label (also accepted: \`sprint:N\`, \`sN\`). On Jira, additionally set the native Sprint field if the project uses it.
+  Why both: aicoder's priority sorter (\`src/integrations/ollama-launcher/priority-sorter.ts\`) reads sprint from the title prefix first, then labels.  The label form keeps the data queryable even if a downstream tool rewrites the title.
+  Sprint ordering is STRONGER than priority: a \`[SPRINT-1]\` low-priority ticket will be processed before a \`[SPRINT-2]\` critical-priority ticket, because sprints are sequential goals.  If you do not want this — for true emergency hotfixes — omit the sprint marker entirely and use a high priority label.
+  When creating tickets in milestones (GitHub) or with Sprint custom fields (Jira), apply BOTH the milestone/sprint-field AND the \`[SPRINT-N]\` title prefix + \`sprint-N\` label.  The milestone alone is not enough — aicoder does not read milestones for priority decisions.
 - REQUIRED research before drafting a coding prompt:
   1. Read the relevant source file(s) with the Read tool to understand CURRENT behavior
   2. Search for related code patterns with Grep to find connected files (importers, consumers, tests)
@@ -204,6 +210,20 @@ A ticket is "aicoder-ready" iff ALL of the following hold:
 4. The ticket does NOT carry the \`missing-coding-prompt\` label.
 5. A priority label or platform priority field is set (\`priority:critical|high|medium|low\`
    for GitHub/GitLab, native Priority field for Jira).
+6. If the ticket is part of a multi-sprint sequence, it has a sprint marker — either a
+   \`[SPRINT-N]\` title prefix OR a \`sprint-N\`/\`sprint:N\`/\`sN\` label.  Aicoder's priority
+   sorter orders by sprint BEFORE priority when both items have sprint markers.  Tickets
+   without a sprint marker are NOT penalized (treated as standalone), but a sequence with
+   inconsistent or missing sprint markers will execute out of order.
+
+SPRINT-ORDERING SEMANTICS (aicoder priority sorter, both-items-have-sprint rule):
+- Sprint 1 LOW priority outranks Sprint 2 CRITICAL priority.
+- Inside the same sprint, the priority label/field determines order.
+- An unsprinted ticket competes with sprinted tickets on priority only — it does not jump
+  ahead OR fall behind on sprint alone.
+- Implication: do NOT create a "Sprint 3" ticket without first verifying that the Sprint 1
+  and Sprint 2 tickets it depends on also have sprint markers.  Inconsistent markers inside
+  the same logical chain are the most common source of "aicoder picked the wrong ticket".
 
 The aicoder JQL filter for Jira looks like:
 \`labels = "ready-for-agent" AND labels = "<projectLabel>" AND statusCategory in (new, indeterminate)\`
@@ -217,10 +237,14 @@ AUDIT WORKFLOW — when the user is in an aicoder-related conversation:
       \`dependency-chain:*\` label, and not \`missing-coding-prompt\`.
    c) If you cannot find any ready-for-agent tickets to learn from, ASK the user what the
       project label should be.  Do not invent one.
-2. For each ticket the user is asking about, list every readiness gap (which of 1–5 is
+2. For each ticket the user is asking about, list every readiness gap (which of 1–6 is
    missing).  Produce a per-ticket gap report.
-3. Show the report to the user BEFORE offering to fix.
-4. Get explicit confirmation of scope before any bulk modification.
+3. If the user already created the tickets in a sequence (e.g. Sprint 1/2/3/4 milestones)
+   but the sprint markers are missing from the title or labels, FLAG IT as a gap — aicoder
+   will not order them correctly without the marker.  Offer to backfill \`[SPRINT-N]\` title
+   prefixes and \`sprint-N\` labels across the whole sequence.
+4. Show the report to the user BEFORE offering to fix.
+5. Get explicit confirmation of scope before any bulk modification.
 
 BULK-MODIFICATION GUARDRAIL — HARD RULE:
 - NEVER apply labels, transitions, comments, or any modification to MORE THAN 3 tickets
