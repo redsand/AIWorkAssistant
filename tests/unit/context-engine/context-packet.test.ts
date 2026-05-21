@@ -139,7 +139,8 @@ describe("assembleContextPacket - ClaimKit integration", () => {
 
     const claimKitSection = packet.sections.find((s) => s.name === "claimkit_evidence");
     expect(claimKitSection).toBeDefined();
-    expect(claimKitSection!.content).toContain("VERIFIED EVIDENCE (ClaimKit)");
+    // With confidence 0.85 and answerable, this routes to ck_primary
+    expect(claimKitSection!.content).toContain("PRIMARY ANSWER (ClaimKit — high confidence)");
     expect(claimKitSection!.content).toContain("Answerability: answerable");
   });
 
@@ -149,7 +150,7 @@ describe("assembleContextPacket - ClaimKit integration", () => {
     const packet = await assembleContextPacket(baseParams);
 
     const claimKitMessage = packet.messages.find(
-      (m) => m.role === "system" && m.content?.includes("VERIFIED EVIDENCE (ClaimKit)"),
+      (m) => m.role === "system" && m.content?.includes("PRIMARY ANSWER (ClaimKit"),
     );
     expect(claimKitMessage).toBeDefined();
   });

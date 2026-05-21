@@ -14,6 +14,8 @@ import type {
   ContextSection,
   ClaimKitContextSection,
   ScoredDocument,
+  PreferredSource,
+  RoutingTier,
 } from "./types";
 import { claimKitAdapter } from "./adapters/claimkit-adapter";
 import { saveLiveComparison } from "../comparison-runs/auto-capture";
@@ -21,6 +23,37 @@ import { createBudget, estimateTokens, enforceBudget } from "./budget";
 import { compressDocuments } from "./compressor";
 import { rerank } from "./reranker";
 import { scoreMessages, deduplicateByJaccard, selectMessages } from "./memory-decay";
+import type { ClaimKitQueryResult } from "./adapters/claimkit-adapter";
+
+export interface RoutingDecision {
+  tier: RoutingTier;
+  preferredSource: PreferredSource;
+  overallWinner: "rag" | "claimkit" | "tie";
+  routingReason: string;
+}
+
+export function determineRoutingTier(ckResult: ClaimKitQueryResult | null): RoutingDecision {
+  if (!ckResult) {
+    return { tier: "rag_primary", preferredSource: "rag", overallWinner: "rag", routingReason: "ck_unavailable" };
+  }
+
+  const { confidence, answerability } = ckResult;
+
+  if (confidence > 0.7 && answerability === "answerable") {
+    return { tier: "ck_primary", preferredSource: "claimkit", overallWinner: "claimkit", routingReason: "high_confidence" };
+  }
+
+  if (confidence < 0.3 || answerability === "not_answerable") {
+    return {
+      tier: "rag_primary",
+      preferredSource: "rag",
+      overallWinner: "rag",
+      routingReason: answerability === "not_answerable" ? "not_answerable" : "low_confidence",
+    };
+  }
+
+  return { tier: "blended", preferredSource: "blended", overallWinner: "tie", routingReason: "uncertain" };
+}
 
 export async function assembleContextPacket(
   params: AssembleContextParams,
@@ -112,21 +145,8 @@ export async function assembleContextPacket(
       );
     }
 
-    // Auto-save comparison data for dashboard
-    let overallWinner: "rag" | "claimkit" | "tie" = "tie";
-    let winnerReason: string | undefined;
-    if (!claimKitResult) {
-      overallWinner = "rag";
-      winnerReason = "ck_unavailable";
-    } else if (claimKitResult.confidence > 0.5 && claimKitResult.answerability === "answerable") {
-      overallWinner = "claimkit";
-      winnerReason = "high_confidence";
-    } else if (claimKitResult.confidence < 0.3 || claimKitResult.answerability === "not_answerable") {
-      overallWinner = "rag";
-      winnerReason = claimKitResult.answerability === "not_answerable" ? "not_answerable" : "low_confidence";
-    } else {
-      winnerReason = "uncertain";
-    }
+    // Auto-save comparison data for dashboard — use routing decision
+    const comparisonRouting = determineRoutingTier(claimKitResult);
     const ragMs = Date.now() - ragStart;
     saveLiveComparison({
       query,
@@ -142,8 +162,8 @@ export async function assembleContextPacket(
       ckRetrievalScore: claimKitResult?.metadata.retrievalScore ?? null,
       ckSourceCount: claimKitResult?.metadata.sourceIds.length ?? null,
       ckMissingEvidence: claimKitResult?.missingEvidence?.join(", ") ?? null,
-      overallWinner,
-      winnerReason,
+      overallWinner: comparisonRouting.overallWinner,
+      winnerReason: comparisonRouting.routingReason,
     });
   }
 
@@ -157,10 +177,18 @@ export async function assembleContextPacket(
   const knowledgeSection = formatDocumentsSection(compressedDocs);
   const graphSection = trimmedGraph;
 
+  const routing = determineRoutingTier(claimKitResult);
+
   let claimKitSection: ClaimKitContextSection | null = null;
   if (claimKitResult) {
     const evidenceLines: string[] = [];
-    evidenceLines.push("=== VERIFIED EVIDENCE (ClaimKit) ===");
+    if (routing.tier === "ck_primary") {
+      evidenceLines.push("=== PRIMARY ANSWER (ClaimKit — high confidence) ===");
+    } else if (routing.tier === "rag_primary") {
+      evidenceLines.push("=== SUPPLEMENTARY ANALYSIS (ClaimKit) ===");
+    } else {
+      evidenceLines.push("=== VERIFIED EVIDENCE (ClaimKit) ===");
+    }
     evidenceLines.push(`Answerability: ${claimKitResult.answerability}`);
     evidenceLines.push(`Confidence: ${(claimKitResult.confidence * 100).toFixed(1)}%`);
     evidenceLines.push(`Claims found: ${claimKitResult.metadata.claimCount}`);
@@ -212,25 +240,44 @@ export async function assembleContextPacket(
     { role: "system", content: enforced[0].content },
   ];
 
-  if (enforced[2].content.trim()) {
-    messages.push({
-      role: "system",
-      content: `=== RELEVANT CONTEXT ===\n${enforced[2].content}`,
-    });
+  const claimKitEnforced = enforced.find((s) => s.name === "claimkit_evidence");
+  const docEnforced = enforced[2];
+
+  if (routing.tier === "ck_primary" && claimKitEnforced?.content.trim()) {
+    // CK primary: show ClaimKit answer first with full detail
+    messages.push({ role: "system", content: claimKitEnforced.content });
+    if (docEnforced?.content.trim()) {
+      messages.push({
+        role: "system",
+        content: `=== SUPPLEMENTARY CONTEXT ===\n${docEnforced.content}`,
+      });
+    }
+  } else if (routing.tier === "rag_primary" && claimKitEnforced?.content.trim()) {
+    // RAG primary: show RAG first, CK as supplementary
+    if (docEnforced?.content.trim()) {
+      messages.push({
+        role: "system",
+        content: `=== RELEVANT CONTEXT ===\n${docEnforced.content}`,
+      });
+    }
+    messages.push({ role: "system", content: claimKitEnforced.content });
+  } else {
+    // Blended or CK unavailable: current behavior — RAG then CK equally
+    if (docEnforced?.content.trim()) {
+      messages.push({
+        role: "system",
+        content: `=== RELEVANT CONTEXT ===\n${docEnforced.content}`,
+      });
+    }
+    if (claimKitEnforced?.content.trim()) {
+      messages.push({ role: "system", content: claimKitEnforced.content });
+    }
   }
 
   if (enforced[3].content.trim()) {
     messages.push({
       role: "system",
       content: `=== KNOWLEDGE GRAPH ===\n${enforced[3].content}`,
-    });
-  }
-
-  const claimKitEnforced = enforced.find((s) => s.name === "claimkit_evidence");
-  if (claimKitEnforced && claimKitEnforced.content.trim()) {
-    messages.push({
-      role: "system",
-      content: claimKitEnforced.content,
     });
   }
 
@@ -274,6 +321,8 @@ export async function assembleContextPacket(
     sections: enforced,
     messages,
     totalTokens,
+    preferredSource: routing.preferredSource,
+    routingReason: routing.routingReason,
     budgetBreakdown: budget.slots,
     diagnostics: {
       mode: "engine",
