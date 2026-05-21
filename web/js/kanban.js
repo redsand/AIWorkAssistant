@@ -166,6 +166,14 @@
   var agentRunToCardKey = {};      // agentRunId → cardKey (for step/completed events)
   var pendingMoves = new Map();    // cardKey → timeoutId (debounce optimistic moves)
 
+  // ─── Dependency arrow state ────────────────────────────────────────────────
+
+  var depOverlay = document.getElementById("dep-overlay");
+  var boardEdges = [];             // saved from API response
+  var boardGhostNodes = [];        // saved from API response
+  var depRafId = null;             // rAF handle for resize debounce
+  var ghostAnchorMap = {};         // ghostKey → anchor element
+
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
   function showError(msg) {
@@ -199,6 +207,123 @@
     var m = Math.floor(totalSec / 60);
     var s = totalSec % 60;
     return m + "m " + (s < 10 ? "0" : "") + s + "s";
+  }
+
+  // ─── Dependency arrows ─────────────────────────────────────────────────────
+
+  function ensureGhostAnchors(ghostNodes) {
+    // Remove stale anchors
+    Object.keys(ghostAnchorMap).forEach(function (key) {
+      if (!ghostNodes.some(function (g) { return g.key === key; })) {
+        if (ghostAnchorMap[key].parentNode) ghostAnchorMap[key].parentNode.removeChild(ghostAnchorMap[key]);
+        delete ghostAnchorMap[key];
+      }
+    });
+
+    ghostNodes.forEach(function (ghost) {
+      if (ghostAnchorMap[ghost.key]) return;
+
+      // Anchor to the repo chip in the header if platform:repo matches
+      var repoChip = document.getElementById("repo-chip");
+      var anchor = document.createElement("div");
+      anchor.className = "dep-ghost-anchor";
+      anchor.setAttribute("data-ghost-key", ghost.key);
+
+      // Place anchor inside the board so SVG coords are relative
+      boardEl.appendChild(anchor);
+
+      // Position near the repo chip or fallback to top-left
+      if (repoChip) {
+        var chipRect = repoChip.getBoundingClientRect();
+        var boardRect = boardEl.getBoundingClientRect();
+        anchor.style.left = (chipRect.left - boardRect.left + chipRect.width / 2) + "px";
+        anchor.style.top = (chipRect.top - boardRect.top + chipRect.height) + "px";
+      } else {
+        anchor.style.left = "0px";
+        anchor.style.top = "0px";
+      }
+
+      ghostAnchorMap[ghost.key] = anchor;
+    });
+  }
+
+  var getCardCenter = KanbanDepUtils.getCardCenter;
+  var buildEdgePath = KanbanDepUtils.buildEdgePath;
+  var safeFindByDataKey = KanbanDepUtils.safeFindByDataKey;
+
+  function drawDepArrows() {
+    if (!depOverlay) return;
+
+    // Clear existing paths (keep <defs>)
+    var existing = depOverlay.querySelectorAll(".dep-path");
+    for (var i = 0; i < existing.length; i++) {
+      existing[i].parentNode.removeChild(existing[i]);
+    }
+
+    if (boardEdges.length === 0) return;
+
+    var boardRect = boardEl.getBoundingClientRect();
+
+    boardEdges.forEach(function (edge) {
+      var fromEl, toEl;
+
+      if (edge.fromGhost) {
+        fromEl = ghostAnchorMap[edge.fromKey];
+      } else {
+        fromEl = cardIndex.get(edge.fromKey) || safeFindByDataKey(boardEl, edge.fromKey);
+      }
+
+      toEl = cardIndex.get(edge.toKey) || safeFindByDataKey(boardEl, edge.toKey);
+
+      // Skip if both endpoints are missing
+      if (!fromEl && !toEl) return;
+      // If only one endpoint is missing, skip (per acceptance: no arrows where both are missing —
+      // but also skip if only one is missing since we can't draw a complete arrow)
+      if (!fromEl || !toEl) return;
+
+      var from = getCardCenter(fromEl, boardRect);
+      var to = getCardCenter(toEl, boardRect);
+
+      var path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", buildEdgePath(from, to));
+      path.setAttribute("marker-end", edge.fromGhost ? "url(#dep-arrowhead-ghost)" : "url(#dep-arrowhead)");
+      path.classList.add("dep-path");
+      if (edge.fromGhost) path.classList.add("dep-path--ghost");
+      path.setAttribute("data-from", edge.fromKey);
+      path.setAttribute("data-to", edge.toKey);
+
+      // Set stroke-dasharray to actual path length for correct draw animation
+      depOverlay.appendChild(path);
+      if (typeof path.getTotalLength === "function") {
+        var totalLen = path.getTotalLength();
+        if (!edge.fromGhost) {
+          path.style.strokeDasharray = totalLen;
+          path.style.strokeDashoffset = totalLen;
+        }
+      }
+
+      // Hover highlighting
+      path.addEventListener("mouseenter", function () {
+        var fromCard = cardIndex.get(edge.fromKey);
+        var toCard = cardIndex.get(edge.toKey);
+        if (fromCard) fromCard.classList.add("kcard--edge-hover");
+        if (toCard) toCard.classList.add("kcard--edge-hover");
+      });
+      path.addEventListener("mouseleave", function () {
+        var fromCard = cardIndex.get(edge.fromKey);
+        var toCard = cardIndex.get(edge.toKey);
+        if (fromCard) fromCard.classList.remove("kcard--edge-hover");
+        if (toCard) toCard.classList.remove("kcard--edge-hover");
+      });
+    });
+  }
+
+  function scheduleDepRedraw() {
+    if (depRafId) return;
+    depRafId = requestAnimationFrame(function () {
+      depRafId = null;
+      drawDepArrows();
+    });
   }
 
   // ─── Agents Rail ───────────────────────────────────────────────────────────
@@ -300,7 +425,7 @@
 
   function scrollToCard(cardKey) {
     if (!cardKey) return;
-    var card = cardIndex.get(cardKey) || document.querySelector('[data-key="' + cardKey + '"]');
+    var card = cardIndex.get(cardKey) || safeFindByDataKey(document.body, cardKey);
     if (card) {
       card.scrollIntoView({ behavior: "smooth", block: "center" });
       card.classList.add("kcard--highlight");
@@ -327,6 +452,7 @@
       columns[targetCol].appendChild(cardEl);
       cardEl.classList.remove("kcard--moving");
       updateColumnCounts();
+      scheduleDepRedraw();
     }, 250);
   }
 
@@ -493,6 +619,12 @@
     Object.keys(counts).forEach(function (key) {
       counts[key].textContent = columnCounts[key];
     });
+
+    // Store edges/ghostNodes and draw dependency arrows
+    boardEdges = data.edges || [];
+    boardGhostNodes = data.ghostNodes || [];
+    ensureGhostAnchors(boardGhostNodes);
+    drawDepArrows();
   }
 
   // ─── Data fetch ────────────────────────────────────────────────────────────
@@ -524,6 +656,8 @@
   // ─── Init ──────────────────────────────────────────────────────────────────
 
   refreshBtn.addEventListener("click", fetchBoard);
+
+  window.addEventListener("resize", scheduleDepRedraw);
 
   fetchBoard();
   fetchAgents();

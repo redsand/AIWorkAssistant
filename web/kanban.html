@@ -8,6 +8,7 @@
     <meta name="theme-color" content="#1a1a2e" />
     <link rel="stylesheet" href="/css/base.css" />
     <link rel="stylesheet" href="/css/kanban.css" />
+    <script src="/js/kanban-dep-utils.js" defer></script>
     <script src="/js/kanban.js" defer></script>
   </head>
   <body>
@@ -73,6 +74,16 @@
 
       <!-- Board -->
       <div id="kanban-board" class="k-board" style="display: none">
+        <svg id="dep-overlay" class="dep-overlay" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="dep-arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#667eea" />
+            </marker>
+            <marker id="dep-arrowhead-ghost" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
+            </marker>
+          </defs>
+        </svg>
         <div class="k-col" data-column="backlog">
           <h3 class="k-col-title">Backlog <span class="k-col-count" id="count-backlog">0</span></h3>
           <div class="k-col-items" id="col-backlog"></div>
