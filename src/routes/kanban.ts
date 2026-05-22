@@ -1060,6 +1060,9 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
 
           if (column === "done") {
             const current = await gitlabClient.getIssue(sanitizedRepo, issueIid);
+            if (!current) {
+              return reply.status(404).send({ error: "Issue not found" });
+            }
             const currentLabels: string[] = (current?.labels || []);
             const cleanedLabels = currentLabels.filter(
               (l) => l.toLowerCase() !== "blocked" && l.toLowerCase() !== "in progress",

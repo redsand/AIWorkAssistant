@@ -493,6 +493,20 @@ describe('POST /cards/:platform/:repo/:id/move', () => {
     );
   });
 
+  it('should return 404 when moving GitLab issue to done and issue does not exist', async () => {
+    mockGitlabGetIssue.mockResolvedValueOnce(null);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: moveUrl('gitlab', '123', '10'),
+      payload: { column: 'done' },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toMatch(/issue not found/i);
+    expect(mockEditIssue).not.toHaveBeenCalled();
+  });
+
   it('should return 400 for non-numeric GitLab issue id', async () => {
     const res = await app.inject({
       method: 'POST',
