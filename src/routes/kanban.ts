@@ -24,7 +24,7 @@ import type {
 } from "../kanban/types";
 import { resolveEdges } from "../kanban/edges.js";
 import { kanbanEvents } from "../kanban/events.js";
-import { createWorktree, removeWorktree, isClean } from "../kanban/worktree-manager.js";
+import { createWorktree, removeWorktree, isClean, listWorktrees } from "../kanban/worktree-manager.js";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import * as fs from "node:fs";
@@ -549,6 +549,133 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
   const VALID_PLATFORMS = new Set(["github", "gitlab", "jira", "work_items"]);
   const VALID_AGENTS = new Set(["claude", "codex", "opencode"]);
   const REPO_PATH_RE = /^[a-zA-Z0-9._\-/]+$/;
+
+  // ─── GET /worktrees — list all tracked worktrees with disk-state reconcile ─
+
+  interface WorktreeEntry {
+    agentRunId: string;
+    path: string;
+    branch: string;
+    cardKey: string | null;
+    onDisk: boolean;
+    isClean: boolean | null;
+    state: "active" | "orphan" | "ghost";
+  }
+
+  fastify.get("/worktrees", async () => {
+    // 1. Get all runs that have a worktree path
+    const allRuns = agentRunDatabase.listRuns({ status: undefined, limit: 10000 });
+    const tracked = allRuns.runs.filter((r) => r.worktreePath);
+
+    // 2. Build DB entries map (path → run info)
+    const dbByPath = new Map<string, { runId: string; branch: string; cardKey: string | null }>();
+    for (const run of tracked) {
+      dbByPath.set(path.resolve(run.worktreePath!), {
+        runId: run.id,
+        branch: run.branch ?? "",
+        cardKey: run.issuePlatform && run.issueRepo && run.issueId
+          ? `${run.issuePlatform}:${run.issueRepo}:${run.issueId}`
+          : null,
+      });
+    }
+
+    // 3. Get on-disk worktrees from all known repo roots
+    const repoPaths = new Set<string>();
+    for (const run of tracked) {
+      const repoPath = resolveRepoPath(run.issuePlatform ?? "github", run.issueRepo ?? "");
+      repoPaths.add(repoPath);
+    }
+    // Always include cwd as fallback to discover ghost worktrees
+    repoPaths.add(process.cwd());
+
+    const diskByPath = new Map<string, { branch: string; head: string }>();
+    for (const repoPath of repoPaths) {
+      try {
+        const wts = await listWorktrees(repoPath);
+        for (const wt of wts) {
+          diskByPath.set(path.resolve(wt.path), { branch: wt.branch, head: wt.head });
+        }
+      } catch { /* repo may not have worktrees */ }
+    }
+
+    // 4. Reconcile
+    const entries: WorktreeEntry[] = [];
+    const allPaths = new Set([...dbByPath.keys(), ...diskByPath.keys()]);
+
+    for (const wtPath of allPaths) {
+      const inDb = dbByPath.get(wtPath);
+      const onDisk = diskByPath.has(wtPath);
+
+      if (inDb && onDisk) {
+        let clean: boolean | null = null;
+        try {
+          clean = await isClean(wtPath);
+        } catch { /* worktree may be locked */ }
+        entries.push({
+          agentRunId: inDb.runId,
+          path: wtPath,
+          branch: inDb.branch,
+          cardKey: inDb.cardKey,
+          onDisk: true,
+          isClean: clean,
+          state: "active",
+        });
+      } else if (inDb && !onDisk) {
+        entries.push({
+          agentRunId: inDb.runId,
+          path: wtPath,
+          branch: inDb.branch,
+          cardKey: inDb.cardKey,
+          onDisk: false,
+          isClean: null,
+          state: "orphan",
+        });
+      } else if (!inDb && onDisk) {
+        const disk = diskByPath.get(wtPath)!;
+        let clean: boolean | null = null;
+        try {
+          clean = await isClean(wtPath);
+        } catch { /* locked */ }
+        entries.push({
+          agentRunId: "",
+          path: wtPath,
+          branch: disk.branch,
+          cardKey: null,
+          onDisk: true,
+          isClean: clean,
+          state: "ghost",
+        });
+      }
+    }
+
+    return entries;
+  });
+
+  // ─── GET /settings — kanban settings ─────────────────────────────────────────
+
+  fastify.get("/settings", async () => {
+    const hours = agentRunDatabase.getKanbanSetting("autoCleanupHours");
+    return {
+      autoCleanupHours: hours !== null ? Number(hours) : 24,
+    };
+  });
+
+  // ─── PUT /settings — update kanban settings ──────────────────────────────────
+
+  fastify.put<{
+    Body: { autoCleanupHours?: number };
+  }>("/settings", async (request, reply) => {
+    const body = request.body ?? {};
+    if (body.autoCleanupHours !== undefined) {
+      const hours = Number(body.autoCleanupHours);
+      if (!Number.isFinite(hours) || hours < 0) {
+        return reply.status(400).send({ error: "autoCleanupHours must be a non-negative number" });
+      }
+      agentRunDatabase.setKanbanSetting("autoCleanupHours", String(hours));
+    }
+    const hours = agentRunDatabase.getKanbanSetting("autoCleanupHours");
+    return { autoCleanupHours: hours !== null ? Number(hours) : 24 };
+  });
 
   // Note: authentication is enforced by the global authMiddleware registered
   // in the app setup — these routes are NOT in PUBLIC_PATHS.
@@ -1174,8 +1301,10 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
 
   fastify.delete<{
     Params: { id: string };
+    Querystring: { force?: string };
   }>("/worktrees/:id", async (request, reply) => {
     const { id: runId } = request.params;
+    const force = request.query.force === "true";
 
     const run = agentRunDatabase.getRun(runId);
     if (!run) {
@@ -1184,6 +1313,16 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
 
     if (!run.worktreePath) {
       return reply.status(404).send({ error: "No worktree for this run" });
+    }
+
+    // Check if worktree still exists on disk
+    if (fs.existsSync(run.worktreePath)) {
+      try {
+        const clean = await isClean(run.worktreePath);
+        if (!clean && !force) {
+          return reply.status(409).send({ error: "Worktree has uncommitted changes. Use ?force=true to override." });
+        }
+      } catch { /* if isClean fails, proceed with force */ }
     }
 
     try {

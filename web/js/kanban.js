@@ -1468,6 +1468,188 @@
     stepsContainer.scrollTop = stepsContainer.scrollHeight;
   }
 
+  // ─── Worktree Admin Modal ──────────────────────────────────────────────────
+
+  var worktreeBtn = document.getElementById("worktree-admin-btn");
+  var worktreeCount = document.getElementById("worktree-count");
+  var worktreeBackdrop = document.getElementById("worktree-modal-backdrop");
+  var worktreeClose = document.getElementById("worktree-modal-close");
+  var worktreeTbody = document.getElementById("worktree-tbody");
+  var autoCleanupInput = document.getElementById("auto-cleanup-hours");
+  var saveSettingsBtn = document.getElementById("save-settings-btn");
+
+  function fetchWorktreeCount() {
+    fetch("/api/kanban/worktrees")
+      .then(function (res) { return res.ok ? res.json() : []; })
+      .then(function (entries) {
+        worktreeCount.textContent = entries.length;
+      })
+      .catch(function () { /* non-critical */ });
+  }
+
+  function openWorktreeModal() {
+    worktreeBackdrop.classList.add("kmodal-backdrop--active");
+    loadWorktreeModal();
+  }
+
+  function closeWorktreeModal() {
+    worktreeBackdrop.classList.remove("kmodal-backdrop--active");
+  }
+
+  function loadWorktreeModal() {
+    worktreeTbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#9ca3af;padding:20px;">Loading…</td></tr>';
+
+    fetch("/api/kanban/worktrees")
+      .then(function (res) { return res.ok ? res.json() : []; })
+      .then(function (entries) {
+        worktreeCount.textContent = entries.length;
+        renderWorktreeTable(entries);
+      })
+      .catch(function () {
+        worktreeTbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#ef4444;padding:20px;">Failed to load worktrees</td></tr>';
+      });
+
+    // Load settings
+    fetch("/api/kanban/settings")
+      .then(function (res) { return res.ok ? res.json() : {}; })
+      .then(function (settings) {
+        if (autoCleanupInput) {
+          autoCleanupInput.value = settings.autoCleanupHours ?? 24;
+        }
+      })
+      .catch(function () { /* non-critical */ });
+  }
+
+  function renderWorktreeTable(entries) {
+    if (!entries || entries.length === 0) {
+      worktreeTbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#9ca3af;padding:20px;">No worktrees found</td></tr>';
+      return;
+    }
+
+    var html = "";
+    entries.forEach(function (wt) {
+      var stateClass, stateLabel;
+      if (wt.state === "orphan") {
+        stateClass = "kmodal-state--orphan";
+        stateLabel = "Orphan";
+      } else if (wt.state === "ghost") {
+        stateClass = "kmodal-state--ghost";
+        stateLabel = "Ghost";
+      } else if (wt.isClean === false) {
+        stateClass = "kmodal-state--dirty";
+        stateLabel = "Dirty";
+      } else {
+        stateClass = "kmodal-state--active";
+        stateLabel = "Clean";
+      }
+
+      var cardLink = "";
+      if (wt.cardKey) {
+        var parts = wt.cardKey.split(":");
+        var externalId = parts.length >= 3 ? parts.slice(2).join(":") : wt.cardKey;
+        cardLink = '<a class="kmodal-card-link" href="#card-' + escapeHtml(wt.cardKey) + '">' + escapeHtml(externalId) + '</a>';
+      }
+
+      // Shorten path for display
+      var shortPath = wt.path;
+      var kanbanIdx = shortPath.indexOf(".kanban-worktrees");
+      if (kanbanIdx > 0) {
+        shortPath = "../" + shortPath.substring(kanbanIdx);
+      }
+
+      html += "<tr>" +
+        "<td title=\"" + escapeHtml(wt.path) + "\">" + escapeHtml(shortPath) + "</td>" +
+        "<td>" + escapeHtml(wt.branch || "—") + "</td>" +
+        "<td><span class=\"kmodal-state " + stateClass + "\"><span class=\"kmodal-state-dot\"></span>" + stateLabel + "</span></td>" +
+        "<td>" + cardLink + "</td>" +
+        "<td>" + (wt.agentRunId ? "<button class=\"kmodal-remove-btn\" data-run-id=\"" + escapeHtml(wt.agentRunId) + "\" data-clean=\"" + (wt.isClean ? "1" : "0") + "\">✕</button>" : "") + "</td>" +
+        "</tr>";
+    });
+
+    worktreeTbody.innerHTML = html;
+
+    // Wire remove buttons
+    var removeBtns = worktreeTbody.querySelectorAll(".kmodal-remove-btn");
+    for (var i = 0; i < removeBtns.length; i++) {
+      removeBtns[i].addEventListener("click", function () {
+        var btn = this;
+        var runId = btn.getAttribute("data-run-id");
+        var isClean = btn.getAttribute("data-clean") === "1";
+
+        if (!isClean && !confirm("This worktree has uncommitted changes. Remove anyway?")) return;
+
+        btn.disabled = true;
+        btn.textContent = "…";
+
+        var url = "/api/kanban/worktrees/" + encodeURIComponent(runId);
+        if (!isClean) url += "?force=true";
+
+        fetch(url, { method: "DELETE" })
+          .then(function (res) {
+            if (res.ok) {
+              loadWorktreeModal();
+            } else {
+              return res.json().then(function (data) {
+                showToast("Cleanup failed: " + (data.error || "Unknown error"));
+                btn.disabled = false;
+                btn.textContent = "✕";
+              });
+            }
+          })
+          .catch(function () {
+            showToast("Cleanup failed — network error");
+            btn.disabled = false;
+            btn.textContent = "✕";
+          });
+      });
+    }
+
+    // Wire card links to scroll and close modal
+    var cardLinks = worktreeTbody.querySelectorAll(".kmodal-card-link");
+    for (var j = 0; j < cardLinks.length; j++) {
+      cardLinks[j].addEventListener("click", function (e) {
+        e.preventDefault();
+        var cardKey = this.getAttribute("href").replace("#card-", "");
+        closeWorktreeModal();
+        scrollToCard(cardKey);
+      });
+    }
+  }
+
+  worktreeBtn.addEventListener("click", openWorktreeModal);
+  worktreeClose.addEventListener("click", closeWorktreeModal);
+  worktreeBackdrop.addEventListener("click", function (e) {
+    if (e.target === worktreeBackdrop) closeWorktreeModal();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && worktreeBackdrop.classList.contains("kmodal-backdrop--active")) {
+      closeWorktreeModal();
+    }
+  });
+
+  saveSettingsBtn.addEventListener("click", function () {
+    var hours = parseInt(autoCleanupInput.value, 10);
+    if (isNaN(hours) || hours < 0) {
+      showToast("Invalid hours value");
+      return;
+    }
+    fetch("/api/kanban/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ autoCleanupHours: hours }),
+    })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (data) {
+          autoCleanupInput.value = data.autoCleanupHours;
+          showToast("Settings saved — auto-cleanup: " + (data.autoCleanupHours === 0 ? "disabled" : data.autoCleanupHours + "h"));
+        }
+      })
+      .catch(function () {
+        showToast("Failed to save settings");
+      });
+  });
+
   // ─── Init ──────────────────────────────────────────────────────────────────
 
   refreshBtn.addEventListener("click", fetchBoard);
@@ -1494,4 +1676,5 @@
 
   fetchAgents();
   openSSE();
+  fetchWorktreeCount();
 })();

@@ -32,7 +32,7 @@ const {
   mockAddIssueComment: vi.fn().mockResolvedValue({ id: 1 }),
   mockAddIssueNote: vi.fn().mockResolvedValue({ id: 2 }),
   mockJiraAddComment: vi.fn().mockResolvedValue({ id: 3 }),
-  mockExecFileAsync: vi.fn().mockImplementation((cmd: string, args: string[]) => {
+  mockExecFileAsync: vi.fn().mockImplementation((_cmd: string, args: string[]) => {
     if (Array.isArray(args) && args.includes('symbolic-ref')) {
       return Promise.resolve({ stdout: 'refs/remotes/origin/main\n' });
     }
@@ -526,7 +526,7 @@ describe('Kanban Card Detail Routes', () => {
 
       mockListRuns.mockReturnValue({ runs: [mockRun], total: 1 });
       // Override execFileAsync to reject for diff calls (but not symbolic-ref)
-      mockExecFileAsync.mockImplementation((cmd: string, args: string[]) => {
+      mockExecFileAsync.mockImplementation((_cmd: string, args: string[]) => {
         if (Array.isArray(args) && args.includes('symbolic-ref')) {
           return Promise.resolve({ stdout: 'refs/remotes/origin/main\n' });
         }
