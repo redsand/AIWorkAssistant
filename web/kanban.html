@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="/css/base.css" />
     <link rel="stylesheet" href="/css/kanban.css" />
     <script src="/js/kanban-dep-utils.js" defer></script>
+    <script src="/js/markdown.js" defer></script>
     <script src="/js/kanban.js" defer></script>
   </head>
   <body>
@@ -120,6 +121,55 @@
         </svg>
         <!-- Lanes populated dynamically by JS -->
       </div>
+
+      <!-- Card Detail Drawer -->
+      <aside id="kanban-drawer" class="kdrawer" aria-hidden="true">
+        <header class="kdrawer-header">
+          <h2 class="kdrawer-title" id="drawer-title">Card Detail</h2>
+          <div class="kdrawer-header-actions">
+            <a class="kdrawer-external-link" id="drawer-external-link" href="#" target="_blank" rel="noopener" title="Open in platform">↗</a>
+            <button class="kdrawer-close" id="drawer-close" aria-label="Close drawer">&times;</button>
+          </div>
+        </header>
+        <nav class="kdrawer-tabs" id="drawer-tabs">
+          <button class="kdrawer-tab active" data-tab="overview">Overview</button>
+          <button class="kdrawer-tab" data-tab="agent">Agent</button>
+          <button class="kdrawer-tab" data-tab="worktree">Worktree</button>
+          <button class="kdrawer-tab" data-tab="diff">Diff</button>
+        </nav>
+        <div class="kdrawer-body">
+          <!-- Overview tab -->
+          <section class="kdrawer-section" data-tab="overview">
+            <div class="kdrawer-meta" id="drawer-meta"></div>
+            <div class="kdrawer-labels" id="drawer-labels"></div>
+            <div class="kdrawer-deps" id="drawer-deps"></div>
+            <div class="kdrawer-description" id="drawer-description"></div>
+            <div class="kdrawer-comments" id="drawer-comments">
+              <h4>Comments</h4>
+              <div id="drawer-comments-list"></div>
+            </div>
+          </section>
+          <!-- Agent tab -->
+          <section class="kdrawer-section" data-tab="agent" style="display:none">
+            <div id="drawer-agent-content">
+              <p class="kdrawer-empty-tab">No agent run for this card.</p>
+            </div>
+          </section>
+          <!-- Worktree tab -->
+          <section class="kdrawer-section" data-tab="worktree" style="display:none">
+            <div id="drawer-worktree-content">
+              <p class="kdrawer-empty-tab">No worktree for this card.</p>
+            </div>
+          </section>
+          <!-- Diff tab -->
+          <section class="kdrawer-section" data-tab="diff" style="display:none">
+            <div id="drawer-diff-content">
+              <p class="kdrawer-empty-tab">No diff available. Start an agent to generate changes.</p>
+            </div>
+          </section>
+        </div>
+      </aside>
+      <div class="kdrawer-backdrop" id="drawer-backdrop"></div>
     </div>
   </body>
 </html>
