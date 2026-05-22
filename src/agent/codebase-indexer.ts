@@ -84,28 +84,12 @@ class CodebaseIndexer {
     const chunkOverlap = env.RAG_CHUNK_OVERLAP;
 
     const SKIP_DIRS = new Set([
-      "node_modules",
-      ".git",
-      "dist",
-      ".next",
-      "coverage",
-      ".turbo",
-      "__pycache__",
-      ".venv",
-      "venv",           // python virtualenvs without dot prefix
-      "env",
-      "target",
-      "build",
-      "data",
-      "logs",
-      "ssl",
-      "backups",
-      "monitoring",
-      "generated-audio",
-      "site-packages",  // catch any stray python lib dirs
+      "node_modules", ".git", "dist", ".next", "coverage", ".turbo",
+      "__pycache__", ".venv", "venv", "env", "target", "build",
+      "data", "logs", "ssl", "backups", "monitoring", "generated-audio",
+      "site-packages",
     ]);
 
-    // Allowlist — only index actual source files
     const ALLOW_EXTENSIONS = new Set([
       ".ts", ".tsx", ".js", ".jsx",
       ".py", ".rs", ".go", ".java", ".kt", ".rb", ".php",
@@ -121,30 +105,18 @@ class CodebaseIndexer {
 
     function walkDir(dir: string) {
       let entries: fs.Dirent[];
-      try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch {
-        return;
-      }
-
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
       for (const entry of entries) {
         if (SKIP_DIRS.has(entry.name)) continue;
-        if (entry.name.startsWith(".") && entry.name !== ".env.example")
-          continue;
-
+        if (entry.name.startsWith(".") && entry.name !== ".env.example") continue;
         const fullPath = path.join(dir, entry.name);
         if (entry.isDirectory()) {
           walkDir(fullPath);
         } else if (entry.isFile()) {
           const ext = path.extname(entry.name).toLowerCase();
-          const isAllowed = ALLOW_EXTENSIONS.has(ext) ||
-            (ext === "" && entry.name === ".env.example");
-          if (!isAllowed) continue;
-
+          if (!ALLOW_EXTENSIONS.has(ext) && !(ext === "" && entry.name === ".env.example")) continue;
           try {
-            const stat = fs.statSync(fullPath);
-            if (stat.size > maxFileSize) continue;
-            files.push(fullPath);
+            if (fs.statSync(fullPath).size <= maxFileSize) files.push(fullPath);
           } catch {}
         }
       }
@@ -155,142 +127,162 @@ class CodebaseIndexer {
     console.log(`[CodebaseIndexer] Found ${files.length} files to index`);
 
     const useEmbeddings = await embeddingService.isAvailable();
-    if (useEmbeddings) {
-      console.log(
-        `[CodebaseIndexer] Embeddings available via ${embeddingService.getProviderInfo().provider}, using vector search`,
-      );
-    } else {
-      console.log(
-        "[CodebaseIndexer] Embeddings unavailable, using TF-IDF keyword search",
-      );
-    }
+    console.log(
+      useEmbeddings
+        ? `[CodebaseIndexer] Embeddings available via ${embeddingService.getProviderInfo().provider}`
+        : "[CodebaseIndexer] Embeddings unavailable, using TF-IDF keyword search",
+    );
+
+    // Build file-hash map from existing index for incremental skip
+    const existingHashes = new Map<string, string>();
+    const hashRows = this.db.prepare(`SELECT DISTINCT file_path, file_hash FROM code_chunks WHERE file_hash IS NOT NULL`).all() as { file_path: string; file_hash: string }[];
+    for (const row of hashRows) existingHashes.set(row.file_path, row.file_hash);
 
     const insertStmt = this.db.prepare(`
       INSERT OR REPLACE INTO code_chunks (id, file_path, start_line, end_line, content, language, keywords, embedding, indexed_at, file_hash)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const clearStmt = this.db.prepare(`DELETE FROM code_chunks`);
-    clearStmt.run();
+    // Only clear chunks for files that will actually be re-indexed
+    const deleteFileStmt = this.db.prepare(`DELETE FROM code_chunks WHERE file_path = ?`);
+
+    const EMBED_BATCH_SIZE = 100;   // larger batches = fewer API round trips
+    const EMBED_CONCURRENCY = 3;    // parallel inflight embedding requests
+    const now = new Date().toISOString();
 
     let totalChunks = 0;
-    let batchChunks: CodeChunk[] = [];
-    const BATCH_SIZE = 20;
+    let skippedFiles = 0;
+    let pendingChunks: CodeChunk[] = [];
 
-    const flushBatch = async () => {
-      if (batchChunks.length === 0) return;
-
-      if (useEmbeddings) {
-        const texts = batchChunks.map((c) => c.content);
-        const embeddings = await embeddingService.embedBatch(texts);
-        for (let i = 0; i < batchChunks.length; i++) {
-          batchChunks[i].embedding = embeddings[i]?.embedding || null;
-        }
-      }
-
-      const tx = this.db.transaction((chunks: CodeChunk[]) => {
-        for (const chunk of chunks) {
-          const keywords = this.extractKeywords(chunk.content);
-          const embeddingBlob = chunk.embedding
-            ? Buffer.from(new Float32Array(chunk.embedding).buffer)
-            : null;
-
+    const flushWithEmbeddings = async (chunks: CodeChunk[]) => {
+      if (chunks.length === 0) return;
+      const texts = chunks.map((c) => c.content);
+      const embeddings = await embeddingService.embedBatch(texts);
+      const tx = this.db.transaction((items: CodeChunk[]) => {
+        for (let i = 0; i < items.length; i++) {
+          const emb = embeddings[i]?.embedding || null;
           insertStmt.run(
-            chunk.id,
-            chunk.filePath,
-            chunk.startLine,
-            chunk.endLine,
-            chunk.content,
-            chunk.language,
-            JSON.stringify(keywords),
-            embeddingBlob,
-            new Date().toISOString(),
-            null,
+            items[i].id, items[i].filePath, items[i].startLine, items[i].endLine,
+            items[i].content, items[i].language, JSON.stringify(items[i].keywords),
+            emb ? Buffer.from(new Float32Array(emb).buffer) : null,
+            now, this.hashString(items[i].content),
           );
         }
       });
+      tx(chunks);
+    };
 
-      tx(batchChunks);
-      totalChunks += batchChunks.length;
-      batchChunks = [];
+    const flushWithoutEmbeddings = (chunks: CodeChunk[]) => {
+      if (chunks.length === 0) return;
+      const tx = this.db.transaction((items: CodeChunk[]) => {
+        for (const chunk of items) {
+          insertStmt.run(
+            chunk.id, chunk.filePath, chunk.startLine, chunk.endLine,
+            chunk.content, chunk.language, JSON.stringify(chunk.keywords),
+            null, now, this.hashString(chunk.content),
+          );
+        }
+      });
+      tx(chunks);
+    };
+
+    // Drain pendingChunks in parallel batches of EMBED_BATCH_SIZE
+    const drainPending = async (force = false) => {
+      while (pendingChunks.length >= EMBED_BATCH_SIZE || (force && pendingChunks.length > 0)) {
+        const take = Math.min(pendingChunks.length, EMBED_BATCH_SIZE * EMBED_CONCURRENCY);
+        const wave = pendingChunks.splice(0, take);
+
+        if (useEmbeddings) {
+          // Split into concurrent sub-batches
+          const subBatches: CodeChunk[][] = [];
+          for (let i = 0; i < wave.length; i += EMBED_BATCH_SIZE) {
+            subBatches.push(wave.slice(i, i + EMBED_BATCH_SIZE));
+          }
+          await Promise.all(subBatches.map(flushWithEmbeddings));
+        } else {
+          flushWithoutEmbeddings(wave);
+        }
+
+        totalChunks += wave.length;
+        if (totalChunks % 200 === 0) {
+          console.log(`[CodebaseIndexer] Indexed ${totalChunks} chunks...`);
+        }
+      }
     };
 
     for (const filePath of files) {
       try {
-        const relativePath = path
-          .relative(projectRoot, filePath)
-          .replace(/\\/g, "/");
+        const relativePath = path.relative(projectRoot, filePath).replace(/\\/g, "/");
         const content = fs.readFileSync(filePath, "utf-8");
-        const lines = content.split("\n");
+        const fileHash = this.hashString(content);
+
+        // Skip file if hash unchanged
+        if (existingHashes.get(relativePath) === fileHash) {
+          skippedFiles++;
+          const existing = this.db.prepare(`SELECT COUNT(*) as n FROM code_chunks WHERE file_path = ?`).get(relativePath) as { n: number };
+          totalChunks += existing.n;
+          continue;
+        }
+
+        deleteFileStmt.run(relativePath);
         const language = this.detectLanguage(filePath);
 
-        let charPos = 0;
+        // Pre-compute cumulative char offsets for O(log n) line lookup
+        const lines = content.split("\n");
+        const lineOffsets: number[] = new Array(lines.length + 1);
+        lineOffsets[0] = 0;
+        for (let i = 0; i < lines.length; i++) {
+          lineOffsets[i + 1] = lineOffsets[i] + lines[i].length + 1;
+        }
 
+        const charToLine = (pos: number): number => {
+          let lo = 0, hi = lines.length;
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (lineOffsets[mid + 1] <= pos) lo = mid + 1;
+            else hi = mid;
+          }
+          return lo + 1;
+        };
+
+        let charPos = 0;
         while (charPos < content.length) {
           const end = Math.min(charPos + chunkSize, content.length);
           const chunkContent = content.substring(charPos, end);
+          const startLine = charToLine(charPos);
+          const endLine = charToLine(end - 1);
 
-          let startLine = 1;
-          let endLine = 1;
-          let charsCounted = 0;
-          for (let i = 0; i < lines.length; i++) {
-            charsCounted += lines[i].length + 1;
-            if (charsCounted >= charPos && startLine === 1) {
-              startLine = i + 1;
-            }
-            if (charsCounted >= end) {
-              endLine = i + 1;
-              break;
-            }
-          }
-
-          const chunkId = `chunk-${this.hashString(`${relativePath}:${charPos}`)}`;
-
-          batchChunks.push({
-            id: chunkId,
+          pendingChunks.push({
+            id: `chunk-${this.hashString(`${relativePath}:${charPos}`)}`,
             filePath: relativePath,
             startLine,
             endLine,
             content: chunkContent,
             language,
             embedding: null,
-            keywords: [],
+            keywords: this.extractKeywords(chunkContent),
           });
-
-          if (batchChunks.length >= BATCH_SIZE) {
-            await flushBatch();
-            const progress = totalChunks;
-            if (progress % 100 === 0) {
-              console.log(`[CodebaseIndexer] Indexed ${progress} chunks...`);
-            }
-          }
 
           charPos += chunkSize - chunkOverlap;
         }
+
+        await drainPending();
       } catch (error) {
-        errors.push(
-          `${filePath}: ${error instanceof Error ? error.message : "Unknown"}`,
-        );
+        errors.push(`${filePath}: ${error instanceof Error ? error.message : "Unknown"}`);
       }
     }
 
-    await flushBatch();
+    await drainPending(true);
 
     this.indexed = true;
     this.indexing = false;
     const duration = Date.now() - startTime;
 
     console.log(
-      `[CodebaseIndexer] Complete: ${files.length} files, ${totalChunks} chunks, ${duration}ms, embeddings=${useEmbeddings}`,
+      `[CodebaseIndexer] Complete: ${files.length} files (${skippedFiles} unchanged), ${totalChunks} chunks, ${duration}ms, embeddings=${useEmbeddings}`,
     );
 
-    return {
-      totalFiles: files.length,
-      totalChunks,
-      embedded: useEmbeddings,
-      duration,
-      errors,
-    };
+    return { totalFiles: files.length, totalChunks, embedded: useEmbeddings, duration, errors };
   }
 
   search(

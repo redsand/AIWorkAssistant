@@ -36,24 +36,41 @@ export class OpenAIProvider extends AIProvider {
   }
 
   protected override buildRequestBody(request: ChatRequest): Record<string, unknown> {
-    // Sanitize tool names before handing to the base class body builder.
-    // Also strip any caller-supplied temperature/top_p so callers that
-    // hardcode 0.7 (e.g. chat.ts) don't override the provider's config value.
-    let sanitizedRequest: ChatRequest = {
+    // Sanitize tool names in the tools schema AND in message history.
+    // OpenAI validates ^[a-zA-Z0-9_-]+$ in both places.
+    // Also strip caller-supplied temperature/top_p (chat.ts hardcodes 0.7).
+    this._toolNameMap.clear();
+
+    const sanitizedTools = request.tools?.map((tool) => {
+      const original = tool.function.name;
+      const sanitized = sanitizeToolName(original);
+      if (sanitized !== original) this._toolNameMap.set(sanitized, original);
+      return { ...tool, function: { ...tool.function, name: sanitized } };
+    });
+
+    // Sanitize tool_calls.function.name inside assistant messages in history
+    const sanitizedMessages = request.messages.map((msg) => {
+      if (msg.role !== "assistant" || !msg.tool_calls?.length) return msg;
+      return {
+        ...msg,
+        tool_calls: msg.tool_calls.map((tc) => {
+          const sanitized = sanitizeToolName(tc.function.name);
+          if (sanitized !== tc.function.name) {
+            this._toolNameMap.set(sanitized, tc.function.name);
+          }
+          return { ...tc, function: { ...tc.function, name: sanitized } };
+        }),
+      };
+    });
+
+    const sanitizedRequest: ChatRequest = {
       ...request,
+      messages: sanitizedMessages,
+      tools: sanitizedTools,
       temperature: undefined,
       top_p: undefined,
     };
-    if (request.tools && request.tools.length > 0) {
-      this._toolNameMap.clear();
-      const sanitizedTools = request.tools.map((tool) => {
-        const original = tool.function.name;
-        const sanitized = sanitizeToolName(original);
-        if (sanitized !== original) this._toolNameMap.set(sanitized, original);
-        return { ...tool, function: { ...tool.function, name: sanitized } };
-      });
-      sanitizedRequest = { ...sanitizedRequest, tools: sanitizedTools };
-    }
+
     const body = super.buildRequestBody(sanitizedRequest);
 
     // Reasoning models (o1, o3, o4-*) reject temperature/top_p entirely and
