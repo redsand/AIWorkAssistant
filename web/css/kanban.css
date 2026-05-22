@@ -1724,3 +1724,102 @@ body {
   border-color: #667eea;
   box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.25);
 }
+
+/* ─── Settings Button ─────────────────────────────────────────────────────── */
+
+.k-settings-btn {
+  width: 36px;
+  height: 36px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: white;
+  color: #667eea;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.k-settings-btn:hover {
+  background: #667eea;
+  color: white;
+  border-color: #667eea;
+}
+
+.k-settings-btn:active {
+  transform: scale(0.95);
+}
+
+/* ─── Settings Modal ──────────────────────────────────────────────────────── */
+
+.kmodal--settings {
+  width: 480px;
+}
+
+.ksettings-section {
+  padding: 12px 0;
+}
+
+.ksettings-section + .ksettings-section {
+  border-top: 1px solid #e5e7eb;
+}
+
+.ksettings-heading {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #9ca3af;
+  margin: 0 0 12px 0;
+}
+
+.ksettings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  font-size: 14px;
+  color: #374151;
+  cursor: pointer;
+}
+
+.ksettings-label {
+  flex: 1;
+}
+
+/* Toggle switch */
+.ksettings-toggle {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 40px;
+  height: 22px;
+  background: #d1d5db;
+  border-radius: 11px;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.ksettings-toggle::after {
+  content: "";
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: white;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+.ksettings-toggle:checked {
+  background: #667eea;
+}
+
+.ksettings-toggle:checked::after {
+  transform: translateX(18px);
+}

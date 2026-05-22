@@ -7,6 +7,7 @@ const {
   mockGetRun,
   mockGetKanbanSetting,
   mockSetKanbanSetting,
+  mockGetAllKanbanSettings,
   mockListWorktrees,
   mockIsClean,
   mockRemoveWorktree,
@@ -16,6 +17,7 @@ const {
   mockGetRun: vi.fn().mockReturnValue(null),
   mockGetKanbanSetting: vi.fn().mockReturnValue(null),
   mockSetKanbanSetting: vi.fn(),
+  mockGetAllKanbanSettings: vi.fn().mockReturnValue({}),
   mockListWorktrees: vi.fn().mockResolvedValue([]),
   mockIsClean: vi.fn().mockResolvedValue(true),
   mockRemoveWorktree: vi.fn().mockResolvedValue(undefined),
@@ -57,6 +59,7 @@ vi.mock('../../agent-runs/database', () => ({
     getRun: mockGetRun,
     getKanbanSetting: mockGetKanbanSetting,
     setKanbanSetting: mockSetKanbanSetting,
+    getAllKanbanSettings: mockGetAllKanbanSettings,
   },
 }));
 
@@ -92,6 +95,7 @@ describe('Kanban Worktree Admin Routes', () => {
     mockListRuns.mockReturnValue({ runs: [], total: 0 });
     mockGetRun.mockReturnValue(null);
     mockGetKanbanSetting.mockReturnValue(null);
+    mockGetAllKanbanSettings.mockReturnValue({});
   });
 
   describe('GET /worktrees', () => {
@@ -249,25 +253,50 @@ describe('Kanban Worktree Admin Routes', () => {
   });
 
   describe('GET /settings', () => {
-    it('should return default 24 hours when no setting stored', async () => {
-      mockGetKanbanSetting.mockReturnValue(null);
+    it('should return defaults when no settings stored', async () => {
+      mockGetAllKanbanSettings.mockReturnValue({});
 
       const res = await app.inject({ method: 'GET', url: '/api/kanban/settings' });
       expect(res.statusCode).toBe(200);
-      expect(res.json().autoCleanupHours).toBe(24);
+      const data = res.json();
+      expect(data.autoCleanupHours).toBe(24);
+      expect(data.autoCommit).toBe(false);
+      expect(data.autoPR).toBe(false);
+      expect(data.defaultAgents).toEqual({});
+      expect(data.defaultModels).toEqual({});
     });
 
-    it('should return stored setting', async () => {
-      mockGetKanbanSetting.mockReturnValue('48');
+    it('should return all stored settings', async () => {
+      mockGetAllKanbanSettings.mockReturnValue({
+        autoCommit: 'true',
+        autoPR: 'true',
+        autoCleanupHours: '48',
+      });
 
       const res = await app.inject({ method: 'GET', url: '/api/kanban/settings' });
       expect(res.statusCode).toBe(200);
-      expect(res.json().autoCleanupHours).toBe(48);
+      const data = res.json();
+      expect(data.autoCommit).toBe(true);
+      expect(data.autoPR).toBe(true);
+      expect(data.autoCleanupHours).toBe(48);
+    });
+
+    it('should return per-repo default agent settings', async () => {
+      mockGetAllKanbanSettings.mockReturnValue({
+        'defaultAgent:github:owner/repo': 'claude',
+        'defaultModel:github:owner/repo': 'opus',
+      });
+
+      const res = await app.inject({ method: 'GET', url: '/api/kanban/settings' });
+      expect(res.statusCode).toBe(200);
+      const data = res.json();
+      expect(data.defaultAgents['github:owner/repo']).toBe('claude');
+      expect(data.defaultModels['github:owner/repo']).toBe('opus');
     });
   });
 
   describe('PUT /settings', () => {
-    it('should reject negative values', async () => {
+    it('should reject negative autoCleanupHours', async () => {
       const res = await app.inject({
         method: 'PUT',
         url: '/api/kanban/settings',
@@ -276,7 +305,7 @@ describe('Kanban Worktree Admin Routes', () => {
       expect(res.statusCode).toBe(400);
     });
 
-    it('should reject non-numeric values', async () => {
+    it('should reject non-numeric autoCleanupHours', async () => {
       const res = await app.inject({
         method: 'PUT',
         url: '/api/kanban/settings',
@@ -285,8 +314,8 @@ describe('Kanban Worktree Admin Routes', () => {
       expect(res.statusCode).toBe(400);
     });
 
-    it('should save valid setting', async () => {
-      mockGetKanbanSetting.mockReturnValue('12');
+    it('should save autoCleanupHours', async () => {
+      mockGetAllKanbanSettings.mockReturnValue({ autoCleanupHours: '12' });
 
       const res = await app.inject({
         method: 'PUT',
@@ -298,8 +327,8 @@ describe('Kanban Worktree Admin Routes', () => {
       expect(mockSetKanbanSetting).toHaveBeenCalledWith('autoCleanupHours', '12');
     });
 
-    it('should allow 0 (disables auto-cleanup)', async () => {
-      mockGetKanbanSetting.mockReturnValue('0');
+    it('should allow 0 autoCleanupHours (disables auto-cleanup)', async () => {
+      mockGetAllKanbanSettings.mockReturnValue({ autoCleanupHours: '0' });
 
       const res = await app.inject({
         method: 'PUT',
@@ -309,6 +338,74 @@ describe('Kanban Worktree Admin Routes', () => {
       expect(res.statusCode).toBe(200);
       expect(res.json().autoCleanupHours).toBe(0);
       expect(mockSetKanbanSetting).toHaveBeenCalledWith('autoCleanupHours', '0');
+    });
+
+    it('should save autoCommit toggle', async () => {
+      mockGetAllKanbanSettings.mockReturnValue({ autoCommit: 'true' });
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/kanban/settings',
+        payload: { autoCommit: true },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().autoCommit).toBe(true);
+      expect(mockSetKanbanSetting).toHaveBeenCalledWith('autoCommit', 'true');
+    });
+
+    it('should save autoPR toggle', async () => {
+      mockGetAllKanbanSettings.mockReturnValue({ autoPR: 'true' });
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/kanban/settings',
+        payload: { autoPR: true },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().autoPR).toBe(true);
+      expect(mockSetKanbanSetting).toHaveBeenCalledWith('autoPR', 'true');
+    });
+
+    it('should save multiple settings at once', async () => {
+      mockGetAllKanbanSettings.mockReturnValue({
+        autoCommit: 'true',
+        autoPR: 'false',
+        autoCleanupHours: '48',
+      });
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/kanban/settings',
+        payload: { autoCommit: true, autoPR: false, autoCleanupHours: 48 },
+      });
+      expect(res.statusCode).toBe(200);
+      const data = res.json();
+      expect(data.autoCommit).toBe(true);
+      expect(data.autoPR).toBe(false);
+      expect(data.autoCleanupHours).toBe(48);
+    });
+
+    it('should upsert arbitrary key-value pairs', async () => {
+      mockGetAllKanbanSettings.mockReturnValue({
+        'defaultAgent:github:owner/repo': 'codex',
+      });
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/kanban/settings',
+        payload: { key: 'defaultAgent:github:owner/repo', value: 'codex' },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(mockSetKanbanSetting).toHaveBeenCalledWith('defaultAgent:github:owner/repo', 'codex');
+    });
+
+    it('should reject empty key', async () => {
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/kanban/settings',
+        payload: { key: '', value: 'test' },
+      });
+      expect(res.statusCode).toBe(400);
     });
   });
 });

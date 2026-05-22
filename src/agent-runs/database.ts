@@ -481,6 +481,17 @@ class AgentRunDatabase {
       .run(key, value);
   }
 
+  getAllKanbanSettings(): Record<string, string> {
+    const rows = this.db
+      .prepare("SELECT key, value FROM kanban_settings")
+      .all() as Array<{ key: string; value: string }>;
+    const result: Record<string, string> = {};
+    for (const row of rows) {
+      result[row.key] = row.value;
+    }
+    return result;
+  }
+
   close(): void {
     this.db.close();
   }

@@ -50,6 +50,9 @@
           <button id="refresh-btn" class="k-refresh-btn" title="Refresh board">
             ↻
           </button>
+          <button id="settings-btn" class="k-settings-btn" title="Settings">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
         </div>
       </div>
 
@@ -257,6 +260,37 @@
         </button>
       </footer>
 
+      <!-- Settings Modal -->
+      <div class="kmodal-backdrop" id="settings-modal-backdrop">
+        <div class="kmodal kmodal--settings" id="settings-modal">
+          <header class="kmodal-header">
+            <h2 class="kmodal-title">Settings</h2>
+            <button class="kmodal-close" id="settings-modal-close">&times;</button>
+          </header>
+          <div class="kmodal-body">
+            <div class="ksettings-section">
+              <h3 class="ksettings-heading">Agent Automation</h3>
+              <label class="ksettings-row">
+                <span class="ksettings-label">Auto-commit after agent run</span>
+                <input type="checkbox" id="setting-auto-commit" class="ksettings-toggle">
+              </label>
+              <label class="ksettings-row">
+                <span class="ksettings-label">Auto-create PR/MR after commit</span>
+                <input type="checkbox" id="setting-auto-pr" class="ksettings-toggle">
+              </label>
+            </div>
+            <div class="ksettings-section">
+              <h3 class="ksettings-heading">Worktree Cleanup</h3>
+              <label class="ksettings-row">
+                <span class="ksettings-label">Auto-cleanup Done cards after</span>
+                <input type="number" id="setting-auto-cleanup-hours" min="0" max="720" value="24" class="kmodal-input">
+                <span>hours</span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Worktree Admin Modal -->
       <div class="kmodal-backdrop" id="worktree-modal-backdrop">
         <div class="kmodal" id="worktree-modal">
@@ -278,12 +312,6 @@
               <tbody id="worktree-tbody">
               </tbody>
             </table>
-            <div class="kmodal-settings">
-              <label for="auto-cleanup-hours">Auto-cleanup Done cards after</label>
-              <input type="number" id="auto-cleanup-hours" min="0" max="720" value="24" class="kmodal-input">
-              <span>hours</span>
-              <button class="kdrawer-btn kdrawer-btn--primary" id="save-settings-btn">Save</button>
-            </div>
           </div>
         </div>
       </div>
