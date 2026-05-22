@@ -101,6 +101,14 @@ class AgentRunDatabase {
       );
       CREATE INDEX IF NOT EXISTS idx_processed_issues_workspace ON processed_issues(workspace);
     `);
+
+    // Kanban settings — singleton k/v store for autoCleanupHours etc.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS kanban_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `);
   }
 
   startRun(params: AgentRunCreateParams): AgentRun {
@@ -452,6 +460,21 @@ class AgentRunDatabase {
           .prepare(`SELECT issue_key FROM processed_issues ORDER BY processed_at DESC`)
           .all();
     return (rows as Array<{ issue_key: string }>).map((r) => r.issue_key);
+  }
+
+  // ── Kanban settings ──────────────────────────────────────────────────────────
+
+  getKanbanSetting(key: string): string | null {
+    const row = this.db
+      .prepare("SELECT value FROM kanban_settings WHERE key = ?")
+      .get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  setKanbanSetting(key: string, value: string): void {
+    this.db
+      .prepare("INSERT OR REPLACE INTO kanban_settings (key, value) VALUES (?, ?)")
+      .run(key, value);
   }
 
   close(): void {

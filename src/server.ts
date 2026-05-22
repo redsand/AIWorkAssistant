@@ -51,6 +51,7 @@ import {
 } from "./middleware/auth";
 import { startTunnel } from "./integrations/file/tunnel";
 import { startCalendarScheduler } from "./scheduler/calendar-midnight";
+import { startKanbanCleanupScheduler } from "./scheduler/kanban-worktree-cleanup";
 import { initializeMCP } from "./integrations/mcp";
 import { codebaseIndexer } from "./agent/codebase-indexer";
 import path from "path";
@@ -406,6 +407,7 @@ async function start() {
 
     const tunnelUrl = await startTunnel();
     startCalendarScheduler();
+    startKanbanCleanupScheduler();
     if (tunnelUrl) {
       const webcalUrl = tunnelUrl.replace(/^https?/, "webcal");
       console.log("");
