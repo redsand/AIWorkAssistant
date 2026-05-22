@@ -24,7 +24,73 @@ import type {
 } from "../kanban/types";
 import { resolveEdges } from "../kanban/edges.js";
 import { kanbanEvents } from "../kanban/events.js";
-import { createWorktree } from "../kanban/worktree-manager.js";
+import { createWorktree, removeWorktree, isClean, listWorktrees } from "../kanban/worktree-manager.js";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+const execFileAsync = promisify(execFile);
+
+function collectPerRepoSettings(all: Record<string, string>, prefix: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(all)) {
+    if (key.startsWith(prefix)) {
+      const repo = key.slice(prefix.length);
+      result[repo] = value;
+    }
+  }
+  return result;
+}
+
+/**
+ * Validates that a worktree path from the DB is a real git worktree under a
+ * sane root — prevents path-traversal and arbitrary-filesystem-execution attacks.
+ */
+function validateWorktreePath(worktreePath: string): string | null {
+  // Must be an absolute path
+  if (!path.isAbsolute(worktreePath)) return null;
+
+  const resolved = path.resolve(worktreePath);
+
+  // Reject path traversal
+  if (resolved.includes("..")) return null;
+
+  // Must exist as a directory on disk
+  try {
+    const stat = fs.statSync(resolved);
+    if (!stat.isDirectory()) return null;
+  } catch {
+    return null;
+  }
+
+  // Must have a .git file (worktree marker, not a directory)
+  const gitPath = path.join(resolved, ".git");
+  try {
+    const gitStat = fs.statSync(gitPath);
+    if (!gitStat.isFile()) return null;
+  } catch {
+    return null;
+  }
+
+  return resolved;
+}
+
+/**
+ * Detects the default branch of a git repo by asking the worktree's origin.
+ * Falls back to "main" when detection fails.
+ */
+async function getDefaultBranch(worktreePath: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync("git", [
+      "symbolic-ref", "refs/remotes/origin/HEAD",
+    ], { cwd: worktreePath });
+    const match = stdout.trim().match(/^refs\/remotes\/origin\/(.+)$/);
+    return match ? match[1] : "main";
+  } catch {
+    return "main";
+  }
+}
 
 const MAX_ISSUES = 200;
 
@@ -283,6 +349,14 @@ async function buildBoard(filters: {
   if (filters.sprint) {
     allIssues = allIssues.filter((i) => i.sprint === filters.sprint);
   }
+  if (filters.agents && filters.agents.length > 0) {
+    const agentSet = new Set(filters.agents);
+    allIssues = allIssues.filter((i) => {
+      const key = `${i.platform}:${i.repo}:${i.id}`;
+      const cardAgent = agentTypeMap.get(key);
+      return cardAgent && agentSet.has(cardAgent);
+    });
+  }
 
   // Deduplicate by platform:repo:id
   const seenKeys = new Set<string>();
@@ -297,6 +371,7 @@ async function buildBoard(filters: {
 
   // Build agent_runs lookup: find active (running) runs for each issue
   const agentRunMap = new Map<string, string>();
+  const agentTypeMap = new Map<string, string>();
   try {
     const runningRuns = agentRunDatabase.listRuns({ status: "running", limit: 1000 });
     for (const run of runningRuns.runs) {
@@ -304,6 +379,7 @@ async function buildBoard(filters: {
         const key = `${run.issuePlatform}:${run.issueRepo}:${run.issueId}`;
         if (!agentRunMap.has(key)) {
           agentRunMap.set(key, run.id);
+          agentTypeMap.set(key, run.agentType || "claude");
         }
       }
     }
@@ -373,6 +449,19 @@ async function buildBoard(filters: {
 // ─── Fastify plugin ─────────────────────────────────────────────────────────
 
 export async function kanbanRoutes(fastify: FastifyInstance) {
+  // ─── GET /token-status — which platforms have write tokens configured ─────
+  // Protected by global authMiddleware (not in PUBLIC_PATHS).
+
+  fastify.get("/token-status", async (request) => {
+    request.log.info("Token status checked");
+    return {
+      github: !!(env.GITHUB_TOKEN && env.GITHUB_DEFAULT_OWNER),
+      gitlab: !!env.GITLAB_TOKEN,
+      jira: !!(env.JIRA_API_TOKEN && env.JIRA_EMAIL),
+      work_items: true,
+    };
+  });
+
   fastify.get<{
     Querystring: {
       "repos[]"?: string | string[];
@@ -398,13 +487,22 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
       assignee: q.assignee,
     };
 
-    // Build cache key from filter fingerprint
-    const cacheKey = `board:${JSON.stringify(filters)}`;
+    // Build cache key from sorted filter values + integration fingerprint
+    const sortedRepos = [...(filters.repos || [])].sort().join(",");
+    const sortedAgents = [...(filters.agents || [])].sort().join(",");
+    const integrationFingerprint = [
+      !!env.GITHUB_TOKEN && !!env.GITHUB_DEFAULT_OWNER ? "gh" : "",
+      env.GITLAB_TOKEN ? "gl" : "",
+      env.JIRA_API_TOKEN && env.JIRA_EMAIL ? "jira" : "",
+      "wi",
+    ].filter(Boolean).join(",");
+    const cacheKey = `board:${sortedRepos}|${sortedAgents}|${filters.sprint || ""}|${filters.priority || ""}|${filters.assignee || ""}|${integrationFingerprint}`;
     const now = Date.now();
     const cached = boardCache.get(cacheKey);
     if (cached && now - cached.fetchedAt < CACHE_TTL_MS) {
       cached.lastAccessed = now;
-      return cached.data;
+      request.log.info({ cached: true, cacheKey }, "Board cache hit");
+      return { ...cached.data, cached: true };
     }
 
     const board = await buildBoard(filters);
@@ -482,7 +580,7 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
 
       return {
         agentRunId: run.id,
-        agent: (run.mode === "interactive" ? "claude" : "claude") as KanbanAgent["agent"],
+        agent: (run.agentType || "claude") as KanbanAgent["agent"],
         model: run.model,
         status: "running" as const,
         cardKey: run.issuePlatform && run.issueRepo && run.issueId
@@ -503,8 +601,268 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
   const VALID_AGENTS = new Set(["claude", "codex", "opencode"]);
   const REPO_PATH_RE = /^[a-zA-Z0-9._\-/]+$/;
 
+  // ─── GET /worktrees — list all tracked worktrees with disk-state reconcile ─
+
+  interface WorktreeEntry {
+    agentRunId: string;
+    path: string;
+    branch: string;
+    cardKey: string | null;
+    onDisk: boolean;
+    isClean: boolean | null;
+    state: "active" | "orphan" | "ghost";
+  }
+
+  fastify.get("/worktrees", async () => {
+    // 1. Get all runs that have a worktree path
+    const allRuns = agentRunDatabase.listRuns({ status: undefined, limit: 10000 });
+    const tracked = allRuns.runs.filter((r) => r.worktreePath);
+
+    // 2. Build DB entries map (path → run info)
+    const dbByPath = new Map<string, { runId: string; branch: string; cardKey: string | null }>();
+    for (const run of tracked) {
+      dbByPath.set(path.resolve(run.worktreePath!), {
+        runId: run.id,
+        branch: run.branch ?? "",
+        cardKey: run.issuePlatform && run.issueRepo && run.issueId
+          ? `${run.issuePlatform}:${run.issueRepo}:${run.issueId}`
+          : null,
+      });
+    }
+
+    // 3. Get on-disk worktrees from all known repo roots
+    const repoPaths = new Set<string>();
+    for (const run of tracked) {
+      const repoPath = resolveRepoPath(run.issuePlatform ?? "github", run.issueRepo ?? "");
+      repoPaths.add(repoPath);
+    }
+    // Always include cwd as fallback to discover ghost worktrees
+    repoPaths.add(process.cwd());
+
+    const diskByPath = new Map<string, { branch: string; head: string }>();
+    for (const repoPath of repoPaths) {
+      try {
+        const wts = await listWorktrees(repoPath);
+        for (const wt of wts) {
+          diskByPath.set(path.resolve(wt.path), { branch: wt.branch, head: wt.head });
+        }
+      } catch { /* repo may not have worktrees */ }
+    }
+
+    // 4. Reconcile
+    const entries: WorktreeEntry[] = [];
+    const allPaths = new Set([...dbByPath.keys(), ...diskByPath.keys()]);
+
+    for (const wtPath of allPaths) {
+      const inDb = dbByPath.get(wtPath);
+      const onDisk = diskByPath.has(wtPath);
+
+      if (inDb && onDisk) {
+        let clean: boolean | null = null;
+        try {
+          clean = await isClean(wtPath);
+        } catch { /* worktree may be locked */ }
+        entries.push({
+          agentRunId: inDb.runId,
+          path: wtPath,
+          branch: inDb.branch,
+          cardKey: inDb.cardKey,
+          onDisk: true,
+          isClean: clean,
+          state: "active",
+        });
+      } else if (inDb && !onDisk) {
+        entries.push({
+          agentRunId: inDb.runId,
+          path: wtPath,
+          branch: inDb.branch,
+          cardKey: inDb.cardKey,
+          onDisk: false,
+          isClean: null,
+          state: "orphan",
+        });
+      } else if (!inDb && onDisk) {
+        const disk = diskByPath.get(wtPath)!;
+        let clean: boolean | null = null;
+        try {
+          clean = await isClean(wtPath);
+        } catch { /* locked */ }
+        entries.push({
+          agentRunId: "",
+          path: wtPath,
+          branch: disk.branch,
+          cardKey: null,
+          onDisk: true,
+          isClean: clean,
+          state: "ghost",
+        });
+      }
+    }
+
+    return entries;
+  });
+
+  // ─── GET /settings — kanban settings ─────────────────────────────────────────
+
+  fastify.get("/settings", async () => {
+    const all = agentRunDatabase.getAllKanbanSettings();
+    return {
+      autoCommit: all.autoCommit === "true",
+      autoPR: all.autoPR === "true",
+      autoCleanupHours: all.autoCleanupHours !== undefined ? Number(all.autoCleanupHours) : 24,
+      defaultAgents: collectPerRepoSettings(all, "defaultAgent:"),
+      defaultModels: collectPerRepoSettings(all, "defaultModel:"),
+    };
+  });
+
+  // ─── PUT /settings — update kanban settings ──────────────────────────────────
+
+  fastify.put<{
+    Body: {
+      autoCommit?: boolean;
+      autoPR?: boolean;
+      autoCleanupHours?: number;
+      key?: string;
+      value?: string;
+    };
+  }>("/settings", async (request, reply) => {
+    const body = request.body ?? {};
+
+    // Simple key-value upsert (for per-repo defaults etc.)
+    if (body.key !== undefined && body.value !== undefined) {
+      if (typeof body.key !== "string" || !body.key) {
+        return reply.status(400).send({ error: "key must be a non-empty string" });
+      }
+      agentRunDatabase.setKanbanSetting(body.key, String(body.value));
+    }
+
+    // Named boolean toggles
+    if (body.autoCommit !== undefined) {
+      agentRunDatabase.setKanbanSetting("autoCommit", String(!!body.autoCommit));
+    }
+    if (body.autoPR !== undefined) {
+      agentRunDatabase.setKanbanSetting("autoPR", String(!!body.autoPR));
+    }
+    if (body.autoCleanupHours !== undefined) {
+      const hours = Number(body.autoCleanupHours);
+      if (!Number.isFinite(hours) || hours < 0) {
+        return reply.status(400).send({ error: "autoCleanupHours must be a non-negative number" });
+      }
+      agentRunDatabase.setKanbanSetting("autoCleanupHours", String(hours));
+    }
+
+    // Return full settings (same shape as GET)
+    const all = agentRunDatabase.getAllKanbanSettings();
+    return {
+      autoCommit: all.autoCommit === "true",
+      autoPR: all.autoPR === "true",
+      autoCleanupHours: all.autoCleanupHours !== undefined ? Number(all.autoCleanupHours) : 24,
+      defaultAgents: collectPerRepoSettings(all, "defaultAgent:"),
+      defaultModels: collectPerRepoSettings(all, "defaultModel:"),
+    };
+  });
+
   // Note: authentication is enforced by the global authMiddleware registered
   // in the app setup — these routes are NOT in PUBLIC_PATHS.
+
+  // ─── POST /cards/bulk — create multiple issues at once ─────────────────────
+
+  fastify.post<{
+    Body: {
+      items: Array<{ title: string; body?: string }>;
+      platform: string;
+      repo: string;
+    };
+  }>("/cards/bulk", async (request, reply) => {
+    const { items, platform, repo } = request.body ?? {};
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return reply.status(400).send({ error: "items must be a non-empty array" });
+    }
+    if (items.length > 50) {
+      return reply.status(400).send({ error: "Maximum 50 items per bulk request" });
+    }
+    if (!platform || !VALID_PLATFORMS.has(platform)) {
+      return reply.status(400).send({ error: `Invalid platform: ${platform}` });
+    }
+    const sanitizedRepo = sanitizeRepo(repo);
+    if (!sanitizedRepo) {
+      return reply.status(400).send({ error: "Missing or invalid repo" });
+    }
+
+    for (const item of items) {
+      if (!item.title || typeof item.title !== "string" || item.title.trim().length === 0) {
+        return reply.status(400).send({ error: "Each item must have a non-empty title" });
+      }
+      if (item.title.length > 256) {
+        return reply.status(400).send({ error: `Title too long: "${item.title.slice(0, 40)}…" (max 256 chars)` });
+      }
+    }
+
+    const labels = ["enhancement", "ready-for-agent"];
+    const created: Array<{ title: string; id: string; url: string }> = [];
+    const errors: Array<{ title: string; error: string }> = [];
+
+    for (const item of items) {
+      try {
+        switch (platform) {
+          case "github": {
+            const [owner, repoName] = sanitizedRepo.split("/");
+            if (!owner || !repoName) {
+              errors.push({ title: item.title, error: "Invalid GitHub repo format" });
+              break;
+            }
+            const issue = await githubClient.createIssue(
+              { title: item.title.trim(), body: item.body || "", labels },
+              owner,
+              repoName,
+            );
+            created.push({
+              title: item.title,
+              id: String(issue.number),
+              url: issue.html_url || "",
+            });
+            break;
+          }
+          case "gitlab": {
+            const issue = await gitlabClient.createIssue(sanitizedRepo, {
+              title: item.title.trim(),
+              description: item.body || "",
+              labels: labels.join(","),
+            });
+            created.push({
+              title: item.title,
+              id: String(issue.iid || issue.id),
+              url: issue.web_url || "",
+            });
+            break;
+          }
+          case "jira": {
+            const issue = await jiraClient.createIssue({
+              project: sanitizedRepo,
+              summary: item.title.trim(),
+              description: item.body || "",
+              issueType: "Task",
+            });
+            created.push({
+              title: item.title,
+              id: issue.key,
+              url: `${env.JIRA_BASE_URL}/browse/${issue.key}`,
+            });
+            break;
+          }
+          default:
+            errors.push({ title: item.title, error: `Unsupported platform: ${platform}` });
+        }
+      } catch (err) {
+        errors.push({ title: item.title, error: (err as Error).message });
+      }
+    }
+
+    invalidateBoardCache();
+
+    return { created, errors };
+  });
 
   function sanitizeRepo(repo: string): string | null {
     const trimmed = repo.trim();
@@ -587,6 +945,7 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
       issueRepo: repo,
       worktreePath,
       branch,
+      agentType: agent,
     });
 
     request.log.info({ agentRunId: run.id, platform, repo, id, agent }, "Agent started");
@@ -626,7 +985,7 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
         });
       }
     })
-      .then((result) => {
+      .then(async (result) => {
         activeChildren.delete(run.id);
         if (result.exitCode === 0 || result.finDetected) {
           agentRunDatabase.completeRun(run.id, {
@@ -639,6 +998,53 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
             status: "completed",
           });
           request.log.info({ agentRunId: run.id, steps: stepCounter }, "Agent completed");
+
+          // Auto-commit
+          const autoCommit = agentRunDatabase.getKanbanSetting("autoCommit") === "true";
+          let committed = false;
+          if (autoCommit) {
+            try {
+              await execFileAsync("git", ["-C", worktreePath, "add", "-A"]);
+              await execFileAsync("git", ["-C", worktreePath, "commit", "-m", `AI: ${card.title}`]);
+              committed = true;
+              request.log.info({ agentRunId: run.id, worktreePath }, "Auto-committed");
+            } catch (err) {
+              request.log.warn({ agentRunId: run.id, err }, "Auto-commit failed (no changes or error)");
+            }
+          }
+
+          // Auto-PR (only after successful auto-commit)
+          const autoPR = agentRunDatabase.getKanbanSetting("autoPR") === "true";
+          if (autoPR && committed && platform === "github") {
+            try {
+              const [owner, repoName] = repo.split("/");
+              if (owner && repoName) {
+                const baseBranch = await getDefaultBranch(worktreePath);
+                const prBody = `Closes #${id}\n\nAuto-generated by AI agent.`;
+                await githubClient.createPullRequest(
+                  { title: `AI: ${card.title}`, body: prBody, head: branch, base: baseBranch },
+                  owner,
+                  repoName,
+                );
+                request.log.info({ agentRunId: run.id, branch }, "Auto-PR created");
+              }
+            } catch (err) {
+              request.log.warn({ agentRunId: run.id, err }, "Auto-PR failed");
+            }
+          } else if (autoPR && committed && platform === "gitlab") {
+            try {
+              const desc = `Auto-generated by AI agent.`;
+              await gitlabClient.createMergeRequest(repo, {
+                title: `AI: ${card.title}`,
+                sourceBranch: branch,
+                targetBranch: "main",
+                description: desc,
+              });
+              request.log.info({ agentRunId: run.id, branch }, "Auto-MR created");
+            } catch (err) {
+              request.log.warn({ agentRunId: run.id, err }, "Auto-MR failed");
+            }
+          }
         } else {
           agentRunDatabase.failRun(run.id, result.stderr || `Agent exited with code ${result.exitCode}`);
           kanbanEvents.emitEvent({
@@ -748,6 +1154,423 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
 
     return reply.send({ agentRunId: match.id, status: "stopped" });
   });
+
+  // ─── GET /cards/:platform/:repo/:id — card detail ────────────────────────
+
+  fastify.get<{
+    Params: { platform: string; repo: string; id: string };
+  }>("/cards/:platform/:repo/:id", async (request, reply) => {
+    const { platform, repo, id } = request.params;
+
+    if (!VALID_PLATFORMS.has(platform)) {
+      return reply.status(400).send({ error: `Invalid platform: ${platform}` });
+    }
+
+    const sanitizedRepo = sanitizeRepo(repo);
+    if (!sanitizedRepo) {
+      return reply.status(400).send({ error: "Invalid repo" });
+    }
+
+    // 1. Fetch card info (title + description)
+    const cardInfo = await findCard(platform, sanitizedRepo, id);
+    if (!cardInfo) {
+      return reply.status(404).send({ error: "Card not found" });
+    }
+
+    // 2. Build KanbanCard from the card info
+    const cardKey = `${platform}:${sanitizedRepo}:${id}`;
+    const card: KanbanCard = {
+      key: cardKey,
+      platform: platform as KanbanCard["platform"],
+      repo: sanitizedRepo,
+      id,
+      externalId: platform === "jira" ? id : `#${id}`,
+      title: cardInfo.title,
+      url: "",
+      status: "",
+      column: "backlog",
+      priority: "unknown",
+      assignee: null,
+      labels: [],
+      createdAt: "",
+      updatedAt: "",
+      dependencyKeys: [],
+      activeAgentRunId: null,
+    };
+
+    // 3. Fetch comments from the platform
+    const comments = await fetchComments(platform, sanitizedRepo, id);
+
+    // 4. Look up agent run
+    let agentRun: import("../agent-runs/types").AgentRunWithSteps | null = null;
+    try {
+      const runs = agentRunDatabase.listRuns({ status: undefined, limit: 1000 });
+      const match = runs.runs.find(
+        (r) => r.issuePlatform === platform && r.issueRepo === sanitizedRepo && r.issueId === id,
+      );
+      if (match) {
+        const withSteps = agentRunDatabase.getRunWithSteps(match.id);
+        if (withSteps) agentRun = withSteps;
+        card.activeAgentRunId = match.id;
+      }
+    } catch { /* no agent runs */ }
+
+    // 5. Worktree info
+    let worktree: (import("../kanban/worktree-manager").WorktreeInfo & { isClean: boolean }) | null = null;
+    if (agentRun?.worktreePath) {
+      try {
+        const validatedPath = validateWorktreePath(agentRun.worktreePath);
+        if (validatedPath) {
+          const clean = await isClean(validatedPath);
+          worktree = {
+            path: validatedPath,
+            branch: agentRun.branch ?? "",
+            head: "",
+            locked: false,
+            prunable: false,
+            isClean: clean,
+          };
+        }
+      } catch { /* worktree gone */ }
+    }
+
+    return {
+      card,
+      description: cardInfo.description ?? "",
+      comments,
+      agentRun,
+      worktree,
+      diffUrl: worktree ? `/api/kanban/cards/${platform}/${sanitizedRepo}/${id}/diff` : null,
+    };
+  });
+
+  // ─── GET /cards/:platform/:repo/:id/diff ─────────────────────────────────
+
+  fastify.get<{
+    Params: { platform: string; repo: string; id: string };
+  }>("/cards/:platform/:repo/:id/diff", async (request, reply) => {
+    const { platform, repo, id } = request.params;
+
+    if (!VALID_PLATFORMS.has(platform)) {
+      return reply.status(400).send({ error: `Invalid platform: ${platform}` });
+    }
+
+    const sanitizedRepo = sanitizeRepo(repo);
+    if (!sanitizedRepo) {
+      return reply.status(400).send({ error: "Invalid repo" });
+    }
+
+    // Find the agent run to get the worktree path
+    let rawWorktreePath: string | null = null;
+    try {
+      const runs = agentRunDatabase.listRuns({ status: undefined, limit: 1000 });
+      const match = runs.runs.find(
+        (r) => r.issuePlatform === platform && r.issueRepo === sanitizedRepo && r.issueId === id,
+      );
+      if (match) {
+        rawWorktreePath = match.worktreePath;
+      }
+    } catch { /* no runs */ }
+
+    if (!rawWorktreePath) {
+      return reply.status(404).send({ error: "No worktree for this card" });
+    }
+
+    // Validate path is a real git worktree (prevents arbitrary filesystem access)
+    const worktreePath = validateWorktreePath(rawWorktreePath);
+    if (!worktreePath) {
+      return reply.status(400).send({ error: "Invalid worktree path" });
+    }
+
+    try {
+      const baseBranch = await getDefaultBranch(worktreePath);
+      const { stdout } = await execFileAsync("git", [
+        "-C", worktreePath,
+        "diff", `${baseBranch}..HEAD`,
+      ], { maxBuffer: 10 * 1024 * 1024 });
+      return reply.type("text/plain").send(stdout);
+    } catch (err) {
+      return reply.status(500).send({ error: `Diff failed: ${(err as Error).message}` });
+    }
+  });
+
+  // ─── POST /cards/:platform/:repo/:id/comment ─────────────────────────────
+
+  fastify.post<{
+    Params: { platform: string; repo: string; id: string };
+    Body: { body: string };
+  }>("/cards/:platform/:repo/:id/comment", async (request, reply) => {
+    const { platform, repo, id } = request.params;
+    const commentBody = request.body?.body;
+
+    if (!VALID_PLATFORMS.has(platform)) {
+      return reply.status(400).send({ error: `Invalid platform: ${platform}` });
+    }
+
+    const sanitizedRepo = sanitizeRepo(repo);
+    if (!sanitizedRepo) {
+      return reply.status(400).send({ error: "Invalid repo" });
+    }
+
+    if (!commentBody || typeof commentBody !== "string") {
+      return reply.status(400).send({ error: "Missing comment body" });
+    }
+
+    try {
+      await addComment(platform, sanitizedRepo, id, commentBody);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: `Comment failed: ${(err as Error).message}` });
+    }
+  });
+
+  // ─── GitHub label helpers ────────────────────────────────────────────────
+
+  function extractGitHubLabels(labels: any[]): string[] {
+    return (labels || [])
+      .map((l: any) => (typeof l === "string" ? l : l.name))
+      .filter(Boolean);
+  }
+
+  function removeStatusLabels(labels: string[]): string[] {
+    return labels.filter(
+      (l) => l.toLowerCase() !== "blocked" && l.toLowerCase() !== "in progress",
+    );
+  }
+
+  // ─── POST /cards/:platform/:repo/:id/move — drag-and-drop status transition ─
+
+  const COLUMN_TO_NORMALIZED: Record<KanbanColumn, string> = {
+    backlog: "open",
+    in_flight: "in_progress",
+    blocked: "blocked",
+    done: "done",
+  };
+
+  const VALID_COLUMNS = new Set<KanbanColumn>(["backlog", "in_flight", "blocked", "done"]);
+
+  fastify.post<{
+    Params: { platform: string; repo: string; id: string };
+    Body: { column: KanbanColumn };
+  }>("/cards/:platform/:repo/:id/move", async (request, reply) => {
+    const { platform, repo, id } = request.params;
+    const column = request.body?.column;
+
+    if (!VALID_PLATFORMS.has(platform)) {
+      return reply.status(400).send({ error: `Invalid platform: ${platform}` });
+    }
+
+    const sanitizedRepo = sanitizeRepo(repo);
+    if (!sanitizedRepo) {
+      return reply.status(400).send({ error: "Invalid repo" });
+    }
+
+    if (!column || !VALID_COLUMNS.has(column)) {
+      return reply.status(400).send({ error: `Invalid column: ${column}. Must be one of: ${Array.from(VALID_COLUMNS).join(", ")}` });
+    }
+
+    try {
+      switch (platform) {
+        case "github": {
+          const [owner, repoName] = sanitizedRepo.split("/");
+          if (!owner || !repoName) {
+            return reply.status(400).send({ error: "Invalid GitHub repo format" });
+          }
+          const issueNum = Number(id);
+          if (!Number.isFinite(issueNum)) {
+            return reply.status(400).send({ error: "Invalid issue id: must be a number" });
+          }
+
+          if (column === "done") {
+            const current = await githubClient.getIssue(issueNum, owner, repoName);
+            if (!current) {
+              return reply.status(404).send({ error: "Issue not found" });
+            }
+            const currentLabels = extractGitHubLabels(current.labels);
+            const cleanedLabels = removeStatusLabels(currentLabels);
+            await githubClient.updateIssue(issueNum, { state: "closed", labels: cleanedLabels }, owner, repoName);
+          } else if (column === "backlog") {
+            const current = await githubClient.getIssue(issueNum, owner, repoName);
+            if (!current) {
+              return reply.status(404).send({ error: "Issue not found" });
+            }
+            const currentLabels = extractGitHubLabels(current.labels);
+            const cleanedLabels = removeStatusLabels(currentLabels);
+            await githubClient.updateIssue(issueNum, { state: "open", labels: cleanedLabels }, owner, repoName);
+          } else {
+            // blocked or in_flight — manage labels
+            const current = await githubClient.getIssue(issueNum, owner, repoName);
+            if (!current) {
+              return reply.status(404).send({ error: "Issue not found" });
+            }
+            const currentLabels = extractGitHubLabels(current.labels);
+            const labelToAdd = column === "blocked" ? "blocked" : "in progress";
+            const updatedLabels = [...new Set([...currentLabels, labelToAdd])];
+            await githubClient.updateIssue(issueNum, { labels: updatedLabels }, owner, repoName);
+          }
+          break;
+        }
+
+        case "gitlab": {
+          const issueIid = Number(id);
+          if (!Number.isFinite(issueIid)) {
+            return reply.status(400).send({ error: "Invalid issue id: must be a number" });
+          }
+
+          if (column === "done") {
+            const current = await gitlabClient.getIssue(sanitizedRepo, issueIid);
+            if (!current) {
+              return reply.status(404).send({ error: "Issue not found" });
+            }
+            const currentLabels: string[] = (current?.labels || []);
+            const cleanedLabels = currentLabels.filter(
+              (l) => l.toLowerCase() !== "blocked" && l.toLowerCase() !== "in progress",
+            ).join(",");
+            await gitlabClient.editIssue(sanitizedRepo, issueIid, { stateEvent: "close", labels: cleanedLabels });
+          } else if (column === "backlog") {
+            const current = await gitlabClient.getIssue(sanitizedRepo, issueIid);
+            if (!current) {
+              return reply.status(404).send({ error: "Issue not found" });
+            }
+            const currentLabels: string[] = (current.labels || []);
+            const cleanedLabels = currentLabels.filter(
+              (l) => l.toLowerCase() !== "blocked" && l.toLowerCase() !== "in progress",
+            ).join(",");
+            await gitlabClient.editIssue(sanitizedRepo, issueIid, { stateEvent: "reopen", labels: cleanedLabels });
+          } else {
+            // blocked or in_flight — manage labels
+            const current = await gitlabClient.getIssue(sanitizedRepo, issueIid);
+            if (!current) {
+              return reply.status(404).send({ error: "Issue not found" });
+            }
+            const currentLabels: string[] = (current.labels || []);
+            const labelToAdd = column === "blocked" ? "blocked" : "in progress";
+            const updatedLabels = [...new Set([...currentLabels, labelToAdd])].join(",");
+            await gitlabClient.editIssue(sanitizedRepo, issueIid, { labels: updatedLabels });
+          }
+          break;
+        }
+
+        case "jira": {
+          const statusTargets: Record<string, string[]> = {
+            open: ["to do", "new", "backlog", "open", "reopened"],
+            in_progress: ["in progress", "in review"],
+            blocked: ["blocked", "on hold"],
+            done: ["done", "resolved", "closed"],
+          };
+          const targetNames = statusTargets[COLUMN_TO_NORMALIZED[column]] || [];
+          const transitions = await jiraClient.getTransitions(id);
+          const match = (transitions || []).find((t: any) => {
+            const toName = (t.to?.name || "").toLowerCase().trim();
+            return targetNames.includes(toName);
+          });
+          if (!match) {
+            return reply.status(409).send({
+              error: `No available transition to "${column}" for ${id}. Available: ${(transitions || []).map((t: any) => t.name).join(", ") || "none"}`,
+            });
+          }
+          await jiraClient.transitionIssue(id, match.id, `Moved via kanban board to ${column}`);
+          break;
+        }
+
+        case "work_items": {
+          const statusMap: Record<string, string> = {
+            open: "proposed",
+            in_progress: "active",
+            blocked: "blocked",
+            done: "done",
+          };
+          const wiStatus = statusMap[COLUMN_TO_NORMALIZED[column]];
+          if (!wiStatus) {
+            return reply.status(400).send({ error: `Cannot map column "${column}" to work item status` });
+          }
+          const result = workItemDatabase.updateWorkItem(id, { status: wiStatus as any });
+          if (!result) {
+            return reply.status(404).send({ error: `Work item ${id} not found` });
+          }
+          break;
+        }
+
+        default:
+          return reply.status(400).send({ error: `Unsupported platform: ${platform}` });
+      }
+
+      // Emit SSE event and invalidate cache
+      const cardKey = `${platform}:${sanitizedRepo}:${id}`;
+      kanbanEvents.emitEvent({
+        type: "card.updated",
+        card: {
+          key: cardKey,
+          platform: platform as KanbanCard["platform"],
+          repo: sanitizedRepo,
+          id,
+          externalId: id,
+          title: "",
+          url: "",
+          status: COLUMN_TO_NORMALIZED[column],
+          column,
+          priority: "unknown",
+          assignee: null,
+          labels: [],
+          createdAt: "",
+          updatedAt: new Date().toISOString(),
+          dependencyKeys: [],
+          activeAgentRunId: null,
+        },
+      });
+
+      request.log.info({ platform, repo: sanitizedRepo, id, column, cardKey }, "Card moved");
+
+      invalidateBoardCache();
+
+      return { ok: true, column };
+    } catch (err) {
+      return reply.status(500).send({ error: `Move failed: ${(err as Error).message}` });
+    }
+  });
+
+  // ─── DELETE /worktrees/:id — cleanup worktree ────────────────────────────
+
+  fastify.delete<{
+    Params: { id: string };
+    Querystring: { force?: string };
+  }>("/worktrees/:id", async (request, reply) => {
+    const { id: runId } = request.params;
+    const force = request.query.force === "true";
+
+    const run = agentRunDatabase.getRun(runId);
+    if (!run) {
+      return reply.status(404).send({ error: "Agent run not found" });
+    }
+
+    if (!run.worktreePath) {
+      return reply.status(404).send({ error: "No worktree for this run" });
+    }
+
+    // Check if worktree still exists on disk
+    if (fs.existsSync(run.worktreePath)) {
+      try {
+        const clean = await isClean(run.worktreePath);
+        if (!clean && !force) {
+          return reply.status(409).send({ error: "Worktree has uncommitted changes. Use ?force=true to override." });
+        }
+      } catch { /* if isClean fails, proceed with force */ }
+    }
+
+    try {
+      await removeWorktree(run.worktreePath, { force: true });
+
+      kanbanEvents.emitEvent({
+        type: "worktree.changed",
+        path: run.worktreePath,
+        status: "removed",
+      });
+
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: `Cleanup failed: ${(err as Error).message}` });
+    }
+  });
 }
 
 // ─── Helpers for start/stop ────────────────────────────────────────────────────
@@ -810,4 +1633,71 @@ function resolveRepoPath(platform: string, repo: string): string {
   }
   // Fallback: use cwd
   return process.cwd();
+}
+
+async function fetchComments(
+  platform: string,
+  repo: string,
+  id: string,
+): Promise<Array<{ author: string; body: string; createdAt: string }>> {
+  try {
+    switch (platform) {
+      case "github": {
+        const [owner, repoName] = repo.split("/");
+        if (!owner || !repoName) return [];
+        const comments = await githubClient.listIssueComments(parseInt(id, 10), owner, repoName);
+        return (comments || []).map((c: any) => ({
+          author: c.user?.login || "unknown",
+          body: c.body || "",
+          createdAt: c.created_at || "",
+        }));
+      }
+      case "gitlab": {
+        const notes = await gitlabClient.listIssueNotes(repo, parseInt(id, 10));
+        return (notes || []).map((n: any) => ({
+          author: n.author?.username || n.author?.name || "unknown",
+          body: n.body || "",
+          createdAt: n.created_at || "",
+        }));
+      }
+      case "jira": {
+        const comments = await jiraClient.getComments(id);
+        return (comments || []).map((c: any) => ({
+          author: c.author?.displayName || c.author?.name || "unknown",
+          body: typeof c.body === "string" ? c.body : JSON.stringify(c.body),
+          createdAt: c.created || "",
+        }));
+      }
+      default:
+        return [];
+    }
+  } catch {
+    return [];
+  }
+}
+
+async function addComment(
+  platform: string,
+  repo: string,
+  id: string,
+  body: string,
+): Promise<void> {
+  switch (platform) {
+    case "github": {
+      const [owner, repoName] = repo.split("/");
+      if (!owner || !repoName) throw new Error("Invalid GitHub repo");
+      await githubClient.addIssueComment(parseInt(id, 10), body, owner, repoName);
+      break;
+    }
+    case "gitlab": {
+      await gitlabClient.addIssueNote(repo, parseInt(id, 10), body);
+      break;
+    }
+    case "jira": {
+      await jiraClient.addComment(id, body);
+      break;
+    }
+    default:
+      throw new Error(`Comments not supported for platform: ${platform}`);
+  }
 }

@@ -39,6 +39,7 @@ export interface KanbanEdge {
   fromGhost: boolean;
   kind: "depends_on" | "blocks";
   label: string;
+  onCriticalPath?: boolean;
 }
 
 export interface KanbanGhostNode {

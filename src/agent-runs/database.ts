@@ -82,6 +82,7 @@ class AgentRunDatabase {
     this.ensureColumn("agent_runs", "issue_repo", "TEXT");
     this.ensureColumn("agent_runs", "worktree_path", "TEXT");
     this.ensureColumn("agent_runs", "branch", "TEXT");
+    this.ensureColumn("agent_runs", "agent_type", "TEXT");
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_agent_runs_last_activity_at ON agent_runs(last_activity_at);
       CREATE INDEX IF NOT EXISTS idx_agent_runs_issue ON agent_runs(issue_platform, issue_repo, issue_id);
@@ -101,6 +102,14 @@ class AgentRunDatabase {
       );
       CREATE INDEX IF NOT EXISTS idx_processed_issues_workspace ON processed_issues(workspace);
     `);
+
+    // Kanban settings — singleton k/v store for autoCleanupHours etc.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS kanban_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `);
   }
 
   startRun(params: AgentRunCreateParams): AgentRun {
@@ -108,8 +117,8 @@ class AgentRunDatabase {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO agent_runs (id, session_id, user_id, mode, status, started_at, last_activity_at, issue_id, issue_platform, issue_repo, worktree_path, branch)
-         VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO agent_runs (id, session_id, user_id, mode, status, started_at, last_activity_at, issue_id, issue_platform, issue_repo, worktree_path, branch, agent_type)
+         VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -123,6 +132,7 @@ class AgentRunDatabase {
         params.issueRepo ?? null,
         params.worktreePath ?? null,
         params.branch ?? null,
+        params.agentType ?? null,
       );
 
     return {
@@ -146,6 +156,7 @@ class AgentRunDatabase {
       issueRepo: params.issueRepo ?? null,
       worktreePath: params.worktreePath ?? null,
       branch: params.branch ?? null,
+      agentType: params.agentType ?? null,
     };
   }
 
@@ -395,6 +406,7 @@ class AgentRunDatabase {
       issueRepo: (row.issue_repo as string | null) ?? null,
       worktreePath: (row.worktree_path as string | null) ?? null,
       branch: (row.branch as string | null) ?? null,
+      agentType: (row.agent_type as string | null) ?? null,
     };
   }
 
@@ -452,6 +464,32 @@ class AgentRunDatabase {
           .prepare(`SELECT issue_key FROM processed_issues ORDER BY processed_at DESC`)
           .all();
     return (rows as Array<{ issue_key: string }>).map((r) => r.issue_key);
+  }
+
+  // ── Kanban settings ──────────────────────────────────────────────────────────
+
+  getKanbanSetting(key: string): string | null {
+    const row = this.db
+      .prepare("SELECT value FROM kanban_settings WHERE key = ?")
+      .get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  setKanbanSetting(key: string, value: string): void {
+    this.db
+      .prepare("INSERT OR REPLACE INTO kanban_settings (key, value) VALUES (?, ?)")
+      .run(key, value);
+  }
+
+  getAllKanbanSettings(): Record<string, string> {
+    const rows = this.db
+      .prepare("SELECT key, value FROM kanban_settings")
+      .all() as Array<{ key: string; value: string }>;
+    const result: Record<string, string> = {};
+    for (const row of rows) {
+      result[row.key] = row.value;
+    }
+    return result;
   }
 
   close(): void {

@@ -232,6 +232,7 @@ export function normalizeStatus(
 
   if (platform === "github") {
     if (s === "open") {
+      if (labels?.some((l) => l.toLowerCase() === "blocked")) return "blocked";
       if (labels?.some((l) => l.toLowerCase() === "in progress")) return "in_progress";
       return "open";
     }
@@ -240,6 +241,7 @@ export function normalizeStatus(
   }
   if (platform === "gitlab") {
     if (s === "opened") {
+      if (labels?.some((l) => l.toLowerCase() === "blocked")) return "blocked";
       if (labels?.some((l) => l.toLowerCase() === "in progress")) return "in_progress";
       return "open";
     }

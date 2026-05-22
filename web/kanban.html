@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="/css/base.css" />
     <link rel="stylesheet" href="/css/kanban.css" />
     <script src="/js/kanban-dep-utils.js" defer></script>
+    <script src="/js/markdown.js" defer></script>
     <script src="/js/kanban.js" defer></script>
   </head>
   <body>
@@ -39,24 +40,67 @@
           </div>
         </div>
         <div class="k-header-right">
-          <select id="repo-select" class="k-select">
-            <option value="">— All Repos —</option>
-          </select>
-          <select id="sprint-select" class="k-select" disabled>
+          <button id="sidechat-toggle" class="k-sidechat-toggle-btn" title="Task breakdown assistant">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          </button>
+          <div class="k-view-toggle" id="view-toggle">
+            <button class="k-view-btn active" id="view-status" title="Group by status columns">Status</button>
+            <button class="k-view-btn" id="view-swimlane" title="Group by agent swimlanes">Who's doing what</button>
+          </div>
+          <select id="sprint-select" class="k-select">
             <option value="">— All Sprints —</option>
           </select>
           <button id="refresh-btn" class="k-refresh-btn" title="Refresh board">
             ↻
           </button>
+          <button id="settings-btn" class="k-settings-btn" title="Settings">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
         </div>
+      </div>
+
+      <!-- Filter Strip -->
+      <div class="k-filter-strip" id="filter-strip">
+        <div class="k-filter-group" id="filter-repos">
+          <span class="k-filter-label">Repos</span>
+          <button class="k-filter-chip k-filter-chip--dropdown" id="filter-repo-btn" aria-pressed="false" aria-haspopup="listbox" aria-expanded="false">
+            All Repos <span class="k-filter-count" id="filter-repo-count"></span>
+          </button>
+          <div class="k-filter-dropdown" id="filter-repo-dropdown" role="listbox" aria-label="Select repositories" style="display:none">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+        <div class="k-filter-group" id="filter-agents-group">
+          <span class="k-filter-label">Agent</span>
+          <button class="k-filter-chip" data-agent="claude" aria-pressed="false">Claude</button>
+          <button class="k-filter-chip" data-agent="codex" aria-pressed="false">Codex</button>
+          <button class="k-filter-chip" data-agent="opencode" aria-pressed="false">OpenCode</button>
+        </div>
+        <div class="k-filter-group" id="filter-priority-group">
+          <span class="k-filter-label">Priority</span>
+          <button class="k-filter-chip" data-priority="critical" aria-pressed="false">Critical</button>
+          <button class="k-filter-chip" data-priority="high" aria-pressed="false">High</button>
+          <button class="k-filter-chip" data-priority="medium" aria-pressed="false">Medium</button>
+          <button class="k-filter-chip" data-priority="low" aria-pressed="false">Low</button>
+        </div>
+        <button class="k-filter-clear" id="filter-clear" style="display:none">Clear filters</button>
       </div>
 
       <div id="error-banner" class="k-error-banner" style="display: none"></div>
 
-      <!-- Agents Rail -->
-      <section id="agents-rail" class="k-agents-rail">
-        <!-- Populated by future sprint -->
-      </section>
+      <!-- Screen reader live region -->
+      <div id="a11y-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+
+      <!-- Agents Rail wrapper (mobile pill + desktop rail) -->
+      <div class="k-agents-rail-wrapper">
+        <button id="agents-pill" class="k-agents-pill" aria-expanded="false" aria-label="Show running agents">
+          <span class="k-agents-pill-dot"></span>
+          <span id="agents-pill-label">0 agents running</span>
+        </button>
+        <section id="agents-rail" class="k-agents-rail">
+          <!-- Populated by JS -->
+        </section>
+      </div>
 
       <!-- Loading state -->
       <div id="kanban-loading" class="k-loading" style="display: none">
@@ -69,9 +113,34 @@
         <p>No cards found. Issues will appear here once they are created across your repositories.</p>
       </div>
 
-      <!-- Board -->
+      <!-- Dependency Edge Legend -->
+      <div id="dep-legend" class="k-dep-legend">
+        <span class="k-dep-legend-title">Dependencies:</span>
+        <span class="k-dep-legend-item">
+          <svg width="24" height="6" class="k-dep-legend-swatch"><line x1="0" y1="3" x2="24" y2="3" stroke="#f59e0b" stroke-width="2"/></svg>
+          In Progress
+        </span>
+        <span class="k-dep-legend-item">
+          <svg width="24" height="6" class="k-dep-legend-swatch"><line x1="0" y1="3" x2="24" y2="3" stroke="#ef4444" stroke-width="3" stroke-dasharray="8 4"/></svg>
+          Blocked
+        </span>
+        <span class="k-dep-legend-item">
+          <svg width="24" height="6" class="k-dep-legend-swatch"><line x1="0" y1="3" x2="24" y2="3" stroke="#9ca3af" stroke-width="2" stroke-dasharray="6 4"/></svg>
+          Pending
+        </span>
+        <span class="k-dep-legend-item">
+          <svg width="24" height="6" class="k-dep-legend-swatch"><line x1="0" y1="3" x2="24" y2="3" stroke="#22c55e" stroke-width="2" stroke-dasharray="4 4"/></svg>
+          Resolved
+        </span>
+        <span class="k-dep-legend-item">
+          <svg width="24" height="6" class="k-dep-legend-swatch"><line x1="0" y1="3" x2="24" y2="3" stroke="#eab308" stroke-width="4"/></svg>
+          Critical Path
+        </span>
+      </div>
+
+      <!-- Board (Status view) -->
       <div id="kanban-board" class="k-board" style="display: none">
-        <svg id="dep-overlay" class="dep-overlay" xmlns="http://www.w3.org/2000/svg">
+        <svg id="dep-overlay" class="dep-overlay" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
           <defs>
             <marker id="dep-arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
               <polygon points="0 0, 8 3, 0 6" fill="#667eea" />
@@ -79,23 +148,221 @@
             <marker id="dep-arrowhead-ghost" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
               <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
             </marker>
+            <marker id="dep-arrowhead-pending" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
+            </marker>
+            <marker id="dep-arrowhead-in_progress" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#f59e0b" />
+            </marker>
+            <marker id="dep-arrowhead-blocked" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#ef4444" />
+            </marker>
+            <marker id="dep-arrowhead-resolved" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#22c55e" />
+            </marker>
+            <marker id="dep-arrowhead-critical" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#eab308" />
+            </marker>
           </defs>
         </svg>
-        <div class="k-col" data-column="backlog">
+        <div class="k-col" data-column="backlog" role="region" aria-label="Backlog">
           <h3 class="k-col-title">Backlog <span class="k-col-count" id="count-backlog">0</span></h3>
           <div class="k-col-items" id="col-backlog"></div>
         </div>
-        <div class="k-col" data-column="in_flight">
+        <div class="k-col" data-column="in_flight" role="region" aria-label="In Flight">
           <h3 class="k-col-title">In Flight <span class="k-col-count" id="count-in_flight">0</span></h3>
           <div class="k-col-items" id="col-in_flight"></div>
         </div>
-        <div class="k-col" data-column="blocked">
+        <div class="k-col" data-column="blocked" role="region" aria-label="Blocked">
           <h3 class="k-col-title">Blocked <span class="k-col-count" id="count-blocked">0</span></h3>
           <div class="k-col-items" id="col-blocked"></div>
         </div>
-        <div class="k-col" data-column="done">
+        <div class="k-col" data-column="done" role="region" aria-label="Done">
           <h3 class="k-col-title">Done <span class="k-col-count" id="count-done">0</span></h3>
           <div class="k-col-items" id="col-done"></div>
+        </div>
+      </div>
+
+      <!-- Board (Swimlane / Who's-doing-what view) -->
+      <div id="kanban-swimlanes" class="k-swimlanes" style="display: none">
+        <svg id="dep-overlay-swim" class="dep-overlay" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <defs>
+            <marker id="dep-arrowhead-swim" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#667eea" />
+            </marker>
+            <marker id="dep-arrowhead-ghost-swim" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
+            </marker>
+            <marker id="dep-arrowhead-swim-pending" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
+            </marker>
+            <marker id="dep-arrowhead-swim-in_progress" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#f59e0b" />
+            </marker>
+            <marker id="dep-arrowhead-swim-blocked" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#ef4444" />
+            </marker>
+            <marker id="dep-arrowhead-swim-resolved" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#22c55e" />
+            </marker>
+            <marker id="dep-arrowhead-swim-critical" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#eab308" />
+            </marker>
+          </defs>
+        </svg>
+        <!-- Lanes populated dynamically by JS -->
+      </div>
+
+      <!-- Card Detail Drawer -->
+      <aside id="kanban-drawer" class="kdrawer" role="dialog" aria-label="Card detail drawer" aria-hidden="true">
+        <header class="kdrawer-header">
+          <h2 class="kdrawer-title" id="drawer-title">Card Detail</h2>
+          <div class="kdrawer-header-actions">
+            <a class="kdrawer-external-link" id="drawer-external-link" href="#" target="_blank" rel="noopener" title="Open in platform">↗</a>
+            <button class="kdrawer-close" id="drawer-close" aria-label="Close drawer">&times;</button>
+          </div>
+        </header>
+        <nav class="kdrawer-tabs" id="drawer-tabs">
+          <button class="kdrawer-tab active" data-tab="overview">Overview</button>
+          <button class="kdrawer-tab" data-tab="agent">Agent</button>
+          <button class="kdrawer-tab" data-tab="worktree">Worktree</button>
+          <button class="kdrawer-tab" data-tab="diff">Diff</button>
+        </nav>
+        <div class="kdrawer-body">
+          <!-- Overview tab -->
+          <section class="kdrawer-section" data-tab="overview">
+            <div class="kdrawer-meta" id="drawer-meta"></div>
+            <div class="kdrawer-labels" id="drawer-labels"></div>
+            <div class="kdrawer-deps" id="drawer-deps"></div>
+            <div class="kdrawer-description" id="drawer-description"></div>
+            <div class="kdrawer-comments" id="drawer-comments">
+              <h4>Comments</h4>
+              <div id="drawer-comments-list"></div>
+            </div>
+          </section>
+          <!-- Agent tab -->
+          <section class="kdrawer-section" data-tab="agent" style="display:none">
+            <div id="drawer-agent-content">
+              <p class="kdrawer-empty-tab">No agent run for this card.</p>
+            </div>
+          </section>
+          <!-- Worktree tab -->
+          <section class="kdrawer-section" data-tab="worktree" style="display:none">
+            <div id="drawer-worktree-content">
+              <p class="kdrawer-empty-tab">No worktree for this card.</p>
+            </div>
+          </section>
+          <!-- Diff tab -->
+          <section class="kdrawer-section" data-tab="diff" style="display:none">
+            <div id="drawer-diff-content">
+              <p class="kdrawer-empty-tab">No diff available. Start an agent to generate changes.</p>
+            </div>
+          </section>
+        </div>
+      </aside>
+      <div class="kdrawer-backdrop" id="drawer-backdrop"></div>
+
+      <!-- Sidebar Chat (Task Breakdown) -->
+      <aside id="kanban-sidechat" class="k-sidechat" aria-hidden="true">
+        <header class="k-sidechat-header">
+          <h2 class="k-sidechat-title">Task Breakdown</h2>
+          <button class="k-sidechat-close" id="sidechat-close" aria-label="Close sidebar">&times;</button>
+        </header>
+        <div class="k-sidechat-transcript" id="sidechat-transcript"></div>
+        <div class="k-sidechat-input-area">
+          <textarea id="sidechat-input" class="k-sidechat-input" placeholder="Describe what you want built…" rows="2"></textarea>
+          <button id="sidechat-submit" class="k-sidechat-submit" title="Send">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </div>
+      </aside>
+
+      <!-- Footer with Worktrees button -->
+      <footer class="k-footer">
+        <button class="k-footer-btn" id="worktree-admin-btn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+          Worktrees (<span id="worktree-count">0</span>)
+        </button>
+      </footer>
+
+      <!-- Settings Modal -->
+      <div class="kmodal-backdrop" id="settings-modal-backdrop">
+        <div class="kmodal kmodal--settings" id="settings-modal">
+          <header class="kmodal-header">
+            <h2 class="kmodal-title">Settings</h2>
+            <button class="kmodal-close" id="settings-modal-close">&times;</button>
+          </header>
+          <div class="kmodal-body">
+            <div class="ksettings-section">
+              <h3 class="ksettings-heading">Agent Automation</h3>
+              <label class="ksettings-row">
+                <span class="ksettings-label">Auto-commit after agent run</span>
+                <input type="checkbox" id="setting-auto-commit" class="ksettings-toggle">
+              </label>
+              <label class="ksettings-row">
+                <span class="ksettings-label">Auto-create PR/MR after commit</span>
+                <input type="checkbox" id="setting-auto-pr" class="ksettings-toggle">
+              </label>
+            </div>
+            <div class="ksettings-section">
+              <h3 class="ksettings-heading">Worktree Cleanup</h3>
+              <label class="ksettings-row">
+                <span class="ksettings-label">Auto-cleanup Done cards after</span>
+                <input type="number" id="setting-auto-cleanup-hours" min="0" max="720" value="24" class="kmodal-input">
+                <span>hours</span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Worktree Admin Modal -->
+      <div class="kmodal-backdrop" id="worktree-modal-backdrop">
+        <div class="kmodal" id="worktree-modal">
+          <header class="kmodal-header">
+            <h2 class="kmodal-title">Worktrees</h2>
+            <button class="kmodal-close" id="worktree-modal-close">&times;</button>
+          </header>
+          <div class="kmodal-body">
+            <table class="kmodal-table">
+              <thead>
+                <tr>
+                  <th>Path</th>
+                  <th>Branch</th>
+                  <th>State</th>
+                  <th>Card</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="worktree-tbody">
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Keyboard Shortcuts Modal -->
+      <div class="kmodal-backdrop" id="shortcuts-modal-backdrop">
+        <div class="kmodal kmodal--shortcuts" id="shortcuts-modal" role="dialog" aria-label="Keyboard shortcuts">
+          <header class="kmodal-header">
+            <h2 class="kmodal-title">Keyboard Shortcuts</h2>
+            <button class="kmodal-close" id="shortcuts-modal-close" aria-label="Close">&times;</button>
+          </header>
+          <div class="kmodal-body">
+            <table class="kshortcuts-table">
+              <tbody>
+                <tr><td><kbd>&uarr;</kbd> <kbd>&darr;</kbd></td><td>Move focus between cards in a column</td></tr>
+                <tr><td><kbd>&larr;</kbd> <kbd>&rarr;</kbd></td><td>Move focus across columns</td></tr>
+                <tr><td><kbd>Enter</kbd></td><td>Open card detail drawer</td></tr>
+                <tr><td><kbd>Space</kbd></td><td>Toggle card running selection</td></tr>
+                <tr><td><kbd>]</kbd> <kbd>[</kbd></td><td>Move card to next / previous column</td></tr>
+                <tr><td><kbd>?</kbd></td><td>Show this shortcuts dialog</td></tr>
+                <tr><td><kbd>Esc</kbd></td><td>Close drawer / modal</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
