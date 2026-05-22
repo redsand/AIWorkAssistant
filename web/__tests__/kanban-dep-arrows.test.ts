@@ -74,6 +74,21 @@ describe("drawDepArrows integration", () => {
             <marker id="dep-arrowhead-ghost" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
               <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
             </marker>
+            <marker id="dep-arrowhead-pending" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
+            </marker>
+            <marker id="dep-arrowhead-in_progress" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#f59e0b" />
+            </marker>
+            <marker id="dep-arrowhead-blocked" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#ef4444" />
+            </marker>
+            <marker id="dep-arrowhead-resolved" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#22c55e" />
+            </marker>
+            <marker id="dep-arrowhead-critical" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#eab308" />
+            </marker>
           </defs>
         </svg>
         <div class="k-col" data-column="backlog">
@@ -119,7 +134,7 @@ describe("drawDepArrows integration", () => {
     });
   }
 
-  function drawDepArrows(edges: KanbanEdge[]) {
+  function drawDepArrows(edges: KanbanEdge[], cards?: KanbanCard[]) {
     // Clear existing paths (keep <defs>)
     const existing = depOverlay.querySelectorAll(".dep-path");
     for (let i = 0; i < existing.length; i++) {
@@ -130,6 +145,10 @@ describe("drawDepArrows integration", () => {
 
     const boardRect = boardEl.getBoundingClientRect();
 
+    // Build card column lookup for edge state computation
+    const cardColumnMap: Record<string, string> = {};
+    (cards || []).forEach((c) => { cardColumnMap[c.key] = c.column; });
+
     edges.forEach((edge) => {
       const fromEl = cardIndex.get(edge.fromKey) || safeFindByDataKey(boardEl, edge.fromKey);
       const toEl = cardIndex.get(edge.toKey) || safeFindByDataKey(boardEl, edge.toKey);
@@ -139,23 +158,44 @@ describe("drawDepArrows integration", () => {
       const from = getCardCenter(fromEl, boardRect);
       const to = getCardCenter(toEl, boardRect);
 
+      // Determine edge state from blocker column
+      const blockerColumn = cardColumnMap[edge.fromKey];
+      let edgeState = "pending";
+      if (blockerColumn === "done") edgeState = "resolved";
+      else if (blockerColumn === "in_flight") edgeState = "in_progress";
+      else if (blockerColumn === "blocked") edgeState = "blocked";
+
+      const isCritical = !!edge.onCriticalPath;
+
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
       path.setAttribute("d", buildEdgePath(from, to));
-      path.setAttribute(
-        "marker-end",
-        edge.fromGhost ? "url(#dep-arrowhead-ghost)" : "url(#dep-arrowhead)"
-      );
+
+      // Pick marker
+      let markerId: string;
+      if (edge.fromGhost) {
+        markerId = "dep-arrowhead-ghost";
+      } else if (isCritical) {
+        markerId = "dep-arrowhead-critical";
+      } else {
+        markerId = "dep-arrowhead-" + edgeState;
+      }
+      const markerEl = depOverlay.querySelector("#" + markerId);
+      path.setAttribute("marker-end", markerEl ? ("url(#" + markerId + ")") : "url(#dep-arrowhead)");
+
       path.classList.add("dep-path");
       if (edge.fromGhost) path.classList.add("dep-path--ghost");
+      path.classList.add("dep-edge--" + edgeState);
+      if (isCritical) path.classList.add("dep-edge--critical");
       path.setAttribute("data-from", edge.fromKey);
       path.setAttribute("data-to", edge.toKey);
+      path.setAttribute("data-state", edgeState);
 
       depOverlay.appendChild(path);
 
       // In happy-dom, getTotalLength may not be available — skip if so
       if (typeof path.getTotalLength === "function") {
         const totalLen = path.getTotalLength();
-        if (!edge.fromGhost) {
+        if (!edge.fromGhost && edgeState !== "resolved") {
           path.style.strokeDasharray = String(totalLen);
           path.style.strokeDashoffset = String(totalLen);
         }
@@ -180,13 +220,14 @@ describe("drawDepArrows integration", () => {
       { fromKey: "github:owner/repo:1", toKey: "github:owner/repo:2", fromGhost: false, kind: "depends_on", label: "depends on #1" },
     ];
 
-    drawDepArrows(edges);
+    drawDepArrows(edges, [card1, card2]);
 
     const paths = depOverlay.querySelectorAll(".dep-path");
     expect(paths).toHaveLength(1);
     expect(paths[0].getAttribute("data-from")).toBe("github:owner/repo:1");
     expect(paths[0].getAttribute("data-to")).toBe("github:owner/repo:2");
-    expect(paths[0].getAttribute("marker-end")).toBe("url(#dep-arrowhead)");
+    // Blocker card1 is in backlog, so edge state is "pending"
+    expect(paths[0].getAttribute("marker-end")).toBe("url(#dep-arrowhead-pending)");
   });
 
   it("renders ghost arrow with ghost marker and class", () => {
@@ -306,7 +347,7 @@ describe("drawDepArrows integration", () => {
     renderCards(boardData.cards);
 
     // Step 2: Draw dependency arrows (simulates drawDepArrows)
-    drawDepArrows(boardData.edges);
+    drawDepArrows(boardData.edges, boardData.cards);
 
     // Verify all arrows rendered
     const paths = depOverlay.querySelectorAll(".dep-path");
@@ -320,10 +361,93 @@ describe("drawDepArrows integration", () => {
     expect(toKeys).toContain("github:owner/repo:2");
     expect(toKeys).toContain("github:owner/repo:3");
 
-    // Verify all arrows use the purple (non-ghost) arrowhead
+    // Verify state-aware rendering
     paths.forEach((p) => {
-      expect(p.getAttribute("marker-end")).toBe("url(#dep-arrowhead)");
       expect(p.classList.contains("dep-path--ghost")).toBe(false);
+      const state = p.getAttribute("data-state");
+      expect(["pending", "in_progress", "blocked", "resolved"]).toContain(state);
     });
+
+    // Card 1 is backlog (blocker for edge 1→2) → pending
+    // Card 2 is in_flight (blocker for edge 2→3) → in_progress
+    const edge12 = Array.from(paths).find((p) => p.getAttribute("data-from") === "github:owner/repo:1");
+    const edge23 = Array.from(paths).find((p) => p.getAttribute("data-from") === "github:owner/repo:2");
+    expect(edge12?.getAttribute("data-state")).toBe("pending");
+    expect(edge12?.classList.contains("dep-edge--pending")).toBe(true);
+    expect(edge23?.getAttribute("data-state")).toBe("in_progress");
+    expect(edge23?.classList.contains("dep-edge--in_progress")).toBe(true);
+  });
+
+  // ─── Edge state tests ──────────────────────────────────────────────────────
+
+  it("applies blocked state when blocker card is in blocked column", () => {
+    const card1 = makeCard({ key: "github:owner/repo:1", column: "blocked" });
+    const card2 = makeCard({ key: "github:owner/repo:2", column: "in_flight" });
+    renderCards([card1, card2]);
+
+    const edges: KanbanEdge[] = [
+      { fromKey: "github:owner/repo:1", toKey: "github:owner/repo:2", fromGhost: false, kind: "depends_on", label: "blocked by #1" },
+    ];
+
+    drawDepArrows(edges, [card1, card2]);
+
+    const paths = depOverlay.querySelectorAll(".dep-path");
+    expect(paths).toHaveLength(1);
+    expect(paths[0].classList.contains("dep-edge--blocked")).toBe(true);
+    expect(paths[0].getAttribute("data-state")).toBe("blocked");
+    expect(paths[0].getAttribute("marker-end")).toBe("url(#dep-arrowhead-blocked)");
+  });
+
+  it("applies resolved state when blocker card is in done column", () => {
+    const card1 = makeCard({ key: "github:owner/repo:1", column: "done" });
+    const card2 = makeCard({ key: "github:owner/repo:2", column: "backlog" });
+    renderCards([card1, card2]);
+
+    const edges: KanbanEdge[] = [
+      { fromKey: "github:owner/repo:1", toKey: "github:owner/repo:2", fromGhost: false, kind: "depends_on", label: "depends on #1" },
+    ];
+
+    drawDepArrows(edges, [card1, card2]);
+
+    const paths = depOverlay.querySelectorAll(".dep-path");
+    expect(paths).toHaveLength(1);
+    expect(paths[0].classList.contains("dep-edge--resolved")).toBe(true);
+    expect(paths[0].getAttribute("data-state")).toBe("resolved");
+    expect(paths[0].getAttribute("marker-end")).toBe("url(#dep-arrowhead-resolved)");
+  });
+
+  it("applies critical path class when edge is on critical path", () => {
+    const card1 = makeCard({ key: "github:owner/repo:1", column: "backlog" });
+    const card2 = makeCard({ key: "github:owner/repo:2", column: "in_flight" });
+    renderCards([card1, card2]);
+
+    const edges: KanbanEdge[] = [
+      { fromKey: "github:owner/repo:1", toKey: "github:owner/repo:2", fromGhost: false, kind: "depends_on", label: "depends on #1", onCriticalPath: true },
+    ];
+
+    drawDepArrows(edges, [card1, card2]);
+
+    const paths = depOverlay.querySelectorAll(".dep-path");
+    expect(paths).toHaveLength(1);
+    expect(paths[0].classList.contains("dep-edge--critical")).toBe(true);
+    // Still has base state too
+    expect(paths[0].classList.contains("dep-edge--pending")).toBe(true);
+    expect(paths[0].getAttribute("marker-end")).toBe("url(#dep-arrowhead-critical)");
+  });
+
+  it("defaults to pending state for unknown blocker column", () => {
+    // Ghost node as blocker — not in cardIndex so no column known
+    const card2 = makeCard({ key: "github:owner/repo:2", column: "in_flight" });
+    renderCards([card2]);
+
+    const edges: KanbanEdge[] = [
+      { fromKey: "github:owner/repo:1", toKey: "github:owner/repo:2", fromGhost: false, kind: "depends_on", label: "depends on #1" },
+    ];
+
+    drawDepArrows(edges, [card2]);
+
+    const paths = depOverlay.querySelectorAll(".dep-path");
+    // fromEl not found (card1 not rendered), so no arrow
+    expect(paths).toHaveLength(0);
   });
 });
