@@ -38,6 +38,7 @@ const chatRequestSchema = z.object({
   includeTools: z.boolean().default(true),
   includeMemory: z.boolean().default(true),
   systemPrompt: z.string().optional(),
+  model: z.string().optional(),
 });
 
 const createSessionSchema = z.object({
@@ -220,6 +221,7 @@ async function runChatJob(
   tools: Tool[] | undefined,
   mode: string,
   userId: string,
+  model?: string,
 ) {
   const job = getOrCreateJob(sessionId);
   if (job.cancelled) return;
@@ -244,6 +246,7 @@ async function runChatJob(
       tools,
       temperature: 0.7,
       top_p: 0.95,
+      model,
     });
     assertJobActive(job);
     try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
@@ -444,6 +447,7 @@ async function runChatJob(
         tools: expandedTools.length > 0 ? expandedTools : undefined,
         temperature: 0.7,
         top_p: 0.95,
+        model,
       });
       assertJobActive(job);
       try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
@@ -626,6 +630,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         tools,
         temperature: 0.7,
         top_p: 0.95,
+        model: body.model,
       });
       try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
@@ -770,6 +775,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           tools: expandedTools.length > 0 ? expandedTools : undefined,
           temperature: 0.7,
           top_p: 0.95,
+          model: body.model,
         });
         try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
       }
@@ -989,7 +995,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       };
       job.subscribers.add(subscriber);
 
-      runChatJob(sessionId!, messages, tools, body.mode, body.userId)
+      runChatJob(sessionId!, messages, tools, body.mode, body.userId, body.model)
         .catch((err) => {
           console.error("[Chat/Stream] Background job error:", err);
         })

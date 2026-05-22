@@ -2093,6 +2093,7 @@
         includeTools: false,
         includeMemory: false,
         systemPrompt: systemPrompt,
+        model: "haiku",
       }),
     })
       .then(function (res) {
