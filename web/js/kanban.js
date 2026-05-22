@@ -650,6 +650,17 @@
     boardGhostNodes = data.ghostNodes || [];
     ensureGhostAnchors(boardGhostNodes);
 
+    // Populate agentCache from board data so swimlanes can group cards by agent
+    var agents = data.agents || [];
+    agents.forEach(function (a) {
+      agentCache[a.agentRunId] = {
+        agent: a.agent,
+        model: a.model,
+        startedAt: a.startedAt,
+        cardKey: a.cardKey,
+      };
+    });
+
     // Render swimlanes too (so switching views doesn't require a refetch)
     renderSwimlanes(data);
 
@@ -672,7 +683,6 @@
     }
 
     var cards = data.cards || [];
-    cardIndex.clear();
 
     if (cards.length === 0) {
       boardEl.style.display = "none";
@@ -779,6 +789,9 @@
       viewSwimlaneBtn.classList.remove("active");
       viewStatusBtn.classList.add("active");
     }
+
+    applyViewToContainers();
+    scheduleDepRedraw();
   }
 
   function applyViewToContainers() {
@@ -820,6 +833,9 @@
   // ─── Init ──────────────────────────────────────────────────────────────────
 
   refreshBtn.addEventListener("click", fetchBoard);
+
+  viewStatusBtn.addEventListener("click", function () { switchView(VIEW_STATUS); });
+  viewSwimlaneBtn.addEventListener("click", function () { switchView(VIEW_SWIMLANE); });
 
   window.addEventListener("resize", scheduleDepRedraw);
 
