@@ -394,12 +394,17 @@ async function fetchJiraWork(
   // Strip any prefix like "gitlab:" from the repo filter.
   // Use statusCategory keys (new/indeterminate) not display names — Jira JQL
   // accepts category keys, not the user-visible "To Do"/"In Progress" labels.
+  //
+  // "ready-for-agent" is a GitHub label convention — Jira uses status categories
+  // to express readiness, so skip the label clause when using that default.
+  const DEFAULT_GITHUB_LABEL = "ready-for-agent";
+  const labelClause = label !== DEFAULT_GITHUB_LABEL ? `labels = "${label}" AND ` : "";
   let jql: string;
   if (repoFilter) {
     const repoLabel = repoFilter.replace(/^(gitlab:|github:)/i, "");
-    jql = `labels = "${label}" AND labels = "${repoLabel}" AND statusCategory in (new, indeterminate) ORDER BY priority ASC`;
+    jql = `${labelClause}labels = "${repoLabel}" AND statusCategory in (new, indeterminate) ORDER BY priority ASC`;
   } else {
-    jql = `labels = "${label}" AND statusCategory in (new, indeterminate) ORDER BY priority ASC`;
+    jql = `${labelClause}statusCategory in (new, indeterminate) ORDER BY priority ASC`;
   }
   const candidateLimit = Math.min(Math.max(limit * 5, 25), 100);
   const issues = await jiraClient.searchIssues(jql, candidateLimit);

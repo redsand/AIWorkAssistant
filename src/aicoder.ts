@@ -265,6 +265,158 @@ async function fetchWork(cfg: ServerConfig): Promise<WorkItem[]> {
   return resp.data.items ?? [];
 }
 
+/** Minimal ADF → text conversion for dep-expansion (mirrors server-side extractJiraBodyText). */
+function adfToText(description: any): string {
+  if (!description) return "";
+  if (typeof description === "string") return description;
+  if (!description.content) return "";
+  return description.content
+    .map((node: any) => {
+      const text = node?.content?.map((c: any) => c?.text || "").join(" ") || "";
+      if (node?.type === "heading" && node?.attrs?.level) {
+        return `${"#".repeat(node.attrs.level)} ${text}`;
+      }
+      return text;
+    })
+    .join("\n");
+}
+
+/**
+ * BFS-expand a work queue by following dependency chains up to their roots.
+ * Handles both GitHub (numeric refs) and Jira (KEY-N refs) sources.
+ * Only open issues are added. Iterates until no new deps are found
+ * (or a 10-hop guard triggers to prevent runaway on circular/deep chains).
+ */
+async function expandWithDependencies(
+  items: WorkItem[],
+  source: string,
+  ghToken: string,
+  owner: string,
+  repo: string,
+): Promise<WorkItem[]> {
+  const isGitHub = source === "github" && ghToken && owner && repo;
+  const isJira = source === "jira" && jiraClient.isConfigured();
+  const gitlabProject = process.env.GITLAB_DEFAULT_PROJECT || "";
+  const isGitLab = source === "gitlab" && gitlabClient.isConfigured() && !!gitlabProject;
+  if (!isGitHub && !isJira && !isGitLab) return items;
+
+  // Pool keyed by id (GitHub: "123", Jira: "SIEM-15")
+  const inPool = new Map(items.map((i) => [i.id, i]));
+  const fetchedIds: string[] = [];
+
+  const fetchGitHubIssue = async (num: number): Promise<WorkItem | null> => {
+    try {
+      const resp = await axios.get(
+        `https://api.github.com/repos/${owner}/${repo}/issues/${num}`,
+        { headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" } },
+      );
+      const issue = resp.data;
+      if (issue.pull_request || issue.state !== "open") return null;
+      const slug = issue.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+      return {
+        id: String(issue.number),
+        type: "github_issue",
+        title: issue.title,
+        number: issue.number,
+        url: issue.html_url,
+        owner,
+        repo,
+        labels: (issue.labels || []).map((l: any) => (typeof l === "string" ? l : l.name)),
+        suggestedBranch: slug ? `ai/issue-${issue.number}-${slug}` : `ai/issue-${issue.number}`,
+        body: issue.body || "",
+      } as WorkItem;
+    } catch { return null; }
+  };
+
+  const fetchJiraIssue = async (key: string): Promise<WorkItem | null> => {
+    try {
+      const issue = await jiraClient.getIssue(key);
+      const status = issue.fields?.status?.name ?? "";
+      if (/done|closed|resolved|completed/i.test(status)) return null;
+      const num = parseInt(key.split("-").pop() || "0", 10);
+      const title = issue.fields?.summary || "";
+      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+      const jiraBase = process.env.JIRA_BASE_URL ?? "https://hawksolutionstech.atlassian.net";
+      return {
+        id: key,
+        type: "jira_issue",
+        title,
+        number: num,
+        url: `${jiraBase}/browse/${key}`,
+        owner: issue.fields?.project?.key || "",
+        repo: issue.fields?.project?.key || "",
+        labels: issue.fields?.labels || [],
+        suggestedBranch: slug ? `ai/issue-${num}-${slug}` : `ai/issue-${num}`,
+        body: adfToText(issue.fields?.description),
+      } as WorkItem;
+    } catch { return null; }
+  };
+
+  const fetchGitLabIssue = async (num: number): Promise<WorkItem | null> => {
+    try {
+      const issue = await gitlabClient.getIssue(gitlabProject, num);
+      if (issue.state !== "opened") return null;
+      const title = issue.title || "";
+      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+      return {
+        id: String(issue.iid),
+        type: "gitlab_issue",
+        title,
+        number: issue.iid,
+        url: issue.web_url,
+        owner: String(issue.project_id),
+        repo: gitlabProject,
+        labels: issue.labels || [],
+        suggestedBranch: slug ? `ai/issue-${issue.iid}-${slug}` : `ai/issue-${issue.iid}`,
+        body: issue.description || "",
+      } as WorkItem;
+    } catch { return null; }
+  };
+
+  const isJiraKey = (dep: string) => /^[A-Z][A-Z0-9]+-\d+$/.test(dep);
+  const isNumeric = (dep: string) => /^\d+$/.test(dep);
+
+  // Seed frontier from initial items' deps
+  let frontierGH = new Set<number>();
+  let frontierGL = new Set<number>();
+  let frontierJira = new Set<string>();
+  const seedFrontier = (body: string) => {
+    for (const dep of parseDependencies(body)) {
+      if (isNumeric(dep)) {
+        const num = parseInt(dep, 10);
+        if (isGitHub && !inPool.has(dep)) frontierGH.add(num);
+        if (isGitLab && !inPool.has(dep)) frontierGL.add(num);
+      }
+      if (isJira && isJiraKey(dep) && !inPool.has(dep)) frontierJira.add(dep);
+    }
+  };
+  for (const item of items) seedFrontier(item.body || "");
+
+  const MAX_HOPS = 10;
+  for (let hop = 0; hop < MAX_HOPS && (frontierGH.size > 0 || frontierGL.size > 0 || frontierJira.size > 0); hop++) {
+    const [ghResults, glResults, jiraResults] = await Promise.all([
+      isGitHub ? Promise.all([...frontierGH].map(fetchGitHubIssue)) : Promise.resolve([]),
+      isGitLab ? Promise.all([...frontierGL].map(fetchGitLabIssue)) : Promise.resolve([]),
+      isJira   ? Promise.all([...frontierJira].map(fetchJiraIssue))  : Promise.resolve([]),
+    ]);
+    frontierGH = new Set<number>();
+    frontierGL = new Set<number>();
+    frontierJira = new Set<string>();
+    for (const item of [...ghResults, ...glResults, ...jiraResults]) {
+      if (!item) continue;
+      inPool.set(item.id, item);
+      fetchedIds.push(item.id);
+      seedFrontier(item.body || "");
+    }
+  }
+
+  if (fetchedIds.length > 0) {
+    runLogger.logConfig(`Expanded work queue with ${fetchedIds.length} dependency issue(s): ${fetchedIds.join(", ")}`);
+  }
+
+  return [...inPool.values()];
+}
+
 async function generatePrompt(
   cfg: ServerConfig,
   item: WorkItem,
@@ -1948,6 +2100,9 @@ async function fetchGitLabReworkPrompt(
 const processedIssues = new Set<string>();
 const failedAttempts = new Map<string, number>(); // Track consecutive failures per issue
 const MAX_FAILED_ATTEMPTS = 3;
+// Items dep-blocked in the current poll cycle — cleared each cycle, used by focusedLoop
+// to skip past blocked items and try the next one rather than stalling the whole cycle.
+const depBlockedThisCycle = new Set<string>();
 
 // Persist processed issues across restarts via SQLite (concurrency-safe)
 function loadProcessedIssues(): void {
@@ -2205,6 +2360,8 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
         trackStep(run.id, "note", message);
         runLogger.endRun(null);
         completeRunTrack(run.id, { model: MODEL, toolLoopCount: 0, totalTokens: 0 });
+        failedAttempts.delete(issueKey); // dep-blocked is not a failure — don't burn retry budget
+        depBlockedThisCycle.add(issueKey);
         return null;
       }
     }
@@ -2213,6 +2370,8 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     if (numericDeps.length > 0) {
       const resolved = await resolveDependencyBranch(ghToken || "", owner, repo, numericDeps);
       if (!resolved) {
+        failedAttempts.delete(issueKey); // dep-blocked is not a failure — don't burn retry budget
+        depBlockedThisCycle.add(issueKey);
         if (WAIT_FOR_DEPS) {
           runLogger.logGit("Waiting for dependencies", "will retry later");
           runLogger.endRun(null);
@@ -2890,17 +3049,21 @@ async function focusedLoop(cfg: ServerConfig): Promise<void> {
     }
 
     try {
-      const items = await fetchWork(cfg);
-      if (items.length === 0) {
+      const rawItems = await fetchWork(cfg);
+      if (rawItems.length === 0) {
         runLogger.logPoll(`No qualifying issues found — waiting ${POLL_MS / 1000}s`);
       } else {
+        const items = await expandWithDependencies(rawItems, SOURCE, ghToken || "", owner, repo);
         const sorted = await prioritizeItems(items, PRIORITY, cfg.apiUrl, cfg.apiKey);
         runLogger.logConfig(`Prioritized ${sorted.length} issues (mode=${PRIORITY}): ${sorted.map((i) => `#${i.number}`).join(", ")}`);
-        // Process only the first (highest-priority) item per cycle.
-        // After it merges, the next cycle will pull latest main and pick the next item,
-        // preventing cascading merge conflicts across independent branches.
-        const item = sorted[0];
-        await focusedProcessWorkItem(cfg, item, ghToken, owner, repo);
+        // Try items in priority order. Skip dep-blocked ones and attempt the next.
+        // Only one unblocked item is processed per cycle so that after it merges,
+        // the next cycle pulls latest main before branching for the subsequent item.
+        depBlockedThisCycle.clear();
+        for (const item of sorted) {
+          await focusedProcessWorkItem(cfg, item, ghToken, owner, repo);
+          if (!depBlockedThisCycle.has(item.id || String(item.number))) break;
+        }
         cycles++;
       }
     } catch (err) {
@@ -3722,11 +3885,15 @@ async function pollLoop(cfg: ServerConfig): Promise<void> {
     }
 
     try {
-      const items = await fetchWork(cfg);
+      const rawItems = await fetchWork(cfg);
+      const ghToken = process.env.GITHUB_TOKEN;
+      const owner = cfg.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand";
+      const repo = cfg.repo || process.env.AICODER_REPO || "";
 
-      if (items.length === 0) {
+      if (rawItems.length === 0) {
         runLogger.logPoll(`No qualifying issues found — waiting ${POLL_MS / 1000}s`);
       } else {
+        const items = await expandWithDependencies(rawItems, SOURCE, ghToken || "", owner, repo);
         const sorted = await prioritizeItems(items, PRIORITY, cfg.apiUrl, cfg.apiKey);
         runLogger.logConfig(`Prioritized ${sorted.length} issues (mode=${PRIORITY}): ${sorted.map((i) => `#${i.number}`).join(", ")}`);
         for (const item of sorted) {
