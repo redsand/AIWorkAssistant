@@ -250,6 +250,9 @@ const envSchema = z.object({
   // Tool loop limit (max iterations before forcing a final response)
   MAX_TOOL_LOOPS: z.coerce.number().default(75),
 
+  // Admin user IDs (comma-separated) — users allowed to override system prompts
+  ADMIN_USER_IDS: z.string().default(""),
+
   // Autonomous loop — shared (aicoder + reviewer)
   AIWORKASSISTANT_URL: z.string().url().default("http://localhost:3050"),
   AIWORKASSISTANT_API_KEY: z.string().default(""),

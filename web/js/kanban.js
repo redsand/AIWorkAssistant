@@ -1980,6 +1980,235 @@
   if (settingAutoPR) settingAutoPR.addEventListener("change", saveSettings);
   if (settingAutoCleanup) settingAutoCleanup.addEventListener("change", saveSettings);
 
+  // ─── Sidebar Chat (Task Breakdown) ────────────────────────────────────────
+
+  var sidechatAside = document.getElementById("kanban-sidechat");
+  var sidechatToggle = document.getElementById("sidechat-toggle");
+  var sidechatCloseBtn = document.getElementById("sidechat-close");
+  var sidechatTranscript = document.getElementById("sidechat-transcript");
+  var sidechatInput = document.getElementById("sidechat-input");
+  var sidechatSubmit = document.getElementById("sidechat-submit");
+  var SIDECHAT_OPEN_KEY = "kanban-sidechat-open";
+  var sidechatState = {
+    open: false,
+    lastCheckboxItems: null,   // parsed checkbox items from last assistant response
+  };
+
+  // Bail out silently if sidechat elements are missing (e.g. different page layout)
+  if (!sidechatAside || !sidechatToggle || !sidechatTranscript || !sidechatInput || !sidechatSubmit) {
+    console.warn("[Sidechat] Required DOM elements not found — sidechat disabled.");
+  } else {
+
+  function openSidechat() {
+    sidechatAside.setAttribute("aria-hidden", "false");
+    sidechatToggle.classList.add("active");
+    sidechatState.open = true;
+    localStorage.setItem(SIDECHAT_OPEN_KEY, "true");
+    sidechatInput.focus();
+  }
+
+  function closeSidechat() {
+    sidechatAside.setAttribute("aria-hidden", "true");
+    sidechatToggle.classList.remove("active");
+    sidechatState.open = false;
+    localStorage.setItem(SIDECHAT_OPEN_KEY, "false");
+  }
+
+  function toggleSidechat() {
+    if (sidechatState.open) {
+      closeSidechat();
+    } else {
+      openSidechat();
+    }
+  }
+
+  function appendSidechatMsg(role, html) {
+    var div = document.createElement("div");
+    div.className = "k-sidechat-msg k-sidechat-msg--" + role;
+    div.innerHTML = html;
+    sidechatTranscript.appendChild(div);
+    sidechatTranscript.scrollTop = sidechatTranscript.scrollHeight;
+    return div;
+  }
+
+  function detectCheckboxItems(text) {
+    // Match lines like "- [ ] Task title" and extract the titles
+    var items = [];
+    var lines = text.split("\n");
+    for (var i = 0; i < lines.length; i++) {
+      var match = lines[i].match(/^[-*]\s*\[[ x]\]\s*(.+)$/);
+      if (match) {
+        var title = match[1].trim();
+        if (title.length > 0 && title.length <= 256) {
+          items.push({ title: title });
+        }
+      }
+    }
+    return items.length >= 2 ? items : null;
+  }
+
+  function handleSidechatSubmit() {
+    var message = (sidechatInput.value || "").trim();
+    if (!message) return;
+
+    // Determine platform + repo from first selected repo filter, or first board repo
+    var targetRepo = "";
+    var targetPlatform = "";
+    if (filterState.repos.length > 0) {
+      targetRepo = filterState.repos[0];
+      // Find matching repo in boardRepos to get platform
+      for (var i = 0; i < boardRepos.length; i++) {
+        if (boardRepos[i].repo === targetRepo) {
+          targetPlatform = boardRepos[i].platform;
+          break;
+        }
+      }
+    } else if (boardRepos.length > 0) {
+      targetRepo = boardRepos[0].repo;
+      targetPlatform = boardRepos[0].platform;
+    }
+
+    if (!targetPlatform || !targetRepo) {
+      appendSidechatMsg("assistant", '<div class="k-sidechat-error">Select a repository first — no platform/repo available.</div>');
+      return;
+    }
+
+    // Add user message
+    appendSidechatMsg("user", escapeHtml(message));
+    sidechatInput.value = "";
+    sidechatInput.style.height = "auto";
+    sidechatState.lastCheckboxItems = null;
+
+    // Show loading
+    var loadingHtml = '<span class="k-sidechat-spinner"></span> Breaking down tasks…';
+    var loadingEl = appendSidechatMsg("assistant", loadingHtml);
+
+    sidechatSubmit.disabled = true;
+
+    var systemPrompt =
+      "You are a planning assistant. Break the user's intent into 3-10 atomic engineering tasks.\n" +
+      "Output ONLY a markdown checkbox list, one task per line, prefixed with \"- [ ] \".\n" +
+      "Each task title is imperative form and <70 chars.";
+
+    fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: message,
+        includeTools: false,
+        includeMemory: false,
+        systemPrompt: systemPrompt,
+        model: "haiku",
+      }),
+    })
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        sidechatSubmit.disabled = false;
+        var content = data.content || "";
+        if (!content.trim()) {
+          loadingEl.innerHTML = '<span style="color:#9ca3af">No response from assistant.</span>';
+          return;
+        }
+
+        // Render markdown
+        var rendered = typeof renderMarkdown === "function" ? renderMarkdown(content) : "<p>" + escapeHtml(content).replace(/\n/g, "<br>") + "</p>";
+        loadingEl.innerHTML = rendered;
+
+        // Detect checkbox items
+        var items = detectCheckboxItems(content);
+        if (items) {
+          sidechatState.lastCheckboxItems = items;
+          var btnHtml = '<button class="k-sidechat-bulk-btn" data-count="' + items.length + '">Create ' + items.length + ' cards</button>';
+          var btnWrapper = document.createElement("div");
+          btnWrapper.innerHTML = btnHtml;
+          loadingEl.appendChild(btnWrapper);
+
+          var bulkBtn = btnWrapper.querySelector(".k-sidechat-bulk-btn");
+          bulkBtn.addEventListener("click", function () {
+            performBulkCreate(items, targetPlatform, targetRepo, bulkBtn);
+          });
+        }
+      })
+      .catch(function (err) {
+        sidechatSubmit.disabled = false;
+        loadingEl.innerHTML = '<div class="k-sidechat-error">Request failed: ' + escapeHtml(err.message) + '</div>';
+      });
+  }
+
+  function performBulkCreate(items, platform, repo, btnEl) {
+    btnEl.classList.add("k-sidechat-bulk-btn--creating");
+    btnEl.textContent = "Creating…";
+
+    fetch("/api/kanban/cards/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        items: items,
+        platform: platform,
+        repo: repo,
+      }),
+    })
+      .then(function (res) {
+        if (!res.ok) {
+          return res.json().then(function (d) { throw new Error(d.error || "Unknown error"); });
+        }
+        return res.json();
+      })
+      .then(function (data) {
+        var created = data.created || [];
+        var errors = data.errors || [];
+
+        if (created.length > 0) {
+          var ids = created.map(function (c) { return "#" + c.id; }).join(", ");
+          showToast("Created " + created.length + " card" + (created.length > 1 ? "s" : "") + ": " + ids);
+          btnEl.textContent = "Created " + created.length + " card" + (created.length > 1 ? "s" : "") + "!";
+          btnEl.disabled = true;
+          sidechatState.lastCheckboxItems = null;
+
+          // Refresh the board
+          fetchBoard();
+        }
+
+        if (errors.length > 0) {
+          var errMsg = errors.map(function (e) { return e.error; }).join("; ");
+          appendSidechatMsg("assistant", '<div class="k-sidechat-error">Some items failed: ' + escapeHtml(errMsg) + '</div>');
+        }
+      })
+      .catch(function (err) {
+        btnEl.classList.remove("k-sidechat-bulk-btn--creating");
+        btnEl.textContent = "Create " + items.length + " cards";
+        appendSidechatMsg("assistant", '<div class="k-sidechat-error">Bulk create failed: ' + escapeHtml(err.message) + '</div>');
+      });
+  }
+
+  // Wire sidebar chat events
+  if (sidechatToggle) sidechatToggle.addEventListener("click", toggleSidechat);
+  if (sidechatCloseBtn) sidechatCloseBtn.addEventListener("click", closeSidechat);
+
+  if (sidechatSubmit) sidechatSubmit.addEventListener("click", handleSidechatSubmit);
+  if (sidechatInput) sidechatInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSidechatSubmit();
+    }
+  });
+
+  // Auto-resize textarea
+  if (sidechatInput) sidechatInput.addEventListener("input", function () {
+    this.style.height = "auto";
+    this.style.height = Math.min(this.scrollHeight, 120) + "px";
+  });
+
+  // Restore sidebar open state from localStorage
+  if (localStorage.getItem(SIDECHAT_OPEN_KEY) === "true") {
+    openSidechat();
+  }
+
+  } // end sidechat guard — all sidechat code runs only when DOM elements exist
+
   // ─── Init ──────────────────────────────────────────────────────────────────
 
   // Restore filter state: URL params override localStorage

@@ -27,6 +27,27 @@ import { env } from "../config/env";
 import { agentRunDatabase } from "../agent-runs/database";
 import { sanitizeValue } from "../agent-runs/sanitizer";
 
+const MAX_SYSTEM_PROMPT_LENGTH = 4000;
+
+const adminUserIds: Set<string> = new Set(
+  (env.ADMIN_USER_IDS || "").split(",").map((s) => s.trim()).filter(Boolean),
+);
+
+function canOverrideSystemPrompt(userId: string): boolean {
+  return adminUserIds.size > 0 && adminUserIds.has(userId);
+}
+
+const ALLOWED_MODELS = new Set([
+  "haiku",
+  "sonnet",
+  "opus",
+  "claude-opus-4-7",
+  "claude-sonnet-4-6",
+  "claude-haiku-4-5-20251001",
+  "gpt-5.5",
+  "gpt-4o",
+]);
+
 const chatRequestSchema = z.object({
   message: z.string(),
   mode: z
@@ -37,6 +58,8 @@ const chatRequestSchema = z.object({
   context: z.object({}).optional(),
   includeTools: z.boolean().default(true),
   includeMemory: z.boolean().default(true),
+  systemPrompt: z.string().max(MAX_SYSTEM_PROMPT_LENGTH).optional(),
+  model: z.string().optional(),
 });
 
 const createSessionSchema = z.object({
@@ -219,6 +242,7 @@ async function runChatJob(
   tools: Tool[] | undefined,
   mode: string,
   userId: string,
+  model?: string,
 ) {
   const job = getOrCreateJob(sessionId);
   if (job.cancelled) return;
@@ -243,6 +267,7 @@ async function runChatJob(
       tools,
       temperature: 0.7,
       top_p: 0.95,
+      model,
     });
     assertJobActive(job);
     try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
@@ -443,6 +468,7 @@ async function runChatJob(
         tools: expandedTools.length > 0 ? expandedTools : undefined,
         temperature: 0.7,
         top_p: 0.95,
+        model,
       });
       assertJobActive(job);
       try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
@@ -502,6 +528,13 @@ export async function chatRoutes(fastify: FastifyInstance) {
     try {
       const body = chatRequestSchema.parse(request.body);
 
+      if (body.model && !ALLOWED_MODELS.has(body.model)) {
+        return reply.status(400).send({
+          error: `Invalid model: ${body.model}`,
+          allowedModels: [...ALLOWED_MODELS],
+        });
+      }
+
       try { runId = agentRunDatabase.startRun({ sessionId: body.sessionId ?? null, userId: body.userId, mode: body.mode }).id; } catch (e) { console.error("[AgentRuns]", e); }
 
       if (!aiClient.isConfigured()) {
@@ -527,7 +560,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
         ? conversationManager.getSession(sessionId)
         : null;
 
-      const systemPrompt = getSystemPrompt(body.mode, body.message);
+      const systemPrompt = (body.systemPrompt && canOverrideSystemPrompt(body.userId))
+        ? body.systemPrompt
+        : getSystemPrompt(body.mode, body.message);
 
       if (existingSession) {
         conversationManager.addMessage(sessionId!, {
@@ -625,6 +660,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         tools,
         temperature: 0.7,
         top_p: 0.95,
+        model: body.model,
       });
       try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
@@ -769,6 +805,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           tools: expandedTools.length > 0 ? expandedTools : undefined,
           temperature: 0.7,
           top_p: 0.95,
+          model: body.model,
         });
         try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
       }
@@ -816,6 +853,14 @@ export async function chatRoutes(fastify: FastifyInstance) {
    */
   fastify.post("/chat/stream", async (request, reply): Promise<void> => {
     const body = chatRequestSchema.parse(request.body);
+
+    if (body.model && !ALLOWED_MODELS.has(body.model)) {
+      reply.code(400);
+      return reply.send({
+        error: `Invalid model: ${body.model}`,
+        allowedModels: [...ALLOWED_MODELS],
+      });
+    }
 
     if (!aiClient.isConfigured()) {
       reply.code(503);
@@ -891,7 +936,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
         return;
       }
 
-      const systemPrompt = getSystemPrompt(body.mode, body.message);
+      const systemPrompt = (body.systemPrompt && canOverrideSystemPrompt(body.userId))
+        ? body.systemPrompt
+        : getSystemPrompt(body.mode, body.message);
 
       const existingSession = sessionId
         ? conversationManager.getSession(sessionId)
@@ -988,7 +1035,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       };
       job.subscribers.add(subscriber);
 
-      runChatJob(sessionId!, messages, tools, body.mode, body.userId)
+      runChatJob(sessionId!, messages, tools, body.mode, body.userId, body.model)
         .catch((err) => {
           console.error("[Chat/Stream] Background job error:", err);
         })

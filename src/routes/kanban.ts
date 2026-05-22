@@ -744,6 +744,105 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
   // Note: authentication is enforced by the global authMiddleware registered
   // in the app setup — these routes are NOT in PUBLIC_PATHS.
 
+  // ─── POST /cards/bulk — create multiple issues at once ─────────────────────
+
+  fastify.post<{
+    Body: {
+      items: Array<{ title: string; body?: string }>;
+      platform: string;
+      repo: string;
+    };
+  }>("/cards/bulk", async (request, reply) => {
+    const { items, platform, repo } = request.body ?? {};
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return reply.status(400).send({ error: "items must be a non-empty array" });
+    }
+    if (items.length > 50) {
+      return reply.status(400).send({ error: "Maximum 50 items per bulk request" });
+    }
+    if (!platform || !VALID_PLATFORMS.has(platform)) {
+      return reply.status(400).send({ error: `Invalid platform: ${platform}` });
+    }
+    const sanitizedRepo = sanitizeRepo(repo);
+    if (!sanitizedRepo) {
+      return reply.status(400).send({ error: "Missing or invalid repo" });
+    }
+
+    for (const item of items) {
+      if (!item.title || typeof item.title !== "string" || item.title.trim().length === 0) {
+        return reply.status(400).send({ error: "Each item must have a non-empty title" });
+      }
+      if (item.title.length > 256) {
+        return reply.status(400).send({ error: `Title too long: "${item.title.slice(0, 40)}…" (max 256 chars)` });
+      }
+    }
+
+    const labels = ["enhancement", "ready-for-agent"];
+    const created: Array<{ title: string; id: string; url: string }> = [];
+    const errors: Array<{ title: string; error: string }> = [];
+
+    for (const item of items) {
+      try {
+        switch (platform) {
+          case "github": {
+            const [owner, repoName] = sanitizedRepo.split("/");
+            if (!owner || !repoName) {
+              errors.push({ title: item.title, error: "Invalid GitHub repo format" });
+              break;
+            }
+            const issue = await githubClient.createIssue(
+              { title: item.title.trim(), body: item.body || "", labels },
+              owner,
+              repoName,
+            );
+            created.push({
+              title: item.title,
+              id: String(issue.number),
+              url: issue.html_url || "",
+            });
+            break;
+          }
+          case "gitlab": {
+            const issue = await gitlabClient.createIssue(sanitizedRepo, {
+              title: item.title.trim(),
+              description: item.body || "",
+              labels: labels.join(","),
+            });
+            created.push({
+              title: item.title,
+              id: String(issue.iid || issue.id),
+              url: issue.web_url || "",
+            });
+            break;
+          }
+          case "jira": {
+            const issue = await jiraClient.createIssue({
+              project: sanitizedRepo,
+              summary: item.title.trim(),
+              description: item.body || "",
+              issueType: "Task",
+            });
+            created.push({
+              title: item.title,
+              id: issue.key,
+              url: `${env.JIRA_BASE_URL}/browse/${issue.key}`,
+            });
+            break;
+          }
+          default:
+            errors.push({ title: item.title, error: `Unsupported platform: ${platform}` });
+        }
+      } catch (err) {
+        errors.push({ title: item.title, error: (err as Error).message });
+      }
+    }
+
+    invalidateBoardCache();
+
+    return { created, errors };
+  });
+
   function sanitizeRepo(repo: string): string | null {
     const trimmed = repo.trim();
     if (!trimmed || !REPO_PATH_RE.test(trimmed) || trimmed.includes("..")) {
