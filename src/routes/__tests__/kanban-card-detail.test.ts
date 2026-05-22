@@ -239,6 +239,10 @@ describe('Kanban Card Detail Routes', () => {
     });
 
     it('should include worktree info when agent run has a worktree', async () => {
+      const wtPath = process.platform === 'win32'
+        ? 'C:\\kanban-worktrees\\wt-test'
+        : '/tmp/wt-test';
+
       const mockRun = {
         id: 'run-123',
         sessionId: null,
@@ -258,7 +262,7 @@ describe('Kanban Card Detail Routes', () => {
         issueId: '42',
         issuePlatform: 'github',
         issueRepo: 'owner/repo',
-        worktreePath: '/tmp/wt-test',
+        worktreePath: wtPath,
         branch: 'ai/issue-42-test',
       };
 
@@ -288,6 +292,45 @@ describe('Kanban Card Detail Routes', () => {
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(body.diffUrl).toBeNull();
+    });
+
+    it('should skip worktree info when worktree path fails validation', async () => {
+      const mockRun = {
+        id: 'run-456',
+        sessionId: null,
+        userId: 'kanban',
+        mode: 'interactive',
+        model: null,
+        status: 'running',
+        errorMessage: null,
+        promptTokens: null,
+        completionTokens: null,
+        totalTokens: null,
+        toolLoopCount: 0,
+        startedAt: '2026-05-01T00:00:00Z',
+        lastActivityAt: '2026-05-01T00:01:00Z',
+        completedAt: null,
+        cancelledAt: null,
+        issueId: '42',
+        issuePlatform: 'github',
+        issueRepo: 'owner/repo',
+        worktreePath: '../etc/passwd',
+        branch: 'ai/issue-42-test',
+      };
+
+      mockListRuns.mockReturnValue({ runs: [mockRun], total: 1 });
+      mockGetRunWithSteps.mockReturnValue({ ...mockRun, steps: [] });
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/kanban/cards/github/owner%2Frepo/42',
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.worktree).toBeNull();
+      expect(body.diffUrl).toBeNull();
+      expect(mockIsClean).not.toHaveBeenCalled();
     });
   });
 
@@ -466,6 +509,64 @@ describe('Kanban Card Detail Routes', () => {
 
       expect(res.statusCode).toBe(400);
       expect(res.json().error).toBe('Invalid worktree path');
+    });
+
+    it('should return 500 when git diff command throws an error', async () => {
+      const wtPath = process.platform === 'win32'
+        ? 'C:\\kanban-worktrees\\wt-test'
+        : '/tmp/wt-test';
+
+      const mockRun = {
+        id: 'run-789',
+        issuePlatform: 'github',
+        issueRepo: 'owner/repo',
+        issueId: '42',
+        worktreePath: wtPath,
+      };
+
+      mockListRuns.mockReturnValue({ runs: [mockRun], total: 1 });
+      // Override execFileAsync to reject for diff calls (but not symbolic-ref)
+      mockExecFileAsync.mockImplementation((cmd: string, args: string[]) => {
+        if (Array.isArray(args) && args.includes('symbolic-ref')) {
+          return Promise.resolve({ stdout: 'refs/remotes/origin/main\n' });
+        }
+        return Promise.reject(new Error('fatal: not a git repository'));
+      });
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/kanban/cards/github/owner%2Frepo/42/diff',
+      });
+
+      expect(res.statusCode).toBe(500);
+      expect(res.json().error).toContain('Diff failed');
+      expect(res.json().error).toContain('fatal: not a git repository');
+    });
+  });
+
+  describe('XSS safety', () => {
+    it('should not render raw script tags in card description', async () => {
+      mockGetIssue.mockResolvedValueOnce({
+        title: 'XSS Test <script>alert("xss")</script>',
+        body: '# Description\n\n<img src=x onerror="alert(1)"><script>alert("xss")</script>',
+        number: 42,
+        html_url: 'https://github.com/owner/repo/issues/42',
+      });
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/kanban/cards/github/owner%2Frepo/42',
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      // The response is JSON — confirm script content is present as raw text,
+      // not executed. JSON.stringify handles this safely, but the values should
+      // be the literal strings, not HTML-escaped or stripped.
+      expect(body.card.title).toBe('XSS Test <script>alert("xss")</script>');
+      expect(body.description).toContain('<script>alert("xss")</script>');
+      // Verify the response body is valid JSON (no injected HTML in the HTTP response)
+      expect(res.headers['content-type']).toContain('application/json');
     });
   });
 });

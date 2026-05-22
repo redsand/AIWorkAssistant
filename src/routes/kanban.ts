@@ -847,15 +847,18 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
     let worktree: (import("../kanban/worktree-manager").WorktreeInfo & { isClean: boolean }) | null = null;
     if (agentRun?.worktreePath) {
       try {
-        const clean = await isClean(agentRun.worktreePath);
-        worktree = {
-          path: agentRun.worktreePath,
-          branch: agentRun.branch ?? "",
-          head: "",
-          locked: false,
-          prunable: false,
-          isClean: clean,
-        };
+        const validatedPath = validateWorktreePath(agentRun.worktreePath);
+        if (validatedPath) {
+          const clean = await isClean(validatedPath);
+          worktree = {
+            path: validatedPath,
+            branch: agentRun.branch ?? "",
+            head: "",
+            locked: false,
+            prunable: false,
+            isClean: clean,
+          };
+        }
       } catch { /* worktree gone */ }
     }
 
