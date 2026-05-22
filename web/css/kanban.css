@@ -13,6 +13,20 @@ body {
   margin: 0 auto;
 }
 
+/* ─── Screen-reader only utility ─────────────────────────────────────────── */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ─── Header ──────────────────────────────────────────────────────────────── */
 
 .k-header {
@@ -65,6 +79,52 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* ─── Focus-Visible ───────────────────────────────────────────────────────── */
+
+.kcard:focus-visible {
+  outline: 2px solid #667eea;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.2);
+}
+
+.k-filter-chip:focus-visible,
+.k-view-btn:focus-visible,
+.k-refresh-btn:focus-visible,
+.k-settings-btn:focus-visible,
+.k-sidechat-toggle-btn:focus-visible,
+.k-footer-btn:focus-visible,
+.k-agents-pill:focus-visible {
+  outline: 2px solid #667eea;
+  outline-offset: 2px;
+}
+
+.kdrawer-tab:focus-visible,
+.kdrawer-close:focus-visible,
+.kmodal-close:focus-visible {
+  outline: 2px solid #667eea;
+  outline-offset: -2px;
+}
+
+.krun-stop:focus-visible,
+.kdrawer-btn:focus-visible,
+.kmodal-remove-btn:focus-visible {
+  outline: 2px solid #667eea;
+  outline-offset: 2px;
+}
+
+.k-select:focus-visible,
+.kmodal-input:focus-visible,
+.k-sidechat-input:focus-visible {
+  outline: 2px solid #667eea;
+  outline-offset: 2px;
+}
+
+.k-back-link:focus-visible {
+  outline: 2px solid #667eea;
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 /* ─── View Toggle ─────────────────────────────────────────────────────────── */
@@ -129,7 +189,7 @@ body {
 .k-filter-label {
   font-size: 11px;
   font-weight: 600;
-  color: #9ca3af;
+  color: #6b7280;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-right: 2px;
@@ -333,10 +393,14 @@ body {
 
 /* ─── Agents Rail ─────────────────────────────────────────────────────────── */
 
+.k-agents-rail-wrapper {
+  position: relative;
+  margin-bottom: 16px;
+}
+
 .k-agents-rail {
   display: flex;
   gap: 10px;
-  margin-bottom: 16px;
   min-height: 0;
   overflow-x: auto;
   padding-bottom: 4px;
@@ -344,6 +408,36 @@ body {
   top: 0;
   z-index: 10;
   background: inherit;
+}
+
+/* Mobile agents pill (hidden on desktop) */
+.k-agents-pill {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  cursor: pointer;
+  margin-bottom: 12px;
+  transition: all 0.15s;
+}
+
+.k-agents-pill:hover {
+  border-color: #667eea;
+  color: #667eea;
+}
+
+.k-agents-pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #667eea;
+  animation: kcard-pulse 1.5s ease-in-out infinite;
 }
 
 /* ─── Agent Tile (.krun) ────────────────────────────────────────────────── */
@@ -707,7 +801,7 @@ body {
 
 .kbadge-platform {
   background: #f3f4f6;
-  color: #6b7280;
+  color: #4b5563;
 }
 
 .kbadge-priority {
@@ -974,6 +1068,11 @@ body {
     overflow-x: auto;
     padding-bottom: 8px;
     -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x mandatory;
+  }
+
+  .k-col {
+    scroll-snap-align: start;
   }
 
   .k-swimlane-cards .kcard {
@@ -983,6 +1082,49 @@ body {
   .k-header {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  /* Mobile agents rail: hide desktop rail, show pill */
+  .k-agents-rail {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    padding: 8px;
+    z-index: 100;
+    max-height: 300px;
+    overflow-y: auto;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .k-agents-rail.k-agents-rail--open {
+    display: flex;
+  }
+
+  .k-agents-rail .krun {
+    width: 100%;
+  }
+
+  .k-agents-pill {
+    display: inline-flex;
+  }
+
+  /* Full-screen drawer on mobile */
+  .kdrawer {
+    width: 100vw;
+    max-width: 100vw;
+    right: -100vw;
+  }
+
+  .k-filter-strip {
+    gap: 8px;
+    padding: 8px 12px;
   }
 }
 
@@ -2062,4 +2204,42 @@ body {
   border-radius: 6px;
   padding: 8px 12px;
   font-size: 12px;
+}
+
+/* ─── Keyboard Shortcuts Modal ────────────────────────────────────────────── */
+
+.kmodal--shortcuts {
+  width: 400px;
+}
+
+.kshortcuts-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.kshortcuts-table td {
+  padding: 8px 0;
+  border-bottom: 1px solid #f3f4f6;
+  color: #374151;
+  vertical-align: middle;
+}
+
+.kshortcuts-table td:first-child {
+  white-space: nowrap;
+  width: 140px;
+  color: #6b7280;
+}
+
+.kshortcuts-table kbd {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  line-height: 1.5;
 }
