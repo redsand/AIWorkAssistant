@@ -27,8 +27,59 @@ import { kanbanEvents } from "../kanban/events.js";
 import { createWorktree, removeWorktree, isClean } from "../kanban/worktree-manager.js";
 import { execFile } from "child_process";
 import { promisify } from "util";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Validates that a worktree path from the DB is a real git worktree under a
+ * sane root — prevents path-traversal and arbitrary-filesystem-execution attacks.
+ */
+function validateWorktreePath(worktreePath: string): string | null {
+  // Must be an absolute path
+  if (!path.isAbsolute(worktreePath)) return null;
+
+  const resolved = path.resolve(worktreePath);
+
+  // Reject path traversal
+  if (resolved.includes("..")) return null;
+
+  // Must exist as a directory on disk
+  try {
+    const stat = fs.statSync(resolved);
+    if (!stat.isDirectory()) return null;
+  } catch {
+    return null;
+  }
+
+  // Must have a .git file (worktree marker, not a directory)
+  const gitPath = path.join(resolved, ".git");
+  try {
+    const gitStat = fs.statSync(gitPath);
+    if (!gitStat.isFile()) return null;
+  } catch {
+    return null;
+  }
+
+  return resolved;
+}
+
+/**
+ * Detects the default branch of a git repo by asking the worktree's origin.
+ * Falls back to "main" when detection fails.
+ */
+async function getDefaultBranch(worktreePath: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync("git", [
+      "symbolic-ref", "refs/remotes/origin/HEAD",
+    ], { cwd: worktreePath });
+    const match = stdout.trim().match(/^refs\/remotes\/origin\/(.+)$/);
+    return match ? match[1] : "main";
+  } catch {
+    return "main";
+  }
+}
 
 const MAX_ISSUES = 200;
 
@@ -834,24 +885,30 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({ error: "Invalid repo" });
     }
 
-    // Find the agent run to get the worktree path and base branch
-    let worktreePath: string | null = null;
+    // Find the agent run to get the worktree path
+    let rawWorktreePath: string | null = null;
     try {
       const runs = agentRunDatabase.listRuns({ status: undefined, limit: 1000 });
       const match = runs.runs.find(
         (r) => r.issuePlatform === platform && r.issueRepo === sanitizedRepo && r.issueId === id,
       );
       if (match) {
-        worktreePath = match.worktreePath;
+        rawWorktreePath = match.worktreePath;
       }
     } catch { /* no runs */ }
 
-    if (!worktreePath) {
+    if (!rawWorktreePath) {
       return reply.status(404).send({ error: "No worktree for this card" });
     }
 
+    // Validate path is a real git worktree (prevents arbitrary filesystem access)
+    const worktreePath = validateWorktreePath(rawWorktreePath);
+    if (!worktreePath) {
+      return reply.status(400).send({ error: "Invalid worktree path" });
+    }
+
     try {
-      const baseBranch = "main";
+      const baseBranch = await getDefaultBranch(worktreePath);
       const { stdout } = await execFileAsync("git", [
         "-C", worktreePath,
         "diff", `${baseBranch}..HEAD`,

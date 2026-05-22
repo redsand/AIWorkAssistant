@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
+import * as path from 'node:path';
 import { kanbanRoutes } from '../kanban';
 
 // Hoist mock functions
@@ -11,6 +12,9 @@ const {
   mockRemoveWorktree,
   mockListIssueComments,
   mockAddIssueComment,
+  mockAddIssueNote,
+  mockJiraAddComment,
+  mockExecFileAsync,
 } = vi.hoisted(() => ({
   mockGetIssue: vi.fn().mockResolvedValue({
     title: 'Test Card Title',
@@ -26,6 +30,14 @@ const {
     { user: { login: 'tester' }, body: 'First comment', created_at: '2026-01-01T00:00:00Z' },
   ]),
   mockAddIssueComment: vi.fn().mockResolvedValue({ id: 1 }),
+  mockAddIssueNote: vi.fn().mockResolvedValue({ id: 2 }),
+  mockJiraAddComment: vi.fn().mockResolvedValue({ id: 3 }),
+  mockExecFileAsync: vi.fn().mockImplementation((cmd: string, args: string[]) => {
+    if (Array.isArray(args) && args.includes('symbolic-ref')) {
+      return Promise.resolve({ stdout: 'refs/remotes/origin/main\n' });
+    }
+    return Promise.resolve({ stdout: 'diff --git a/file.ts b/file.ts\n+new line' });
+  }),
 }));
 
 vi.mock('../../integrations/github/github-client', () => ({
@@ -44,7 +56,7 @@ vi.mock('../../integrations/gitlab/gitlab-client', () => ({
     listIssues: vi.fn().mockResolvedValue([]),
     getIssue: vi.fn().mockResolvedValue(null),
     listIssueNotes: vi.fn().mockResolvedValue([]),
-    addIssueNote: vi.fn().mockResolvedValue({}),
+    addIssueNote: mockAddIssueNote,
   },
 }));
 
@@ -54,7 +66,7 @@ vi.mock('../../integrations/jira/jira-client', () => ({
     searchIssues: vi.fn().mockResolvedValue([]),
     getIssue: vi.fn().mockResolvedValue(null),
     getComments: vi.fn().mockResolvedValue([]),
-    addComment: vi.fn().mockResolvedValue({}),
+    addComment: mockJiraAddComment,
   },
 }));
 
@@ -89,6 +101,31 @@ vi.mock('../autonomous-loop/agent-runner', () => ({
 
 vi.mock('../autonomous-loop', () => ({
   makeBranchName: vi.fn().mockReturnValue('ai/issue-42-test-card-title'),
+}));
+
+// Mock child_process for execFileAsync used in diff endpoint
+vi.mock('child_process', () => ({
+  execFile: (...args: unknown[]) => {
+    const callback = args[args.length - 1] as (...a: unknown[]) => void;
+    if (typeof callback !== 'function') return;
+    const callArgs = args.slice(0, -1);
+    mockExecFileAsync(...callArgs).then(
+      (result: { stdout: string; stderr?: string }) => callback(null, result),
+      (err: unknown) => callback(err),
+    );
+  },
+}));
+
+// Mock node:fs for validateWorktreePath — return appropriate stat results
+// based on whether the path is a directory or the .git marker file.
+vi.mock('node:fs', () => ({
+  statSync: vi.fn().mockImplementation((p: string) => {
+    if (typeof p === 'string' && p.endsWith(`${path.sep}.git`)) {
+      return { isDirectory: () => false, isFile: () => true };
+    }
+    return { isDirectory: () => true, isFile: () => false };
+  }),
+  existsSync: vi.fn().mockReturnValue(true),
 }));
 
 describe('Kanban Card Detail Routes', () => {
@@ -255,7 +292,7 @@ describe('Kanban Card Detail Routes', () => {
   });
 
   describe('POST /cards/:platform/:repo/:id/comment', () => {
-    it('should post a comment to the platform', async () => {
+    it('should post a comment to GitHub', async () => {
       const res = await app.inject({
         method: 'POST',
         url: '/api/kanban/cards/github/owner%2Frepo/42/comment',
@@ -265,6 +302,30 @@ describe('Kanban Card Detail Routes', () => {
       expect(res.statusCode).toBe(200);
       expect(res.json().ok).toBe(true);
       expect(mockAddIssueComment).toHaveBeenCalledWith(42, 'Great work!', 'owner', 'repo');
+    });
+
+    it('should post a comment to GitLab', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/kanban/cards/gitlab/group%2Fproject/42/comment',
+        payload: { body: 'LGTM!' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().ok).toBe(true);
+      expect(mockAddIssueNote).toHaveBeenCalledWith('group/project', 42, 'LGTM!');
+    });
+
+    it('should post a comment to Jira', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/kanban/cards/jira/PROJ/ABC-123/comment',
+        payload: { body: 'Looks good' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().ok).toBe(true);
+      expect(mockJiraAddComment).toHaveBeenCalledWith('ABC-123', 'Looks good');
     });
 
     it('should return 400 when comment body is missing', async () => {
@@ -296,6 +357,22 @@ describe('Kanban Card Detail Routes', () => {
       });
 
       expect(res.statusCode).toBe(404);
+    });
+
+    it('should return 404 when agent run has no worktreePath', async () => {
+      const { agentRunDatabase } = await import('../../agent-runs/database.js');
+      (agentRunDatabase.getRun as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+        id: 'run-no-wt',
+        worktreePath: null,
+      });
+
+      const res = await app.inject({
+        method: 'DELETE',
+        url: '/api/kanban/worktrees/run-no-wt',
+      });
+
+      expect(res.statusCode).toBe(404);
+      expect(res.json().error).toBe('No worktree for this run');
     });
 
     it('should remove worktree when agent run exists', async () => {
@@ -335,6 +412,60 @@ describe('Kanban Card Detail Routes', () => {
       });
 
       expect(res.statusCode).toBe(400);
+    });
+
+    it('should return diff output when worktree exists and is valid', async () => {
+      // Use a platform-appropriate absolute path so path.isAbsolute passes
+      const wtPath = process.platform === 'win32'
+        ? 'C:\\kanban-worktrees\\wt-test'
+        : '/tmp/wt-test';
+
+      const mockRun = {
+        id: 'run-123',
+        issuePlatform: 'github',
+        issueRepo: 'owner/repo',
+        issueId: '42',
+        worktreePath: wtPath,
+      };
+
+      mockListRuns.mockReturnValue({ runs: [mockRun], total: 1 });
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/kanban/cards/github/owner%2Frepo/42/diff',
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['content-type']).toContain('text/plain');
+      expect(res.body).toContain('diff --git');
+      expect(res.body).toContain('+new line');
+      // Verify symbolic-ref was called first to detect default branch
+      expect(mockExecFileAsync).toHaveBeenCalledWith(
+        'git',
+        expect.arrayContaining(['symbolic-ref']),
+        expect.objectContaining({ cwd: expect.any(String) }),
+      );
+    });
+
+    it('should return 400 when worktree path fails validation', async () => {
+      // A relative path should fail path.isAbsolute
+      const mockRun = {
+        id: 'run-456',
+        issuePlatform: 'github',
+        issueRepo: 'owner/repo',
+        issueId: '42',
+        worktreePath: '../etc/passwd',
+      };
+
+      mockListRuns.mockReturnValue({ runs: [mockRun], total: 1 });
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/kanban/cards/github/owner%2Frepo/42/diff',
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe('Invalid worktree path');
     });
   });
 });
