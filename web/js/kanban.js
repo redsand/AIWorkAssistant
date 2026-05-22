@@ -924,6 +924,7 @@
         if (nextIdx < 0 || nextIdx >= COLUMN_ORDER.length) return;
         var targetCol = COLUMN_ORDER[nextIdx];
         performMove(card, article, targetCol);
+        announce("Moved " + card.title + " to " + targetCol.replace("_", " "));
       }
     });
 
@@ -1796,6 +1797,8 @@
           addTile(data.agent);
           var agent = data.agent;
           var cardKey = agent.cardKey;
+          var cardTitle = cardTitleMap[cardKey] || cardKey || "unknown card";
+          announce("Started " + agent.agent + " on " + cardTitle);
           if (cardKey) {
             agentRunToCardKey[agent.agentRunId] = cardKey;
             var cardEl = cardIndex.get(cardKey);
@@ -1839,6 +1842,10 @@
         removeTile(data.agentRunId);
 
         var cardKey = agentRunToCardKey[data.agentRunId];
+        var cardTitle = cardTitleMap[cardKey] || cardKey || "unknown card";
+        var statusVerb = data.status === "completed" ? "completed" : "failed";
+        announce("Agent " + statusVerb + " on " + cardTitle);
+
         if (cardKey) {
           var cardEl = cardIndex.get(cardKey);
           if (cardEl) {
