@@ -186,7 +186,7 @@ describe('POST /cards/:platform/:repo/:id/move', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(mockUpdateIssue).toHaveBeenCalledWith(42, { state: 'closed' }, 'owner', 'repo');
+    expect(mockUpdateIssue).toHaveBeenCalledWith(42, { state: 'closed', labels: ['bug'] }, 'owner', 'repo');
   });
 
   it('should reopen a GitHub issue when moving to backlog', async () => {
@@ -205,7 +205,7 @@ describe('POST /cards/:platform/:repo/:id/move', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(mockUpdateIssue).toHaveBeenCalledWith(42, { state: 'open' }, 'owner', 'repo');
+    expect(mockUpdateIssue).toHaveBeenCalledWith(42, { state: 'open', labels: [] }, 'owner', 'repo');
   });
 
   it('should add blocked label when moving to blocked', async () => {
@@ -262,6 +262,89 @@ describe('POST /cards/:platform/:repo/:id/move', () => {
     );
   });
 
+  it('should remove blocked label when moving GitHub issue from blocked to backlog', async () => {
+    mockGetIssue.mockResolvedValueOnce({
+      title: 'Test',
+      body: '',
+      state: 'open',
+      labels: [{ name: 'bug' }, { name: 'blocked' }],
+    });
+    mockUpdateIssue.mockResolvedValueOnce({});
+
+    const res = await app.inject({
+      method: 'POST',
+      url: moveUrl('github', 'owner/repo', '42'),
+      payload: { column: 'backlog' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockUpdateIssue).toHaveBeenCalledWith(
+      42,
+      { state: 'open', labels: ['bug'] },
+      'owner',
+      'repo',
+    );
+  });
+
+  it('should remove in progress label when moving GitHub issue from in_flight to backlog', async () => {
+    mockGetIssue.mockResolvedValueOnce({
+      title: 'Test',
+      body: '',
+      state: 'open',
+      labels: [{ name: 'feature' }, { name: 'in progress' }],
+    });
+    mockUpdateIssue.mockResolvedValueOnce({});
+
+    const res = await app.inject({
+      method: 'POST',
+      url: moveUrl('github', 'owner/repo', '42'),
+      payload: { column: 'backlog' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockUpdateIssue).toHaveBeenCalledWith(
+      42,
+      { state: 'open', labels: ['feature'] },
+      'owner',
+      'repo',
+    );
+  });
+
+  it('should remove blocked and in progress labels when moving GitHub issue to done', async () => {
+    mockGetIssue.mockResolvedValueOnce({
+      title: 'Test',
+      body: '',
+      state: 'open',
+      labels: [{ name: 'bug' }, { name: 'blocked' }, { name: 'in progress' }],
+    });
+    mockUpdateIssue.mockResolvedValueOnce({});
+
+    const res = await app.inject({
+      method: 'POST',
+      url: moveUrl('github', 'owner/repo', '42'),
+      payload: { column: 'done' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockUpdateIssue).toHaveBeenCalledWith(
+      42,
+      { state: 'closed', labels: ['bug'] },
+      'owner',
+      'repo',
+    );
+  });
+
+  it('should return 400 for non-numeric GitHub issue id', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: moveUrl('github', 'owner/repo', 'abc'),
+      payload: { column: 'done' },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/invalid issue id/i);
+  });
+
   // ─── GitLab ─────────────────────────────────────────────────────────────────
 
   it('should close a GitLab issue when moving to done', async () => {
@@ -280,7 +363,7 @@ describe('POST /cards/:platform/:repo/:id/move', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(mockEditIssue).toHaveBeenCalledWith('123', 10, { stateEvent: 'close' });
+    expect(mockEditIssue).toHaveBeenCalledWith('123', 10, { stateEvent: 'close', labels: 'enhancement' });
   });
 
   it('should reopen a GitLab issue when moving to backlog', async () => {
@@ -299,7 +382,7 @@ describe('POST /cards/:platform/:repo/:id/move', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(mockEditIssue).toHaveBeenCalledWith('123', 10, { stateEvent: 'reopen' });
+    expect(mockEditIssue).toHaveBeenCalledWith('123', 10, { stateEvent: 'reopen', labels: '' });
   });
 
   it('should add blocked label on GitLab when moving to blocked', async () => {
@@ -325,6 +408,86 @@ describe('POST /cards/:platform/:repo/:id/move', () => {
         labels: expect.stringContaining('blocked'),
       }),
     );
+  });
+
+  it('should remove blocked label when moving GitLab issue from blocked to backlog', async () => {
+    mockGitlabGetIssue.mockResolvedValueOnce({
+      title: 'GL',
+      description: '',
+      state: 'opened',
+      labels: ['enhancement', 'blocked'],
+    });
+    mockEditIssue.mockResolvedValueOnce({});
+
+    const res = await app.inject({
+      method: 'POST',
+      url: moveUrl('gitlab', '123', '10'),
+      payload: { column: 'backlog' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockEditIssue).toHaveBeenCalledWith(
+      '123',
+      10,
+      { stateEvent: 'reopen', labels: 'enhancement' },
+    );
+  });
+
+  it('should remove in progress label when moving GitLab issue from in_flight to backlog', async () => {
+    mockGitlabGetIssue.mockResolvedValueOnce({
+      title: 'GL',
+      description: '',
+      state: 'opened',
+      labels: ['feature', 'in progress'],
+    });
+    mockEditIssue.mockResolvedValueOnce({});
+
+    const res = await app.inject({
+      method: 'POST',
+      url: moveUrl('gitlab', '123', '10'),
+      payload: { column: 'backlog' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockEditIssue).toHaveBeenCalledWith(
+      '123',
+      10,
+      { stateEvent: 'reopen', labels: 'feature' },
+    );
+  });
+
+  it('should remove blocked and in progress labels when moving GitLab issue to done', async () => {
+    mockGitlabGetIssue.mockResolvedValueOnce({
+      title: 'GL',
+      description: '',
+      state: 'opened',
+      labels: ['bug', 'blocked', 'in progress'],
+    });
+    mockEditIssue.mockResolvedValueOnce({});
+
+    const res = await app.inject({
+      method: 'POST',
+      url: moveUrl('gitlab', '123', '10'),
+      payload: { column: 'done' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockEditIssue).toHaveBeenCalledWith(
+      '123',
+      10,
+      { stateEvent: 'close', labels: 'bug' },
+    );
+  });
+
+  it('should return 400 for non-numeric GitLab issue id', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: moveUrl('gitlab', '123', 'not-a-number'),
+      payload: { column: 'done' },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/invalid issue id/i);
   });
 
   // ─── Jira ───────────────────────────────────────────────────────────────────

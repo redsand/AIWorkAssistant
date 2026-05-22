@@ -1002,11 +1002,31 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
             return reply.status(400).send({ error: "Invalid GitHub repo format" });
           }
           const issueNum = Number(id);
+          if (!Number.isFinite(issueNum)) {
+            return reply.status(400).send({ error: "Invalid issue id: must be a number" });
+          }
 
           if (column === "done") {
-            await githubClient.updateIssue(issueNum, { state: "closed" }, owner, repoName);
+            const current = await githubClient.getIssue(issueNum, owner, repoName);
+            const currentLabels: string[] = (current?.labels || []).map(
+              (l: any) => typeof l === "string" ? l : l.name,
+            ).filter(Boolean);
+            const cleanedLabels = currentLabels.filter(
+              (l) => l.toLowerCase() !== "blocked" && l.toLowerCase() !== "in progress",
+            );
+            await githubClient.updateIssue(issueNum, { state: "closed", labels: cleanedLabels }, owner, repoName);
           } else if (column === "backlog") {
-            await githubClient.updateIssue(issueNum, { state: "open" }, owner, repoName);
+            const current = await githubClient.getIssue(issueNum, owner, repoName);
+            if (!current) {
+              return reply.status(404).send({ error: "Issue not found" });
+            }
+            const currentLabels: string[] = (current.labels || []).map(
+              (l: any) => typeof l === "string" ? l : l.name,
+            ).filter(Boolean);
+            const cleanedLabels = currentLabels.filter(
+              (l) => l.toLowerCase() !== "blocked" && l.toLowerCase() !== "in progress",
+            );
+            await githubClient.updateIssue(issueNum, { state: "open", labels: cleanedLabels }, owner, repoName);
           } else {
             // blocked or in_flight — manage labels
             const current = await githubClient.getIssue(issueNum, owner, repoName);
@@ -1025,11 +1045,27 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
 
         case "gitlab": {
           const issueIid = Number(id);
+          if (!Number.isFinite(issueIid)) {
+            return reply.status(400).send({ error: "Invalid issue id: must be a number" });
+          }
 
           if (column === "done") {
-            await gitlabClient.editIssue(sanitizedRepo, issueIid, { stateEvent: "close" });
+            const current = await gitlabClient.getIssue(sanitizedRepo, issueIid);
+            const currentLabels: string[] = (current?.labels || []);
+            const cleanedLabels = currentLabels.filter(
+              (l) => l.toLowerCase() !== "blocked" && l.toLowerCase() !== "in progress",
+            ).join(",");
+            await gitlabClient.editIssue(sanitizedRepo, issueIid, { stateEvent: "close", labels: cleanedLabels });
           } else if (column === "backlog") {
-            await gitlabClient.editIssue(sanitizedRepo, issueIid, { stateEvent: "reopen" });
+            const current = await gitlabClient.getIssue(sanitizedRepo, issueIid);
+            if (!current) {
+              return reply.status(404).send({ error: "Issue not found" });
+            }
+            const currentLabels: string[] = (current.labels || []);
+            const cleanedLabels = currentLabels.filter(
+              (l) => l.toLowerCase() !== "blocked" && l.toLowerCase() !== "in progress",
+            ).join(",");
+            await gitlabClient.editIssue(sanitizedRepo, issueIid, { stateEvent: "reopen", labels: cleanedLabels });
           } else {
             // blocked or in_flight — manage labels
             const current = await gitlabClient.getIssue(sanitizedRepo, issueIid);
