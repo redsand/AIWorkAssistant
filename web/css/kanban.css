@@ -796,6 +796,86 @@ body {
   pointer-events: none;
 }
 
+/* ─── Dependency Edge State Colors ────────────────────────────────────────── */
+
+.dep-edge--pending {
+  stroke: #9ca3af;
+  stroke-dasharray: 6 4;
+  stroke-width: 2;
+}
+
+.dep-edge--in_progress {
+  stroke: #f59e0b;
+  stroke-width: 2;
+}
+
+.dep-edge--blocked {
+  stroke: #ef4444;
+  stroke-dasharray: 8 4;
+  stroke-width: 3;
+}
+
+.dep-edge--resolved {
+  stroke: #22c55e;
+  stroke-dasharray: 4 4;
+  stroke-width: 2;
+  animation: dep-resolved-fade 5s ease forwards;
+}
+
+.dep-edge--critical {
+  stroke: #eab308;
+  stroke-width: 4;
+  z-index: 10;
+  filter: drop-shadow(0 0 3px rgba(234, 179, 8, 0.5));
+}
+
+.dep-edge--critical.dep-edge--pending {
+  stroke-dasharray: none;
+}
+
+@keyframes dep-resolved-fade {
+  0%, 60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.dep-path--removing {
+  pointer-events: none;
+  transition: opacity 0.4s ease;
+  opacity: 0;
+}
+
+/* ─── Dependency Edge Legend ───────────────────────────────────────────────── */
+
+.k-dep-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 12px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: #6b7280;
+  flex-wrap: wrap;
+}
+
+.k-dep-legend-title {
+  font-weight: 600;
+  color: #374151;
+}
+
+.k-dep-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.k-dep-legend-swatch {
+  flex-shrink: 0;
+}
+
 /* ─── Swimlane View ──────────────────────────────────────────────────────── */
 
 .k-swimlanes {

@@ -98,6 +98,31 @@
         <p>No cards found. Issues will appear here once they are created across your repositories.</p>
       </div>
 
+      <!-- Dependency Edge Legend -->
+      <div id="dep-legend" class="k-dep-legend">
+        <span class="k-dep-legend-title">Dependencies:</span>
+        <span class="k-dep-legend-item">
+          <svg width="24" height="6" class="k-dep-legend-swatch"><line x1="0" y1="3" x2="24" y2="3" stroke="#f59e0b" stroke-width="2"/></svg>
+          In Progress
+        </span>
+        <span class="k-dep-legend-item">
+          <svg width="24" height="6" class="k-dep-legend-swatch"><line x1="0" y1="3" x2="24" y2="3" stroke="#ef4444" stroke-width="3" stroke-dasharray="8 4"/></svg>
+          Blocked
+        </span>
+        <span class="k-dep-legend-item">
+          <svg width="24" height="6" class="k-dep-legend-swatch"><line x1="0" y1="3" x2="24" y2="3" stroke="#9ca3af" stroke-width="2" stroke-dasharray="6 4"/></svg>
+          Pending
+        </span>
+        <span class="k-dep-legend-item">
+          <svg width="24" height="6" class="k-dep-legend-swatch"><line x1="0" y1="3" x2="24" y2="3" stroke="#22c55e" stroke-width="2" stroke-dasharray="4 4"/></svg>
+          Resolved
+        </span>
+        <span class="k-dep-legend-item">
+          <svg width="24" height="6" class="k-dep-legend-swatch"><line x1="0" y1="3" x2="24" y2="3" stroke="#eab308" stroke-width="4"/></svg>
+          Critical Path
+        </span>
+      </div>
+
       <!-- Board (Status view) -->
       <div id="kanban-board" class="k-board" style="display: none">
         <svg id="dep-overlay" class="dep-overlay" xmlns="http://www.w3.org/2000/svg">
@@ -107,6 +132,21 @@
             </marker>
             <marker id="dep-arrowhead-ghost" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
               <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
+            </marker>
+            <marker id="dep-arrowhead-pending" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
+            </marker>
+            <marker id="dep-arrowhead-in_progress" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#f59e0b" />
+            </marker>
+            <marker id="dep-arrowhead-blocked" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#ef4444" />
+            </marker>
+            <marker id="dep-arrowhead-resolved" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#22c55e" />
+            </marker>
+            <marker id="dep-arrowhead-critical" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#eab308" />
             </marker>
           </defs>
         </svg>
@@ -137,6 +177,21 @@
             </marker>
             <marker id="dep-arrowhead-ghost-swim" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
               <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
+            </marker>
+            <marker id="dep-arrowhead-swim-pending" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
+            </marker>
+            <marker id="dep-arrowhead-swim-in_progress" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#f59e0b" />
+            </marker>
+            <marker id="dep-arrowhead-swim-blocked" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#ef4444" />
+            </marker>
+            <marker id="dep-arrowhead-swim-resolved" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#22c55e" />
+            </marker>
+            <marker id="dep-arrowhead-swim-critical" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#eab308" />
             </marker>
           </defs>
         </svg>

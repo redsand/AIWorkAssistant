@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { KanbanCard } from "../types.js";
 import type { DependencyRef } from "../../routes/repo-dashboard.js";
-import { resolveEdges } from "../edges.js";
+import { resolveEdges, computeCriticalPath } from "../edges.js";
 
 function makeCard(overrides: Partial<KanbanCard> & Pick<KanbanCard, "key" | "platform" | "repo" | "id">): KanbanCard {
   return {
@@ -177,5 +177,127 @@ describe("resolveEdges", () => {
     expect(edges[0].toKey).toBe("gitlab:myproject:99");
     expect(edges[0].fromGhost).toBe(false);
     expect(ghostNodes).toHaveLength(0);
+  });
+});
+
+describe("computeCriticalPath", () => {
+  it("marks edges on the longest chain ending in in_flight/blocked", () => {
+    const cards = [
+      makeCard({ key: "github:o/r:1", platform: "github", repo: "o/r", id: "1", column: "done" }),
+      makeCard({ key: "github:o/r:2", platform: "github", repo: "o/r", id: "2", column: "backlog" }),
+      makeCard({ key: "github:o/r:3", platform: "github", repo: "o/r", id: "3", column: "in_flight" }),
+    ];
+
+    const depsByCardKey = new Map<string, DependencyRef[]>([
+      ["github:o/r:2", [{ id: "1", label: "depends on #1", external: false }]],
+      ["github:o/r:3", [{ id: "2", label: "depends on #2", external: false }]],
+    ]);
+
+    const { edges } = resolveEdges(cards, depsByCardKey);
+    const result = computeCriticalPath(edges, cards);
+
+    const criticalEdges = result.filter((e) => e.onCriticalPath);
+    expect(criticalEdges).toHaveLength(2);
+    expect(criticalEdges[0].fromKey).toBe("github:o/r:1");
+    expect(criticalEdges[0].toKey).toBe("github:o/r:2");
+    expect(criticalEdges[1].fromKey).toBe("github:o/r:2");
+    expect(criticalEdges[1].toKey).toBe("github:o/r:3");
+  });
+
+  it("picks the longest chain when multiple paths exist", () => {
+    const cards = [
+      makeCard({ key: "github:o/r:1", platform: "github", repo: "o/r", id: "1", column: "done" }),
+      makeCard({ key: "github:o/r:2", platform: "github", repo: "o/r", id: "2", column: "done" }),
+      makeCard({ key: "github:o/r:3", platform: "github", repo: "o/r", id: "3", column: "in_flight" }),
+      makeCard({ key: "github:o/r:4", platform: "github", repo: "o/r", id: "4", column: "done" }),
+    ];
+
+    const depsByCardKey = new Map<string, DependencyRef[]>([
+      ["github:o/r:3", [{ id: "1", label: "depends on #1", external: false }]],
+      ["github:o/r:2", [{ id: "4", label: "depends on #4", external: false }]],
+    ]);
+    depsByCardKey.get("github:o/r:3")!.push({ id: "2", label: "depends on #2", external: false });
+
+    const { edges } = resolveEdges(cards, depsByCardKey);
+    const result = computeCriticalPath(edges, cards);
+
+    const criticalEdges = result.filter((e) => e.onCriticalPath);
+    expect(criticalEdges).toHaveLength(2);
+    expect(criticalEdges.map((e) => e.fromKey)).toContain("github:o/r:4");
+    expect(criticalEdges.map((e) => e.fromKey)).toContain("github:o/r:2");
+  });
+
+  it("does not mark edges ending in done/backlog cards", () => {
+    const cards = [
+      makeCard({ key: "github:o/r:1", platform: "github", repo: "o/r", id: "1", column: "done" }),
+      makeCard({ key: "github:o/r:2", platform: "github", repo: "o/r", id: "2", column: "done" }),
+    ];
+
+    const depsByCardKey = new Map<string, DependencyRef[]>([
+      ["github:o/r:2", [{ id: "1", label: "depends on #1", external: false }]],
+    ]);
+
+    const { edges } = resolveEdges(cards, depsByCardKey);
+    const result = computeCriticalPath(edges, cards);
+
+    const criticalEdges = result.filter((e) => e.onCriticalPath);
+    expect(criticalEdges).toHaveLength(0);
+  });
+
+  it("handles cycle without crashing", () => {
+    const cards = [
+      makeCard({ key: "github:o/r:1", platform: "github", repo: "o/r", id: "1", column: "blocked" }),
+      makeCard({ key: "github:o/r:2", platform: "github", repo: "o/r", id: "2", column: "blocked" }),
+    ];
+
+    const depsByCardKey = new Map<string, DependencyRef[]>([
+      ["github:o/r:1", [{ id: "2", label: "depends on #2", external: false }]],
+      ["github:o/r:2", [{ id: "1", label: "depends on #1", external: false }]],
+    ]);
+
+    const { edges } = resolveEdges(cards, depsByCardKey);
+    expect(() => computeCriticalPath(edges, cards)).not.toThrow();
+
+    const result = computeCriticalPath(edges, cards);
+    const criticalEdges = result.filter((e) => e.onCriticalPath);
+    expect(criticalEdges.length).toBeGreaterThanOrEqual(0);
+  });
+
+  it("handles self-dependency without crashing", () => {
+    const cards = [
+      makeCard({ key: "github:o/r:1", platform: "github", repo: "o/r", id: "1", column: "blocked" }),
+    ];
+
+    const depsByCardKey = new Map<string, DependencyRef[]>([
+      ["github:o/r:1", [{ id: "1", label: "depends on #1", external: false }]],
+    ]);
+
+    const { edges } = resolveEdges(cards, depsByCardKey);
+    expect(() => computeCriticalPath(edges, cards)).not.toThrow();
+  });
+
+  it("returns empty array for empty edges", () => {
+    const result = computeCriticalPath([], []);
+    expect(result).toHaveLength(0);
+  });
+
+  it("handles disconnected components", () => {
+    const cards = [
+      makeCard({ key: "github:o/r:1", platform: "github", repo: "o/r", id: "1", column: "done" }),
+      makeCard({ key: "github:o/r:2", platform: "github", repo: "o/r", id: "2", column: "in_flight" }),
+      makeCard({ key: "github:o/r:3", platform: "github", repo: "o/r", id: "3", column: "done" }),
+      makeCard({ key: "github:o/r:4", platform: "github", repo: "o/r", id: "4", column: "blocked" }),
+    ];
+
+    const depsByCardKey = new Map<string, DependencyRef[]>([
+      ["github:o/r:2", [{ id: "1", label: "depends on #1", external: false }]],
+      ["github:o/r:4", [{ id: "3", label: "depends on #3", external: false }]],
+    ]);
+
+    const { edges } = resolveEdges(cards, depsByCardKey);
+    const result = computeCriticalPath(edges, cards);
+
+    const criticalEdges = result.filter((e) => e.onCriticalPath);
+    expect(criticalEdges).toHaveLength(2);
   });
 });

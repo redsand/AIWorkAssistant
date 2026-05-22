@@ -185,6 +185,7 @@
   var boardGhostNodes = [];        // saved from API response
   var depRafId = null;             // rAF handle for resize debounce
   var ghostAnchorMap = {};         // ghostKey → anchor element
+  var resolvedEdgeTimers = [];    // timers for resolved edge fade-out removal
 
   // ─── View mode state ────────────────────────────────────────────────────────
 
@@ -537,6 +538,10 @@
 
     var containerRect = container.getBoundingClientRect();
 
+    // Build card column lookup for edge state computation
+    var cardColumnMap = {};
+    boardCards.forEach(function (c) { cardColumnMap[c.key] = c.column; });
+
     boardEdges.forEach(function (edge) {
       var fromEl, toEl;
 
@@ -556,16 +561,42 @@
 
       var path = document.createElementNS("http://www.w3.org/2000/svg", "path");
       path.setAttribute("d", buildEdgePath(from, to));
-      path.setAttribute("marker-end", edge.fromGhost ? "url(#" + ghostArrowheadId + ")" : "url(#" + arrowheadId + ")");
+
+      // Determine edge state from blocker column
+      var blockerColumn = cardColumnMap[edge.fromKey];
+      var edgeState = "pending";
+      if (blockerColumn === "done") edgeState = "resolved";
+      else if (blockerColumn === "in_flight") edgeState = "in_progress";
+      else if (blockerColumn === "blocked") edgeState = "blocked";
+
+      // Critical path overrides (on top visually via CSS)
+      var isCritical = !!edge.onCriticalPath;
+
+      // Pick arrowhead color based on state
+      var markerId;
+      if (edge.fromGhost) {
+        markerId = ghostArrowheadId;
+      } else if (isCritical) {
+        markerId = arrowheadId + "-critical";
+      } else {
+        markerId = arrowheadId + "-" + edgeState;
+      }
+      // Fall back to default if state-specific marker not found
+      var markerEl = overlay.querySelector("#" + markerId);
+      path.setAttribute("marker-end", markerEl ? ("url(#" + markerId + ")") : ("url(#" + arrowheadId + ")"));
+
       path.classList.add("dep-path");
       if (edge.fromGhost) path.classList.add("dep-path--ghost");
+      path.classList.add("dep-edge--" + edgeState);
+      if (isCritical) path.classList.add("dep-edge--critical");
       path.setAttribute("data-from", edge.fromKey);
       path.setAttribute("data-to", edge.toKey);
+      path.setAttribute("data-state", edgeState);
 
       overlay.appendChild(path);
       if (typeof path.getTotalLength === "function") {
         var totalLen = path.getTotalLength();
-        if (!edge.fromGhost) {
+        if (!edge.fromGhost && edgeState !== "resolved") {
           path.style.strokeDasharray = totalLen;
           path.style.strokeDashoffset = totalLen;
         }
@@ -1662,6 +1693,52 @@
             debounceMoveCard(card.key, card.column || "backlog");
           }
         }
+      } catch (ex) { /* ignore */ }
+    });
+
+    source.addEventListener("dependency.unblocked", function (e) {
+      try {
+        var data = JSON.parse(e.data);
+        var blockerKey = data.blockerKey;
+        var unblockedKeys = data.unblockedKeys || [];
+
+        // Transition affected edges to resolved state
+        var affectedFromKeys = [blockerKey];
+        unblockedKeys.forEach(function (k) { affectedFromKeys.push(k); });
+
+        boardEdges.forEach(function (edge) {
+          if (affectedFromKeys.indexOf(edge.fromKey) !== -1) {
+            edge._resolved = true;
+          }
+        });
+
+        // Update rendered arrows
+        var overlays = [depOverlay, depOverlaySwim];
+        overlays.forEach(function (overlay) {
+          if (!overlay) return;
+          var paths = overlay.querySelectorAll(".dep-path");
+          for (var i = 0; i < paths.length; i++) {
+            var p = paths[i];
+            var fromKey = p.getAttribute("data-from");
+            if (affectedFromKeys.indexOf(fromKey) !== -1) {
+              // Remove old state classes, add resolved
+              p.classList.remove("dep-edge--pending", "dep-edge--in_progress", "dep-edge--blocked");
+              p.classList.add("dep-edge--resolved");
+              p.setAttribute("data-state", "resolved");
+
+              // Schedule removal after 5s fade
+              (function (pathEl) {
+                var timer = setTimeout(function () {
+                  pathEl.classList.add("dep-path--removing");
+                  setTimeout(function () {
+                    if (pathEl.parentNode) pathEl.parentNode.removeChild(pathEl);
+                  }, 400);
+                }, 5000);
+                resolvedEdgeTimers.push(timer);
+              })(p);
+            }
+          }
+        });
       } catch (ex) { /* ignore */ }
     });
 
