@@ -195,6 +195,215 @@
   // Agent data cache: agentRunId → { agent, model, startedAt, cardKey }
   var agentCache = {};
 
+  // ─── Filter state ───────────────────────────────────────────────────────────
+
+  var FILTER_STORAGE_KEY = "kanban-filters";
+  var filterState = {
+    repos: [],      // selected repo identifiers
+    agents: [],     // selected agent types: claude, codex, opencode
+    priority: null,  // selected priority: critical, high, medium, low
+  };
+  var boardRepos = [];  // repos from last board response
+
+  var filterStrip = document.getElementById("filter-strip");
+  var filterRepoBtn = document.getElementById("filter-repo-btn");
+  var filterRepoCount = document.getElementById("filter-repo-count");
+  var filterRepoDropdown = document.getElementById("filter-repo-dropdown");
+  var filterClearBtn = document.getElementById("filter-clear");
+  var filterAgentBtns = document.querySelectorAll("#filter-agents-group .k-filter-chip");
+  var filterPriorityBtns = document.querySelectorAll("#filter-priority-group .k-filter-chip");
+
+  // ─── Filter helpers ─────────────────────────────────────────────────────────
+
+  function loadFiltersFromURL() {
+    var params = new URLSearchParams(window.location.search);
+    var repos = params.get("repos");
+    var agents = params.get("agents");
+    var priority = params.get("priority");
+
+    if (repos) filterState.repos = repos.split(",").filter(Boolean);
+    if (agents) filterState.agents = agents.split(",").filter(Boolean);
+    if (priority) filterState.priority = priority;
+  }
+
+  function loadFiltersFromStorage() {
+    try {
+      var stored = localStorage.getItem(FILTER_STORAGE_KEY);
+      if (stored) {
+        var parsed = JSON.parse(stored);
+        if (parsed.repos) filterState.repos = parsed.repos;
+        if (parsed.agents) filterState.agents = parsed.agents;
+        if (parsed.priority) filterState.priority = parsed.priority;
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  function saveFilters() {
+    try {
+      localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(filterState));
+    } catch (e) { /* ignore */ }
+  }
+
+  function updateURL() {
+    var params = new URLSearchParams();
+    if (filterState.repos.length > 0) params.set("repos", filterState.repos.join(","));
+    if (filterState.agents.length > 0) params.set("agents", filterState.agents.join(","));
+    if (filterState.priority) params.set("priority", filterState.priority);
+    var qs = params.toString();
+    var newURL = window.location.pathname + (qs ? "?" + qs : "");
+    history.replaceState(null, "", newURL);
+  }
+
+  function syncFilterUI() {
+    // Agent chips
+    filterAgentBtns.forEach(function (btn) {
+      var agent = btn.getAttribute("data-agent");
+      btn.setAttribute("aria-pressed", filterState.agents.indexOf(agent) >= 0 ? "true" : "false");
+    });
+
+    // Priority chips
+    filterPriorityBtns.forEach(function (btn) {
+      var pri = btn.getAttribute("data-priority");
+      btn.setAttribute("aria-pressed", filterState.priority === pri ? "true" : "false");
+    });
+
+    // Repo button
+    var repoCount = filterState.repos.length;
+    if (repoCount > 0) {
+      filterRepoBtn.setAttribute("aria-pressed", "true");
+      filterRepoBtn.innerHTML = repoCount + " repo" + (repoCount > 1 ? "s" : "") +
+        ' <span class="k-filter-count">' + repoCount + "</span>";
+    } else {
+      filterRepoBtn.setAttribute("aria-pressed", "false");
+      filterRepoBtn.innerHTML = 'All Repos <span class="k-filter-count"></span>';
+    }
+
+    // Clear button visibility
+    var hasFilters = filterState.repos.length > 0 || filterState.agents.length > 0 || filterState.priority;
+    filterClearBtn.style.display = hasFilters ? "" : "none";
+  }
+
+  function clearAllFilters() {
+    filterState.repos = [];
+    filterState.agents = [];
+    filterState.priority = null;
+    saveFilters();
+    updateURL();
+    syncFilterUI();
+    syncRepoDropdownCheckboxes();
+    fetchBoard();
+  }
+
+  function toggleFilterChip(type, value) {
+    if (type === "agent") {
+      var idx = filterState.agents.indexOf(value);
+      if (idx >= 0) {
+        filterState.agents.splice(idx, 1);
+      } else {
+        filterState.agents.push(value);
+      }
+    } else if (type === "priority") {
+      filterState.priority = filterState.priority === value ? null : value;
+    }
+    saveFilters();
+    updateURL();
+    syncFilterUI();
+    fetchBoard();
+  }
+
+  // ─── Repo dropdown ──────────────────────────────────────────────────────────
+
+  function buildRepoDropdown(repos) {
+    boardRepos = repos || [];
+    boardRepos.sort(function (a, b) { return b.cardCount - a.cardCount; });
+
+    filterRepoDropdown.innerHTML = "";
+    boardRepos.forEach(function (repo) {
+      var item = document.createElement("button");
+      item.className = "k-filter-dropdown-item";
+      item.setAttribute("role", "option");
+      item.setAttribute("data-repo", repo.repo);
+      var checked = filterState.repos.indexOf(repo.repo) >= 0;
+      item.setAttribute("aria-selected", checked ? "true" : "false");
+      item.innerHTML =
+        '<input type="checkbox"' + (checked ? " checked" : "") + ' tabindex="-1">' +
+        '<span>' + escapeHtml(repo.repo) + '</span>' +
+        '<span class="k-filter-repo-platform">' + escapeHtml(repo.platform) + '</span>' +
+        '<span class="k-filter-repo-count">' + repo.cardCount + '</span>';
+      item.addEventListener("click", function () {
+        toggleRepoFilter(repo.repo);
+      });
+      filterRepoDropdown.appendChild(item);
+    });
+  }
+
+  function syncRepoDropdownCheckboxes() {
+    var items = filterRepoDropdown.querySelectorAll(".k-filter-dropdown-item");
+    items.forEach(function (item) {
+      var repo = item.getAttribute("data-repo");
+      var checked = filterState.repos.indexOf(repo) >= 0;
+      item.setAttribute("aria-selected", checked ? "true" : "false");
+      var cb = item.querySelector("input[type='checkbox']");
+      if (cb) cb.checked = checked;
+    });
+  }
+
+  function toggleRepoFilter(repoName) {
+    var idx = filterState.repos.indexOf(repoName);
+    if (idx >= 0) {
+      filterState.repos.splice(idx, 1);
+    } else {
+      filterState.repos.push(repoName);
+    }
+    saveFilters();
+    updateURL();
+    syncFilterUI();
+    syncRepoDropdownCheckboxes();
+    fetchBoard();
+  }
+
+  function toggleRepoDropdown() {
+    var isOpen = filterRepoDropdown.style.display !== "none";
+    if (isOpen) {
+      filterRepoDropdown.style.display = "none";
+      filterRepoBtn.setAttribute("aria-expanded", "false");
+    } else {
+      filterRepoDropdown.style.display = "block";
+      filterRepoBtn.setAttribute("aria-expanded", "true");
+    }
+  }
+
+  // Close dropdown on outside click
+  document.addEventListener("click", function (e) {
+    if (filterRepoDropdown.style.display !== "none" &&
+        !filterRepoBtn.contains(e.target) &&
+        !filterRepoDropdown.contains(e.target)) {
+      filterRepoDropdown.style.display = "none";
+      filterRepoBtn.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  // ─── Filter event wiring ────────────────────────────────────────────────────
+
+  filterRepoBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    toggleRepoDropdown();
+  });
+
+  filterAgentBtns.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      toggleFilterChip("agent", btn.getAttribute("data-agent"));
+    });
+  });
+
+  filterPriorityBtns.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      toggleFilterChip("priority", btn.getAttribute("data-priority"));
+    });
+  });
+
+  filterClearBtn.addEventListener("click", clearAllFilters);
+
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
   function showError(msg) {
@@ -282,7 +491,7 @@
     ghostNodes.forEach(function (ghost) {
       if (ghostAnchorMap[ghost.key]) return;
 
-      var repoChip = document.getElementById("repo-chip");
+      var repoChip = document.getElementById("filter-strip");
       var anchor = document.createElement("div");
       anchor.className = "dep-ghost-anchor";
       anchor.setAttribute("data-ghost-key", ghost.key);
@@ -908,7 +1117,15 @@
     boardEl.style.display = "none";
     emptyEl.style.display = "none";
 
-    fetch("/api/kanban/board")
+    // Build query params from filter state
+    var params = new URLSearchParams();
+    filterState.repos.forEach(function (r) { params.append("repos[]", r); });
+    filterState.agents.forEach(function (a) { params.append("agents[]", a); });
+    if (filterState.priority) params.set("priority", filterState.priority);
+    var qs = params.toString();
+    var url = "/api/kanban/board" + (qs ? "?" + qs : "");
+
+    fetch(url)
       .then(function (res) {
         if (!res.ok) {
           throw new Error("HTTP " + res.status + " " + res.statusText);
@@ -917,6 +1134,10 @@
       })
       .then(function (data) {
         loadingEl.style.display = "none";
+        // Populate repo dropdown on first load
+        if (data.repos) {
+          buildRepoDropdown(data.repos);
+        }
         renderBoard(data);
       })
       .catch(function (err) {
@@ -1651,6 +1872,11 @@
   });
 
   // ─── Init ──────────────────────────────────────────────────────────────────
+
+  // Restore filter state: URL params override localStorage
+  loadFiltersFromStorage();
+  loadFiltersFromURL();
+  syncFilterUI();
 
   refreshBtn.addEventListener("click", fetchBoard);
 
