@@ -457,6 +457,63 @@ body {
   opacity: 0.7;
 }
 
+/* ─── Drag-and-drop ──────────────────────────────────────────────────────── */
+
+.kcard[draggable="true"] {
+  cursor: grab;
+}
+
+.kcard[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.kcard--dragging {
+  opacity: 0.4;
+  transform: rotate(2deg);
+}
+
+.kcard--readonly {
+  opacity: 0.6;
+  cursor: not-allowed;
+  position: relative;
+}
+
+.kcard--readonly::after {
+  content: attr(data-readonly-tooltip);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1f2937;
+  color: #f9fafb;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+  z-index: 10;
+}
+
+.kcard--readonly:hover::after {
+  opacity: 1;
+}
+
+.kcol--target {
+  background: #eef2ff;
+  border: 2px dashed #667eea;
+}
+
+.kcard--drop-preview {
+  background: #eef2ff;
+  border: 2px dashed #667eea;
+  opacity: 0.5;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  min-height: 60px;
+}
+
 .kcard header {
   display: flex;
   align-items: center;

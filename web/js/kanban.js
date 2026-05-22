@@ -171,6 +171,13 @@
   var agentRunToCardKey = {};      // agentRunId → cardKey (for step/completed events)
   var pendingMoves = new Map();    // cardKey → timeoutId (debounce optimistic moves)
 
+  // ─── Drag-and-drop state ────────────────────────────────────────────────────
+
+  var COLUMN_ORDER = ["backlog", "in_flight", "blocked", "done"];
+  var READONLY_PLATFORMS = {};    // platform → true if no token configured
+  var boardCards = [];            // saved from last render for keyboard nav
+  var toastEl = null;             // toast notification element
+
   // ─── Dependency arrow state ────────────────────────────────────────────────
 
   var depOverlay = document.getElementById("dep-overlay");
@@ -221,6 +228,42 @@
     var m = Math.floor(totalSec / 60);
     var s = totalSec % 60;
     return m + "m " + (s < 10 ? "0" : "") + s + "s";
+  }
+
+  function showToast(msg, duration) {
+    if (!toastEl) {
+      toastEl = document.createElement("div");
+      toastEl.className = "k-toast";
+      toastEl.style.cssText = "position:fixed;bottom:20px;left:50%;transform:translateX(-50%);" +
+        "background:#1f2937;color:#f9fafb;padding:8px 16px;border-radius:6px;" +
+        "font-size:13px;z-index:9999;transition:opacity 0.3s;pointer-events:none;";
+      document.body.appendChild(toastEl);
+    }
+    toastEl.textContent = msg;
+    toastEl.style.opacity = "1";
+    clearTimeout(toastEl._timer);
+    toastEl._timer = setTimeout(function () {
+      toastEl.style.opacity = "0";
+    }, duration || 3000);
+  }
+
+  function isPlatformReadonly(platform) {
+    return !!READONLY_PLATFORMS[platform];
+  }
+
+  function moveCardViaApi(cardKey, targetColumn) {
+    var parts = cardKey.split(":");
+    if (parts.length < 3) return Promise.reject(new Error("Invalid card key"));
+    var platform = parts[0];
+    var id = parts.slice(2).join(":");
+    var repo = parts.slice(1, -1).join(":");
+
+    return fetch("/api/kanban/cards/" + encodeURIComponent(platform) + "/" +
+      encodeURIComponent(repo) + "/" + encodeURIComponent(id) + "/move", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ column: targetColumn }),
+    });
   }
 
   // ─── Dependency arrows ─────────────────────────────────────────────────────
@@ -510,13 +553,22 @@
     // Track card titles for the agents rail
     cardTitleMap[card.key] = card.title;
 
+    var readonly = isPlatformReadonly(card.platform);
+
     var article = document.createElement("article");
-    article.className = "kcard";
+    article.className = "kcard" + (readonly ? " kcard--readonly" : "");
     article.setAttribute("data-key", card.key);
     article.setAttribute("id", "card-" + card.key);
     article.setAttribute("tabindex", "0");
     article.setAttribute("role", "button");
     article.setAttribute("aria-label", "Open details for " + card.title);
+
+    if (readonly) {
+      article.setAttribute("data-readonly-tooltip",
+        "Read-only — set " + card.platform + " token to enable");
+    } else {
+      article.setAttribute("draggable", "true");
+    }
 
     article.innerHTML =
       '<header>' +
@@ -533,19 +585,122 @@
         '</span>' +
       '</footer>';
 
-    article.addEventListener("click", function () {
+    article.addEventListener("click", function (e) {
+      if (article._isDragging) return;
       openDrawer(card);
     });
+
     article.addEventListener("keydown", function (e) {
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         openDrawer(card);
+      } else if (e.key === "]" || e.key === "[") {
+        e.preventDefault();
+        var currentCol = article.parentElement
+          ? article.parentElement.getAttribute("data-column")
+          : null;
+        if (!currentCol) return;
+        var idx = COLUMN_ORDER.indexOf(currentCol);
+        var nextIdx = e.key === "]" ? idx + 1 : idx - 1;
+        if (nextIdx < 0 || nextIdx >= COLUMN_ORDER.length) return;
+        var targetCol = COLUMN_ORDER[nextIdx];
+        performMove(card, article, targetCol);
       }
     });
+
+    // Drag start
+    if (!readonly) {
+      article.addEventListener("dragstart", function (e) {
+        e.dataTransfer.setData("text/plain", card.key);
+        e.dataTransfer.effectAllowed = "move";
+        article._isDragging = true;
+        requestAnimationFrame(function () {
+          article.classList.add("kcard--dragging");
+        });
+      });
+
+      article.addEventListener("dragend", function () {
+        article._isDragging = false;
+        article.classList.remove("kcard--dragging");
+        removeColumnHighlights();
+        // Clear drag state after a tick so click handler sees false
+        setTimeout(function () { article._isDragging = false; }, 0);
+      });
+    }
 
     cardIndex.set(card.key, article);
 
     return article;
+  }
+
+  function performMove(card, cardEl, targetColumn) {
+    var currentParent = cardEl.parentElement;
+    var prevColumn = currentParent ? currentParent.getAttribute("data-column") : null;
+
+    // Optimistic move
+    moveCardToColumn(cardEl, targetColumn);
+
+    moveCardViaApi(card.key, targetColumn)
+      .then(function (res) {
+        if (!res.ok) {
+          // Rollback
+          if (prevColumn && columns[prevColumn]) {
+            moveCardToColumn(cardEl, prevColumn);
+          }
+          return res.json().then(function (data) {
+            showToast("Move failed: " + (data.error || "Unknown error"));
+          });
+        }
+        showToast("Moved to " + targetColumn.replace("_", " "));
+      })
+      .catch(function () {
+        if (prevColumn && columns[prevColumn]) {
+          moveCardToColumn(cardEl, prevColumn);
+        }
+        showToast("Move failed — network error");
+      });
+  }
+
+  function removeColumnHighlights() {
+    Object.keys(columns).forEach(function (col) {
+      columns[col].parentElement.classList.remove("kcol--target");
+    });
+  }
+
+  function setupColumnDropZones() {
+    Object.keys(columns).forEach(function (col) {
+      var colItems = columns[col];
+      var colEl = colItems.parentElement;
+
+      colEl.addEventListener("dragover", function (e) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        colEl.classList.add("kcol--target");
+      });
+
+      colEl.addEventListener("dragleave", function (e) {
+        if (!colEl.contains(e.relatedTarget)) {
+          colEl.classList.remove("kcol--target");
+        }
+      });
+
+      colEl.addEventListener("drop", function (e) {
+        e.preventDefault();
+        colEl.classList.remove("kcol--target");
+
+        var cardKey = e.dataTransfer.getData("text/plain");
+        if (!cardKey) return;
+
+        var cardEl = cardIndex.get(cardKey);
+        if (!cardEl) return;
+
+        var card = boardCards.find(function (c) { return c.key === cardKey; });
+        if (!card) return;
+
+        var targetColumn = col;
+        performMove(card, cardEl, targetColumn);
+      });
+    });
   }
 
   // ─── Board rendering ───────────────────────────────────────────────────────
@@ -555,6 +710,7 @@
     cardIndex.clear();
 
     var cards = data.cards || [];
+    boardCards = cards;
     var columnCounts = { backlog: 0, in_flight: 0, blocked: 0, done: 0 };
 
     if (cards.length === 0) {
@@ -565,6 +721,12 @@
     }
 
     emptyEl.style.display = "none";
+
+    // Set up drop zones once
+    if (!renderBoard._dropZonesReady) {
+      setupColumnDropZones();
+      renderBoard._dropZonesReady = true;
+    }
 
     cards.forEach(function (card) {
       var col = card.column || "backlog";
@@ -1315,7 +1477,21 @@
 
   window.addEventListener("resize", scheduleDepRedraw);
 
-  fetchBoard();
+  // Fetch token status to determine read-only platforms
+  fetch("/api/kanban/token-status")
+    .then(function (res) { return res.ok ? res.json() : {}; })
+    .then(function (status) {
+      Object.keys(status).forEach(function (platform) {
+        if (!status[platform]) {
+          READONLY_PLATFORMS[platform] = true;
+        }
+      });
+    })
+    .catch(function () { /* non-critical */ })
+    .then(function () {
+      fetchBoard();
+    });
+
   fetchAgents();
   openSSE();
 })();

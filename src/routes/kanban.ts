@@ -407,6 +407,17 @@ async function buildBoard(filters: {
 // ─── Fastify plugin ─────────────────────────────────────────────────────────
 
 export async function kanbanRoutes(fastify: FastifyInstance) {
+  // ─── GET /token-status — which platforms have write tokens configured ─────
+
+  fastify.get("/token-status", async () => {
+    return {
+      github: !!(env.GITHUB_TOKEN && env.GITHUB_DEFAULT_OWNER),
+      gitlab: !!env.GITLAB_TOKEN,
+      jira: !!(env.JIRA_API_TOKEN && env.JIRA_EMAIL),
+      work_items: true,
+    };
+  });
+
   fastify.get<{
     Querystring: {
       "repos[]"?: string | string[];
@@ -949,6 +960,163 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
       return reply.send({ ok: true });
     } catch (err) {
       return reply.status(500).send({ error: `Comment failed: ${(err as Error).message}` });
+    }
+  });
+
+  // ─── POST /cards/:platform/:repo/:id/move — drag-and-drop status transition ─
+
+  const COLUMN_TO_NORMALIZED: Record<KanbanColumn, string> = {
+    backlog: "open",
+    in_flight: "in_progress",
+    blocked: "blocked",
+    done: "done",
+  };
+
+  const VALID_COLUMNS = new Set<KanbanColumn>(["backlog", "in_flight", "blocked", "done"]);
+
+  fastify.post<{
+    Params: { platform: string; repo: string; id: string };
+    Body: { column: KanbanColumn };
+  }>("/cards/:platform/:repo/:id/move", async (request, reply) => {
+    const { platform, repo, id } = request.params;
+    const column = request.body?.column;
+
+    if (!VALID_PLATFORMS.has(platform)) {
+      return reply.status(400).send({ error: `Invalid platform: ${platform}` });
+    }
+
+    const sanitizedRepo = sanitizeRepo(repo);
+    if (!sanitizedRepo) {
+      return reply.status(400).send({ error: "Invalid repo" });
+    }
+
+    if (!column || !VALID_COLUMNS.has(column)) {
+      return reply.status(400).send({ error: `Invalid column: ${column}. Must be one of: ${Array.from(VALID_COLUMNS).join(", ")}` });
+    }
+
+    try {
+      switch (platform) {
+        case "github": {
+          const [owner, repoName] = sanitizedRepo.split("/");
+          if (!owner || !repoName) {
+            return reply.status(400).send({ error: "Invalid GitHub repo format" });
+          }
+          const issueNum = Number(id);
+
+          if (column === "done") {
+            await githubClient.updateIssue(issueNum, { state: "closed" }, owner, repoName);
+          } else if (column === "backlog") {
+            await githubClient.updateIssue(issueNum, { state: "open" }, owner, repoName);
+          } else {
+            // blocked or in_flight — manage labels
+            const current = await githubClient.getIssue(issueNum, owner, repoName);
+            if (!current) {
+              return reply.status(404).send({ error: "Issue not found" });
+            }
+            const currentLabels: string[] = (current.labels || []).map(
+              (l: any) => typeof l === "string" ? l : l.name,
+            ).filter(Boolean);
+            const labelToAdd = column === "blocked" ? "blocked" : "in progress";
+            const updatedLabels = [...new Set([...currentLabels, labelToAdd])];
+            await githubClient.updateIssue(issueNum, { labels: updatedLabels }, owner, repoName);
+          }
+          break;
+        }
+
+        case "gitlab": {
+          const issueIid = Number(id);
+
+          if (column === "done") {
+            await gitlabClient.editIssue(sanitizedRepo, issueIid, { stateEvent: "close" });
+          } else if (column === "backlog") {
+            await gitlabClient.editIssue(sanitizedRepo, issueIid, { stateEvent: "reopen" });
+          } else {
+            // blocked or in_flight — manage labels
+            const current = await gitlabClient.getIssue(sanitizedRepo, issueIid);
+            if (!current) {
+              return reply.status(404).send({ error: "Issue not found" });
+            }
+            const currentLabels: string[] = (current.labels || []);
+            const labelToAdd = column === "blocked" ? "blocked" : "in progress";
+            const updatedLabels = [...new Set([...currentLabels, labelToAdd])].join(",");
+            await gitlabClient.editIssue(sanitizedRepo, issueIid, { labels: updatedLabels });
+          }
+          break;
+        }
+
+        case "jira": {
+          const statusTargets: Record<string, string[]> = {
+            open: ["to do", "new", "backlog", "open", "reopened"],
+            in_progress: ["in progress", "in review"],
+            blocked: ["blocked", "on hold"],
+            done: ["done", "resolved", "closed"],
+          };
+          const targetNames = statusTargets[COLUMN_TO_NORMALIZED[column]] || [];
+          const transitions = await jiraClient.getTransitions(id);
+          const match = (transitions || []).find((t: any) => {
+            const toName = (t.to?.name || "").toLowerCase().trim();
+            return targetNames.includes(toName);
+          });
+          if (!match) {
+            return reply.status(500).send({
+              error: `No available transition to "${column}" for ${id}. Available: ${(transitions || []).map((t: any) => t.name).join(", ") || "none"}`,
+            });
+          }
+          await jiraClient.transitionIssue(id, match.id, `Moved via kanban board to ${column}`);
+          break;
+        }
+
+        case "work_items": {
+          const statusMap: Record<string, string> = {
+            open: "proposed",
+            in_progress: "active",
+            blocked: "blocked",
+            done: "done",
+          };
+          const wiStatus = statusMap[COLUMN_TO_NORMALIZED[column]];
+          if (!wiStatus) {
+            return reply.status(400).send({ error: `Cannot map column "${column}" to work item status` });
+          }
+          const result = workItemDatabase.updateWorkItem(id, { status: wiStatus as any });
+          if (!result) {
+            return reply.status(404).send({ error: `Work item ${id} not found` });
+          }
+          break;
+        }
+
+        default:
+          return reply.status(400).send({ error: `Unsupported platform: ${platform}` });
+      }
+
+      // Emit SSE event and invalidate cache
+      const cardKey = `${platform}:${sanitizedRepo}:${id}`;
+      kanbanEvents.emitEvent({
+        type: "card.updated",
+        card: {
+          key: cardKey,
+          platform: platform as KanbanCard["platform"],
+          repo: sanitizedRepo,
+          id,
+          externalId: id,
+          title: "",
+          url: "",
+          status: COLUMN_TO_NORMALIZED[column],
+          column,
+          priority: "unknown",
+          assignee: null,
+          labels: [],
+          createdAt: "",
+          updatedAt: new Date().toISOString(),
+          dependencyKeys: [],
+          activeAgentRunId: null,
+        },
+      });
+
+      invalidateBoardCache();
+
+      return { ok: true, column };
+    } catch (err) {
+      return reply.status(500).send({ error: `Move failed: ${(err as Error).message}` });
     }
   });
 
