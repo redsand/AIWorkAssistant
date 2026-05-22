@@ -12,9 +12,67 @@ import {
 const DEBUG = process.env.AICODER_DEBUG === "true";
 
 // OpenAI tool names must match ^[a-zA-Z0-9_-]+$
-// This map lets us send sanitized names to the API and restore originals on the way back.
 function sanitizeToolName(name: string): string {
   return name.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+/**
+ * After pruning, message pairs can be broken: a tool response with no preceding
+ * assistant+tool_calls, or an assistant+tool_calls with no following tool responses.
+ * OpenAI rejects both. Walk the sequence and repair it.
+ */
+function repairToolMessagePairs(messages: any[]): any[] {
+  const result: any[] = [];
+  let i = 0;
+
+  while (i < messages.length) {
+    const msg = messages[i];
+
+    if (msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+      // Collect consecutive tool responses that follow
+      const expectedIds = new Set<string>(msg.tool_calls.map((tc: any) => tc.id).filter(Boolean));
+      const toolResponses: any[] = [];
+      let j = i + 1;
+      while (j < messages.length && messages[j].role === "tool") {
+        toolResponses.push(messages[j]);
+        j++;
+      }
+
+      const respondedIds = new Set(toolResponses.map((m: any) => m.tool_call_id).filter(Boolean));
+      const allPresent = [...expectedIds].every((id) => respondedIds.has(id));
+
+      if (allPresent && toolResponses.length > 0) {
+        // Complete pair — include as-is
+        result.push(msg);
+        toolResponses.forEach((m) => result.push(m));
+      } else if (toolResponses.length > 0) {
+        // Partial — keep only the tool_calls that have responses
+        const filteredCalls = msg.tool_calls.filter((tc: any) => respondedIds.has(tc.id));
+        if (filteredCalls.length > 0) {
+          result.push({ ...msg, tool_calls: filteredCalls });
+          toolResponses.filter((m) => filteredCalls.some((tc: any) => tc.id === m.tool_call_id))
+            .forEach((m) => result.push(m));
+        } else {
+          // No matching responses — drop tool_calls from the assistant turn
+          const { tool_calls, ...rest } = msg;
+          if (rest.content) result.push(rest);
+        }
+      } else {
+        // No tool responses at all — emit assistant message without tool_calls
+        const { tool_calls, ...rest } = msg;
+        if (rest.content) result.push(rest);
+      }
+      i = j;
+    } else if (msg.role === "tool") {
+      // Orphaned tool message (no preceding assistant+tool_calls) — drop it
+      i++;
+    } else {
+      result.push(msg);
+      i++;
+    }
+  }
+
+  return result;
 }
 
 export class OpenAIProvider extends AIProvider {
@@ -72,6 +130,13 @@ export class OpenAIProvider extends AIProvider {
     };
 
     const body = super.buildRequestBody(sanitizedRequest);
+
+    // Repair broken tool_calls/tool message pairs introduced by context pruning.
+    // OpenAI requires every role:tool message to follow an assistant+tool_calls
+    // that contains the matching tool_call_id.
+    if (Array.isArray(body.messages)) {
+      body.messages = repairToolMessagePairs(body.messages);
+    }
 
     // Reasoning models (o1, o3, o4-*) reject temperature/top_p entirely and
     // require max_completion_tokens instead of max_tokens.

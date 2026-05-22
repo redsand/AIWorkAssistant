@@ -72,6 +72,7 @@ Options:
                           Enables file/git tool access during review. Also set via REVIEW_WORKSPACE_PATH env var.
   --provider <name>     AI provider: opencode | zai | ollama | openai (overrides AI_PROVIDER env)
   --model <name>        Model name for the selected provider (overrides env defaults)
+  --url <url>           Base URL for the selected provider (overrides OLLAMA_API_URL / OPENAI_API_URL / etc.)
   --review-mr <n>       Force a fresh review of MR/PR number n and exit
   --merge-mr <n>        Force-merge MR/PR number n, close the linked issue, and exit
   --help                 Show this help
@@ -1767,7 +1768,8 @@ async function forceMergeMr(mrNumber: number): Promise<void> {
 function applyProviderOverrides(): void {
   const provider = ARGV.provider as string | undefined;
   const model = ARGV.model as string | undefined;
-  if (!provider && !model) return;
+  const url = ARGV.url as string | undefined;
+  if (!provider && !model && !url) return;
 
   if (provider) {
     const valid = ["opencode", "zai", "ollama", "openai"];
@@ -1792,6 +1794,24 @@ function applyProviderOverrides(): void {
         break;
       default:
         process.env.OPENCODE_MODEL = model;
+        break;
+    }
+  }
+
+  if (url) {
+    const resolvedProvider = (provider || process.env.AI_PROVIDER || "opencode").toLowerCase();
+    switch (resolvedProvider) {
+      case "zai":
+        process.env.ZAI_API_URL = url;
+        break;
+      case "ollama":
+        process.env.OLLAMA_API_URL = url;
+        break;
+      case "openai":
+        process.env.OPENAI_API_URL = url;
+        break;
+      default:
+        process.env.OPENCODE_API_URL = url;
         break;
     }
   }
