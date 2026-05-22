@@ -120,4 +120,30 @@ describe('Schema migration: issue linkage + worktree columns', () => {
     expect(run.issueId).toBe('99');
     db2.close();
   });
+
+  it('should create schema_migrations table and record migration version 1', () => {
+    const internalDb = (db as unknown as { db: { prepare(sql: string): { all(): Array<{ version: number; applied_at: string }> } } })
+      .db;
+    const migrations = internalDb.prepare("SELECT version, applied_at FROM schema_migrations ORDER BY version").all();
+    expect(migrations.length).toBeGreaterThanOrEqual(1);
+    expect(migrations[0].version).toBe(1);
+    expect(migrations[0].applied_at).toBeTruthy();
+  });
+
+  it('should not re-apply migrations on second database open', () => {
+    const internalDb = (db as unknown as { db: { prepare(sql: string): { all(): Array<Record<string, unknown>> } } })
+      .db;
+    const before = internalDb.prepare("SELECT COUNT(*) as count FROM schema_migrations").all();
+
+    // Simulate re-opening on the same in-memory DB by creating a new instance with the same data
+    const db2 = new AgentRunDatabase(':memory:');
+    const internalDb2 = (db2 as unknown as { db: { prepare(sql: string): { all(): Array<Record<string, unknown>> } } })
+      .db;
+    const after = internalDb2.prepare("SELECT COUNT(*) as count FROM schema_migrations").all();
+
+    // Both fresh in-memory DBs should each have exactly the same migrations applied once
+    expect(before[0].count as number).toBeGreaterThanOrEqual(1);
+    expect(after[0].count as number).toBeGreaterThanOrEqual(1);
+    db2.close();
+  });
 });

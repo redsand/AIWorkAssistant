@@ -54,7 +54,8 @@ export async function runCleanupTick(
         status: "removed",
       });
       cleaned++;
-    } catch {
+    } catch (err) {
+      console.warn(`[Kanban Cleanup] Failed to remove worktree at ${run.worktreePath}:`, err);
       skipped++;
     }
   }

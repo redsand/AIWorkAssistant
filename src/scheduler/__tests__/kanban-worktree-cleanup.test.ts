@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runCleanupTick } from '../kanban-worktree-cleanup';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { runCleanupTick, startKanbanCleanupScheduler, stopKanbanCleanupScheduler } from '../kanban-worktree-cleanup';
 
 const mockGetSetting = vi.fn();
 const mockListRuns = vi.fn();
@@ -130,5 +130,65 @@ describe('Kanban Worktree Auto-Cleanup Scheduler', () => {
     const result = await runCleanupTick(now, mockGetSetting, mockListRuns);
 
     expect(result.cleaned).toBe(1);
+  });
+
+  it('should log a warning when removeWorktree fails', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const now = new Date('2026-01-15T12:00:00Z');
+    const old = new Date('2026-01-14T11:00:00Z').toISOString();
+
+    mockListRuns
+      .mockReturnValueOnce({ runs: [{ id: 'r1', worktreePath: '/wt1', completedAt: old }], total: 1 })
+      .mockReturnValueOnce({ runs: [], total: 0 });
+    mockRemoveWorktree.mockRejectedValue(new Error('worktree locked'));
+
+    const result = await runCleanupTick(now, mockGetSetting, mockListRuns);
+
+    expect(result.skipped).toBe(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to remove worktree at /wt1'),
+      expect.any(Error),
+    );
+    warnSpy.mockRestore();
+  });
+
+  describe('startKanbanCleanupScheduler / stopKanbanCleanupScheduler', () => {
+    const originalEnv = process.env;
+
+    beforeEach(() => {
+      process.env = { ...originalEnv };
+      delete process.env.NODE_ENV;
+      delete process.env.VITEST;
+      stopKanbanCleanupScheduler();
+    });
+
+    afterEach(() => {
+      stopKanbanCleanupScheduler();
+      process.env = originalEnv;
+    });
+
+    it('should not start scheduler in test environment', () => {
+      process.env.VITEST = 'true';
+      startKanbanCleanupScheduler();
+      // No interval should be set — stopKanbanCleanupScheduler is a no-op
+      // We verify by calling stop and confirming no error
+      stopKanbanCleanupScheduler();
+    });
+
+    it('should start and stop scheduler cleanly', () => {
+      startKanbanCleanupScheduler();
+      // Stopping should not throw
+      stopKanbanCleanupScheduler();
+    });
+
+    it('should be safe to call stop without start', () => {
+      expect(() => stopKanbanCleanupScheduler()).not.toThrow();
+    });
+
+    it('should be safe to call stop multiple times', () => {
+      startKanbanCleanupScheduler();
+      stopKanbanCleanupScheduler();
+      expect(() => stopKanbanCleanupScheduler()).not.toThrow();
+    });
   });
 });

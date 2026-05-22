@@ -246,6 +246,52 @@ describe('Kanban Worktree Admin Routes', () => {
       expect(res.statusCode).toBe(200);
       expect(res.json().ok).toBe(true);
     });
+
+    it('should return 500 when isClean throws and force is not set', async () => {
+      mockGetRun.mockReturnValue({
+        id: 'run-1',
+        worktreePath: '/repo/.kanban-worktrees/locked-wt',
+        status: 'completed',
+      });
+      mockIsClean.mockRejectedValue(new Error('worktree is locked'));
+      mockExistsSync.mockReturnValue(true);
+
+      const res = await app.inject({ method: 'DELETE', url: '/api/kanban/worktrees/run-1' });
+      expect(res.statusCode).toBe(500);
+      expect(res.json().error).toContain('Cannot determine worktree cleanliness');
+      expect(mockRemoveWorktree).not.toHaveBeenCalled();
+    });
+
+    it('should proceed with force removal when isClean throws and force=true', async () => {
+      mockGetRun.mockReturnValue({
+        id: 'run-1',
+        worktreePath: '/repo/.kanban-worktrees/locked-wt',
+        status: 'completed',
+      });
+      mockIsClean.mockRejectedValue(new Error('worktree is locked'));
+      mockRemoveWorktree.mockResolvedValue(undefined);
+      mockExistsSync.mockReturnValue(true);
+
+      const res = await app.inject({ method: 'DELETE', url: '/api/kanban/worktrees/run-1?force=true' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().ok).toBe(true);
+      expect(mockRemoveWorktree).toHaveBeenCalledWith('/repo/.kanban-worktrees/locked-wt', { force: true });
+    });
+
+    it('should pass force=false to removeWorktree when worktree is clean and no force param', async () => {
+      mockGetRun.mockReturnValue({
+        id: 'run-1',
+        worktreePath: '/repo/.kanban-worktrees/clean-wt',
+        status: 'completed',
+      });
+      mockIsClean.mockResolvedValue(true);
+      mockRemoveWorktree.mockResolvedValue(undefined);
+      mockExistsSync.mockReturnValue(true);
+
+      const res = await app.inject({ method: 'DELETE', url: '/api/kanban/worktrees/run-1' });
+      expect(res.statusCode).toBe(200);
+      expect(mockRemoveWorktree).toHaveBeenCalledWith('/repo/.kanban-worktrees/clean-wt', { force: false });
+    });
   });
 
   describe('GET /settings', () => {
@@ -309,6 +355,70 @@ describe('Kanban Worktree Admin Routes', () => {
       expect(res.statusCode).toBe(200);
       expect(res.json().autoCleanupHours).toBe(0);
       expect(mockSetKanbanSetting).toHaveBeenCalledWith('autoCleanupHours', '0');
+    });
+
+    it('should accept fractional numbers like 0.5 (JSON round-trip)', async () => {
+      mockGetKanbanSetting.mockReturnValue('0.5');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/kanban/settings',
+        payload: { autoCleanupHours: 0.5 },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().autoCleanupHours).toBe(0.5);
+    });
+
+    it('should normalize Infinity to 0 via JSON serialization', async () => {
+      // JSON.stringify(Infinity) → null, Number(null) → 0
+      mockGetKanbanSetting.mockReturnValue('0');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/kanban/settings',
+        payload: { autoCleanupHours: Infinity },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().autoCleanupHours).toBe(0);
+    });
+
+    it('should normalize -Infinity to 0 via JSON serialization', async () => {
+      // JSON.stringify(-Infinity) → null, Number(null) → 0
+      mockGetKanbanSetting.mockReturnValue('0');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/kanban/settings',
+        payload: { autoCleanupHours: -Infinity },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().autoCleanupHours).toBe(0);
+    });
+
+    it('should normalize NaN to 0 via JSON serialization', async () => {
+      // JSON.stringify(NaN) → null, Number(null) → 0
+      mockGetKanbanSetting.mockReturnValue('0');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/kanban/settings',
+        payload: { autoCleanupHours: NaN },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().autoCleanupHours).toBe(0);
+    });
+
+    it('should accept very large integer values', async () => {
+      mockGetKanbanSetting.mockReturnValue('999999');
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/kanban/settings',
+        payload: { autoCleanupHours: 999999 },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().autoCleanupHours).toBe(999999);
+      expect(mockSetKanbanSetting).toHaveBeenCalledWith('autoCleanupHours', '999999');
     });
   });
 });

@@ -434,7 +434,7 @@ describe('Kanban Card Detail Routes', () => {
 
       expect(res.statusCode).toBe(200);
       expect(res.json().ok).toBe(true);
-      expect(mockRemoveWorktree).toHaveBeenCalledWith('/tmp/wt-test', { force: true });
+      expect(mockRemoveWorktree).toHaveBeenCalledWith('/tmp/wt-test', { force: false });
     });
   });
 

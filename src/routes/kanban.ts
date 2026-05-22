@@ -595,7 +595,7 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
         for (const wt of wts) {
           diskByPath.set(path.resolve(wt.path), { branch: wt.branch, head: wt.head });
         }
-      } catch { /* repo may not have worktrees */ }
+      } catch (err) { console.warn(`[Kanban] Failed to list worktrees for ${repoPath}:`, (err as Error).message); }
     }
 
     // 4. Reconcile
@@ -610,7 +610,7 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
         let clean: boolean | null = null;
         try {
           clean = await isClean(wtPath);
-        } catch { /* worktree may be locked */ }
+        } catch (err) { console.warn(`[Kanban] isClean check failed for ${wtPath}:`, (err as Error).message); }
         entries.push({
           agentRunId: inDb.runId,
           path: wtPath,
@@ -635,7 +635,7 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
         let clean: boolean | null = null;
         try {
           clean = await isClean(wtPath);
-        } catch { /* locked */ }
+        } catch (err) { console.warn(`[Kanban] isClean check failed for ghost ${wtPath}:`, (err as Error).message); }
         entries.push({
           agentRunId: "",
           path: wtPath,
@@ -1322,11 +1322,22 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
         if (!clean && !force) {
           return reply.status(409).send({ error: "Worktree has uncommitted changes. Use ?force=true to override." });
         }
-      } catch { /* if isClean fails, proceed with force */ }
+      } catch (err) {
+        // isClean threw (locked/corrupted worktree) — only proceed if user explicitly passed ?force=true
+        if (!force) {
+          request.log.error({ err, worktreePath: run.worktreePath }, "isClean check failed");
+          return reply.status(500).send({ error: "Cannot determine worktree cleanliness. Use ?force=true to override." });
+        }
+        request.log.warn({ err, worktreePath: run.worktreePath }, "isClean check failed, proceeding with force removal");
+      }
+    }
+
+    if (force) {
+      request.log.info({ worktreePath: run.worktreePath, runId }, "Force worktree deletion requested");
     }
 
     try {
-      await removeWorktree(run.worktreePath, { force: true });
+      await removeWorktree(run.worktreePath, { force: force || false });
 
       kanbanEvents.emitEvent({
         type: "worktree.changed",

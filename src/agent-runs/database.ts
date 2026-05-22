@@ -109,6 +109,41 @@ class AgentRunDatabase {
         value TEXT NOT NULL
       );
     `);
+
+    // Schema migrations — track which migrations have been applied
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      );
+    `);
+    this.runMigrations();
+  }
+
+  private runMigrations(): void {
+    const applied = new Set(
+      (this.db.prepare("SELECT version FROM schema_migrations").all() as Array<{ version: number }>)
+        .map((r) => r.version),
+    );
+
+    const migrations: Array<{ version: number; sql: string }> = [
+      {
+        version: 1,
+        sql: `CREATE TABLE IF NOT EXISTS kanban_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        )`,
+      },
+    ];
+
+    for (const migration of migrations) {
+      if (!applied.has(migration.version)) {
+        this.db.exec(migration.sql);
+        this.db
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(migration.version, new Date().toISOString());
+      }
+    }
   }
 
   startRun(params: AgentRunCreateParams): AgentRun {
