@@ -3,6 +3,7 @@ import { AIProvider } from "./types";
 import { OpenCodeProvider } from "./opencode-provider";
 import { ZaiProvider } from "./zai-provider";
 import { OllamaProvider } from "./ollama-provider";
+import { OpenAIProvider } from "./openai-provider";
 
 /**
  * Resolve the effective context limit for a model by checking per-model
@@ -45,17 +46,29 @@ export function createProvider(): AIProvider {
 
     case "ollama":
       return new OllamaProvider({
-        apiKey: env.OLLAMA_API_KEY,
-        baseUrl: env.OLLAMA_API_URL,
+        apiKey: process.env.OLLAMA_API_KEY || env.OLLAMA_API_KEY,
+        baseUrl: process.env.OLLAMA_API_URL || env.OLLAMA_API_URL,
         model: process.env.OLLAMA_MODEL || env.OLLAMA_MODEL,
         temperature: env.OLLAMA_TEMPERATURE,
         topP: 0.9,
         maxRetries: env.OLLAMA_API_KEY ? 5 : 2,
         timeout: 300000,
         maxContextTokens: getEffectiveContextLimit(
-          process.env.OLLAMA_MODEL || env.OLLAMA_MODEL,
+          process.env.OLLAMA_MODEL || env.OLLAMA_MODEL || "",
           env.OLLAMA_MAX_CONTEXT_TOKENS,
         ),
+      });
+
+    case "openai":
+      return new OpenAIProvider({
+        apiKey: process.env.OPENAI_API_KEY || env.OPENAI_API_KEY,
+        baseUrl: process.env.OPENAI_API_URL || env.OPENAI_API_URL,
+        model: process.env.OPENAI_MODEL || env.OPENAI_MODEL,
+        temperature: 1,
+        topP: 1,
+        maxRetries: 3,
+        timeout: 300000,
+        maxContextTokens: env.OPENAI_MAX_CONTEXT_TOKENS,
       });
 
     default:

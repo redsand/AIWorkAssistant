@@ -70,7 +70,7 @@ Options:
   --workspace-path <path> Base directory containing local clones of all repos (e.g. ../ or /home/user/repos).
                           The reviewer resolves each MR's workspace as <workspace-path>/<repo-name>.
                           Enables file/git tool access during review. Also set via REVIEW_WORKSPACE_PATH env var.
-  --provider <name>     AI provider: opencode | zai | ollama (overrides AI_PROVIDER env)
+  --provider <name>     AI provider: opencode | zai | ollama | openai (overrides AI_PROVIDER env)
   --model <name>        Model name for the selected provider (overrides env defaults)
   --review-mr <n>       Force a fresh review of MR/PR number n and exit
   --merge-mr <n>        Force-merge MR/PR number n, close the linked issue, and exit
@@ -1770,7 +1770,7 @@ function applyProviderOverrides(): void {
   if (!provider && !model) return;
 
   if (provider) {
-    const valid = ["opencode", "zai", "ollama"];
+    const valid = ["opencode", "zai", "ollama", "openai"];
     if (!valid.includes(provider)) {
       log.error(`Unknown provider "${provider}". Valid: ${valid.join(", ")}`);
       process.exit(1);
@@ -1786,6 +1786,9 @@ function applyProviderOverrides(): void {
         break;
       case "ollama":
         process.env.OLLAMA_MODEL = model;
+        break;
+      case "openai":
+        process.env.OPENAI_MODEL = model;
         break;
       default:
         process.env.OPENCODE_MODEL = model;

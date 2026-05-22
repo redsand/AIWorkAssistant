@@ -38,6 +38,11 @@ class EmbeddingService {
         this.apiKey = env.ZAI_API_KEY;
         if (!this.model) this.model = "embedding-3";
         break;
+      case "openai":
+        this.baseUrl = env.OPENAI_API_URL;
+        this.apiKey = env.OPENAI_API_KEY;
+        if (!this.model) this.model = "text-embedding-3-small";
+        break;
       default:
         this.baseUrl = env.OPENCODE_API_URL;
         this.apiKey = env.OPENCODE_API_KEY;

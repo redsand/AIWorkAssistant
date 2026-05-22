@@ -22,7 +22,13 @@ const envSchema = z.object({
   OPENCODE_MODEL: z.string().default(""),
 
   // AI Provider Selection
-  AI_PROVIDER: z.enum(["opencode", "zai", "ollama"]).default("opencode"),
+  AI_PROVIDER: z.enum(["opencode", "zai", "ollama", "openai"]).default("opencode"),
+
+  // OpenAI
+  OPENAI_API_URL: z.string().url().default("https://api.openai.com/v1"),
+  OPENAI_API_KEY: z.string().default(""),
+  OPENAI_MODEL: z.string().default("gpt-4o"),
+  OPENAI_MAX_CONTEXT_TOKENS: z.coerce.number().default(128000),
 
   // Z.ai (GLM models)
   ZAI_API_URL: z.string().url().default("https://api.z.ai/api/coding/paas/v4"),
