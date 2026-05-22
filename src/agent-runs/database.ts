@@ -82,6 +82,7 @@ class AgentRunDatabase {
     this.ensureColumn("agent_runs", "issue_repo", "TEXT");
     this.ensureColumn("agent_runs", "worktree_path", "TEXT");
     this.ensureColumn("agent_runs", "branch", "TEXT");
+    this.ensureColumn("agent_runs", "agent_type", "TEXT");
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_agent_runs_last_activity_at ON agent_runs(last_activity_at);
       CREATE INDEX IF NOT EXISTS idx_agent_runs_issue ON agent_runs(issue_platform, issue_repo, issue_id);
@@ -116,8 +117,8 @@ class AgentRunDatabase {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO agent_runs (id, session_id, user_id, mode, status, started_at, last_activity_at, issue_id, issue_platform, issue_repo, worktree_path, branch)
-         VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO agent_runs (id, session_id, user_id, mode, status, started_at, last_activity_at, issue_id, issue_platform, issue_repo, worktree_path, branch, agent_type)
+         VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -131,6 +132,7 @@ class AgentRunDatabase {
         params.issueRepo ?? null,
         params.worktreePath ?? null,
         params.branch ?? null,
+        params.agentType ?? null,
       );
 
     return {
@@ -154,6 +156,7 @@ class AgentRunDatabase {
       issueRepo: params.issueRepo ?? null,
       worktreePath: params.worktreePath ?? null,
       branch: params.branch ?? null,
+      agentType: params.agentType ?? null,
     };
   }
 
@@ -403,6 +406,7 @@ class AgentRunDatabase {
       issueRepo: (row.issue_repo as string | null) ?? null,
       worktreePath: (row.worktree_path as string | null) ?? null,
       branch: (row.branch as string | null) ?? null,
+      agentType: (row.agent_type as string | null) ?? null,
     };
   }
 

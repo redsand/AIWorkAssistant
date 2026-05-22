@@ -105,6 +105,157 @@ body {
 
 /* ─── Chips & Selects ─────────────────────────────────────────────────────── */
 
+/* ─── Filter Strip ─────────────────────────────────────────────────────── */
+
+.k-filter-strip {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: white;
+  border-radius: 10px;
+  padding: 10px 20px;
+  margin-bottom: 16px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+  flex-wrap: wrap;
+  position: relative;
+}
+
+.k-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.k-filter-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-right: 2px;
+}
+
+.k-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: white;
+  border: 1px solid #d1d5db;
+  border-radius: 16px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #374151;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.k-filter-chip:hover {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+
+.k-filter-chip[aria-pressed="true"] {
+  background: #667eea;
+  color: white;
+  border-color: #667eea;
+}
+
+.k-filter-chip--dropdown {
+  padding-right: 8px;
+}
+
+.k-filter-count {
+  background: rgba(102, 126, 234, 0.15);
+  color: #667eea;
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 16px;
+  text-align: center;
+}
+
+.k-filter-chip[aria-pressed="true"] .k-filter-count {
+  background: rgba(255, 255, 255, 0.25);
+  color: white;
+}
+
+.k-filter-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: white;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  min-width: 220px;
+  max-height: 280px;
+  overflow-y: auto;
+  z-index: 100;
+  padding: 4px;
+}
+
+.k-filter-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #374151;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.1s;
+  border: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+}
+
+.k-filter-dropdown-item:hover {
+  background: #f3f4f6;
+}
+
+.k-filter-dropdown-item[aria-selected="true"] {
+  background: #eef2ff;
+  color: #4338ca;
+  font-weight: 600;
+}
+
+.k-filter-dropdown-item input[type="checkbox"] {
+  accent-color: #667eea;
+  pointer-events: none;
+}
+
+.k-filter-dropdown-item .k-filter-repo-platform {
+  font-size: 10px;
+  color: #9ca3af;
+  font-weight: 600;
+}
+
+.k-filter-dropdown-item .k-filter-repo-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: #9ca3af;
+}
+
+.k-filter-clear {
+  background: none;
+  border: none;
+  color: #667eea;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.k-filter-clear:hover {
+  background: #eef2ff;
+}
+
 .k-chip {
   display: inline-flex;
   align-items: center;

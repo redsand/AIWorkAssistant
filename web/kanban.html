@@ -40,12 +40,6 @@
           </div>
         </div>
         <div class="k-header-right">
-          <span class="k-chip" id="repo-chip" title="Repository filter">
-            <span class="k-chip-dot"></span> All Repos
-          </span>
-          <span class="k-chip" id="agent-chip" title="Agent filter">
-            <span class="k-chip-dot"></span> All Agents
-          </span>
           <div class="k-view-toggle" id="view-toggle">
             <button class="k-view-btn active" id="view-status" title="Group by status columns">Status</button>
             <button class="k-view-btn" id="view-swimlane" title="Group by agent swimlanes">Who's doing what</button>
@@ -57,6 +51,33 @@
             ↻
           </button>
         </div>
+      </div>
+
+      <!-- Filter Strip -->
+      <div class="k-filter-strip" id="filter-strip">
+        <div class="k-filter-group" id="filter-repos">
+          <span class="k-filter-label">Repos</span>
+          <button class="k-filter-chip k-filter-chip--dropdown" id="filter-repo-btn" aria-pressed="false" aria-haspopup="listbox" aria-expanded="false">
+            All Repos <span class="k-filter-count" id="filter-repo-count"></span>
+          </button>
+          <div class="k-filter-dropdown" id="filter-repo-dropdown" role="listbox" aria-label="Select repositories" style="display:none">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+        <div class="k-filter-group" id="filter-agents-group">
+          <span class="k-filter-label">Agent</span>
+          <button class="k-filter-chip" data-agent="claude" aria-pressed="false">Claude</button>
+          <button class="k-filter-chip" data-agent="codex" aria-pressed="false">Codex</button>
+          <button class="k-filter-chip" data-agent="opencode" aria-pressed="false">OpenCode</button>
+        </div>
+        <div class="k-filter-group" id="filter-priority-group">
+          <span class="k-filter-label">Priority</span>
+          <button class="k-filter-chip" data-priority="critical" aria-pressed="false">Critical</button>
+          <button class="k-filter-chip" data-priority="high" aria-pressed="false">High</button>
+          <button class="k-filter-chip" data-priority="medium" aria-pressed="false">Medium</button>
+          <button class="k-filter-chip" data-priority="low" aria-pressed="false">Low</button>
+        </div>
+        <button class="k-filter-clear" id="filter-clear" style="display:none">Clear filters</button>
       </div>
 
       <div id="error-banner" class="k-error-banner" style="display: none"></div>

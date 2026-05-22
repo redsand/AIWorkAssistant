@@ -317,6 +317,14 @@ async function buildBoard(filters: {
   if (filters.sprint) {
     allIssues = allIssues.filter((i) => i.sprint === filters.sprint);
   }
+  if (filters.agents && filters.agents.length > 0) {
+    const agentSet = new Set(filters.agents);
+    allIssues = allIssues.filter((i) => {
+      const key = `${i.platform}:${i.repo}:${i.id}`;
+      const cardAgent = agentTypeMap.get(key);
+      return cardAgent && agentSet.has(cardAgent);
+    });
+  }
 
   // Deduplicate by platform:repo:id
   const seenKeys = new Set<string>();
@@ -331,6 +339,7 @@ async function buildBoard(filters: {
 
   // Build agent_runs lookup: find active (running) runs for each issue
   const agentRunMap = new Map<string, string>();
+  const agentTypeMap = new Map<string, string>();
   try {
     const runningRuns = agentRunDatabase.listRuns({ status: "running", limit: 1000 });
     for (const run of runningRuns.runs) {
@@ -338,6 +347,7 @@ async function buildBoard(filters: {
         const key = `${run.issuePlatform}:${run.issueRepo}:${run.issueId}`;
         if (!agentRunMap.has(key)) {
           agentRunMap.set(key, run.id);
+          agentTypeMap.set(key, run.agentType || "claude");
         }
       }
     }
@@ -445,13 +455,22 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
       assignee: q.assignee,
     };
 
-    // Build cache key from filter fingerprint
-    const cacheKey = `board:${JSON.stringify(filters)}`;
+    // Build cache key from sorted filter values + integration fingerprint
+    const sortedRepos = [...(filters.repos || [])].sort().join(",");
+    const sortedAgents = [...(filters.agents || [])].sort().join(",");
+    const integrationFingerprint = [
+      !!env.GITHUB_TOKEN && !!env.GITHUB_DEFAULT_OWNER ? "gh" : "",
+      env.GITLAB_TOKEN ? "gl" : "",
+      env.JIRA_API_TOKEN && env.JIRA_EMAIL ? "jira" : "",
+      "wi",
+    ].filter(Boolean).join(",");
+    const cacheKey = `board:${sortedRepos}|${sortedAgents}|${filters.sprint || ""}|${filters.priority || ""}|${filters.assignee || ""}|${integrationFingerprint}`;
     const now = Date.now();
     const cached = boardCache.get(cacheKey);
     if (cached && now - cached.fetchedAt < CACHE_TTL_MS) {
       cached.lastAccessed = now;
-      return cached.data;
+      request.log.info({ cached: true, cacheKey }, "Board cache hit");
+      return { ...cached.data, cached: true };
     }
 
     const board = await buildBoard(filters);
@@ -529,7 +548,7 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
 
       return {
         agentRunId: run.id,
-        agent: (run.mode === "interactive" ? "claude" : "claude") as KanbanAgent["agent"],
+        agent: (run.agentType || "claude") as KanbanAgent["agent"],
         model: run.model,
         status: "running" as const,
         cardKey: run.issuePlatform && run.issueRepo && run.issueId
@@ -761,6 +780,7 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
       issueRepo: repo,
       worktreePath,
       branch,
+      agentType: agent,
     });
 
     request.log.info({ agentRunId: run.id, platform, repo, id, agent }, "Agent started");
