@@ -345,6 +345,20 @@ describe('POST /cards/:platform/:repo/:id/move', () => {
     expect(res.json().error).toMatch(/invalid issue id/i);
   });
 
+  it('should return 404 when moving GitHub issue to done and issue does not exist', async () => {
+    mockGetIssue.mockResolvedValueOnce(null);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: moveUrl('github', 'owner/repo', '42'),
+      payload: { column: 'done' },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toMatch(/issue not found/i);
+    expect(mockUpdateIssue).not.toHaveBeenCalled();
+  });
+
   // ─── GitLab ─────────────────────────────────────────────────────────────────
 
   it('should close a GitLab issue when moving to done', async () => {
@@ -522,7 +536,7 @@ describe('POST /cards/:platform/:repo/:id/move', () => {
     expect(mockJiraTransitionIssue).toHaveBeenCalledWith('PROJ-1', '21', expect.any(String));
   });
 
-  it('should return 500 when no matching Jira transition is found', async () => {
+  it('should return 409 when no matching Jira transition is found', async () => {
     mockJiraGetTransitions.mockResolvedValueOnce([]);
 
     const res = await app.inject({
@@ -531,7 +545,20 @@ describe('POST /cards/:platform/:repo/:id/move', () => {
       payload: { column: 'blocked' },
     });
 
-    expect(res.statusCode).toBe(500);
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/transition/i);
+  });
+
+  it('should return 409 when Jira getTransitions returns null', async () => {
+    mockJiraGetTransitions.mockResolvedValueOnce(null as any);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: moveUrl('jira', 'PROJ', 'PROJ-1'),
+      payload: { column: 'in_flight' },
+    });
+
+    expect(res.statusCode).toBe(409);
     expect(res.json().error).toMatch(/transition/i);
   });
 

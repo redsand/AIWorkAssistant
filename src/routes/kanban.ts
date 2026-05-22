@@ -408,8 +408,10 @@ async function buildBoard(filters: {
 
 export async function kanbanRoutes(fastify: FastifyInstance) {
   // ─── GET /token-status — which platforms have write tokens configured ─────
+  // Protected by global authMiddleware (not in PUBLIC_PATHS).
 
-  fastify.get("/token-status", async () => {
+  fastify.get("/token-status", async (request) => {
+    request.log.info("Token status checked");
     return {
       github: !!(env.GITHUB_TOKEN && env.GITHUB_DEFAULT_OWNER),
       gitlab: !!env.GITLAB_TOKEN,
@@ -963,6 +965,20 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // ─── GitHub label helpers ────────────────────────────────────────────────
+
+  function extractGitHubLabels(labels: any[]): string[] {
+    return (labels || [])
+      .map((l: any) => (typeof l === "string" ? l : l.name))
+      .filter(Boolean);
+  }
+
+  function removeStatusLabels(labels: string[]): string[] {
+    return labels.filter(
+      (l) => l.toLowerCase() !== "blocked" && l.toLowerCase() !== "in progress",
+    );
+  }
+
   // ─── POST /cards/:platform/:repo/:id/move — drag-and-drop status transition ─
 
   const COLUMN_TO_NORMALIZED: Record<KanbanColumn, string> = {
@@ -1008,24 +1024,19 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
 
           if (column === "done") {
             const current = await githubClient.getIssue(issueNum, owner, repoName);
-            const currentLabels: string[] = (current?.labels || []).map(
-              (l: any) => typeof l === "string" ? l : l.name,
-            ).filter(Boolean);
-            const cleanedLabels = currentLabels.filter(
-              (l) => l.toLowerCase() !== "blocked" && l.toLowerCase() !== "in progress",
-            );
+            if (!current) {
+              return reply.status(404).send({ error: "Issue not found" });
+            }
+            const currentLabels = extractGitHubLabels(current.labels);
+            const cleanedLabels = removeStatusLabels(currentLabels);
             await githubClient.updateIssue(issueNum, { state: "closed", labels: cleanedLabels }, owner, repoName);
           } else if (column === "backlog") {
             const current = await githubClient.getIssue(issueNum, owner, repoName);
             if (!current) {
               return reply.status(404).send({ error: "Issue not found" });
             }
-            const currentLabels: string[] = (current.labels || []).map(
-              (l: any) => typeof l === "string" ? l : l.name,
-            ).filter(Boolean);
-            const cleanedLabels = currentLabels.filter(
-              (l) => l.toLowerCase() !== "blocked" && l.toLowerCase() !== "in progress",
-            );
+            const currentLabels = extractGitHubLabels(current.labels);
+            const cleanedLabels = removeStatusLabels(currentLabels);
             await githubClient.updateIssue(issueNum, { state: "open", labels: cleanedLabels }, owner, repoName);
           } else {
             // blocked or in_flight — manage labels
@@ -1033,9 +1044,7 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
             if (!current) {
               return reply.status(404).send({ error: "Issue not found" });
             }
-            const currentLabels: string[] = (current.labels || []).map(
-              (l: any) => typeof l === "string" ? l : l.name,
-            ).filter(Boolean);
+            const currentLabels = extractGitHubLabels(current.labels);
             const labelToAdd = column === "blocked" ? "blocked" : "in progress";
             const updatedLabels = [...new Set([...currentLabels, labelToAdd])];
             await githubClient.updateIssue(issueNum, { labels: updatedLabels }, owner, repoName);
@@ -1094,7 +1103,7 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
             return targetNames.includes(toName);
           });
           if (!match) {
-            return reply.status(500).send({
+            return reply.status(409).send({
               error: `No available transition to "${column}" for ${id}. Available: ${(transitions || []).map((t: any) => t.name).join(", ") || "none"}`,
             });
           }
@@ -1147,6 +1156,8 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
           activeAgentRunId: null,
         },
       });
+
+      request.log.info({ platform, repo: sanitizedRepo, id, column, cardKey }, "Card moved");
 
       invalidateBoardCache();
 
