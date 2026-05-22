@@ -32,6 +32,17 @@ import * as path from "node:path";
 
 const execFileAsync = promisify(execFile);
 
+function collectPerRepoSettings(all: Record<string, string>, prefix: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(all)) {
+    if (key.startsWith(prefix)) {
+      const repo = key.slice(prefix.length);
+      result[repo] = value;
+    }
+  }
+  return result;
+}
+
 /**
  * Validates that a worktree path from the DB is a real git worktree under a
  * sane root — prevents path-traversal and arbitrary-filesystem-execution attacks.
@@ -673,18 +684,44 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
   // ─── GET /settings — kanban settings ─────────────────────────────────────────
 
   fastify.get("/settings", async () => {
-    const hours = agentRunDatabase.getKanbanSetting("autoCleanupHours");
+    const all = agentRunDatabase.getAllKanbanSettings();
     return {
-      autoCleanupHours: hours !== null ? Number(hours) : 24,
+      autoCommit: all.autoCommit === "true",
+      autoPR: all.autoPR === "true",
+      autoCleanupHours: all.autoCleanupHours !== undefined ? Number(all.autoCleanupHours) : 24,
+      defaultAgents: collectPerRepoSettings(all, "defaultAgent:"),
+      defaultModels: collectPerRepoSettings(all, "defaultModel:"),
     };
   });
 
   // ─── PUT /settings — update kanban settings ──────────────────────────────────
 
   fastify.put<{
-    Body: { autoCleanupHours?: number };
+    Body: {
+      autoCommit?: boolean;
+      autoPR?: boolean;
+      autoCleanupHours?: number;
+      key?: string;
+      value?: string;
+    };
   }>("/settings", async (request, reply) => {
     const body = request.body ?? {};
+
+    // Simple key-value upsert (for per-repo defaults etc.)
+    if (body.key !== undefined && body.value !== undefined) {
+      if (typeof body.key !== "string" || !body.key) {
+        return reply.status(400).send({ error: "key must be a non-empty string" });
+      }
+      agentRunDatabase.setKanbanSetting(body.key, String(body.value));
+    }
+
+    // Named boolean toggles
+    if (body.autoCommit !== undefined) {
+      agentRunDatabase.setKanbanSetting("autoCommit", String(!!body.autoCommit));
+    }
+    if (body.autoPR !== undefined) {
+      agentRunDatabase.setKanbanSetting("autoPR", String(!!body.autoPR));
+    }
     if (body.autoCleanupHours !== undefined) {
       const hours = Number(body.autoCleanupHours);
       if (!Number.isFinite(hours) || hours < 0) {
@@ -692,8 +729,16 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
       }
       agentRunDatabase.setKanbanSetting("autoCleanupHours", String(hours));
     }
-    const hours = agentRunDatabase.getKanbanSetting("autoCleanupHours");
-    return { autoCleanupHours: hours !== null ? Number(hours) : 24 };
+
+    // Return full settings (same shape as GET)
+    const all = agentRunDatabase.getAllKanbanSettings();
+    return {
+      autoCommit: all.autoCommit === "true",
+      autoPR: all.autoPR === "true",
+      autoCleanupHours: all.autoCleanupHours !== undefined ? Number(all.autoCleanupHours) : 24,
+      defaultAgents: collectPerRepoSettings(all, "defaultAgent:"),
+      defaultModels: collectPerRepoSettings(all, "defaultModel:"),
+    };
   });
 
   // Note: authentication is enforced by the global authMiddleware registered
@@ -820,7 +865,7 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
         });
       }
     })
-      .then((result) => {
+      .then(async (result) => {
         activeChildren.delete(run.id);
         if (result.exitCode === 0 || result.finDetected) {
           agentRunDatabase.completeRun(run.id, {
@@ -833,6 +878,53 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
             status: "completed",
           });
           request.log.info({ agentRunId: run.id, steps: stepCounter }, "Agent completed");
+
+          // Auto-commit
+          const autoCommit = agentRunDatabase.getKanbanSetting("autoCommit") === "true";
+          let committed = false;
+          if (autoCommit) {
+            try {
+              await execFileAsync("git", ["-C", worktreePath, "add", "-A"]);
+              await execFileAsync("git", ["-C", worktreePath, "commit", "-m", `AI: ${card.title}`]);
+              committed = true;
+              request.log.info({ agentRunId: run.id, worktreePath }, "Auto-committed");
+            } catch (err) {
+              request.log.warn({ agentRunId: run.id, err }, "Auto-commit failed (no changes or error)");
+            }
+          }
+
+          // Auto-PR (only after successful auto-commit)
+          const autoPR = agentRunDatabase.getKanbanSetting("autoPR") === "true";
+          if (autoPR && committed && platform === "github") {
+            try {
+              const [owner, repoName] = repo.split("/");
+              if (owner && repoName) {
+                const baseBranch = await getDefaultBranch(worktreePath);
+                const prBody = `Closes #${id}\n\nAuto-generated by AI agent.`;
+                await githubClient.createPullRequest(
+                  { title: `AI: ${card.title}`, body: prBody, head: branch, base: baseBranch },
+                  owner,
+                  repoName,
+                );
+                request.log.info({ agentRunId: run.id, branch }, "Auto-PR created");
+              }
+            } catch (err) {
+              request.log.warn({ agentRunId: run.id, err }, "Auto-PR failed");
+            }
+          } else if (autoPR && committed && platform === "gitlab") {
+            try {
+              const desc = `Auto-generated by AI agent.`;
+              await gitlabClient.createMergeRequest(repo, {
+                title: `AI: ${card.title}`,
+                sourceBranch: branch,
+                targetBranch: "main",
+                description: desc,
+              });
+              request.log.info({ agentRunId: run.id, branch }, "Auto-MR created");
+            } catch (err) {
+              request.log.warn({ agentRunId: run.id, err }, "Auto-MR failed");
+            }
+          }
         } else {
           agentRunDatabase.failRun(run.id, result.stderr || `Agent exited with code ${result.exitCode}`);
           kanbanEvents.emitEvent({

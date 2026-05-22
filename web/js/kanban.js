@@ -1773,8 +1773,6 @@
   var worktreeBackdrop = document.getElementById("worktree-modal-backdrop");
   var worktreeClose = document.getElementById("worktree-modal-close");
   var worktreeTbody = document.getElementById("worktree-tbody");
-  var autoCleanupInput = document.getElementById("auto-cleanup-hours");
-  var saveSettingsBtn = document.getElementById("save-settings-btn");
 
   function fetchWorktreeCount() {
     fetch("/api/kanban/worktrees")
@@ -1806,16 +1804,6 @@
       .catch(function () {
         worktreeTbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#ef4444;padding:20px;">Failed to load worktrees</td></tr>';
       });
-
-    // Load settings
-    fetch("/api/kanban/settings")
-      .then(function (res) { return res.ok ? res.json() : {}; })
-      .then(function (settings) {
-        if (autoCleanupInput) {
-          autoCleanupInput.value = settings.autoCleanupHours ?? 24;
-        }
-      })
-      .catch(function () { /* non-critical */ });
   }
 
   function renderWorktreeTable(entries) {
@@ -1925,28 +1913,72 @@
     }
   });
 
-  saveSettingsBtn.addEventListener("click", function () {
-    var hours = parseInt(autoCleanupInput.value, 10);
-    if (isNaN(hours) || hours < 0) {
-      showToast("Invalid hours value");
-      return;
-    }
+  // ─── Settings Modal ──────────────────────────────────────────────────────────
+
+  var settingsBtn = document.getElementById("settings-btn");
+  var settingsBackdrop = document.getElementById("settings-modal-backdrop");
+  var settingsClose = document.getElementById("settings-modal-close");
+  var settingAutoCommit = document.getElementById("setting-auto-commit");
+  var settingAutoPR = document.getElementById("setting-auto-pr");
+  var settingAutoCleanup = document.getElementById("setting-auto-cleanup-hours");
+
+  function openSettingsModal() {
+    settingsBackdrop.classList.add("kmodal-backdrop--active");
+    fetch("/api/kanban/settings")
+      .then(function (res) { return res.ok ? res.json() : {}; })
+      .then(function (s) {
+        settingAutoCommit.checked = !!s.autoCommit;
+        settingAutoPR.checked = !!s.autoPR;
+        settingAutoCleanup.value = s.autoCleanupHours ?? 24;
+      })
+      .catch(function () { /* non-critical */ });
+  }
+
+  function closeSettingsModal() {
+    settingsBackdrop.classList.remove("kmodal-backdrop--active");
+  }
+
+  function saveSettings() {
     fetch("/api/kanban/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ autoCleanupHours: hours }),
+      body: JSON.stringify({
+        autoCommit: settingAutoCommit.checked,
+        autoPR: settingAutoPR.checked,
+        autoCleanupHours: parseInt(settingAutoCleanup.value, 10),
+      }),
     })
       .then(function (res) { return res.ok ? res.json() : null; })
       .then(function (data) {
         if (data) {
-          autoCleanupInput.value = data.autoCleanupHours;
-          showToast("Settings saved — auto-cleanup: " + (data.autoCleanupHours === 0 ? "disabled" : data.autoCleanupHours + "h"));
+          settingAutoCleanup.value = data.autoCleanupHours;
+          showToast("Settings saved");
         }
       })
       .catch(function () {
         showToast("Failed to save settings");
       });
+  }
+
+  if (settingsBtn) {
+    settingsBtn.addEventListener("click", openSettingsModal);
+  }
+  if (settingsClose) {
+    settingsClose.addEventListener("click", closeSettingsModal);
+  }
+  if (settingsBackdrop) {
+    settingsBackdrop.addEventListener("click", function (e) {
+      if (e.target === settingsBackdrop) closeSettingsModal();
+    });
+  }
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && settingsBackdrop && settingsBackdrop.classList.contains("kmodal-backdrop--active")) {
+      closeSettingsModal();
+    }
   });
+  if (settingAutoCommit) settingAutoCommit.addEventListener("change", saveSettings);
+  if (settingAutoPR) settingAutoPR.addEventListener("change", saveSettings);
+  if (settingAutoCleanup) settingAutoCleanup.addEventListener("change", saveSettings);
 
   // ─── Init ──────────────────────────────────────────────────────────────────
 
