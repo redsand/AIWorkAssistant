@@ -187,6 +187,74 @@
   var ghostAnchorMap = {};         // ghostKey → anchor element
   var resolvedEdgeTimers = [];    // timers for resolved edge fade-out removal
 
+  // ─── Accessibility helpers ─────────────────────────────────────────────────
+
+  var a11yLiveEl = document.getElementById("a11y-live");
+  var agentsPill = document.getElementById("agents-pill");
+  var agentsPillLabel = document.getElementById("agents-pill-label");
+
+  function announce(msg) {
+    if (!a11yLiveEl) return;
+    a11yLiveEl.textContent = "";
+    requestAnimationFrame(function () { a11yLiveEl.textContent = msg; });
+  }
+
+  function updateAgentsPill() {
+    if (!agentsPill || !agentsPillLabel) return;
+    var count = Object.keys(tileMap).length;
+    agentsPillLabel.textContent = count + " agent" + (count !== 1 ? "s" : "") + " running";
+  }
+
+  // ─── Keyboard shortcuts modal ──────────────────────────────────────────────
+
+  var shortcutsBackdrop = document.getElementById("shortcuts-modal-backdrop");
+  var shortcutsClose = document.getElementById("shortcuts-modal-close");
+
+  function openShortcutsModal() {
+    if (shortcutsBackdrop) {
+      shortcutsBackdrop.classList.add("kmodal-backdrop--active");
+      if (shortcutsClose) shortcutsClose.focus();
+    }
+  }
+
+  function closeShortcutsModal() {
+    if (shortcutsBackdrop) {
+      shortcutsBackdrop.classList.remove("kmodal-backdrop--active");
+    }
+  }
+
+  if (shortcutsClose) {
+    shortcutsClose.addEventListener("click", closeShortcutsModal);
+  }
+  if (shortcutsBackdrop) {
+    shortcutsBackdrop.addEventListener("click", function (e) {
+      if (e.target === shortcutsBackdrop) closeShortcutsModal();
+    });
+  }
+
+  // ─── Mobile agents pill toggle ─────────────────────────────────────────────
+
+  if (agentsPill) {
+    agentsPill.addEventListener("click", function () {
+      var isOpen = agentsRail.classList.contains("k-agents-rail--open");
+      if (isOpen) {
+        agentsRail.classList.remove("k-agents-rail--open");
+        agentsPill.setAttribute("aria-expanded", "false");
+      } else {
+        agentsRail.classList.add("k-agents-rail--open");
+        agentsPill.setAttribute("aria-expanded", "true");
+      }
+    });
+
+    // Close dropdown on outside click
+    document.addEventListener("click", function (e) {
+      if (!agentsPill.contains(e.target) && !agentsRail.contains(e.target)) {
+        agentsRail.classList.remove("k-agents-rail--open");
+        agentsPill.setAttribute("aria-expanded", "false");
+      }
+    });
+  }
+
   // ─── View mode state ────────────────────────────────────────────────────────
 
   var VIEW_STATUS = "status";
@@ -831,9 +899,20 @@
     });
 
     article.addEventListener("keydown", function (e) {
-      if (e.key === "Enter" || e.key === " ") {
+      if (e.key === "Enter") {
         e.preventDefault();
         openDrawer(card);
+      } else if (e.key === " ") {
+        e.preventDefault();
+        article.classList.toggle("kcard--running");
+        var isRunning = article.classList.contains("kcard--running");
+        announce((isRunning ? "Selected" : "Deselected") + " " + card.title);
+      } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        e.preventDefault();
+        navigateCardVertical(article, e.key === "ArrowUp" ? -1 : 1);
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault();
+        navigateCardHorizontal(article, e.key === "ArrowLeft" ? -1 : 1);
       } else if (e.key === "]" || e.key === "[") {
         e.preventDefault();
         var currentCol = article.parentElement
@@ -845,6 +924,7 @@
         if (nextIdx < 0 || nextIdx >= COLUMN_ORDER.length) return;
         var targetCol = COLUMN_ORDER[nextIdx];
         performMove(card, article, targetCol);
+        announce("Moved " + card.title + " to " + targetCol.replace("_", " "));
       }
     });
 
@@ -899,6 +979,39 @@
         }
         showToast("Move failed — network error");
       });
+  }
+
+  // ─── Arrow key navigation helpers ─────────────────────────────────────────
+
+  function navigateCardVertical(cardEl, direction) {
+    var colItems = cardEl.parentElement;
+    if (!colItems) return;
+    var siblings = Array.prototype.slice.call(colItems.querySelectorAll(".kcard"));
+    var idx = siblings.indexOf(cardEl);
+    var next = idx + direction;
+    if (next < 0 || next >= siblings.length) return;
+    siblings[next].focus();
+  }
+
+  function navigateCardHorizontal(cardEl, direction) {
+    var colItems = cardEl.parentElement;
+    if (!colItems) return;
+    var colEl = colItems.parentElement;
+    var currentCol = colEl.getAttribute("data-column");
+    var colIdx = COLUMN_ORDER.indexOf(currentCol);
+    var nextColIdx = colIdx + direction;
+    if (nextColIdx < 0 || nextColIdx >= COLUMN_ORDER.length) return;
+    var targetCol = COLUMN_ORDER[nextColIdx];
+
+    // Find same index card in target column
+    var currentSiblings = Array.prototype.slice.call(colItems.querySelectorAll(".kcard"));
+    var currentIdx = currentSiblings.indexOf(cardEl);
+    var targetColItems = columns[targetCol];
+    if (!targetColItems) return;
+    var targetCards = targetColItems.querySelectorAll(".kcard");
+    if (targetCards.length === 0) return;
+    var targetIdx = Math.min(currentIdx, targetCards.length - 1);
+    targetCards[targetIdx].focus();
   }
 
   function removeColumnHighlights() {
@@ -1203,9 +1316,37 @@
     diffLoaded: false,
     scrollPositions: { overview: 0, agent: 0, worktree: 0, diff: 0 },
     pendingSteps: [],  // steps buffered before drawer opened
+    previousFocus: null, // element focused before drawer opened
   };
 
+  function getFocusableDrawerElements() {
+    if (!drawer) return [];
+    var sel = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+    return Array.prototype.slice.call(drawer.querySelectorAll(sel))
+      .filter(function (el) { return !el.disabled && el.offsetParent !== null; });
+  }
+
+  function trapDrawerFocus(e) {
+    if (e.key !== "Tab") return;
+    var focusable = getFocusableDrawerElements();
+    if (focusable.length === 0) return;
+    var first = focusable[0];
+    var last = focusable[focusable.length - 1];
+    if (e.shiftKey) {
+      if (document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  }
+
   function openDrawer(card) {
+    drawerState.previousFocus = document.activeElement;
     drawerState.card = card;
     drawerState.diffLoaded = false;
     drawerState.activeTab = "overview";
@@ -1228,6 +1369,12 @@
     drawer.setAttribute("aria-hidden", "false");
     drawerBackdrop.classList.add("kdrawer-backdrop--active");
     drawerState.open = true;
+
+    // Focus the close button
+    if (drawerCloseBtn) drawerCloseBtn.focus();
+
+    // Add focus trap
+    document.addEventListener("keydown", trapDrawerFocus);
 
     // Fetch detail data
     var platform = card.platform;
@@ -1255,6 +1402,15 @@
     drawerState.open = false;
     drawerState.card = null;
     drawerState.cardData = null;
+
+    // Remove focus trap
+    document.removeEventListener("keydown", trapDrawerFocus);
+
+    // Restore focus
+    if (drawerState.previousFocus && typeof drawerState.previousFocus.focus === "function") {
+      drawerState.previousFocus.focus();
+      drawerState.previousFocus = null;
+    }
   }
 
   function switchDrawerTab(tabName) {
@@ -1600,10 +1756,26 @@
   drawerBackdrop.addEventListener("click", closeDrawer);
 
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && drawerState.open) {
-      closeDrawer();
+    if (e.key === "Escape") {
+      if (shortcutsBackdrop && shortcutsBackdrop.classList.contains("kmodal-backdrop--active")) {
+        closeShortcutsModal();
+        return;
+      }
+      if (drawerState.open) {
+        closeDrawer();
+      }
+    }
+    // ? opens shortcuts (only when not typing in an input)
+    if (e.key === "?" && !isEditableTarget(e.target)) {
+      e.preventDefault();
+      openShortcutsModal();
     }
   });
+
+  function isEditableTarget(el) {
+    var tag = (el.tagName || "").toUpperCase();
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
+  }
 
   drawerTabs.addEventListener("click", function (e) {
     var tab = e.target.closest(".kdrawer-tab");
@@ -1625,6 +1797,8 @@
           addTile(data.agent);
           var agent = data.agent;
           var cardKey = agent.cardKey;
+          var cardTitle = cardTitleMap[cardKey] || cardKey || "unknown card";
+          announce("Started " + agent.agent + " on " + cardTitle);
           if (cardKey) {
             agentRunToCardKey[agent.agentRunId] = cardKey;
             var cardEl = cardIndex.get(cardKey);
@@ -1668,6 +1842,10 @@
         removeTile(data.agentRunId);
 
         var cardKey = agentRunToCardKey[data.agentRunId];
+        var cardTitle = cardTitleMap[cardKey] || cardKey || "unknown card";
+        var statusVerb = data.status === "completed" ? "completed" : "failed";
+        announce("Agent " + statusVerb + " on " + cardTitle);
+
         if (cardKey) {
           var cardEl = cardIndex.get(cardKey);
           if (cardEl) {
