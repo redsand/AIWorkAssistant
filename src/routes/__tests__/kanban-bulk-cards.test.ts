@@ -101,7 +101,6 @@ describe('POST /cards/bulk', () => {
       payload: {
         items: [{ title: 'Test task' }],
         platform: 'github',
-        repo: '',
       },
     });
     expect(res.statusCode).toBe(400);
