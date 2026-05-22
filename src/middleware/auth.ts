@@ -17,6 +17,7 @@ const PUBLIC_PATHS = new Set([
   "/musician",
   "/comparison",
   "/dashboard",
+  "/kanban",
   "/api/comparison/stats",
   "/api/comparison/trends",
   "/api/comparison/runs",
@@ -25,6 +26,9 @@ const PUBLIC_PATHS = new Set([
   "/api/repo-dashboard/dependencies",
   "/api/repo-dashboard/sprints",
   "/api/repo-dashboard/burndown",
+  "/api/kanban/board",
+  "/api/kanban/stream",
+  "/api/kanban/agents",
   "/api/tools",
   "/api/tools/categories",
   "/api/agents",
@@ -139,6 +143,16 @@ export async function authMiddleware(fastify: FastifyInstance) {
       }
 
       if (request.url.startsWith("/webhooks/")) {
+        return;
+      }
+
+      // Kanban read endpoints — board data, SSE stream, agent list
+      // POST /api/kanban/cards/:id/start|stop remain protected
+      if (
+        request.url.startsWith("/api/kanban/board") ||
+        request.url.startsWith("/api/kanban/stream") ||
+        request.url.startsWith("/api/kanban/agents")
+      ) {
         return;
       }
 

@@ -133,6 +133,8 @@
   var errorBanner = document.getElementById("error-banner");
   var refreshBtn = document.getElementById("refresh-btn");
   var agentsRail = document.getElementById("agents-rail");
+  var repoSelect = document.getElementById("repo-select");
+  var sprintSelect = document.getElementById("sprint-select");
 
   var columns = {
     backlog: document.getElementById("col-backlog"),
@@ -165,6 +167,12 @@
   var cardIndex = new Map();       // cardKey → HTMLElement (O(1) lookup)
   var agentRunToCardKey = {};      // agentRunId → cardKey (for step/completed events)
   var pendingMoves = new Map();    // cardKey → timeoutId (debounce optimistic moves)
+
+  // ─── Unfiltered board state (full data from last fetch) ───────────────────
+
+  var allCards = [];
+  var allEdges = [];
+  var allGhostNodes = [];
 
   // ─── Dependency arrow state ────────────────────────────────────────────────
 
@@ -627,6 +635,78 @@
     drawDepArrows();
   }
 
+  // ─── Repo / sprint filter helpers ─────────────────────────────────────────
+
+  function populateRepoSelect(repos) {
+    var current = repoSelect.value;
+    repoSelect.innerHTML = '<option value="">— All Repos —</option>';
+    (repos || []).forEach(function (r) {
+      var val = r.platform + ":" + r.repo;
+      var opt = document.createElement("option");
+      opt.value = val;
+      opt.textContent = r.repo + " (" + r.cardCount + ")";
+      if (val === current) opt.selected = true;
+      repoSelect.appendChild(opt);
+    });
+  }
+
+  function populateSprintSelect(cards) {
+    var repoVal = repoSelect.value;
+    var currentSprint = sprintSelect.value;
+
+    var subset = repoVal
+      ? cards.filter(function (c) { return (c.platform + ":" + c.repo) === repoVal; })
+      : cards;
+
+    var seen = {};
+    var sprints = [];
+    subset.forEach(function (c) {
+      if (c.sprint && !seen[c.sprint]) {
+        seen[c.sprint] = true;
+        sprints.push(c.sprint);
+      }
+    });
+
+    // Natural sort so "sprint-2" < "sprint-10"
+    sprints.sort(function (a, b) {
+      var na = parseInt(a.replace(/\D+/g, ""), 10);
+      var nb = parseInt(b.replace(/\D+/g, ""), 10);
+      if (!isNaN(na) && !isNaN(nb)) return na - nb;
+      return a.localeCompare(b);
+    });
+
+    sprintSelect.innerHTML = '<option value="">— All Sprints —</option>';
+    sprints.forEach(function (s) {
+      var opt = document.createElement("option");
+      opt.value = s;
+      opt.textContent = s;
+      if (s === currentSprint) opt.selected = true;
+      sprintSelect.appendChild(opt);
+    });
+
+    sprintSelect.disabled = sprints.length === 0;
+  }
+
+  function applyFilters() {
+    var repoVal = repoSelect.value;
+    var sprintVal = sprintSelect.value;
+
+    var filtered = allCards.filter(function (c) {
+      if (repoVal && (c.platform + ":" + c.repo) !== repoVal) return false;
+      if (sprintVal && c.sprint !== sprintVal) return false;
+      return true;
+    });
+
+    // Re-derive edges for visible cards only
+    var visibleKeys = new Set(filtered.map(function (c) { return c.key; }));
+    var filteredEdges = allEdges.filter(function (e) {
+      return visibleKeys.has(e.fromKey) || visibleKeys.has(e.toKey);
+    });
+
+    populateSprintSelect(allCards);
+    renderBoard({ cards: filtered, edges: filteredEdges, ghostNodes: allGhostNodes });
+  }
+
   // ─── Data fetch ────────────────────────────────────────────────────────────
 
   function fetchBoard() {
@@ -644,7 +724,12 @@
       })
       .then(function (data) {
         loadingEl.style.display = "none";
-        renderBoard(data);
+        allCards = data.cards || [];
+        allEdges = data.edges || [];
+        allGhostNodes = data.ghostNodes || [];
+        populateRepoSelect(data.repos || []);
+        populateSprintSelect(allCards);
+        applyFilters();
       })
       .catch(function (err) {
         loadingEl.style.display = "none";
@@ -654,6 +739,14 @@
   }
 
   // ─── Init ──────────────────────────────────────────────────────────────────
+
+  repoSelect.addEventListener("change", function () {
+    // Reset sprint when repo changes so stale sprint from prior repo isn't carried over
+    sprintSelect.value = "";
+    applyFilters();
+  });
+
+  sprintSelect.addEventListener("change", applyFilters);
 
   refreshBtn.addEventListener("click", fetchBoard);
 

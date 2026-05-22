@@ -39,13 +39,10 @@
           </div>
         </div>
         <div class="k-header-right">
-          <span class="k-chip" id="repo-chip" title="Repository filter">
-            <span class="k-chip-dot"></span> All Repos
-          </span>
-          <span class="k-chip" id="agent-chip" title="Agent filter">
-            <span class="k-chip-dot"></span> All Agents
-          </span>
-          <select id="sprint-select" class="k-select">
+          <select id="repo-select" class="k-select">
+            <option value="">— All Repos —</option>
+          </select>
+          <select id="sprint-select" class="k-select" disabled>
             <option value="">— All Sprints —</option>
           </select>
           <button id="refresh-btn" class="k-refresh-btn" title="Refresh board">

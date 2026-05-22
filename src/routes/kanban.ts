@@ -28,6 +28,21 @@ import { createWorktree } from "../kanban/worktree-manager.js";
 
 const MAX_ISSUES = 200;
 
+// ─── Sprint extraction ───────────────────────────────────────────────────────
+
+const TITLE_SPRINT_RE = /\[\s*sprint[\s\-]+(\d+)\s*\]/i;
+const LABEL_SPRINT_RE = /^(?:sprint[\s\-:]*|s)(\d+)$/i;
+
+function extractSprint(title: string, labels: string[]): string | undefined {
+  const tm = title.match(TITLE_SPRINT_RE);
+  if (tm) return `sprint-${tm[1]}`;
+  for (const label of labels) {
+    const lm = String(label).match(LABEL_SPRINT_RE);
+    if (lm) return `sprint-${lm[1]}`;
+  }
+  return undefined;
+}
+
 // ─── Status → Column mapping ────────────────────────────────────────────────
 
 function toColumn(normalizedStatus: string): KanbanColumn {
@@ -75,6 +90,10 @@ async function fetchGitHubIssues(repo: string): Promise<DashboardIssue[]> {
       createdAt: i.created_at || "",
       updatedAt: i.updated_at || "",
       dependencies: parseDependencies(i.body || "", { platform: "github", repo }),
+      sprint: extractSprint(
+        i.title || "",
+        (i.labels || []).map((l: any) => (typeof l === "string" ? l : l.name)),
+      ),
     }));
 }
 
@@ -94,7 +113,8 @@ async function fetchGitLabIssues(repoId: string): Promise<DashboardIssue[]> {
     createdAt: i.created_at || "",
     updatedAt: i.updated_at || "",
     dependencies: parseDependencies(i.description || "", { platform: "gitlab", repo: repoId }),
-    sprint: i.milestone ? `gl-milestone-${i.milestone.id}` : undefined,
+    sprint: extractSprint(i.title || "", i.labels || [])
+      ?? (i.milestone?.title ? extractSprint(i.milestone.title, []) ?? i.milestone.title : undefined),
   }));
 }
 
@@ -124,6 +144,7 @@ async function fetchJiraIssues(projectKey: string): Promise<DashboardIssue[]> {
             .join("\n") || "",
       { platform: "jira", repo: projectKey },
     ),
+    sprint: extractSprint(i.fields?.summary || "", i.fields?.labels || []),
   }));
 }
 
