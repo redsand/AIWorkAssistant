@@ -133,6 +133,11 @@
   var errorBanner = document.getElementById("error-banner");
   var refreshBtn = document.getElementById("refresh-btn");
   var agentsRail = document.getElementById("agents-rail");
+  var viewToggle = document.getElementById("view-toggle");
+  var viewStatusBtn = document.getElementById("view-status");
+  var viewSwimlaneBtn = document.getElementById("view-swimlane");
+  var swimlanesEl = document.getElementById("kanban-swimlanes");
+  var depOverlaySwim = document.getElementById("dep-overlay-swim");
 
   var columns = {
     backlog: document.getElementById("col-backlog"),
@@ -173,6 +178,15 @@
   var boardGhostNodes = [];        // saved from API response
   var depRafId = null;             // rAF handle for resize debounce
   var ghostAnchorMap = {};         // ghostKey → anchor element
+
+  // ─── View mode state ────────────────────────────────────────────────────────
+
+  var VIEW_STATUS = "status";
+  var VIEW_SWIMLANE = "swimlane";
+  var currentView = localStorage.getItem("kanban-view") || VIEW_STATUS;
+
+  // Agent data cache: agentRunId → { agent, model, startedAt, cardKey }
+  var agentCache = {};
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -220,24 +234,23 @@
       }
     });
 
+    var container = currentView === VIEW_SWIMLANE ? swimlanesEl : boardEl;
+
     ghostNodes.forEach(function (ghost) {
       if (ghostAnchorMap[ghost.key]) return;
 
-      // Anchor to the repo chip in the header if platform:repo matches
       var repoChip = document.getElementById("repo-chip");
       var anchor = document.createElement("div");
       anchor.className = "dep-ghost-anchor";
       anchor.setAttribute("data-ghost-key", ghost.key);
 
-      // Place anchor inside the board so SVG coords are relative
-      boardEl.appendChild(anchor);
+      container.appendChild(anchor);
 
-      // Position near the repo chip or fallback to top-left
       if (repoChip) {
         var chipRect = repoChip.getBoundingClientRect();
-        var boardRect = boardEl.getBoundingClientRect();
-        anchor.style.left = (chipRect.left - boardRect.left + chipRect.width / 2) + "px";
-        anchor.style.top = (chipRect.top - boardRect.top + chipRect.height) + "px";
+        var containerRect = container.getBoundingClientRect();
+        anchor.style.left = (chipRect.left - containerRect.left + chipRect.width / 2) + "px";
+        anchor.style.top = (chipRect.top - containerRect.top + chipRect.height) + "px";
       } else {
         anchor.style.left = "0px";
         anchor.style.top = "0px";
@@ -252,17 +265,25 @@
   var safeFindByDataKey = KanbanDepUtils.safeFindByDataKey;
 
   function drawDepArrows() {
-    if (!depOverlay) return;
+    if (currentView === VIEW_SWIMLANE) {
+      drawDepArrowsInto(depOverlaySwim, swimlanesEl, "dep-arrowhead-swim", "dep-arrowhead-ghost-swim");
+    } else {
+      drawDepArrowsInto(depOverlay, boardEl, "dep-arrowhead", "dep-arrowhead-ghost");
+    }
+  }
+
+  function drawDepArrowsInto(overlay, container, arrowheadId, ghostArrowheadId) {
+    if (!overlay) return;
 
     // Clear existing paths (keep <defs>)
-    var existing = depOverlay.querySelectorAll(".dep-path");
+    var existing = overlay.querySelectorAll(".dep-path");
     for (var i = 0; i < existing.length; i++) {
       existing[i].parentNode.removeChild(existing[i]);
     }
 
     if (boardEdges.length === 0) return;
 
-    var boardRect = boardEl.getBoundingClientRect();
+    var containerRect = container.getBoundingClientRect();
 
     boardEdges.forEach(function (edge) {
       var fromEl, toEl;
@@ -270,30 +291,26 @@
       if (edge.fromGhost) {
         fromEl = ghostAnchorMap[edge.fromKey];
       } else {
-        fromEl = cardIndex.get(edge.fromKey) || safeFindByDataKey(boardEl, edge.fromKey);
+        fromEl = cardIndex.get(edge.fromKey) || safeFindByDataKey(container, edge.fromKey);
       }
 
-      toEl = cardIndex.get(edge.toKey) || safeFindByDataKey(boardEl, edge.toKey);
+      toEl = cardIndex.get(edge.toKey) || safeFindByDataKey(container, edge.toKey);
 
-      // Skip if both endpoints are missing
       if (!fromEl && !toEl) return;
-      // If only one endpoint is missing, skip (per acceptance: no arrows where both are missing —
-      // but also skip if only one is missing since we can't draw a complete arrow)
       if (!fromEl || !toEl) return;
 
-      var from = getCardCenter(fromEl, boardRect);
-      var to = getCardCenter(toEl, boardRect);
+      var from = getCardCenter(fromEl, containerRect);
+      var to = getCardCenter(toEl, containerRect);
 
       var path = document.createElementNS("http://www.w3.org/2000/svg", "path");
       path.setAttribute("d", buildEdgePath(from, to));
-      path.setAttribute("marker-end", edge.fromGhost ? "url(#dep-arrowhead-ghost)" : "url(#dep-arrowhead)");
+      path.setAttribute("marker-end", edge.fromGhost ? "url(#" + ghostArrowheadId + ")" : "url(#" + arrowheadId + ")");
       path.classList.add("dep-path");
       if (edge.fromGhost) path.classList.add("dep-path--ghost");
       path.setAttribute("data-from", edge.fromKey);
       path.setAttribute("data-to", edge.toKey);
 
-      // Set stroke-dasharray to actual path length for correct draw animation
-      depOverlay.appendChild(path);
+      overlay.appendChild(path);
       if (typeof path.getTotalLength === "function") {
         var totalLen = path.getTotalLength();
         if (!edge.fromGhost) {
@@ -332,7 +349,15 @@
     fetch("/api/kanban/agents")
       .then(function (res) { return res.ok ? res.json() : []; })
       .then(function (agents) {
-        agents.forEach(function (a) { addTile(a); });
+        agents.forEach(function (a) {
+          addTile(a);
+          agentCache[a.agentRunId] = {
+            agent: a.agent,
+            model: a.model,
+            startedAt: a.startedAt,
+            cardKey: a.cardKey,
+          };
+        });
       })
       .catch(function () { /* non-critical */ });
   }
@@ -600,12 +625,12 @@
 
     if (cards.length === 0) {
       boardEl.style.display = "none";
+      swimlanesEl.style.display = "none";
       emptyEl.style.display = "block";
       return;
     }
 
     emptyEl.style.display = "none";
-    boardEl.style.display = "grid";
 
     cards.forEach(function (card) {
       var col = card.column || "backlog";
@@ -624,7 +649,159 @@
     boardEdges = data.edges || [];
     boardGhostNodes = data.ghostNodes || [];
     ensureGhostAnchors(boardGhostNodes);
+
+    // Populate agentCache from board data so swimlanes can group cards by agent
+    var agents = data.agents || [];
+    agents.forEach(function (a) {
+      agentCache[a.agentRunId] = {
+        agent: a.agent,
+        model: a.model,
+        startedAt: a.startedAt,
+        cardKey: a.cardKey,
+      };
+    });
+
+    // Render swimlanes too (so switching views doesn't require a refetch)
+    renderSwimlanes(data);
+
+    applyViewToContainers();
     drawDepArrows();
+  }
+
+  // ─── Swimlane rendering ────────────────────────────────────────────────────
+
+  function renderSwimlanes(data) {
+    // Clear previous swimlane content (keep SVG overlay)
+    var lanes = swimlanesEl.querySelectorAll(".k-swimlane");
+    for (var i = 0; i < lanes.length; i++) {
+      lanes[i].parentNode.removeChild(lanes[i]);
+    }
+    // Clear stale ghost anchors from swimlane container
+    var oldAnchors = swimlanesEl.querySelectorAll(".dep-ghost-anchor");
+    for (var j = 0; j < oldAnchors.length; j++) {
+      oldAnchors[j].parentNode.removeChild(oldAnchors[j]);
+    }
+
+    var cards = data.cards || [];
+
+    if (cards.length === 0) {
+      boardEl.style.display = "none";
+      swimlanesEl.style.display = "none";
+      emptyEl.style.display = "block";
+      return;
+    }
+
+    emptyEl.style.display = "none";
+
+    // Build lookup: agentRunId → agent info from cache
+    // Group cards by activeAgentRunId
+    var groups = {};   // agentRunId → [card, ...]
+    var unassigned = [];
+
+    cards.forEach(function (card) {
+      cardTitleMap[card.key] = card.title;
+      if (card.activeAgentRunId && agentCache[card.activeAgentRunId]) {
+        if (!groups[card.activeAgentRunId]) {
+          groups[card.activeAgentRunId] = [];
+        }
+        groups[card.activeAgentRunId].push(card);
+      } else {
+        unassigned.push(card);
+      }
+    });
+
+    // Sort agent lanes by elapsed-since-started descending
+    var sortedAgentIds = Object.keys(groups).sort(function (a, b) {
+      var aStarted = agentCache[a] ? new Date(agentCache[a].startedAt).getTime() : 0;
+      var bStarted = agentCache[b] ? new Date(agentCache[b].startedAt).getTime() : 0;
+      // More recently started first (higher timestamp = more recent = first)
+      return bStarted - aStarted;
+    });
+
+    // Render agent lanes
+    sortedAgentIds.forEach(function (agentRunId) {
+      var agentInfo = agentCache[agentRunId] || {};
+      var agentCards = groups[agentRunId];
+
+      var lane = document.createElement("div");
+      lane.className = "k-swimlane";
+      lane.setAttribute("data-agent-run-id", agentRunId);
+
+      var agentName = agentInfo.agent || "unknown";
+      var modelLabel = agentInfo.model || "";
+      var elapsed = agentInfo.startedAt ? Date.now() - new Date(agentInfo.startedAt).getTime() : 0;
+
+      lane.innerHTML =
+        '<div class="k-swimlane-header">' +
+          '<img class="k-swimlane-icon" src="/img/agent-' + escapeHtml(agentName) + '.svg" alt="" onerror="this.style.display=\'none\'">' +
+          '<span class="k-swimlane-label">' + escapeHtml(agentName) + '</span>' +
+          (modelLabel ? '<span class="k-swimlane-model">· ' + escapeHtml(modelLabel) + '</span>' : '') +
+          '<span class="k-swimlane-elapsed">' + formatElapsed(elapsed) + '</span>' +
+          '<span class="k-swimlane-count">' + agentCards.length + '</span>' +
+        '</div>' +
+        '<div class="k-swimlane-cards"></div>';
+
+      var cardsContainer = lane.querySelector(".k-swimlane-cards");
+      agentCards.forEach(function (card) {
+        cardsContainer.appendChild(renderCard(card));
+      });
+
+      swimlanesEl.appendChild(lane);
+    });
+
+    // Render Unassigned lane
+    if (unassigned.length > 0) {
+      var unassignedLane = document.createElement("div");
+      unassignedLane.className = "k-swimlane k-swimlane--unassigned";
+
+      unassignedLane.innerHTML =
+        '<div class="k-swimlane-header">' +
+          '<span class="k-swimlane-label">Unassigned</span>' +
+          '<span class="k-swimlane-count">' + unassigned.length + '</span>' +
+        '</div>' +
+        '<div class="k-swimlane-cards"></div>';
+
+      var unassignedCards = unassignedLane.querySelector(".k-swimlane-cards");
+      unassigned.forEach(function (card) {
+        unassignedCards.appendChild(renderCard(card));
+      });
+
+      swimlanesEl.appendChild(unassignedLane);
+    }
+
+    // Store edges/ghostNodes and draw dependency arrows
+    boardEdges = data.edges || [];
+    boardGhostNodes = data.ghostNodes || [];
+    ensureGhostAnchors(boardGhostNodes);
+    drawDepArrows();
+  }
+
+  // ─── View toggle ───────────────────────────────────────────────────────────
+
+  function switchView(view) {
+    currentView = view;
+    localStorage.setItem("kanban-view", view);
+
+    if (view === VIEW_SWIMLANE) {
+      viewStatusBtn.classList.remove("active");
+      viewSwimlaneBtn.classList.add("active");
+    } else {
+      viewSwimlaneBtn.classList.remove("active");
+      viewStatusBtn.classList.add("active");
+    }
+
+    applyViewToContainers();
+    scheduleDepRedraw();
+  }
+
+  function applyViewToContainers() {
+    if (currentView === VIEW_SWIMLANE) {
+      boardEl.style.display = "none";
+      swimlanesEl.style.display = "flex";
+    } else {
+      boardEl.style.display = "grid";
+      swimlanesEl.style.display = "none";
+    }
   }
 
   // ─── Data fetch ────────────────────────────────────────────────────────────
@@ -656,6 +833,9 @@
   // ─── Init ──────────────────────────────────────────────────────────────────
 
   refreshBtn.addEventListener("click", fetchBoard);
+
+  viewStatusBtn.addEventListener("click", function () { switchView(VIEW_STATUS); });
+  viewSwimlaneBtn.addEventListener("click", function () { switchView(VIEW_SWIMLANE); });
 
   window.addEventListener("resize", scheduleDepRedraw);
 

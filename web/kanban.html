@@ -45,6 +45,10 @@
           <span class="k-chip" id="agent-chip" title="Agent filter">
             <span class="k-chip-dot"></span> All Agents
           </span>
+          <div class="k-view-toggle" id="view-toggle">
+            <button class="k-view-btn active" id="view-status" title="Group by status columns">Status</button>
+            <button class="k-view-btn" id="view-swimlane" title="Group by agent swimlanes">Who's doing what</button>
+          </div>
           <select id="sprint-select" class="k-select">
             <option value="">— All Sprints —</option>
           </select>
@@ -72,7 +76,7 @@
         <p>No cards found. Issues will appear here once they are created across your repositories.</p>
       </div>
 
-      <!-- Board -->
+      <!-- Board (Status view) -->
       <div id="kanban-board" class="k-board" style="display: none">
         <svg id="dep-overlay" class="dep-overlay" xmlns="http://www.w3.org/2000/svg">
           <defs>
@@ -100,6 +104,21 @@
           <h3 class="k-col-title">Done <span class="k-col-count" id="count-done">0</span></h3>
           <div class="k-col-items" id="col-done"></div>
         </div>
+      </div>
+
+      <!-- Board (Swimlane / Who's-doing-what view) -->
+      <div id="kanban-swimlanes" class="k-swimlanes" style="display: none">
+        <svg id="dep-overlay-swim" class="dep-overlay" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="dep-arrowhead-swim" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#667eea" />
+            </marker>
+            <marker id="dep-arrowhead-ghost-swim" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
+            </marker>
+          </defs>
+        </svg>
+        <!-- Lanes populated dynamically by JS -->
       </div>
     </div>
   </body>
