@@ -24,7 +24,62 @@ import type {
 } from "../kanban/types";
 import { resolveEdges } from "../kanban/edges.js";
 import { kanbanEvents } from "../kanban/events.js";
-import { createWorktree } from "../kanban/worktree-manager.js";
+import { createWorktree, removeWorktree, isClean } from "../kanban/worktree-manager.js";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Validates that a worktree path from the DB is a real git worktree under a
+ * sane root — prevents path-traversal and arbitrary-filesystem-execution attacks.
+ */
+function validateWorktreePath(worktreePath: string): string | null {
+  // Must be an absolute path
+  if (!path.isAbsolute(worktreePath)) return null;
+
+  const resolved = path.resolve(worktreePath);
+
+  // Reject path traversal
+  if (resolved.includes("..")) return null;
+
+  // Must exist as a directory on disk
+  try {
+    const stat = fs.statSync(resolved);
+    if (!stat.isDirectory()) return null;
+  } catch {
+    return null;
+  }
+
+  // Must have a .git file (worktree marker, not a directory)
+  const gitPath = path.join(resolved, ".git");
+  try {
+    const gitStat = fs.statSync(gitPath);
+    if (!gitStat.isFile()) return null;
+  } catch {
+    return null;
+  }
+
+  return resolved;
+}
+
+/**
+ * Detects the default branch of a git repo by asking the worktree's origin.
+ * Falls back to "main" when detection fails.
+ */
+async function getDefaultBranch(worktreePath: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync("git", [
+      "symbolic-ref", "refs/remotes/origin/HEAD",
+    ], { cwd: worktreePath });
+    const match = stdout.trim().match(/^refs\/remotes\/origin\/(.+)$/);
+    return match ? match[1] : "main";
+  } catch {
+    return "main";
+  }
+}
 
 const MAX_ISSUES = 200;
 
@@ -727,6 +782,206 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
 
     return reply.send({ agentRunId: match.id, status: "stopped" });
   });
+
+  // ─── GET /cards/:platform/:repo/:id — card detail ────────────────────────
+
+  fastify.get<{
+    Params: { platform: string; repo: string; id: string };
+  }>("/cards/:platform/:repo/:id", async (request, reply) => {
+    const { platform, repo, id } = request.params;
+
+    if (!VALID_PLATFORMS.has(platform)) {
+      return reply.status(400).send({ error: `Invalid platform: ${platform}` });
+    }
+
+    const sanitizedRepo = sanitizeRepo(repo);
+    if (!sanitizedRepo) {
+      return reply.status(400).send({ error: "Invalid repo" });
+    }
+
+    // 1. Fetch card info (title + description)
+    const cardInfo = await findCard(platform, sanitizedRepo, id);
+    if (!cardInfo) {
+      return reply.status(404).send({ error: "Card not found" });
+    }
+
+    // 2. Build KanbanCard from the card info
+    const cardKey = `${platform}:${sanitizedRepo}:${id}`;
+    const card: KanbanCard = {
+      key: cardKey,
+      platform: platform as KanbanCard["platform"],
+      repo: sanitizedRepo,
+      id,
+      externalId: platform === "jira" ? id : `#${id}`,
+      title: cardInfo.title,
+      url: "",
+      status: "",
+      column: "backlog",
+      priority: "unknown",
+      assignee: null,
+      labels: [],
+      createdAt: "",
+      updatedAt: "",
+      dependencyKeys: [],
+      activeAgentRunId: null,
+    };
+
+    // 3. Fetch comments from the platform
+    const comments = await fetchComments(platform, sanitizedRepo, id);
+
+    // 4. Look up agent run
+    let agentRun: import("../agent-runs/types").AgentRunWithSteps | null = null;
+    try {
+      const runs = agentRunDatabase.listRuns({ status: undefined, limit: 1000 });
+      const match = runs.runs.find(
+        (r) => r.issuePlatform === platform && r.issueRepo === sanitizedRepo && r.issueId === id,
+      );
+      if (match) {
+        const withSteps = agentRunDatabase.getRunWithSteps(match.id);
+        if (withSteps) agentRun = withSteps;
+        card.activeAgentRunId = match.id;
+      }
+    } catch { /* no agent runs */ }
+
+    // 5. Worktree info
+    let worktree: (import("../kanban/worktree-manager").WorktreeInfo & { isClean: boolean }) | null = null;
+    if (agentRun?.worktreePath) {
+      try {
+        const validatedPath = validateWorktreePath(agentRun.worktreePath);
+        if (validatedPath) {
+          const clean = await isClean(validatedPath);
+          worktree = {
+            path: validatedPath,
+            branch: agentRun.branch ?? "",
+            head: "",
+            locked: false,
+            prunable: false,
+            isClean: clean,
+          };
+        }
+      } catch { /* worktree gone */ }
+    }
+
+    return {
+      card,
+      description: cardInfo.description ?? "",
+      comments,
+      agentRun,
+      worktree,
+      diffUrl: worktree ? `/api/kanban/cards/${platform}/${sanitizedRepo}/${id}/diff` : null,
+    };
+  });
+
+  // ─── GET /cards/:platform/:repo/:id/diff ─────────────────────────────────
+
+  fastify.get<{
+    Params: { platform: string; repo: string; id: string };
+  }>("/cards/:platform/:repo/:id/diff", async (request, reply) => {
+    const { platform, repo, id } = request.params;
+
+    if (!VALID_PLATFORMS.has(platform)) {
+      return reply.status(400).send({ error: `Invalid platform: ${platform}` });
+    }
+
+    const sanitizedRepo = sanitizeRepo(repo);
+    if (!sanitizedRepo) {
+      return reply.status(400).send({ error: "Invalid repo" });
+    }
+
+    // Find the agent run to get the worktree path
+    let rawWorktreePath: string | null = null;
+    try {
+      const runs = agentRunDatabase.listRuns({ status: undefined, limit: 1000 });
+      const match = runs.runs.find(
+        (r) => r.issuePlatform === platform && r.issueRepo === sanitizedRepo && r.issueId === id,
+      );
+      if (match) {
+        rawWorktreePath = match.worktreePath;
+      }
+    } catch { /* no runs */ }
+
+    if (!rawWorktreePath) {
+      return reply.status(404).send({ error: "No worktree for this card" });
+    }
+
+    // Validate path is a real git worktree (prevents arbitrary filesystem access)
+    const worktreePath = validateWorktreePath(rawWorktreePath);
+    if (!worktreePath) {
+      return reply.status(400).send({ error: "Invalid worktree path" });
+    }
+
+    try {
+      const baseBranch = await getDefaultBranch(worktreePath);
+      const { stdout } = await execFileAsync("git", [
+        "-C", worktreePath,
+        "diff", `${baseBranch}..HEAD`,
+      ], { maxBuffer: 10 * 1024 * 1024 });
+      return reply.type("text/plain").send(stdout);
+    } catch (err) {
+      return reply.status(500).send({ error: `Diff failed: ${(err as Error).message}` });
+    }
+  });
+
+  // ─── POST /cards/:platform/:repo/:id/comment ─────────────────────────────
+
+  fastify.post<{
+    Params: { platform: string; repo: string; id: string };
+    Body: { body: string };
+  }>("/cards/:platform/:repo/:id/comment", async (request, reply) => {
+    const { platform, repo, id } = request.params;
+    const commentBody = request.body?.body;
+
+    if (!VALID_PLATFORMS.has(platform)) {
+      return reply.status(400).send({ error: `Invalid platform: ${platform}` });
+    }
+
+    const sanitizedRepo = sanitizeRepo(repo);
+    if (!sanitizedRepo) {
+      return reply.status(400).send({ error: "Invalid repo" });
+    }
+
+    if (!commentBody || typeof commentBody !== "string") {
+      return reply.status(400).send({ error: "Missing comment body" });
+    }
+
+    try {
+      await addComment(platform, sanitizedRepo, id, commentBody);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: `Comment failed: ${(err as Error).message}` });
+    }
+  });
+
+  // ─── DELETE /worktrees/:id — cleanup worktree ────────────────────────────
+
+  fastify.delete<{
+    Params: { id: string };
+  }>("/worktrees/:id", async (request, reply) => {
+    const { id: runId } = request.params;
+
+    const run = agentRunDatabase.getRun(runId);
+    if (!run) {
+      return reply.status(404).send({ error: "Agent run not found" });
+    }
+
+    if (!run.worktreePath) {
+      return reply.status(404).send({ error: "No worktree for this run" });
+    }
+
+    try {
+      await removeWorktree(run.worktreePath, { force: true });
+
+      kanbanEvents.emitEvent({
+        type: "worktree.changed",
+        path: run.worktreePath,
+        status: "removed",
+      });
+
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: `Cleanup failed: ${(err as Error).message}` });
+    }
+  });
 }
 
 // ─── Helpers for start/stop ────────────────────────────────────────────────────
@@ -789,4 +1044,71 @@ function resolveRepoPath(platform: string, repo: string): string {
   }
   // Fallback: use cwd
   return process.cwd();
+}
+
+async function fetchComments(
+  platform: string,
+  repo: string,
+  id: string,
+): Promise<Array<{ author: string; body: string; createdAt: string }>> {
+  try {
+    switch (platform) {
+      case "github": {
+        const [owner, repoName] = repo.split("/");
+        if (!owner || !repoName) return [];
+        const comments = await githubClient.listIssueComments(parseInt(id, 10), owner, repoName);
+        return (comments || []).map((c: any) => ({
+          author: c.user?.login || "unknown",
+          body: c.body || "",
+          createdAt: c.created_at || "",
+        }));
+      }
+      case "gitlab": {
+        const notes = await gitlabClient.listIssueNotes(repo, parseInt(id, 10));
+        return (notes || []).map((n: any) => ({
+          author: n.author?.username || n.author?.name || "unknown",
+          body: n.body || "",
+          createdAt: n.created_at || "",
+        }));
+      }
+      case "jira": {
+        const comments = await jiraClient.getComments(id);
+        return (comments || []).map((c: any) => ({
+          author: c.author?.displayName || c.author?.name || "unknown",
+          body: typeof c.body === "string" ? c.body : JSON.stringify(c.body),
+          createdAt: c.created || "",
+        }));
+      }
+      default:
+        return [];
+    }
+  } catch {
+    return [];
+  }
+}
+
+async function addComment(
+  platform: string,
+  repo: string,
+  id: string,
+  body: string,
+): Promise<void> {
+  switch (platform) {
+    case "github": {
+      const [owner, repoName] = repo.split("/");
+      if (!owner || !repoName) throw new Error("Invalid GitHub repo");
+      await githubClient.addIssueComment(parseInt(id, 10), body, owner, repoName);
+      break;
+    }
+    case "gitlab": {
+      await gitlabClient.addIssueNote(repo, parseInt(id, 10), body);
+      break;
+    }
+    case "jira": {
+      await jiraClient.addComment(id, body);
+      break;
+    }
+    default:
+      throw new Error(`Comments not supported for platform: ${platform}`);
+  }
 }

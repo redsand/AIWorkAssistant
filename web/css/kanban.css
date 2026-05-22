@@ -697,3 +697,509 @@ body {
     align-items: flex-start;
   }
 }
+
+/* ─── Card Detail Drawer ─────────────────────────────────────────────────── */
+
+.kdrawer-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 998;
+}
+
+.kdrawer-backdrop--active {
+  display: block;
+}
+
+.kdrawer {
+  position: fixed;
+  top: 0;
+  right: -560px;
+  width: 540px;
+  max-width: 90vw;
+  height: 100vh;
+  background: white;
+  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.15);
+  z-index: 999;
+  display: flex;
+  flex-direction: column;
+  transition: right 0.25s ease;
+}
+
+.kdrawer[aria-hidden="false"] {
+  right: 0;
+}
+
+.kdrawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e5e7eb;
+  flex-shrink: 0;
+}
+
+.kdrawer-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1a1a2e;
+  margin: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-right: 12px;
+}
+
+.kdrawer-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.kdrawer-external-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: #667eea;
+  text-decoration: none;
+  font-size: 16px;
+  transition: background 0.15s;
+}
+
+.kdrawer-external-link:hover {
+  background: #f3f4f6;
+}
+
+.kdrawer-close {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: #6b7280;
+  font-size: 22px;
+  cursor: pointer;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.kdrawer-close:hover {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+/* ─── Drawer Tabs ─────────────────────────────────────────────────────────── */
+
+.kdrawer-tabs {
+  display: flex;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 0 16px;
+  flex-shrink: 0;
+}
+
+.kdrawer-tab {
+  padding: 10px 14px;
+  border: none;
+  background: none;
+  font-size: 13px;
+  font-weight: 500;
+  color: #6b7280;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.kdrawer-tab:hover {
+  color: #374151;
+  background: #f9fafb;
+}
+
+.kdrawer-tab.active {
+  color: #667eea;
+  border-bottom-color: #667eea;
+  font-weight: 600;
+}
+
+/* ─── Drawer Body ─────────────────────────────────────────────────────────── */
+
+.kdrawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+}
+
+.kdrawer-section {
+  min-height: 200px;
+}
+
+.kdrawer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.kdrawer-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.kdrawer-label {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  background: #eef2ff;
+  color: #4338ca;
+}
+
+.kdrawer-deps {
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.kdrawer-deps-title {
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 4px;
+}
+
+.kdrawer-description {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #374151;
+  margin-bottom: 20px;
+}
+
+.kdrawer-description h1,
+.kdrawer-description h2,
+.kdrawer-description h3 {
+  margin-top: 16px;
+  margin-bottom: 8px;
+}
+
+.kdrawer-description p {
+  margin-bottom: 8px;
+}
+
+.kdrawer-description pre {
+  background: #f3f4f6;
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+  font-size: 12px;
+}
+
+.kdrawer-description code {
+  background: #f3f4f6;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.kdrawer-description pre code {
+  background: none;
+  padding: 0;
+}
+
+/* ─── Comments ────────────────────────────────────────────────────────────── */
+
+.kdrawer-comments h4 {
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.kdrawer-comment {
+  padding: 10px 0;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.kdrawer-comment:last-child {
+  border-bottom: none;
+}
+
+.kdrawer-comment-author {
+  font-size: 12px;
+  font-weight: 600;
+  color: #667eea;
+}
+
+.kdrawer-comment-date {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-left: 8px;
+}
+
+.kdrawer-comment-body {
+  font-size: 13px;
+  color: #374151;
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+/* ─── Agent Tab ───────────────────────────────────────────────────────────── */
+
+.kdrawer-agent-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.kdrawer-agent-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.kdrawer-agent-status-dot.running {
+  background: #667eea;
+  animation: kcard-pulse 1.5s ease-in-out infinite;
+}
+
+.kdrawer-agent-status-dot.completed {
+  background: #22c55e;
+}
+
+.kdrawer-agent-status-dot.failed {
+  background: #ef4444;
+}
+
+.kdrawer-agent-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 16px;
+}
+
+.kdrawer-agent-meta dt {
+  font-weight: 600;
+  color: #374151;
+}
+
+.kdrawer-agent-steps {
+  border-top: 1px solid #e5e7eb;
+  padding-top: 12px;
+}
+
+.kdrawer-agent-steps h4 {
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 8px;
+}
+
+.kdrawer-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.kdrawer-step-order {
+  width: 20px;
+  text-align: right;
+  color: #9ca3af;
+  font-variant-numeric: tabular-nums;
+}
+
+.kdrawer-step-type {
+  background: #eef2ff;
+  color: #4338ca;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.kdrawer-step-tool {
+  color: #374151;
+  font-weight: 500;
+}
+
+.kdrawer-agent-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.kdrawer-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid #d1d5db;
+  background: white;
+  color: #374151;
+  transition: all 0.15s;
+}
+
+.kdrawer-btn:hover {
+  background: #f3f4f6;
+}
+
+.kdrawer-btn--danger {
+  border-color: #fca5a5;
+  color: #991b1b;
+  background: #fff5f5;
+}
+
+.kdrawer-btn--danger:hover {
+  background: #fee2e2;
+}
+
+.kdrawer-btn--primary {
+  background: #667eea;
+  color: white;
+  border-color: #667eea;
+}
+
+.kdrawer-btn--primary:hover {
+  background: #5a6fd6;
+}
+
+/* ─── Worktree Tab ────────────────────────────────────────────────────────── */
+
+.kdrawer-worktree-info {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.kdrawer-worktree-info dt {
+  font-weight: 600;
+  color: #374151;
+}
+
+.kdrawer-worktree-info dd {
+  color: #6b7280;
+  word-break: break-all;
+}
+
+.kdrawer-worktree-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+
+.kdrawer-worktree-status.clean {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.kdrawer-worktree-status.dirty {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+/* ─── Diff Tab ────────────────────────────────────────────────────────────── */
+
+.kdrawer-diff {
+  background: #1a1a2e;
+  border-radius: 8px;
+  padding: 12px;
+  overflow-x: auto;
+  font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #e5e7eb;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.kdrawer-diff .diff-add {
+  color: #4ade80;
+}
+
+.kdrawer-diff .diff-remove {
+  color: #f87171;
+}
+
+.kdrawer-diff .diff-hunk {
+  color: #60a5fa;
+  font-weight: 600;
+}
+
+.kdrawer-hunk-comment {
+  margin-top: 8px;
+  padding: 8px 0;
+  border-top: 1px solid #e5e7eb;
+}
+
+.kdrawer-hunk-comment-btn {
+  font-size: 11px;
+  color: #667eea;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 0;
+  font-weight: 500;
+}
+
+.kdrawer-hunk-comment-btn:hover {
+  text-decoration: underline;
+}
+
+.kdrawer-hunk-comment-form {
+  display: none;
+  margin-top: 6px;
+}
+
+.kdrawer-hunk-comment-form.active {
+  display: block;
+}
+
+.kdrawer-hunk-comment-form textarea {
+  width: 100%;
+  min-height: 60px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.kdrawer-hunk-comment-form-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.kdrawer-empty-tab {
+  color: #9ca3af;
+  font-size: 13px;
+  text-align: center;
+  padding: 40px 20px;
+}

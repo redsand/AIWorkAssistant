@@ -493,86 +493,7 @@
   }
 
   function openSSE() {
-    if (typeof EventSource === "undefined") return;
-    var source = new EventSource("/api/kanban/stream");
-
-    source.addEventListener("agent.started", function (e) {
-      try {
-        var data = JSON.parse(e.data);
-        if (data.agent) {
-          addTile(data.agent);
-
-          // Card live-status: pulse + optimistic move
-          var agent = data.agent;
-          var cardKey = agent.cardKey;
-          if (cardKey) {
-            agentRunToCardKey[agent.agentRunId] = cardKey;
-            var cardEl = cardIndex.get(cardKey);
-            if (cardEl) {
-              cardEl.classList.add("kcard--running");
-              debounceMoveCard(cardKey, "in_flight");
-            }
-          }
-        }
-      } catch (ex) { /* ignore */ }
-    });
-
-    source.addEventListener("agent.step", function (e) {
-      try {
-        var data = JSON.parse(e.data);
-        updateTile(data.agentRunId, data.toolName, data.stepOrder);
-
-        // Card live-status: update tool chip
-        var cardKey = agentRunToCardKey[data.agentRunId];
-        if (cardKey) {
-          var cardEl = cardIndex.get(cardKey);
-          if (cardEl) {
-            var toolEl = cardEl.querySelector(".kcard-tool");
-            if (toolEl) toolEl.textContent = data.toolName;
-          }
-        }
-      } catch (ex) { /* ignore */ }
-    });
-
-    source.addEventListener("agent.completed", function (e) {
-      try {
-        var data = JSON.parse(e.data);
-        removeTile(data.agentRunId);
-
-        // Card live-status: remove pulse, optimistic move to Done
-        var cardKey = agentRunToCardKey[data.agentRunId];
-        if (cardKey) {
-          var cardEl = cardIndex.get(cardKey);
-          if (cardEl) {
-            cardEl.classList.remove("kcard--running");
-            var toolEl = cardEl.querySelector(".kcard-tool");
-            if (toolEl) toolEl.textContent = "";
-            if (data.status === "completed") {
-              debounceMoveCard(cardKey, "done");
-            }
-          }
-          delete agentRunToCardKey[data.agentRunId];
-        }
-      } catch (ex) { /* ignore */ }
-    });
-
-    source.addEventListener("card.updated", function (e) {
-      try {
-        var data = JSON.parse(e.data);
-        if (data.card) {
-          var card = data.card;
-          var cardEl = cardIndex.get(card.key);
-          if (cardEl) {
-            debounceMoveCard(card.key, card.column || "backlog");
-          }
-        }
-      } catch (ex) { /* ignore */ }
-    });
-
-    source.onerror = function () {
-      source.close();
-      setTimeout(openSSE, 5000);
-    };
+    // Replaced by drawer-aware version below
   }
 
   // ─── Card rendering ────────────────────────────────────────────────────────
@@ -593,6 +514,9 @@
     article.className = "kcard";
     article.setAttribute("data-key", card.key);
     article.setAttribute("id", "card-" + card.key);
+    article.setAttribute("tabindex", "0");
+    article.setAttribute("role", "button");
+    article.setAttribute("aria-label", "Open details for " + card.title);
 
     article.innerHTML =
       '<header>' +
@@ -608,6 +532,16 @@
           (depCount > 0 ? depCount + ' deps' : 'no deps') +
         '</span>' +
       '</footer>';
+
+    article.addEventListener("click", function () {
+      openDrawer(card);
+    });
+    article.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openDrawer(card);
+      }
+    });
 
     cardIndex.set(card.key, article);
 
@@ -828,6 +762,548 @@
         emptyEl.style.display = "none";
         showError("Failed to load board: " + err.message);
       });
+  }
+
+  // ─── Card Detail Drawer ─────────────────────────────────────────────────────
+
+  var drawer = document.getElementById("kanban-drawer");
+  var drawerBackdrop = document.getElementById("drawer-backdrop");
+  var drawerTitle = document.getElementById("drawer-title");
+  var drawerExternalLink = document.getElementById("drawer-external-link");
+  var drawerCloseBtn = document.getElementById("drawer-close");
+  var drawerTabs = document.getElementById("drawer-tabs");
+  var drawerMeta = document.getElementById("drawer-meta");
+  var drawerLabels = document.getElementById("drawer-labels");
+  var drawerDeps = document.getElementById("drawer-deps");
+  var drawerDescription = document.getElementById("drawer-description");
+  var drawerCommentsList = document.getElementById("drawer-comments-list");
+  var drawerAgentContent = document.getElementById("drawer-agent-content");
+  var drawerWorktreeContent = document.getElementById("drawer-worktree-content");
+  var drawerDiffContent = document.getElementById("drawer-diff-content");
+
+  var drawerState = {
+    open: false,
+    card: null,
+    cardData: null,
+    activeTab: "overview",
+    diffLoaded: false,
+    scrollPositions: { overview: 0, agent: 0, worktree: 0, diff: 0 },
+    pendingSteps: [],  // steps buffered before drawer opened
+  };
+
+  function openDrawer(card) {
+    drawerState.card = card;
+    drawerState.diffLoaded = false;
+    drawerState.activeTab = "overview";
+    drawerState.scrollPositions = { overview: 0, agent: 0, worktree: 0, diff: 0 };
+
+    drawerTitle.textContent = card.title;
+    drawerExternalLink.href = card.url || "#";
+
+    // Reset tabs
+    var tabs = drawerTabs.querySelectorAll(".kdrawer-tab");
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].classList.toggle("active", tabs[i].getAttribute("data-tab") === "overview");
+    }
+    var sections = drawer.querySelectorAll(".kdrawer-section");
+    for (var j = 0; j < sections.length; j++) {
+      sections[j].style.display = sections[j].getAttribute("data-tab") === "overview" ? "" : "none";
+    }
+
+    // Show drawer
+    drawer.setAttribute("aria-hidden", "false");
+    drawerBackdrop.classList.add("kdrawer-backdrop--active");
+    drawerState.open = true;
+
+    // Fetch detail data
+    var platform = card.platform;
+    var repo = card.repo;
+    var id = card.id;
+
+    var url = "/api/kanban/cards/" + encodeURIComponent(platform) + "/" + encodeURIComponent(repo) + "/" + encodeURIComponent(id);
+
+    fetch(url)
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (!data) return;
+        drawerState.cardData = data;
+        renderDrawerOverview(data);
+        renderDrawerAgent(data);
+        renderDrawerWorktree(data);
+        drawerState.pendingSteps = [];
+      })
+      .catch(function () { /* ignore */ });
+  }
+
+  function closeDrawer() {
+    drawer.setAttribute("aria-hidden", "true");
+    drawerBackdrop.classList.remove("kdrawer-backdrop--active");
+    drawerState.open = false;
+    drawerState.card = null;
+    drawerState.cardData = null;
+  }
+
+  function switchDrawerTab(tabName) {
+    if (drawerState.activeTab === tabName) return;
+
+    // Save scroll position of current tab
+    var body = drawer.querySelector(".kdrawer-body");
+    drawerState.scrollPositions[drawerState.activeTab] = body.scrollTop;
+
+    drawerState.activeTab = tabName;
+
+    // Update tab buttons
+    var tabs = drawerTabs.querySelectorAll(".kdrawer-tab");
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].classList.toggle("active", tabs[i].getAttribute("data-tab") === tabName);
+    }
+
+    // Show/hide sections
+    var sections = drawer.querySelectorAll(".kdrawer-section");
+    for (var j = 0; j < sections.length; j++) {
+      sections[j].style.display = sections[j].getAttribute("data-tab") === tabName ? "" : "none";
+    }
+
+    // Restore scroll position
+    body.scrollTop = drawerState.scrollPositions[tabName] || 0;
+
+    // Lazy-load diff
+    if (tabName === "diff" && !drawerState.diffLoaded && drawerState.card) {
+      fetchDiff();
+    }
+  }
+
+  function renderDrawerOverview(data) {
+    var card = data.card;
+
+    // Meta badges
+    var pl = platformLabel(card.platform);
+    var pri = card.priority || "unknown";
+    drawerMeta.innerHTML =
+      '<span class="kbadge kbadge-platform">' + pl + '</span>' +
+      '<span class="kbadge kbadge-priority kbadge-priority-' + pri + '">' + pri + '</span>' +
+      '<span class="kcard-external">' + escapeHtml(card.externalId || card.id) + '</span>' +
+      (card.assignee ? '<span class="kbadge" style="background:#eef2ff;color:#4338ca;">@' + escapeHtml(card.assignee) + '</span>' : '');
+
+    // Labels
+    if (card.labels && card.labels.length > 0) {
+      drawerLabels.innerHTML = card.labels.map(function (l) {
+        return '<span class="kdrawer-label">' + escapeHtml(l) + '</span>';
+      }).join("");
+    } else {
+      drawerLabels.innerHTML = "";
+    }
+
+    // Dependencies
+    if (card.dependencyKeys && card.dependencyKeys.length > 0) {
+      drawerDeps.innerHTML =
+        '<div class="kdrawer-deps-title">Dependencies (' + card.dependencyKeys.length + ')</div>' +
+        card.dependencyKeys.map(function (dk) {
+          return '<span class="kdrawer-label" style="background:#fef3c7;color:#92400e;">' + escapeHtml(dk) + '</span>';
+        }).join(" ");
+    } else {
+      drawerDeps.innerHTML = "";
+    }
+
+    // Description (markdown)
+    if (data.description && typeof renderMarkdown === "function") {
+      drawerDescription.innerHTML = renderMarkdown(data.description);
+    } else if (data.description) {
+      drawerDescription.innerHTML = "<p>" + escapeHtml(data.description).replace(/\n/g, "<br>") + "</p>";
+    } else {
+      drawerDescription.innerHTML = '<p style="color:#9ca3af">No description</p>';
+    }
+
+    // Comments
+    if (data.comments && data.comments.length > 0) {
+      drawerCommentsList.innerHTML = data.comments.map(function (c) {
+        return '<div class="kdrawer-comment">' +
+          '<span class="kdrawer-comment-author">' + escapeHtml(c.author) + '</span>' +
+          '<span class="kdrawer-comment-date">' + (c.createdAt ? new Date(c.createdAt).toLocaleString() : "") + '</span>' +
+          '<div class="kdrawer-comment-body">' + escapeHtml(c.body).replace(/\n/g, "<br>") + '</div>' +
+        '</div>';
+      }).join("");
+    } else {
+      drawerCommentsList.innerHTML = '<p style="color:#9ca3af;font-size:12px">No comments yet.</p>';
+    }
+  }
+
+  function renderDrawerAgent(data) {
+    var agentRun = data.agentRun;
+    if (!agentRun) {
+      drawerAgentContent.innerHTML = '<p class="kdrawer-empty-tab">No agent run for this card.</p>';
+      return;
+    }
+
+    var statusClass = agentRun.status === "running" ? "running" :
+                      agentRun.status === "completed" ? "completed" : "failed";
+    var statusLabel = agentRun.status.charAt(0).toUpperCase() + agentRun.status.slice(1);
+
+    var html =
+      '<div class="kdrawer-agent-status">' +
+        '<span class="kdrawer-agent-status-dot ' + statusClass + '"></span>' +
+        '<span>' + statusLabel + '</span>' +
+      '</div>' +
+      '<dl class="kdrawer-agent-meta">' +
+        '<dt>Run ID</dt><dd>' + escapeHtml(agentRun.id.slice(0, 8)) + '</dd>' +
+        '<dt>Model</dt><dd>' + escapeHtml(agentRun.model || "—") + '</dd>' +
+        '<dt>Started</dt><dd>' + new Date(agentRun.startedAt).toLocaleString() + '</dd>' +
+        (agentRun.completedAt ? '<dt>Completed</dt><dd>' + new Date(agentRun.completedAt).toLocaleString() + '</dd>' : '') +
+        '<dt>Steps</dt><dd>' + (agentRun.steps ? agentRun.steps.length : 0) + '</dd>' +
+      '</dl>';
+
+    // Steps timeline
+    if (agentRun.steps && agentRun.steps.length > 0) {
+      html += '<div class="kdrawer-agent-steps"><h4>Steps</h4>';
+      agentRun.steps.forEach(function (step) {
+        html +=
+          '<div class="kdrawer-step">' +
+            '<span class="kdrawer-step-order">' + step.stepOrder + '</span>' +
+            '<span class="kdrawer-step-type">' + escapeHtml(step.stepType) + '</span>' +
+            (step.toolName ? '<span class="kdrawer-step-tool">' + escapeHtml(step.toolName) + '</span>' : '') +
+          '</div>';
+      });
+      html += '</div>';
+    }
+
+    // Actions
+    html += '<div class="kdrawer-agent-actions">';
+    if (agentRun.status === "running") {
+      html += '<button class="kdrawer-btn kdrawer-btn--danger" id="drawer-agent-stop">Stop Agent</button>';
+    }
+    html += '</div>';
+
+    drawerAgentContent.innerHTML = html;
+
+    // Wire Stop button
+    var stopBtn = document.getElementById("drawer-agent-stop");
+    if (stopBtn && drawerState.card) {
+      stopBtn.addEventListener("click", function () {
+        var c = drawerState.card;
+        stopAgent({
+          agentRunId: agentRun.id,
+          cardKey: c.key,
+        });
+        closeDrawer();
+      });
+    }
+  }
+
+  function renderDrawerWorktree(data) {
+    var wt = data.worktree;
+    if (!wt) {
+      drawerWorktreeContent.innerHTML = '<p class="kdrawer-empty-tab">No worktree for this card.</p>';
+      return;
+    }
+
+    var cleanLabel = wt.isClean ? "Clean" : "Dirty";
+    var cleanClass = wt.isClean ? "clean" : "dirty";
+
+    var html =
+      '<div class="kdrawer-worktree-status ' + cleanClass + '">' +
+        cleanLabel +
+      '</div>' +
+      '<dl class="kdrawer-worktree-info">' +
+        '<dt>Path</dt><dd>' + escapeHtml(wt.path) + '</dd>' +
+        '<dt>Branch</dt><dd>' + escapeHtml(wt.branch) + '</dd>' +
+      '</dl>' +
+      '<div class="kdrawer-agent-actions">' +
+        '<button class="kdrawer-btn" id="drawer-wt-reveal" title="Open in file explorer">Reveal</button>' +
+        '<button class="kdrawer-btn kdrawer-btn--danger" id="drawer-wt-cleanup">Cleanup</button>' +
+      '</div>';
+
+    drawerWorktreeContent.innerHTML = html;
+
+    // Reveal button (best-effort: copy path to clipboard)
+    var revealBtn = document.getElementById("drawer-wt-reveal");
+    if (revealBtn) {
+      revealBtn.addEventListener("click", function () {
+        navigator.clipboard.writeText(wt.path).catch(function () {});
+      });
+    }
+
+    // Cleanup button
+    var cleanupBtn = document.getElementById("drawer-wt-cleanup");
+    if (cleanupBtn && data.agentRun) {
+      cleanupBtn.addEventListener("click", function () {
+        if (!confirm("Remove this worktree?")) return;
+        fetch("/api/kanban/worktrees/" + encodeURIComponent(data.agentRun.id), {
+          method: "DELETE",
+        })
+          .then(function (res) {
+            if (res.ok) {
+              drawerWorktreeContent.innerHTML = '<p class="kdrawer-empty-tab">Worktree removed.</p>';
+            }
+          })
+          .catch(function () {});
+      });
+    }
+  }
+
+  function fetchDiff() {
+    if (!drawerState.card) return;
+    drawerState.diffLoaded = true;
+
+    var card = drawerState.card;
+    var url = "/api/kanban/cards/" + encodeURIComponent(card.platform) + "/" + encodeURIComponent(card.repo) + "/" + encodeURIComponent(card.id) + "/diff";
+
+    drawerDiffContent.innerHTML = '<p class="kdrawer-empty-tab">Loading diff…</p>';
+
+    fetch(url)
+      .then(function (res) {
+        if (!res.ok) throw new Error("No diff");
+        return res.text();
+      })
+      .then(function (text) {
+        if (!text || text.trim() === "") {
+          drawerDiffContent.innerHTML = '<p class="kdrawer-empty-tab">No changes in diff.</p>';
+          return;
+        }
+        renderDiff(text);
+      })
+      .catch(function () {
+        drawerDiffContent.innerHTML = '<p class="kdrawer-empty-tab">No diff available. Start an agent to generate changes.</p>';
+      });
+  }
+
+  function renderDiff(text) {
+    var lines = text.split("\n");
+    var html = '<div class="kdrawer-diff">';
+    var inHunk = false;
+    var hunkIdx = 0;
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var escaped = escapeHtml(line);
+
+      if (line.startsWith("@@")) {
+        // Close previous hunk comment area
+        if (inHunk) html += '</div>';
+        inHunk = true;
+        html += '<div class="diff-hunk">' + escaped + '</div>';
+        hunkIdx++;
+        // Add comment button for each hunk
+        html += '<div class="kdrawer-hunk-comment" data-hunk="' + hunkIdx + '">';
+        html += '<button class="kdrawer-hunk-comment-btn" data-hunk="' + hunkIdx + '">Comment</button>';
+        html += '<div class="kdrawer-hunk-comment-form" id="hunk-form-' + hunkIdx + '">';
+        html += '<textarea placeholder="Write a comment…"></textarea>';
+        html += '<div class="kdrawer-hunk-comment-form-actions">';
+        html += '<button class="kdrawer-btn kdrawer-btn--primary kdrawer-hunk-submit" data-hunk="' + hunkIdx + '">Submit</button>';
+        html += '<button class="kdrawer-btn kdrawer-hunk-cancel" data-hunk="' + hunkIdx + '">Cancel</button>';
+        html += '</div></div></div>';
+      } else if (line.startsWith("+")) {
+        html += '<div><span class="diff-add">' + escaped + '</span></div>';
+      } else if (line.startsWith("-")) {
+        html += '<div><span class="diff-remove">' + escaped + '</span></div>';
+      } else {
+        html += '<div>' + escaped + '</div>';
+      }
+    }
+
+    if (inHunk) html += '</div>';
+    html += '</div>';
+
+    drawerDiffContent.innerHTML = html;
+
+    // Wire up comment buttons
+    var commentBtns = drawerDiffContent.querySelectorAll(".kdrawer-hunk-comment-btn");
+    for (var b = 0; b < commentBtns.length; b++) {
+      commentBtns[b].addEventListener("click", function () {
+        var hunkId = this.getAttribute("data-hunk");
+        var form = document.getElementById("hunk-form-" + hunkId);
+        if (form) form.classList.add("active");
+      });
+    }
+
+    var cancelBtns = drawerDiffContent.querySelectorAll(".kdrawer-hunk-cancel");
+    for (var c = 0; c < cancelBtns.length; c++) {
+      cancelBtns[c].addEventListener("click", function () {
+        var hunkId = this.getAttribute("data-hunk");
+        var form = document.getElementById("hunk-form-" + hunkId);
+        if (form) {
+          form.classList.remove("active");
+          var ta = form.querySelector("textarea");
+          if (ta) ta.value = "";
+        }
+      });
+    }
+
+    var submitBtns = drawerDiffContent.querySelectorAll(".kdrawer-hunk-submit");
+    for (var s = 0; s < submitBtns.length; s++) {
+      submitBtns[s].addEventListener("click", function () {
+        var hunkId = this.getAttribute("data-hunk");
+        var form = document.getElementById("hunk-form-" + hunkId);
+        if (!form) return;
+        var ta = form.querySelector("textarea");
+        var body = ta ? ta.value.trim() : "";
+        if (!body || !drawerState.card) return;
+
+        var card = drawerState.card;
+        var commentUrl = "/api/kanban/cards/" + encodeURIComponent(card.platform) + "/" + encodeURIComponent(card.repo) + "/" + encodeURIComponent(card.id) + "/comment";
+
+        fetch(commentUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: body }),
+        })
+          .then(function (res) {
+            if (res.ok) {
+              form.classList.remove("active");
+              if (ta) ta.value = "";
+              // Refresh comments in overview tab
+              var url2 = "/api/kanban/cards/" + encodeURIComponent(card.platform) + "/" + encodeURIComponent(card.repo) + "/" + encodeURIComponent(card.id);
+              fetch(url2)
+                .then(function (r2) { return r2.ok ? r2.json() : null; })
+                .then(function (d2) {
+                  if (d2 && d2.comments) {
+                    renderDrawerCommentsOnly(d2.comments);
+                  }
+                })
+                .catch(function () {});
+            }
+          })
+          .catch(function () {});
+      });
+    }
+  }
+
+  function renderDrawerCommentsOnly(comments) {
+    if (comments && comments.length > 0) {
+      drawerCommentsList.innerHTML = comments.map(function (c) {
+        return '<div class="kdrawer-comment">' +
+          '<span class="kdrawer-comment-author">' + escapeHtml(c.author) + '</span>' +
+          '<span class="kdrawer-comment-date">' + (c.createdAt ? new Date(c.createdAt).toLocaleString() : "") + '</span>' +
+          '<div class="kdrawer-comment-body">' + escapeHtml(c.body).replace(/\n/g, "<br>") + '</div>' +
+        '</div>';
+      }).join("");
+    } else {
+      drawerCommentsList.innerHTML = '<p style="color:#9ca3af;font-size:12px">No comments yet.</p>';
+    }
+  }
+
+  // Drawer event wiring
+  drawerCloseBtn.addEventListener("click", closeDrawer);
+  drawerBackdrop.addEventListener("click", closeDrawer);
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && drawerState.open) {
+      closeDrawer();
+    }
+  });
+
+  drawerTabs.addEventListener("click", function (e) {
+    var tab = e.target.closest(".kdrawer-tab");
+    if (tab) {
+      switchDrawerTab(tab.getAttribute("data-tab"));
+    }
+  });
+
+  // ─── SSE step replay for drawer agent tab ──────────────────────────────────
+
+  openSSE = function () {
+    if (typeof EventSource === "undefined") return;
+    var source = new EventSource("/api/kanban/stream");
+
+    source.addEventListener("agent.started", function (e) {
+      try {
+        var data = JSON.parse(e.data);
+        if (data.agent) {
+          addTile(data.agent);
+          var agent = data.agent;
+          var cardKey = agent.cardKey;
+          if (cardKey) {
+            agentRunToCardKey[agent.agentRunId] = cardKey;
+            var cardEl = cardIndex.get(cardKey);
+            if (cardEl) {
+              cardEl.classList.add("kcard--running");
+              debounceMoveCard(cardKey, "in_flight");
+            }
+          }
+        }
+      } catch (ex) { /* ignore */ }
+    });
+
+    source.addEventListener("agent.step", function (e) {
+      try {
+        var data = JSON.parse(e.data);
+        updateTile(data.agentRunId, data.toolName, data.stepOrder);
+
+        var cardKey = agentRunToCardKey[data.agentRunId];
+        if (cardKey) {
+          var cardEl = cardIndex.get(cardKey);
+          if (cardEl) {
+            var toolEl = cardEl.querySelector(".kcard-tool");
+            if (toolEl) toolEl.textContent = data.toolName;
+          }
+        }
+
+        // Live step in drawer
+        if (drawerState.open && drawerState.cardData &&
+            drawerState.cardData.agentRun &&
+            drawerState.cardData.agentRun.id === data.agentRunId) {
+          appendDrawerStep(data);
+        } else {
+          drawerState.pendingSteps.push(data);
+        }
+      } catch (ex) { /* ignore */ }
+    });
+
+    source.addEventListener("agent.completed", function (e) {
+      try {
+        var data = JSON.parse(e.data);
+        removeTile(data.agentRunId);
+
+        var cardKey = agentRunToCardKey[data.agentRunId];
+        if (cardKey) {
+          var cardEl = cardIndex.get(cardKey);
+          if (cardEl) {
+            cardEl.classList.remove("kcard--running");
+            var toolEl = cardEl.querySelector(".kcard-tool");
+            if (toolEl) toolEl.textContent = "";
+            if (data.status === "completed") {
+              debounceMoveCard(cardKey, "done");
+            }
+          }
+          delete agentRunToCardKey[data.agentRunId];
+        }
+      } catch (ex) { /* ignore */ }
+    });
+
+    source.addEventListener("card.updated", function (e) {
+      try {
+        var data = JSON.parse(e.data);
+        if (data.card) {
+          var card = data.card;
+          var cardEl = cardIndex.get(card.key);
+          if (cardEl) {
+            debounceMoveCard(card.key, card.column || "backlog");
+          }
+        }
+      } catch (ex) { /* ignore */ }
+    });
+
+    source.onerror = function () {
+      source.close();
+      setTimeout(openSSE, 5000);
+    };
+  };
+
+  function appendDrawerStep(stepData) {
+    var stepsContainer = drawerAgentContent.querySelector(".kdrawer-agent-steps");
+    if (!stepsContainer) {
+      // Create steps container if it doesn't exist
+      stepsContainer = document.createElement("div");
+      stepsContainer.className = "kdrawer-agent-steps";
+      stepsContainer.innerHTML = "<h4>Live Steps</h4>";
+      drawerAgentContent.appendChild(stepsContainer);
+    }
+    var stepEl = document.createElement("div");
+    stepEl.className = "kdrawer-step";
+    stepEl.innerHTML =
+      '<span class="kdrawer-step-order">' + stepData.stepOrder + '</span>' +
+      '<span class="kdrawer-step-type">' + escapeHtml(stepData.toolName || "output") + '</span>';
+    stepsContainer.appendChild(stepEl);
+    stepsContainer.scrollTop = stepsContainer.scrollHeight;
   }
 
   // ─── Init ──────────────────────────────────────────────────────────────────
