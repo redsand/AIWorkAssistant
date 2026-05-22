@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kanban Board — AI Work Assistant</title>
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#1a1a2e" />
+    <link rel="stylesheet" href="/css/base.css" />
+    <link rel="stylesheet" href="/css/kanban.css" />
+    <script src="/js/kanban-dep-utils.js" defer></script>
+    <script src="/js/kanban.js" defer></script>
+  </head>
+  <body>
+    <div class="page">
+      <!-- Header -->
+      <div class="k-header">
+        <div class="k-header-left">
+          <a href="/dashboard" class="back-link">
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
+            Dashboard
+          </a>
+          <div>
+            <div class="k-title">Kanban Board</div>
+            <div class="k-subtitle">
+              Portfolio-level view — all repositories, all agents
+            </div>
+          </div>
+        </div>
+        <div class="k-header-right">
+          <span class="k-chip" id="repo-chip" title="Repository filter">
+            <span class="k-chip-dot"></span> All Repos
+          </span>
+          <span class="k-chip" id="agent-chip" title="Agent filter">
+            <span class="k-chip-dot"></span> All Agents
+          </span>
+          <select id="sprint-select" class="k-select">
+            <option value="">— All Sprints —</option>
+          </select>
+          <button id="refresh-btn" class="k-refresh-btn" title="Refresh board">
+            ↻
+          </button>
+        </div>
+      </div>
+
+      <div id="error-banner" class="k-error-banner" style="display: none"></div>
+
+      <!-- Agents Rail -->
+      <section id="agents-rail" class="k-agents-rail">
+        <!-- Populated by future sprint -->
+      </section>
+
+      <!-- Loading state -->
+      <div id="kanban-loading" class="k-loading" style="display: none">
+        <div class="k-spinner"></div>
+        <p>Loading board data…</p>
+      </div>
+
+      <!-- Empty state -->
+      <div id="kanban-empty" class="k-empty" style="display: none">
+        <p>No cards found. Issues will appear here once they are created across your repositories.</p>
+      </div>
+
+      <!-- Board -->
+      <div id="kanban-board" class="k-board" style="display: none">
+        <svg id="dep-overlay" class="dep-overlay" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="dep-arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#667eea" />
+            </marker>
+            <marker id="dep-arrowhead-ghost" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
+            </marker>
+          </defs>
+        </svg>
+        <div class="k-col" data-column="backlog">
+          <h3 class="k-col-title">Backlog <span class="k-col-count" id="count-backlog">0</span></h3>
+          <div class="k-col-items" id="col-backlog"></div>
+        </div>
+        <div class="k-col" data-column="in_flight">
+          <h3 class="k-col-title">In Flight <span class="k-col-count" id="count-in_flight">0</span></h3>
+          <div class="k-col-items" id="col-in_flight"></div>
+        </div>
+        <div class="k-col" data-column="blocked">
+          <h3 class="k-col-title">Blocked <span class="k-col-count" id="count-blocked">0</span></h3>
+          <div class="k-col-items" id="col-blocked"></div>
+        </div>
+        <div class="k-col" data-column="done">
+          <h3 class="k-col-title">Done <span class="k-col-count" id="count-done">0</span></h3>
+          <div class="k-col-items" id="col-done"></div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

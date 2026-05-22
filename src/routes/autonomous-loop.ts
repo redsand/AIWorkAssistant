@@ -233,7 +233,7 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
   });
 }
 
-function makeBranchName(issueNumber: number, title: string): string {
+export function makeBranchName(issueNumber: number, title: string): string {
   const slug = title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")

@@ -164,6 +164,7 @@ export async function runAgentDirect(
   resumeSessionId?: string,
   logger: PipelineLogger = noop,
   onChildReady?: (child: ChildProcess) => void,
+  onStep?: (info: StepInfo) => void,
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     if (resumeSessionId) {
@@ -211,6 +212,7 @@ export async function runAgentDirect(
       const formatted = formatter.push(text);
       if (formatted) process.stdout.write(formatted);
       outputBuf += text;
+      onStep?.({ output: text });
 
       if (!finDetected && (finLineRegex.test(outputBuf) || finRegex.test(outputBuf))) {
         finDetected = true;
@@ -248,6 +250,7 @@ export async function runAgentViaLauncher(
   resumeSessionId?: string,
   logger: PipelineLogger = noop,
   onChildReady?: (child: ChildProcess) => void,
+  onStep?: (info: StepInfo) => void,
 ): Promise<RunResult> {
   if (!prompt) {
     logger.logError("No prompt provided to agent — skipping");
@@ -287,6 +290,7 @@ export async function runAgentViaLauncher(
           const formatted = formatter.push(text);
           if (formatted) process.stdout.write(formatted);
           outputBuf += text;
+          onStep?.({ output: text });
 
           if (!finDetected && (finLineRegex.test(outputBuf) || finRegex.test(outputBuf))) {
             finDetected = true;
@@ -316,6 +320,10 @@ export async function runAgentViaLauncher(
   });
 }
 
+export interface StepInfo {
+  output: string;
+}
+
 /** Route to launcher or direct execution based on config. */
 export async function runAgent(
   prompt: string,
@@ -324,9 +332,10 @@ export async function runAgent(
   resumeSessionId?: string,
   logger: PipelineLogger = noop,
   onChildReady?: (child: ChildProcess) => void,
+  onStep?: (info: StepInfo) => void,
 ): Promise<RunResult> {
   if (launcher) {
-    return runAgentViaLauncher(prompt, cfg, launcher, resumeSessionId, logger, onChildReady);
+    return runAgentViaLauncher(prompt, cfg, launcher, resumeSessionId, logger, onChildReady, onStep);
   }
-  return runAgentDirect(prompt, cfg, resumeSessionId, logger, onChildReady);
+  return runAgentDirect(prompt, cfg, resumeSessionId, logger, onChildReady, onStep);
 }
