@@ -37,6 +37,7 @@ const chatRequestSchema = z.object({
   context: z.object({}).optional(),
   includeTools: z.boolean().default(true),
   includeMemory: z.boolean().default(true),
+  systemPrompt: z.string().optional(),
 });
 
 const createSessionSchema = z.object({
@@ -527,7 +528,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         ? conversationManager.getSession(sessionId)
         : null;
 
-      const systemPrompt = getSystemPrompt(body.mode, body.message);
+      const systemPrompt = body.systemPrompt || getSystemPrompt(body.mode, body.message);
 
       if (existingSession) {
         conversationManager.addMessage(sessionId!, {
@@ -891,7 +892,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         return;
       }
 
-      const systemPrompt = getSystemPrompt(body.mode, body.message);
+      const systemPrompt = body.systemPrompt || getSystemPrompt(body.mode, body.message);
 
       const existingSession = sessionId
         ? conversationManager.getSession(sessionId)

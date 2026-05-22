@@ -40,6 +40,9 @@
           </div>
         </div>
         <div class="k-header-right">
+          <button id="sidechat-toggle" class="k-sidechat-toggle-btn" title="Task breakdown assistant">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          </button>
           <div class="k-view-toggle" id="view-toggle">
             <button class="k-view-btn active" id="view-status" title="Group by status columns">Status</button>
             <button class="k-view-btn" id="view-swimlane" title="Group by agent swimlanes">Who's doing what</button>
@@ -249,6 +252,21 @@
         </div>
       </aside>
       <div class="kdrawer-backdrop" id="drawer-backdrop"></div>
+
+      <!-- Sidebar Chat (Task Breakdown) -->
+      <aside id="kanban-sidechat" class="k-sidechat" aria-hidden="true">
+        <header class="k-sidechat-header">
+          <h2 class="k-sidechat-title">Task Breakdown</h2>
+          <button class="k-sidechat-close" id="sidechat-close" aria-label="Close sidebar">&times;</button>
+        </header>
+        <div class="k-sidechat-transcript" id="sidechat-transcript"></div>
+        <div class="k-sidechat-input-area">
+          <textarea id="sidechat-input" class="k-sidechat-input" placeholder="Describe what you want built…" rows="2"></textarea>
+          <button id="sidechat-submit" class="k-sidechat-submit" title="Send">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </div>
+      </aside>
 
       <!-- Footer with Worktrees button -->
       <footer class="k-footer">
