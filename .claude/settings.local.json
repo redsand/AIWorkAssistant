@@ -40,7 +40,10 @@
       "Bash(grep -E \"register|fastify\\\\\\\\.\" src/server.ts)",
       "Bash(gh auth *)",
       "Bash(gh repo *)",
-      "Bash(awk -F: '$1<3225')"
+      "Bash(awk -F: '$1<3225')",
+      "Bash(xargs grep -l \"tenable\\\\|vulnerability\\\\|vuln\\\\|threat\")",
+      "Bash(grep -E \"\\\\.\\(ts|js\\)$\")",
+      "Bash(rtk ls *)"
     ]
   }
 }

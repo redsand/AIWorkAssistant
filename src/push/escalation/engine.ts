@@ -1,6 +1,7 @@
 import { notificationStore } from "../notification-store";
 import { env } from "../../config/env";
 import { sendEmail, isEmailConfigured, getActiveProviderName } from "./email";
+import { isSourceEscalationEnabled } from "./config-store";
 
 export interface EscalationConfig {
   level2AfterMinutes: number;
@@ -48,6 +49,7 @@ export class EscalationEngine {
 
     for (const item of level2Items) {
       if (item.escalationLevel >= 2) continue;
+      if (!isSourceEscalationEnabled(item.source)) continue;
 
       try {
         const deepLink = buildDeepLink(item.source, item.externalId);
@@ -90,6 +92,7 @@ export class EscalationEngine {
 
     for (const item of level3Items) {
       if (item.escalationLevel >= 3) continue;
+      if (!isSourceEscalationEnabled(item.source)) continue;
 
       try {
         const deepLink = buildDeepLink(item.source, item.externalId);

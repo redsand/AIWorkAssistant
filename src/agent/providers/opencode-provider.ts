@@ -9,6 +9,12 @@ import {
   ToolCall,
 } from "./types";
 
+// OpenAI-compatible APIs require tool function names to match ^[a-zA-Z0-9_-]+$
+// Our internal names use dot-notation (e.g. "tenable.list_vulnerabilities").
+function sanitizeToolName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
 export class OpenCodeProvider extends AIProvider {
   readonly name = "opencode";
   readonly capabilities: ProviderCapabilities = {
@@ -19,8 +25,54 @@ export class OpenCodeProvider extends AIProvider {
     synthesizesToolCallIds: false,
   };
 
+  // Maps sanitized name → original name; populated in buildRequestBody, consumed in parseToolCalls
+  private _toolNameMap = new Map<string, string>();
+
   constructor(config: ProviderConfig) {
     super(config);
+  }
+
+  protected override buildRequestBody(request: ChatRequest): Record<string, unknown> {
+    this._toolNameMap.clear();
+
+    const sanitizedTools = request.tools?.map((tool) => {
+      const original = tool.function.name;
+      const sanitized = sanitizeToolName(original);
+      if (sanitized !== original) this._toolNameMap.set(sanitized, original);
+      return { ...tool, function: { ...tool.function, name: sanitized } };
+    });
+
+    // Also sanitize tool_calls.function.name in assistant messages in history
+    const sanitizedMessages = request.messages.map((msg) => {
+      if (msg.role !== "assistant" || !msg.tool_calls?.length) return msg;
+      return {
+        ...msg,
+        tool_calls: msg.tool_calls.map((tc) => {
+          const sanitized = sanitizeToolName(tc.function.name);
+          if (sanitized !== tc.function.name) this._toolNameMap.set(sanitized, tc.function.name);
+          return { ...tc, function: { ...tc.function, name: sanitized } };
+        }),
+      };
+    });
+
+    return super.buildRequestBody({ ...request, tools: sanitizedTools, messages: sanitizedMessages });
+  }
+
+  protected override parseToolCalls(toolCalls: any[]): ToolCall[] {
+    return toolCalls.map((tc) => {
+      const sanitizedName = tc.function?.name || "";
+      const originalName = this._toolNameMap.get(sanitizedName) ?? sanitizedName;
+      return {
+        id: tc.id,
+        type: tc.type || ("function" as const),
+        function: {
+          name: originalName,
+          arguments: typeof tc.function?.arguments === "string"
+            ? tc.function.arguments
+            : JSON.stringify(tc.function?.arguments || {}),
+        },
+      };
+    });
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
@@ -237,7 +289,15 @@ export class OpenCodeProvider extends AIProvider {
             }
 
             if (finishReason === "tool_calls" && toolCallAccumulator.length > 0) {
-              yield { type: "tool_calls", toolCalls: [...toolCallAccumulator] };
+              // Reverse-map sanitized tool names back to dot-notation originals
+              const mappedCalls = toolCallAccumulator.map((tc) => ({
+                ...tc,
+                function: {
+                  ...tc.function,
+                  name: this._toolNameMap.get(tc.function.name) ?? tc.function.name,
+                },
+              }));
+              yield { type: "tool_calls", toolCalls: mappedCalls };
               toolCallAccumulator.length = 0;
             }
           } catch {

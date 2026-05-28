@@ -263,6 +263,51 @@ See `docs/roadmap.md` for the full roadmap. Current priorities:
 
 Always prefix bash commands with `rtk` for token savings on build/test/git output. See `~/.claude/CLAUDE.md` for full RTK command reference.
 
+## ⚠️ CRITICAL: Agent Run Logging Gap
+
+**The agent run database does NOT log user messages.** The `model_request` step type is recorded but the `content` field is always `null` (see `src/agent-runs/database.ts` and `src/routes/chat.ts` lines 264, 464, 657, 802).
+
+### What Gets Logged
+- `model_response` — AI model responses with token counts
+- `tool_call` — Tool invocations and sanitized params
+- `tool_result` — Tool outputs and success/failure
+- `thinking` — Model thinking traces (if enabled)
+- `content` — Assistant content messages
+
+### What Does NOT Get Logged
+- **User messages** — The actual user input is NEVER stored in `agent_run_steps`
+- **Full conversation context** — Only the AI side is preserved
+
+### Why This Matters
+When reviewing past conversations via the UI or database:
+1. You can see what the AI said and did
+2. You CANNOT see what the user asked
+3. This makes debugging communication failures impossible from logs alone
+
+### Files Involved
+- `src/routes/chat.ts` — `addStep` calls for `model_request` never include `content`
+- `src/agent-runs/database.ts` — Schema supports `content` column but it's unused for requests
+
+### Root Cause Found (2026-05-27)
+Logging worked initially but went empty after ~20 steps because:
+1. `runChatJob` extracts user message from `messages` array
+2. `aiClient.pruneMessages()` removes old messages (including user) to save tokens
+3. After pruning, `messages.filter(m => m.role === "user")` returns empty → `{}`
+
+### Fix Applied (2026-05-27)
+Preserve the original user query at job start, before any pruning:
+```typescript
+// At runChatJob start:
+const originalUserQuery = messages.find((m) => m.role === "user")?.content ?? "Unknown query";
+
+// All model_request steps now use:
+content: { user_message: originalUserQuery }  // ← Preserved, survives pruning
+```
+
+This applies to both:
+- `runChatJob` (streaming `/chat/stream` endpoint)
+- `/chat` endpoint (non-streaming)
+
 ## Targeted Prompt Rules (Error Reduction)
 
 These rules apply to every task in this project unless explicitly overridden.

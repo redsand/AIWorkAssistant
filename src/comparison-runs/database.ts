@@ -408,6 +408,14 @@ class ComparisonRunDatabase {
     };
   }
 
+  clearAll(): { deletedRuns: number } {
+    const before = this.db.prepare("SELECT COUNT(*) as n FROM comparison_runs").get() as { n: number };
+    this.db.prepare("DELETE FROM comparison_cases").run();
+    this.db.prepare("DELETE FROM comparison_runs").run();
+    this.db.prepare("VACUUM").run();
+    return { deletedRuns: before.n };
+  }
+
   close(): void {
     this.db.close();
   }

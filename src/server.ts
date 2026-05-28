@@ -28,6 +28,7 @@ import { memoryRoutes } from "./routes/memory";
 import { codeReviewRoutes } from "./routes/code-review";
 import { pushSubscriptionRoutes } from "./routes/push-subscriptions";
 import { pushAcknowledgeRoutes } from "./routes/push-acknowledge";
+import { escalationConfigRoutes } from "./routes/escalation-config";
 import { acknowledgeRoutes } from "./routes/acknowledge";
 import { initPushDispatcher } from "./push/dispatcher";
 import { startPollingEngine, stopPollingEngine } from "./push/polling-engine";
@@ -43,7 +44,7 @@ import { repoDashboardRoutes } from "./routes/repo-dashboard";
 import { kanbanRoutes } from "./routes/kanban";
 import { claimKitAdapter } from "./context-engine/adapters/claimkit-adapter";
 import { comparisonRoutes } from "./comparison-runs/api";
-import { ingestKnowledgeStore, ingestCodebaseStore, ingestGraphStore } from "./context-engine/claimkit-ingestion";
+import { ingestKnowledgeStore, ingestGraphStore } from "./context-engine/claimkit-ingestion";
 import {
   authMiddleware,
   isAuthConfigured,
@@ -112,6 +113,7 @@ export async function buildServer() {
   await server.register(codeReviewRoutes, { prefix: "/api/code-review" });
   await server.register(pushSubscriptionRoutes, { prefix: "/api" });
   await server.register(pushAcknowledgeRoutes, { prefix: "/api" });
+  await server.register(escalationConfigRoutes, { prefix: "/api" });
   await server.register(acknowledgeRoutes);
   await server.register(toolsRoutes, { prefix: "/api" });
   await server.register(ticketBridgeRoutes, { prefix: "/api/ticket-bridge" });
@@ -385,18 +387,16 @@ async function start() {
             `[ClaimKit] Initialized (provider: ${env.CLAIMKIT_LLM_PROVIDER}, topK: ${env.CLAIMKIT_TOP_K}, minScore: ${env.CLAIMKIT_MIN_SCORE})`,
           );
           console.log("[ClaimKit] Ingesting stores...");
-          const [knowledge, codebase, graph] = await Promise.all([
+          const [knowledge, graph] = await Promise.all([
             ingestKnowledgeStore(),
-            ingestCodebaseStore(),
             ingestGraphStore(),
           ]);
           console.log(
             `[ClaimKit] Ingestion complete — ` +
             `knowledge: ${knowledge.ingested}/${knowledge.total} | ` +
-            `codebase: ${codebase.ingested}/${codebase.total} | ` +
             `graph: ${graph.ingested}/${graph.total}` +
-            (knowledge.errors + codebase.errors + graph.errors > 0
-              ? ` | errors: ${knowledge.errors + codebase.errors + graph.errors}`
+            (knowledge.errors + graph.errors > 0
+              ? ` | errors: ${knowledge.errors + graph.errors}`
               : ""),
           );
         })

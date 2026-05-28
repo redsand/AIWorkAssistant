@@ -39,11 +39,13 @@ export function determineRoutingTier(ckResult: ClaimKitQueryResult | null): Rout
 
   const { confidence, answerability } = ckResult;
 
-  if (confidence > 0.7 && answerability === "answerable") {
+  // CK wins when it has real confidence. The scoring formula is multiplicative, so even with
+  // good evidence the combined score rarely exceeds 0.5 — 0.3 is the practical achievable bar.
+  if (confidence > 0.3 && answerability === "answerable") {
     return { tier: "ck_primary", preferredSource: "claimkit", overallWinner: "claimkit", routingReason: "high_confidence" };
   }
 
-  if (confidence < 0.3 || answerability === "not_answerable") {
+  if (confidence < 0.1 || answerability === "not_answerable") {
     return {
       tier: "rag_primary",
       preferredSource: "rag",
@@ -125,7 +127,7 @@ export async function assembleContextPacket(
   if (env.CLAIMKIT_ENABLED) {
     const ragTokens = compressedDocs.reduce((s, d) => s + d.tokens, 0);
     const ckWins = claimKitResult &&
-      claimKitResult.confidence > 0.5 &&
+      claimKitResult.confidence > 0.3 &&
       claimKitResult.answerability === "answerable";
     const winner = claimKitResult
       ? (ckWins ? "ClaimKit ✅" : claimKitResult.answerability === "not_answerable" ? "RAG (CK n/a)" : "RAG (CK low confidence)")

@@ -43,6 +43,7 @@ const PLATFORM_PREFIX_MAP: Record<string, Platform> = {
   workflow: "cross-platform",
   product: "cross-platform",
   hawk_ir: "hawk-ir",
+  tenable: "tenable",
   discover: "cross-platform",
   code_review: "cross-platform",
   ticket_bridge: "cross-platform",
@@ -2689,6 +2690,206 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     actionType: "local.file.chunk",
     riskLevel: "low",
   },
+  // File write/edit operations
+  {
+    name: "local.write_file",
+    description:
+      "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Use for creating new files, updating configs, writing scripts.",
+    params: {
+      path: {
+        type: "string",
+        description: "Absolute or relative path to the file",
+        required: true,
+      },
+      content: {
+        type: "string",
+        description: "Content to write",
+        required: true,
+      },
+    },
+    actionType: "local.file.write",
+    riskLevel: "medium",
+  },
+  {
+    name: "local.edit_file",
+    description:
+      "Apply a text replacement to a file. Use for surgical edits — changing a function, fixing a bug, updating a variable. Specify the exact old_string to find and the new_string to replace it with.",
+    params: {
+      path: {
+        type: "string",
+        description: "Absolute or relative path to the file",
+        required: true,
+      },
+      old_string: {
+        type: "string",
+        description: "Exact text to find in the file",
+        required: true,
+      },
+      new_string: {
+        type: "string",
+        description: "Replacement text",
+        required: true,
+      },
+      replace_all: {
+        type: "boolean",
+        description: "Replace all occurrences (default: false)",
+        required: false,
+      },
+    },
+    actionType: "local.file.edit",
+    riskLevel: "medium",
+  },
+  {
+    name: "local.delete_file",
+    description:
+      "Delete a file. Use for removing generated files, cleaning up temp files, or deleting obsolete code.",
+    params: {
+      path: {
+        type: "string",
+        description: "Absolute or relative path to the file",
+        required: true,
+      },
+    },
+    actionType: "local.file.delete",
+    riskLevel: "high",
+  },
+  {
+    name: "local.list_dir",
+    description:
+      "List contents of a directory. Returns files and subdirectories with basic metadata (type, size, modified date). Use for exploring project structure.",
+    params: {
+      path: {
+        type: "string",
+        description: "Directory path to list (defaults to project root)",
+        required: false,
+      },
+    },
+    actionType: "local.file.list",
+    riskLevel: "low",
+  },
+  // Git operations
+  {
+    name: "git.status",
+    description:
+      "Run git status and return the current working tree state: untracked files, staged/unstaged changes, current branch.",
+    params: {},
+    actionType: "git.status",
+    riskLevel: "low",
+  },
+  {
+    name: "git.diff",
+    description:
+      "Show git diff (staged and unstaged changes). Use to see what will be committed.",
+    params: {
+      staged: {
+        type: "boolean",
+        description: "Only show staged changes (default: false)",
+        required: false,
+      },
+      path: {
+        type: "string",
+        description: "Filter by file path",
+        required: false,
+      },
+    },
+    actionType: "git.diff",
+    riskLevel: "low",
+  },
+  {
+    name: "git.log",
+    description:
+      "Show recent commits. Use to understand commit history and message style.",
+    params: {
+      limit: {
+        type: "number",
+        description: "Number of commits (default: 10)",
+        required: false,
+      },
+      branch: {
+        type: "string",
+        description: "Branch name (default: current branch)",
+        required: false,
+      },
+    },
+    actionType: "git.log",
+    riskLevel: "low",
+  },
+  {
+    name: "git.add",
+    description:
+      "Stage files for commit. Use 'git add <files>' to stage specific files.",
+    params: {
+      files: {
+        type: "string",
+        description: "Space-separated list of files to stage",
+        required: true,
+      },
+    },
+    actionType: "git.add",
+    riskLevel: "low",
+  },
+  {
+    name: "git.commit",
+    description:
+      "Create a new commit with staged changes. Requires a commit message.",
+    params: {
+      message: {
+        type: "string",
+        description: "Commit message",
+        required: true,
+      },
+      amend: {
+        type: "boolean",
+        description: "Amend previous commit (default: false)",
+        required: false,
+      },
+    },
+    actionType: "git.commit",
+    riskLevel: "medium",
+  },
+  {
+    name: "git.push",
+    description:
+      "Push commits to remote. Use after committing to share changes.",
+    params: {
+      remote: {
+        type: "string",
+        description: "Remote name (default: origin)",
+        required: false,
+      },
+      branch: {
+        type: "string",
+        description: "Branch name (default: current branch)",
+        required: false,
+      },
+      force: {
+        type: "boolean",
+        description: "Force push (default: false — requires approval)",
+        required: false,
+      },
+    },
+    actionType: "git.push",
+    riskLevel: "high",
+  },
+  {
+    name: "git.branch",
+    description:
+      "Create, list, or switch branches. Use for feature isolation and PR workflows.",
+    params: {
+      action: {
+        type: "string",
+        description: "Action: 'list', 'create', 'checkout', 'delete'",
+        required: true,
+      },
+      name: {
+        type: "string",
+        description: "Branch name (required for create/checkout/delete)",
+        required: false,
+      },
+    },
+    actionType: "git.branch",
+    riskLevel: "medium",
+  },
   {
     name: "codebase.search",
     description:
@@ -3625,6 +3826,14 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
 
   // ==================== System Tools ====================
   {
+    name: "system.get_time",
+    description:
+      "Get the current date and time. Use this when the user asks about dates, scheduling, or when you need to know 'today' for queries like 'today's cases' or 'this week'.",
+    params: {},
+    actionType: "system.get_time",
+    riskLevel: "low",
+  },
+  {
     name: "system.check_health",
     description:
       "Check the health and integration status of the AI Assistant. Returns provider status (configured, valid, active model) and integration status (GitHub, GitLab, Jira — configured and valid). Use this to verify connections are working or to report status to the user.",
@@ -3637,6 +3846,72 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       },
     },
     actionType: "system.check_health",
+    riskLevel: "low",
+  },
+  {
+    name: "system.exec",
+    description:
+      "Execute a shell command and return stdout/stderr. Use for running tests, builds, scripts, git operations, file operations, and any CLI tool. IMPORTANT: This executes on the host system — never use for destructive operations (rm -rf, drop tables, etc.) without explicit user approval.",
+    params: {
+      command: {
+        type: "string",
+        description: "The shell command to execute",
+        required: true,
+      },
+      cwd: {
+        type: "string",
+        description: "Working directory (defaults to project root)",
+        required: false,
+      },
+      timeout: {
+        type: "number",
+        description: "Timeout in milliseconds (default: 30000)",
+        required: false,
+      },
+    },
+    actionType: "system.exec",
+    riskLevel: "high",
+  },
+  {
+    name: "system.read_env",
+    description:
+      "Read environment variables. Use to check configuration, API keys (masked), Node version, PATH, and other environment state.",
+    params: {
+      names: {
+        type: "string",
+        description: "Comma-separated list of env var names to read. If empty, returns all (secrets masked).",
+        required: false,
+      },
+    },
+    actionType: "system.read_env",
+    riskLevel: "low",
+  },
+  {
+    name: "system.disk_usage",
+    description:
+      "Check disk usage and available space. Use before large operations like downloads, builds, or data exports.",
+    params: {
+      path: {
+        type: "string",
+        description: "Path to check (defaults to project root)",
+        required: false,
+      },
+    },
+    actionType: "system.disk_usage",
+    riskLevel: "low",
+  },
+  {
+    name: "system.process_info",
+    description:
+      "Get information about running processes. Use to check if a service is running, find PIDs, or inspect resource usage.",
+    params: {
+      filter: {
+        type: "string",
+        description: "Filter processes by name (e.g., 'node', 'python')",
+        required: false,
+      },
+    },
+    actionType: "system.process_info",
     riskLevel: "low",
   },
 
@@ -5638,6 +5913,1411 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     actionType: "lsp.symbols",
     riskLevel: "low",
   },
+
+  // ==================== Tenable Cloud Tools ====================
+  // All tools accept optional accessKey/secretKey for per-customer API key overrides.
+
+  // -- Vulnerabilities --
+  {
+    name: "tenable.list_vulnerabilities",
+    description: "List vulnerabilities from the Tenable workbench with optional filters. Returns one page of results (default 100 assets per page). IMPORTANT: If the response pagination.has_more=true, there are more pages — repeat with page+1. For complete vulnerability datasets use tenable.export_vulnerabilities instead. Provide accessKey/secretKey for per-customer access.",
+    params: {
+      date_range: { type: "number", description: "Days of data to return (default: 30)", required: false },
+      num_assets: { type: "number", description: "Max assets per page (default: 100). If response has_more=true, increment page and repeat until has_more=false.", required: false },
+      page: { type: "number", description: "1-based page number (default: 1). Increment to paginate through all results when has_more=true.", required: false },
+      accessKey: { type: "string", description: "Tenable API access key (overrides global; use for per-customer queries)", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key (overrides global; use for per-customer queries)", required: false },
+    },
+    actionType: "tenable.vulnerabilities.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_vulnerability_details",
+    description: "Get detailed information about a specific vulnerability by Nessus plugin ID.",
+    params: {
+      plugin_id: { type: "number", description: "Nessus plugin ID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.vulnerabilities.get",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.export_vulnerabilities",
+    description: "Initiate an async vulnerability export job. Use this when you need ALL vulnerabilities (not just one page). Returns export_uuid — then poll tenable.get_vuln_export_status until status=FINISHED, then download EVERY chunk with tenable.download_vuln_export_chunk before writing any report.",
+    params: {
+      since: { type: "number", description: "Unix timestamp — return vulnerabilities found or updated after this time", required: false },
+      severity: { type: "array", description: "Severity filter: critical, high, medium, low, info", required: false },
+      state: { type: "array", description: "State filter: open, reopened, fixed", required: false },
+      plugin_id: { type: "array", description: "Filter by specific plugin IDs", required: false },
+      tag: { type: "array", description: "Tag filters: [{category, value}]", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.vulnerabilities.export",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_vuln_export_status",
+    description: "Check the status of a vulnerability export job. When status=FINISHED, the response lists all chunk IDs in chunks_available. CRITICAL: You MUST download every chunk listed before writing any report — partial data produces inaccurate results.",
+    params: {
+      export_uuid: { type: "string", description: "Export UUID from tenable.export_vulnerabilities", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.vulnerabilities.export_status",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.download_vuln_export_chunk",
+    description: "Download one chunk from a completed vulnerability export. CRITICAL: Download ALL chunks listed in tenable.get_vuln_export_status before summarizing or writing any report. Do not stop after 1-2 chunks — each chunk contains a distinct subset of the full dataset.",
+    params: {
+      export_uuid: { type: "string", description: "Export UUID", required: true },
+      chunk_id: { type: "number", description: "Chunk ID to download (from chunks_available in export status)", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.vulnerabilities.export_download",
+    riskLevel: "low",
+  },
+
+  // -- Assets --
+  {
+    name: "tenable.list_workbench_assets",
+    description: "List assets from the Tenable workbench with severity summary data. Returns one page of results (default 100 per page). IMPORTANT: If pagination.has_more=true, there are more assets — repeat with page+1 until has_more=false to get the full asset inventory.",
+    params: {
+      date_range: { type: "number", description: "Days of data to return", required: false },
+      num_assets: { type: "number", description: "Max assets per page (default: 100). If has_more=true, increment page and repeat.", required: false },
+      page: { type: "number", description: "1-based page number (default: 1). Increment when has_more=true to get all assets.", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.assets.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_asset_vulnerabilities",
+    description: "Get all vulnerabilities for a specific asset by UUID.",
+    params: {
+      asset_id: { type: "string", description: "Asset UUID", required: true },
+      date_range: { type: "number", description: "Days of data to return", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.assets.get_vulns",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.list_assets",
+    description: "List all assets in the Tenable inventory.",
+    params: {
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.assets.list_all",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_asset",
+    description: "Get full details for a specific asset by UUID.",
+    params: {
+      asset_id: { type: "string", description: "Asset UUID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.assets.get",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.delete_asset",
+    description: "Delete an asset from the Tenable inventory by UUID. High risk — requires approval.",
+    params: {
+      asset_id: { type: "string", description: "Asset UUID to delete", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.assets.delete",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.import_assets",
+    description: "Import assets into Tenable from a JSON array.",
+    params: {
+      assets: { type: "array", description: "Array of asset objects to import", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.assets.import",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.export_assets",
+    description: "Initiate an async asset export job. Returns export_uuid to poll for status.",
+    params: {
+      chunk_size: { type: "number", description: "Max assets per chunk (default 100)", required: false },
+      has_plugin_results: { type: "boolean", description: "Filter to assets with plugin results only", required: false },
+      tag: { type: "array", description: "Tag filters: [{category, value}]", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.assets.export",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_asset_export_status",
+    description: "Check the status of an asset export job.",
+    params: {
+      export_uuid: { type: "string", description: "Export UUID from tenable.export_assets", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.assets.export_status",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.download_asset_export_chunk",
+    description: "Download a specific chunk from a completed asset export.",
+    params: {
+      export_uuid: { type: "string", description: "Export UUID", required: true },
+      chunk_id: { type: "number", description: "Chunk ID to download", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.assets.export_download",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.bulk_delete_assets",
+    description: "Bulk delete assets matching a query. High risk — requires approval.",
+    params: {
+      query: { type: "object", description: "Asset query filter to match assets for deletion", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.assets.bulk_delete",
+    riskLevel: "high",
+  },
+
+  // -- Scans --
+  {
+    name: "tenable.list_scans",
+    description: "List all Tenable scans, optionally filtered by folder.",
+    params: {
+      folder_id: { type: "number", description: "Filter scans by folder ID", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scans.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_scan",
+    description: "Get details of a specific Tenable scan including hosts and vulnerabilities.",
+    params: {
+      scan_id: { type: "number", description: "Scan ID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scans.get",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.create_scan",
+    description: "Create a new Tenable scan with specified settings.",
+    params: {
+      template_uuid: { type: "string", description: "Scan template UUID (use tenable.list_scan_templates to find)", required: true },
+      name: { type: "string", description: "Scan name", required: true },
+      description: { type: "string", description: "Scan description", required: false },
+      targets: { type: "string", description: "Comma-separated list of targets (IP addresses, CIDRs, hostnames)", required: false },
+      policy_id: { type: "number", description: "Policy ID to use for this scan", required: false },
+      scanner_id: { type: "number", description: "Scanner ID to run the scan from", required: false },
+      schedule_enabled: { type: "boolean", description: "Whether to enable scheduled scanning", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scans.create",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.update_scan",
+    description: "Update settings for an existing Tenable scan.",
+    params: {
+      scan_id: { type: "number", description: "Scan ID to update", required: true },
+      name: { type: "string", description: "New scan name", required: false },
+      description: { type: "string", description: "New description", required: false },
+      targets: { type: "string", description: "New targets list", required: false },
+      enabled: { type: "boolean", description: "Enable or disable the scan", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scans.update",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.delete_scan",
+    description: "Delete a Tenable scan and all its results. High risk — requires approval.",
+    params: {
+      scan_id: { type: "number", description: "Scan ID to delete", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scans.delete",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.launch_scan",
+    description: "Launch a Tenable scan immediately. Optionally specify alternate targets.",
+    params: {
+      scan_id: { type: "number", description: "Scan ID to launch", required: true },
+      alt_targets: { type: "array", description: "Optional alternative targets to scan instead of configured targets", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scans.launch",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.stop_scan",
+    description: "Stop a currently running Tenable scan.",
+    params: {
+      scan_id: { type: "number", description: "Scan ID to stop", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scans.stop",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.pause_scan",
+    description: "Pause a currently running Tenable scan.",
+    params: {
+      scan_id: { type: "number", description: "Scan ID to pause", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scans.pause",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.resume_scan",
+    description: "Resume a paused Tenable scan.",
+    params: {
+      scan_id: { type: "number", description: "Scan ID to resume", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scans.resume",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.copy_scan",
+    description: "Create a copy of an existing Tenable scan.",
+    params: {
+      scan_id: { type: "number", description: "Scan ID to copy", required: true },
+      folder_id: { type: "number", description: "Destination folder ID", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scans.copy",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.export_scan",
+    description: "Export scan results in a specified format (nessus, pdf, html, csv).",
+    params: {
+      scan_id: { type: "number", description: "Scan ID to export", required: true },
+      format: { type: "string", description: "Export format: nessus, pdf, html, csv (default: nessus)", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scans.export",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.import_scan",
+    description: "Import a Nessus scan results file.",
+    params: {
+      file: { type: "string", description: "File path or token of the scan file to import", required: true },
+      folder_id: { type: "number", description: "Folder ID to import into", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scans.import",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.get_scan_history",
+    description: "Get the run history of a Tenable scan.",
+    params: {
+      scan_id: { type: "number", description: "Scan ID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scans.history",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.list_scan_templates",
+    description: "List all available Tenable scan templates.",
+    params: {
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scans.templates",
+    riskLevel: "low",
+  },
+
+  // -- Policies --
+  {
+    name: "tenable.list_policies",
+    description: "List all Tenable scan policies.",
+    params: {
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.policies.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_policy",
+    description: "Get details of a specific Tenable scan policy.",
+    params: {
+      policy_id: { type: "number", description: "Policy ID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.policies.get",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.create_policy",
+    description: "Create a new Tenable scan policy.",
+    params: {
+      uuid: { type: "string", description: "Template UUID to base the policy on", required: true },
+      name: { type: "string", description: "Policy name", required: true },
+      description: { type: "string", description: "Policy description", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.policies.create",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.update_policy",
+    description: "Update an existing Tenable scan policy.",
+    params: {
+      policy_id: { type: "number", description: "Policy ID to update", required: true },
+      name: { type: "string", description: "New policy name", required: false },
+      description: { type: "string", description: "New description", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.policies.update",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.delete_policy",
+    description: "Delete a Tenable scan policy. High risk — requires approval.",
+    params: {
+      policy_id: { type: "number", description: "Policy ID to delete", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.policies.delete",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.copy_policy",
+    description: "Create a copy of an existing Tenable scan policy.",
+    params: {
+      policy_id: { type: "number", description: "Policy ID to copy", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.policies.copy",
+    riskLevel: "low",
+  },
+
+  // -- Networks --
+  {
+    name: "tenable.list_networks",
+    description: "List all Tenable networks (network segregation for scanner/asset organization).",
+    params: {
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.networks.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_network",
+    description: "Get details of a specific Tenable network.",
+    params: {
+      network_id: { type: "string", description: "Network UUID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.networks.get",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.create_network",
+    description: "Create a new Tenable network.",
+    params: {
+      name: { type: "string", description: "Network name", required: true },
+      description: { type: "string", description: "Network description", required: false },
+      assets_ttl_days: { type: "number", description: "Asset time-to-live in days", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.networks.create",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.update_network",
+    description: "Update an existing Tenable network.",
+    params: {
+      network_id: { type: "string", description: "Network UUID to update", required: true },
+      name: { type: "string", description: "New network name", required: false },
+      description: { type: "string", description: "New description", required: false },
+      assets_ttl_days: { type: "number", description: "New asset TTL in days", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.networks.update",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.delete_network",
+    description: "Delete a Tenable network. High risk — requires approval.",
+    params: {
+      network_id: { type: "string", description: "Network UUID to delete", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.networks.delete",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.list_network_scanners",
+    description: "List scanners assigned to a specific Tenable network.",
+    params: {
+      network_id: { type: "string", description: "Network UUID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.networks.scanners",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.assign_scanner_to_network",
+    description: "Assign a scanner to a Tenable network.",
+    params: {
+      network_id: { type: "string", description: "Network UUID", required: true },
+      scanner_id: { type: "number", description: "Scanner ID to assign", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.networks.assign_scanner",
+    riskLevel: "medium",
+  },
+
+  // -- Tags --
+  {
+    name: "tenable.list_tag_categories",
+    description: "List all Tenable tag categories.",
+    params: {
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.tags.categories.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.create_tag_category",
+    description: "Create a new Tenable tag category.",
+    params: {
+      name: { type: "string", description: "Tag category name", required: true },
+      description: { type: "string", description: "Tag category description", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.tags.categories.create",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.update_tag_category",
+    description: "Update a Tenable tag category.",
+    params: {
+      category_uuid: { type: "string", description: "Tag category UUID", required: true },
+      name: { type: "string", description: "New category name", required: false },
+      description: { type: "string", description: "New description", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.tags.categories.update",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.delete_tag_category",
+    description: "Delete a Tenable tag category and all its values. High risk — requires approval.",
+    params: {
+      category_uuid: { type: "string", description: "Tag category UUID to delete", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.tags.categories.delete",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.list_tag_values",
+    description: "List Tenable tag values, optionally filtered by category UUID.",
+    params: {
+      category_uuid: { type: "string", description: "Filter values by category UUID", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.tags.values.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.create_tag_value",
+    description: "Create a new tag value within a category.",
+    params: {
+      category_uuid: { type: "string", description: "Tag category UUID", required: true },
+      value: { type: "string", description: "Tag value", required: true },
+      description: { type: "string", description: "Tag value description", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.tags.values.create",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.update_tag_value",
+    description: "Update a Tenable tag value.",
+    params: {
+      value_uuid: { type: "string", description: "Tag value UUID", required: true },
+      value: { type: "string", description: "New tag value", required: false },
+      description: { type: "string", description: "New description", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.tags.values.update",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.delete_tag_value",
+    description: "Delete a Tenable tag value.",
+    params: {
+      value_uuid: { type: "string", description: "Tag value UUID to delete", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.tags.values.delete",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.assign_tags_to_assets",
+    description: "Assign one or more tag values to a list of assets.",
+    params: {
+      asset_uuids: { type: "array", description: "Array of asset UUIDs", required: true },
+      tag_uuids: { type: "array", description: "Array of tag value UUIDs to assign", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.tags.assign",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.remove_tags_from_assets",
+    description: "Remove tag values from a list of assets.",
+    params: {
+      asset_uuids: { type: "array", description: "Array of asset UUIDs", required: true },
+      tag_uuids: { type: "array", description: "Array of tag value UUIDs to remove", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.tags.remove",
+    riskLevel: "medium",
+  },
+
+  // -- Users --
+  {
+    name: "tenable.list_users",
+    description: "List all Tenable users in the container.",
+    params: {
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.users.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_user",
+    description: "Get details of a specific Tenable user.",
+    params: {
+      user_id: { type: "number", description: "User ID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.users.get",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.create_user",
+    description: "Create a new Tenable user account.",
+    params: {
+      username: { type: "string", description: "Username (email)", required: true },
+      password: { type: "string", description: "Initial password", required: true },
+      permissions: { type: "number", description: "Permission level: 16=basic, 32=scan operator, 64=standard, 96=administrator", required: true },
+      name: { type: "string", description: "Display name", required: false },
+      email: { type: "string", description: "Email address", required: false },
+      type: { type: "string", description: "Account type: local, ldap, saml", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.users.create",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.update_user",
+    description: "Update a Tenable user account.",
+    params: {
+      user_id: { type: "number", description: "User ID to update", required: true },
+      permissions: { type: "number", description: "New permission level", required: false },
+      name: { type: "string", description: "New display name", required: false },
+      email: { type: "string", description: "New email address", required: false },
+      enabled: { type: "boolean", description: "Enable or disable the account", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.users.update",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.delete_user",
+    description: "Delete a Tenable user account. High risk — requires approval.",
+    params: {
+      user_id: { type: "number", description: "User ID to delete", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.users.delete",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.get_user_keys",
+    description: "Retrieve a Tenable user's API access key and secret key.",
+    params: {
+      user_id: { type: "number", description: "User ID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.users.keys",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.enable_user",
+    description: "Enable a previously disabled Tenable user account.",
+    params: {
+      user_id: { type: "number", description: "User ID to enable", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.users.enable",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.disable_user",
+    description: "Disable a Tenable user account.",
+    params: {
+      user_id: { type: "number", description: "User ID to disable", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.users.disable",
+    riskLevel: "high",
+  },
+
+  // -- Groups --
+  {
+    name: "tenable.list_groups",
+    description: "List all Tenable user groups.",
+    params: {
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.groups.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.create_group",
+    description: "Create a new Tenable user group.",
+    params: {
+      name: { type: "string", description: "Group name", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.groups.create",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.update_group",
+    description: "Update a Tenable user group.",
+    params: {
+      group_id: { type: "number", description: "Group ID to update", required: true },
+      name: { type: "string", description: "New group name", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.groups.update",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.delete_group",
+    description: "Delete a Tenable user group. High risk — requires approval.",
+    params: {
+      group_id: { type: "number", description: "Group ID to delete", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.groups.delete",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.list_group_users",
+    description: "List users in a Tenable user group.",
+    params: {
+      group_id: { type: "number", description: "Group ID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.groups.users.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.add_user_to_group",
+    description: "Add a Tenable user to a group.",
+    params: {
+      group_id: { type: "number", description: "Group ID", required: true },
+      user_id: { type: "number", description: "User ID to add", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.groups.users.add",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.remove_user_from_group",
+    description: "Remove a Tenable user from a group.",
+    params: {
+      group_id: { type: "number", description: "Group ID", required: true },
+      user_id: { type: "number", description: "User ID to remove", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.groups.users.remove",
+    riskLevel: "medium",
+  },
+
+  // -- Scanners --
+  {
+    name: "tenable.list_scanners",
+    description: "List all Tenable scanners.",
+    params: {
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scanners.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_scanner",
+    description: "Get details of a specific Tenable scanner.",
+    params: {
+      scanner_id: { type: "number", description: "Scanner ID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scanners.get",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.update_scanner",
+    description: "Update scanner settings.",
+    params: {
+      scanner_id: { type: "number", description: "Scanner ID to update", required: true },
+      name: { type: "string", description: "New scanner name", required: false },
+      link_permission: { type: "boolean", description: "Allow/deny scanner linking", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scanners.update",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.delete_scanner",
+    description: "Delete a Tenable scanner. High risk — requires approval.",
+    params: {
+      scanner_id: { type: "number", description: "Scanner ID to delete", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scanners.delete",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.toggle_scanner_link",
+    description: "Toggle the linked state of a Tenable scanner (link or unlink).",
+    params: {
+      scanner_id: { type: "number", description: "Scanner ID", required: true },
+      linked: { type: "boolean", description: "true to link, false to unlink", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.scanners.link",
+    riskLevel: "medium",
+  },
+
+  // -- Agents --
+  {
+    name: "tenable.list_agents",
+    description: "List all Tenable agents with optional pagination.",
+    params: {
+      offset: { type: "number", description: "Pagination offset", required: false },
+      limit: { type: "number", description: "Max agents to return", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.agents.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_agent",
+    description: "Get details of a specific Tenable agent.",
+    params: {
+      agent_id: { type: "number", description: "Agent ID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.agents.get",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.delete_agent",
+    description: "Delete a Tenable agent from a scanner. High risk — requires approval.",
+    params: {
+      scanner_id: { type: "number", description: "Scanner ID the agent belongs to", required: true },
+      agent_id: { type: "number", description: "Agent ID to delete", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.agents.delete",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.unlink_agent",
+    description: "Unlink a Tenable agent from a scanner.",
+    params: {
+      scanner_id: { type: "number", description: "Scanner ID the agent is linked to", required: true },
+      agent_id: { type: "number", description: "Agent ID to unlink", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.agents.unlink",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.bulk_delete_agents",
+    description: "Bulk delete multiple agents from a scanner. High risk — requires approval.",
+    params: {
+      scanner_id: { type: "number", description: "Scanner ID", required: true },
+      agent_ids: { type: "array", description: "Array of agent IDs to delete", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.agents.bulk_delete",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.bulk_unlink_agents",
+    description: "Bulk unlink multiple agents from a scanner.",
+    params: {
+      scanner_id: { type: "number", description: "Scanner ID", required: true },
+      agent_ids: { type: "array", description: "Array of agent IDs to unlink", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.agents.bulk_unlink",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.list_agent_groups",
+    description: "List all agent groups for a scanner.",
+    params: {
+      scanner_id: { type: "number", description: "Scanner ID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.agent_groups.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.create_agent_group",
+    description: "Create a new agent group for a scanner.",
+    params: {
+      scanner_id: { type: "number", description: "Scanner ID", required: true },
+      name: { type: "string", description: "Agent group name", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.agent_groups.create",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.update_agent_group",
+    description: "Update an agent group name.",
+    params: {
+      scanner_id: { type: "number", description: "Scanner ID", required: true },
+      group_id: { type: "number", description: "Agent group ID to update", required: true },
+      name: { type: "string", description: "New group name", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.agent_groups.update",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.delete_agent_group",
+    description: "Delete an agent group from a scanner. High risk — requires approval.",
+    params: {
+      scanner_id: { type: "number", description: "Scanner ID", required: true },
+      group_id: { type: "number", description: "Agent group ID to delete", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.agent_groups.delete",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.add_agent_to_group",
+    description: "Add an agent to an agent group.",
+    params: {
+      scanner_id: { type: "number", description: "Scanner ID", required: true },
+      group_id: { type: "number", description: "Agent group ID", required: true },
+      agent_id: { type: "number", description: "Agent ID to add", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.agent_groups.add_agent",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.remove_agent_from_group",
+    description: "Remove an agent from an agent group.",
+    params: {
+      scanner_id: { type: "number", description: "Scanner ID", required: true },
+      group_id: { type: "number", description: "Agent group ID", required: true },
+      agent_id: { type: "number", description: "Agent ID to remove", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.agent_groups.remove_agent",
+    riskLevel: "medium",
+  },
+
+  // -- Exclusions --
+  {
+    name: "tenable.list_exclusions",
+    description: "List all scan exclusions (IP ranges/hosts excluded from scanning).",
+    params: {
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.exclusions.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.create_exclusion",
+    description: "Create a scan exclusion to prevent specific targets from being scanned.",
+    params: {
+      name: { type: "string", description: "Exclusion name", required: true },
+      members: { type: "string", description: "Comma-separated list of IPs, CIDRs, or hostnames to exclude", required: true },
+      description: { type: "string", description: "Exclusion description", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.exclusions.create",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.get_exclusion",
+    description: "Get details of a specific scan exclusion.",
+    params: {
+      exclusion_id: { type: "number", description: "Exclusion ID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.exclusions.get",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.update_exclusion",
+    description: "Update an existing scan exclusion.",
+    params: {
+      exclusion_id: { type: "number", description: "Exclusion ID to update", required: true },
+      name: { type: "string", description: "New exclusion name", required: false },
+      members: { type: "string", description: "New comma-separated list of excluded targets", required: false },
+      description: { type: "string", description: "New description", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.exclusions.update",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.delete_exclusion",
+    description: "Delete a scan exclusion.",
+    params: {
+      exclusion_id: { type: "number", description: "Exclusion ID to delete", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.exclusions.delete",
+    riskLevel: "medium",
+  },
+
+  // -- Credentials --
+  {
+    name: "tenable.list_credentials",
+    description: "List managed scan credentials.",
+    params: {
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.credentials.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_credential",
+    description: "Get details of a specific managed credential.",
+    params: {
+      credential_uuid: { type: "string", description: "Credential UUID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.credentials.get",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.create_credential",
+    description: "Create a new managed scan credential.",
+    params: {
+      name: { type: "string", description: "Credential name", required: true },
+      description: { type: "string", description: "Credential description", required: false },
+      type: { type: "string", description: "Credential type (e.g., SSH, Windows)", required: true },
+      settings: { type: "object", description: "Credential-specific settings object", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.credentials.create",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.update_credential",
+    description: "Update an existing managed credential.",
+    params: {
+      credential_uuid: { type: "string", description: "Credential UUID to update", required: true },
+      name: { type: "string", description: "New credential name", required: false },
+      description: { type: "string", description: "New description", required: false },
+      settings: { type: "object", description: "Updated credential settings", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.credentials.update",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.delete_credential",
+    description: "Delete a managed credential. High risk — requires approval.",
+    params: {
+      credential_uuid: { type: "string", description: "Credential UUID to delete", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.credentials.delete",
+    riskLevel: "high",
+  },
+
+  // -- Plugins --
+  {
+    name: "tenable.list_plugin_families",
+    description: "List all Nessus plugin families.",
+    params: {
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.plugins.families",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_plugin_family",
+    description: "Get details of a plugin family including its member plugins.",
+    params: {
+      family_id: { type: "number", description: "Plugin family ID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.plugins.family",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_plugin",
+    description: "Get details of a specific Nessus plugin by ID.",
+    params: {
+      plugin_id: { type: "number", description: "Plugin ID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.plugins.get",
+    riskLevel: "low",
+  },
+
+  // -- Alerts --
+  {
+    name: "tenable.list_alerts",
+    description: "List all Tenable alerts.",
+    params: {
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.alerts.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_alert",
+    description: "Get details of a specific Tenable alert.",
+    params: {
+      alert_id: { type: "number", description: "Alert ID", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.alerts.get",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.create_alert",
+    description: "Create a new Tenable alert for vulnerability notifications.",
+    params: {
+      name: { type: "string", description: "Alert name", required: true },
+      enabled: { type: "boolean", description: "Whether the alert is active", required: false },
+      filters: { type: "object", description: "Alert trigger filters", required: false },
+      action: { type: "array", description: "Alert actions (email, syslog, etc.)", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.alerts.create",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.update_alert",
+    description: "Update an existing Tenable alert.",
+    params: {
+      alert_id: { type: "number", description: "Alert ID to update", required: true },
+      name: { type: "string", description: "New alert name", required: false },
+      enabled: { type: "boolean", description: "Enable or disable the alert", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.alerts.update",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.delete_alert",
+    description: "Delete a Tenable alert.",
+    params: {
+      alert_id: { type: "number", description: "Alert ID to delete", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.alerts.delete",
+    riskLevel: "medium",
+  },
+  {
+    name: "tenable.execute_alert",
+    description: "Manually trigger a Tenable alert to fire its actions immediately.",
+    params: {
+      alert_id: { type: "number", description: "Alert ID to execute", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.alerts.execute",
+    riskLevel: "medium",
+  },
+
+  // -- Audit Log --
+  {
+    name: "tenable.get_audit_log",
+    description: "Get Tenable platform audit log events for compliance and activity monitoring.",
+    params: {
+      limit: { type: "number", description: "Max events to return (default 100)", required: false },
+      offset: { type: "number", description: "Pagination offset", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.audit_log.get",
+    riskLevel: "low",
+  },
+
+  // -- Access Groups --
+  {
+    name: "tenable.list_access_groups",
+    description: "List Tenable access groups (control which assets/scans users can see).",
+    params: {
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.access_groups.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_access_group",
+    description: "Get details of a specific Tenable access group.",
+    params: {
+      group_id: { type: "string", description: "Access group ID (UUID)", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.access_groups.get",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.create_access_group",
+    description: "Create a new Tenable access group.",
+    params: {
+      name: { type: "string", description: "Access group name", required: true },
+      rules: { type: "array", description: "Asset filter rules for this group", required: false },
+      principals: { type: "array", description: "Users/groups granted access", required: false },
+      all_users: { type: "boolean", description: "Grant access to all users", required: false },
+      all_assets: { type: "boolean", description: "Include all assets", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.access_groups.create",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.update_access_group",
+    description: "Update an existing Tenable access group.",
+    params: {
+      group_id: { type: "string", description: "Access group ID (UUID) to update", required: true },
+      name: { type: "string", description: "New group name", required: false },
+      rules: { type: "array", description: "Updated asset filter rules", required: false },
+      principals: { type: "array", description: "Updated principals", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.access_groups.update",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.delete_access_group",
+    description: "Delete a Tenable access group. High risk — requires approval.",
+    params: {
+      group_id: { type: "string", description: "Access group ID (UUID) to delete", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.access_groups.delete",
+    riskLevel: "high",
+  },
+
+  // -- Remediation Rules --
+  {
+    name: "tenable.list_remediation_rules",
+    description: "List vulnerability recast/acceptance rules (remediation rules).",
+    params: {
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.remediation_rules.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.create_remediation_rule",
+    description: "Create a vulnerability recast rule to change severity or accept a vulnerability.",
+    params: {
+      rule_type: { type: "string", description: "Rule type: recast_critical, recast_high, recast_medium, recast_low, recast_info, accept_risk", required: true },
+      description: { type: "string", description: "Reason for the rule", required: true },
+      plugin_id: { type: "number", description: "Nessus plugin ID to apply rule to", required: true },
+      target_type: { type: "string", description: "Target scope: all, network, asset_list", required: false },
+      target_id: { type: "string", description: "Target ID (network UUID or asset list ID)", required: false },
+      new_severity: { type: "number", description: "New severity level (0=info, 1=low, 2=medium, 3=high, 4=critical)", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.remediation_rules.create",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.delete_remediation_rule",
+    description: "Delete a vulnerability recast/acceptance rule.",
+    params: {
+      rule_id: { type: "string", description: "Remediation rule ID to delete", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.remediation_rules.delete",
+    riskLevel: "high",
+  },
+
+  // -- Container Security --
+  {
+    name: "tenable.list_container_images",
+    description: "List container images in Tenable Container Security.",
+    params: {
+      offset: { type: "number", description: "Pagination offset", required: false },
+      limit: { type: "number", description: "Max images to return", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.containers.list",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_container_report",
+    description: "Get the security report for a specific container image.",
+    params: {
+      image_id: { type: "string", description: "Container image ID or digest", required: true },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.containers.report",
+    riskLevel: "low",
+  },
+
+  // -- Server --
+  {
+    name: "tenable.get_server_status",
+    description: "Get Tenable platform server status and health information.",
+    params: {
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.server.status",
+    riskLevel: "low",
+  },
+  {
+    name: "tenable.get_server_properties",
+    description: "Get Tenable server properties including version and feature flags.",
+    params: {
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.server.properties",
+    riskLevel: "low",
+  },
 ];
 
 /**
@@ -6379,8 +8059,28 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "lsp.references")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "lsp.symbols")!,
 
-  // System health
+  // System tools
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "system.get_time")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "system.check_health")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "system.exec")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "system.read_env")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "system.disk_usage")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "system.process_info")!,
+
+  // Local file operations
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "local.write_file")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "local.edit_file")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "local.delete_file")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "local.list_dir")!,
+
+  // Git operations
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "git.status")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "git.diff")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "git.log")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "git.add")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "git.commit")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "git.push")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "git.branch")!,
 
   // Jitbit support/customer intelligence core
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.search_tickets")!,
@@ -6519,6 +8219,7 @@ export function getToolInventorySummary(mode: string): string {
     { name: "GitHub", prefix: "github", writeActions: ["create issue", "create PR", "create branch"] },
     { name: "GitLab", prefix: "gitlab", writeActions: ["pipeline/merge actions"] },
     { name: "HAWK IR", prefix: "hawk_ir", writeActions: ["case de-escalation", "case escalation", "case assignment", "host quarantine", "host unquarantine"] },
+    { name: "Tenable", prefix: "tenable", writeActions: ["scan launch", "scan management", "asset deletion", "user management", "credential management"] },
     { name: "Jira", prefix: "jira", writeActions: ["advanced fields"] },
     { name: "Jitbit", prefix: "jitbit", writeActions: ["ticket comments", "ticket lifecycle", "asset management", "tags", "time tracking", "custom fields", "automation"] },
     { name: "Code Review", prefix: "code_review", writeActions: ["create work item from review"] },
@@ -6567,6 +8268,7 @@ export function getToolInventory(mode: string): string {
     { name: "GitHub", prefix: "github", writeActions: ["create issue", "create PR", "create branch"] },
     { name: "GitLab", prefix: "gitlab", writeActions: ["pipeline/merge actions"] },
     { name: "HAWK IR", prefix: "hawk_ir", writeActions: ["case de-escalation", "case escalation", "case assignment", "host quarantine", "host unquarantine"] },
+    { name: "Tenable", prefix: "tenable", writeActions: ["scan launch", "scan management", "asset deletion", "user management", "credential management"] },
     { name: "Jira", prefix: "jira", writeActions: ["advanced fields"] },
     { name: "Jitbit", prefix: "jitbit", writeActions: ["ticket comments", "ticket lifecycle", "asset management", "tags", "time tracking", "custom fields", "automation"] },
     { name: "Code Review", prefix: "code_review", writeActions: ["create work item from review"] },

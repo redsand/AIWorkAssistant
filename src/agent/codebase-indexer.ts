@@ -3,7 +3,6 @@ import * as fs from "fs";
 import * as path from "path";
 import { env } from "../config/env";
 import { embeddingService, cosineSimilarity } from "./embedding-service";
-import { ingestSingleCodebaseFile } from "../context-engine/claimkit-ingestion";
 
 export interface IndexedFile {
   path: string;
@@ -598,10 +597,6 @@ class CodebaseIndexer {
     }
 
     const file: IndexedFile = { path: relativePath, language, content };
-
-    ingestSingleCodebaseFile(file).catch(err =>
-      console.warn(`[CodebaseIndexer] Incremental ClaimKit ingestion failed for ${relativePath}:`, err),
-    );
 
     return file;
   }

@@ -455,11 +455,34 @@
       });
   }
 
+  // ── Clear button ─────────────────────────────────────────────────
+
+  function initClearButton() {
+    var btn = document.getElementById("clear-btn");
+    if (!btn) return;
+    btn.addEventListener("click", async function () {
+      if (!confirm("Clear all comparison data? This cannot be undone.")) return;
+      btn.disabled = true;
+      btn.textContent = "Clearing…";
+      try {
+        var res = await fetch("/api/comparison/runs", { method: "DELETE" });
+        if (!res.ok) throw new Error("Server error " + res.status);
+        await loadDashboard();
+      } catch (e) {
+        showError("Clear failed: " + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg> Clear Data';
+      }
+    });
+  }
+
   // ── Init ─────────────────────────────────────────────────────────
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", loadDashboard);
+    document.addEventListener("DOMContentLoaded", function () { loadDashboard(); initClearButton(); });
   } else {
     loadDashboard();
+    initClearButton();
   }
 })();

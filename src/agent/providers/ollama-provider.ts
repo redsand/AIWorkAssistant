@@ -12,6 +12,10 @@ import {
   ToolCall,
 } from "./types";
 
+function sanitizeToolName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
 export class OllamaProvider extends AIProvider {
   readonly name = "ollama";
   readonly capabilities: ProviderCapabilities = {
@@ -23,9 +27,35 @@ export class OllamaProvider extends AIProvider {
   };
 
   private isContextOverflowRetry = false;
+  private _toolNameMap = new Map<string, string>();
 
   constructor(config: ProviderConfig) {
     super(config);
+  }
+
+  protected override buildRequestBody(request: ChatRequest): Record<string, unknown> {
+    this._toolNameMap.clear();
+
+    const sanitizedTools = request.tools?.map((tool) => {
+      const original = tool.function.name;
+      const sanitized = sanitizeToolName(original);
+      if (sanitized !== original) this._toolNameMap.set(sanitized, original);
+      return { ...tool, function: { ...tool.function, name: sanitized } };
+    });
+
+    const sanitizedMessages = request.messages.map((msg) => {
+      if (msg.role !== "assistant" || !msg.tool_calls?.length) return msg;
+      return {
+        ...msg,
+        tool_calls: msg.tool_calls.map((tc) => {
+          const sanitized = sanitizeToolName(tc.function.name);
+          if (sanitized !== tc.function.name) this._toolNameMap.set(sanitized, tc.function.name);
+          return { ...tc, function: { ...tc.function, name: sanitized } };
+        }),
+      };
+    });
+
+    return super.buildRequestBody({ ...request, tools: sanitizedTools, messages: sanitizedMessages });
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
@@ -295,7 +325,14 @@ export class OllamaProvider extends AIProvider {
             }
 
             if (finishReason === "tool_calls" && toolCallAccumulator.length > 0) {
-              yield { type: "tool_calls", toolCalls: [...toolCallAccumulator] };
+              const mappedCalls = toolCallAccumulator.map((tc) => ({
+                ...tc,
+                function: {
+                  ...tc.function,
+                  name: this._toolNameMap.get(tc.function.name) ?? tc.function.name,
+                },
+              }));
+              yield { type: "tool_calls", toolCalls: mappedCalls };
               toolCallAccumulator.length = 0;
             }
           } catch {
@@ -339,20 +376,21 @@ export class OllamaProvider extends AIProvider {
     }
   }
 
-  protected parseToolCalls(toolCalls: any[]): ToolCall[] {
-    return toolCalls.map((tc, index) => ({
-      id:
-        tc.id ||
-        `call_${randomUUID().replace(/-/g, "").substring(0, 24)}_${index}`,
-      type: tc.type || ("function" as const),
-      function: {
-        name: tc.function?.name || "",
-        arguments:
-          typeof tc.function?.arguments === "string"
+  protected override parseToolCalls(toolCalls: any[]): ToolCall[] {
+    return toolCalls.map((tc, index) => {
+      const sanitizedName = tc.function?.name || "";
+      const originalName = this._toolNameMap.get(sanitizedName) ?? sanitizedName;
+      return {
+        id: tc.id || `call_${randomUUID().replace(/-/g, "").substring(0, 24)}_${index}`,
+        type: tc.type || ("function" as const),
+        function: {
+          name: originalName,
+          arguments: typeof tc.function?.arguments === "string"
             ? tc.function.arguments
             : JSON.stringify(tc.function?.arguments || {}),
-      },
-    }));
+        },
+      };
+    });
   }
 
   private getRetryDelay(attempt: number): number {

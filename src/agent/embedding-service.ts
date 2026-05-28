@@ -22,10 +22,14 @@ class EmbeddingService {
     this.provider = env.AI_PROVIDER;
     this.model = env.RAG_EMBEDDING_MODEL;
 
-    // Fallback: OpenAI-compatible endpoint for when the primary provider
-    // doesn't support embeddings (e.g. Ollama without nomic-embed-text)
-    this.fallbackBaseUrl = env.OPENCODE_API_URL;
-    this.fallbackApiKey = env.OPENCODE_API_KEY;
+    // Fallback: prefer OpenAI when a key is available; otherwise use OpenCode endpoint
+    if (env.OPENAI_API_KEY) {
+      this.fallbackBaseUrl = env.OPENAI_API_URL;
+      this.fallbackApiKey = env.OPENAI_API_KEY;
+    } else {
+      this.fallbackBaseUrl = env.OPENCODE_API_URL;
+      this.fallbackApiKey = env.OPENCODE_API_KEY;
+    }
 
     switch (this.provider) {
       case "ollama":

@@ -1,8 +1,6 @@
 import { claimKitAdapter } from "./adapters/claimkit-adapter";
 import { knowledgeStore } from "../agent/knowledge-store";
 import type { KnowledgeEntry } from "../agent/knowledge-store";
-import { codebaseIndexer } from "../agent/codebase-indexer";
-import type { IndexedFile } from "../agent/codebase-indexer";
 import { knowledgeGraph } from "../agent/knowledge-graph";
 import type { KGNode, KGEdge } from "../agent/knowledge-graph";
 
@@ -27,6 +25,7 @@ export async function ingestSingleKnowledgeEntry(entry: KnowledgeEntry): Promise
       docId: entry.id,
       title: entry.title,
       source: "knowledge",
+      trustTier: "curated",
       tags: entry.tags ?? [],
     });
     ingestedIds.add(`knowledge:${entry.id}`);
@@ -35,22 +34,6 @@ export async function ingestSingleKnowledgeEntry(entry: KnowledgeEntry): Promise
   }
 }
 
-export async function ingestSingleCodebaseFile(file: IndexedFile): Promise<void> {
-  if (!claimKitAdapter.isAvailable()) return;
-  if (ingestedIds.has(`codebase:${file.path}`)) return;
-
-  try {
-    const text = `File: ${file.path}\n\n${file.content}`;
-    await claimKitAdapter.ingest(text, {
-      path: file.path,
-      source: "codebase",
-      language: file.language,
-    });
-    ingestedIds.add(`codebase:${file.path}`);
-  } catch (err) {
-    console.warn(`[ClaimKit Ingestion] Failed to ingest file ${file.path}:`, err);
-  }
-}
 
 export async function ingestSingleGraphNode(node: KGNode): Promise<void> {
   if (!claimKitAdapter.isAvailable()) return;
@@ -62,6 +45,7 @@ export async function ingestSingleGraphNode(node: KGNode): Promise<void> {
       entityId: node.id,
       entityType: node.type,
       source: "graph",
+      trustTier: "curated",
     });
     ingestedIds.add(`graph-node:${node.id}`);
   } catch (err) {
@@ -79,6 +63,7 @@ export async function ingestSingleGraphEdge(edge: KGEdge): Promise<void> {
       relationshipId: edge.id,
       relationshipType: edge.type,
       source: "graph",
+      trustTier: "curated",
     });
     ingestedIds.add(`graph-edge:${edge.id}`);
   } catch (err) {
@@ -110,6 +95,7 @@ export async function ingestKnowledgeStore(): Promise<IngestionStats> {
         docId: doc.id,
         title: doc.title,
         source: "knowledge",
+        trustTier: "curated",
         tags: doc.tags ?? [],
       });
       stats.sourceIds.push(sourceId);
@@ -126,44 +112,6 @@ export async function ingestKnowledgeStore(): Promise<IngestionStats> {
   return stats;
 }
 
-export async function ingestCodebaseStore(): Promise<IngestionStats> {
-  const start = Date.now();
-  const stats: IngestionStats = { total: 0, ingested: 0, skipped: 0, errors: 0, sourceIds: [], durationMs: 0 };
-
-  if (!claimKitAdapter.isAvailable()) {
-    console.warn("[ClaimKit Ingestion] ClaimKit not available, skipping codebase ingestion");
-    return stats;
-  }
-
-  const files: IndexedFile[] = codebaseIndexer.getIndexedFiles();
-  stats.total = files.length;
-
-  for (const file of files) {
-    try {
-      const key = `codebase:${file.path}`;
-      if (ingestedIds.has(key)) {
-        stats.skipped++;
-        continue;
-      }
-      const text = `File: ${file.path}\n\n${file.content}`;
-      const { sourceId } = await claimKitAdapter.ingest(text, {
-        path: file.path,
-        source: "codebase",
-        language: file.language,
-      });
-      stats.sourceIds.push(sourceId);
-      stats.ingested++;
-      ingestedIds.add(key);
-    } catch (err) {
-      console.warn(`[ClaimKit Ingestion] Failed to ingest file ${file.path}:`, err);
-      stats.errors++;
-    }
-  }
-
-  stats.durationMs = Date.now() - start;
-  console.log(`[ClaimKit Ingestion] Codebase: ${stats.ingested}/${stats.total} ingested (${stats.errors} errors) in ${stats.durationMs}ms`);
-  return stats;
-}
 
 export async function ingestGraphStore(): Promise<IngestionStats> {
   const start = Date.now();
@@ -190,6 +138,7 @@ export async function ingestGraphStore(): Promise<IngestionStats> {
         entityId: node.id,
         entityType: node.type,
         source: "graph",
+        trustTier: "curated",
       });
       stats.sourceIds.push(sourceId);
       stats.ingested++;
@@ -212,6 +161,7 @@ export async function ingestGraphStore(): Promise<IngestionStats> {
         relationshipId: edge.id,
         relationshipType: edge.type,
         source: "graph",
+        trustTier: "curated",
       });
       stats.sourceIds.push(sourceId);
       stats.ingested++;

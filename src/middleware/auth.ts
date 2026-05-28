@@ -15,26 +15,18 @@ const PUBLIC_PATHS = new Set([
   "/calendar/subscribe",
   "/capabilities",
   "/musician",
-  "/comparison",
-  "/dashboard",
   "/kanban",
-  "/api/comparison/stats",
-  "/api/comparison/trends",
-  "/api/comparison/runs",
-  "/api/repo-dashboard/repos",
-  "/api/repo-dashboard/issues",
-  "/api/repo-dashboard/dependencies",
-  "/api/repo-dashboard/sprints",
-  "/api/repo-dashboard/burndown",
+  // Kanban board view — read-only display, no sensitive config
   "/api/kanban/board",
   "/api/kanban/stream",
   "/api/kanban/agents",
   "/api/tools",
   "/api/tools/categories",
-  "/api/agents",
   "/api/push-vapid-key",
   "/acknowledge",
   "/manifest.json",
+  // ClaimKit comparison dashboard — read-only stats, no sensitive config
+  "/comparison",
 ]);
 
 const SESSION_TOKEN_BYTES = 32;
@@ -146,15 +138,10 @@ export async function authMiddleware(fastify: FastifyInstance) {
         return;
       }
 
-      // Kanban read endpoints — board data, SSE stream, agent list
-      // POST /api/kanban/cards/:id/start|stop remain protected
-      if (
-        request.url.startsWith("/api/kanban/board") ||
-        request.url.startsWith("/api/kanban/stream") ||
-        request.url.startsWith("/api/kanban/agents")
-      ) {
+      if (request.url.startsWith("/api/comparison")) {
         return;
       }
+
 
       if (
         request.url === "/" ||

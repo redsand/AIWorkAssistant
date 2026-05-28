@@ -13,6 +13,7 @@ import { ctoDailyCommandCenter } from "../cto/daily-command-center";
 import { personalOsBriefGenerator } from "../personal-os/brief-generator";
 import { productChiefOfStaff } from "../product/product-chief-of-staff";
 import { hawkIrService } from "../integrations/hawk-ir/hawk-ir-service";
+import { tenableCloudService } from "../integrations/tenable-cloud/tenable-cloud-service";
 import { roadmapDatabase } from "../roadmap/database";
 import { auditLogger } from "../audit/logger";
 import { env } from "../config/env";
@@ -68,6 +69,7 @@ export interface ToolCallResult {
   requiresApproval?: boolean;
   approvalId?: string;
   dryRun?: boolean;
+  message?: string;
 }
 
 const recentDiagnostics = new Map<string, DiagnosticItem[]>();
@@ -2554,10 +2556,19 @@ async function handleDiscoverTools(
   const newTools = tools.filter((t) => !loadedNames.has(t.name));
   const alreadyLoaded = tools.length - newTools.length;
 
-  const message =
-    alreadyLoaded > 0
-      ? `Loaded ${newTools.length} new '${category}' tools (${alreadyLoaded} already loaded). You can now use them.`
-      : `Loaded ${tools.length} '${category}' tools. You can now use them.`;
+  if (newTools.length === 0) {
+    return {
+      success: true,
+      data: {
+        message: `All ${tools.length} '${category}' tools are already loaded in your tool set. No need to call discover_tools again for this category.`,
+        tools: [],
+      },
+    };
+  }
+
+  const message = alreadyLoaded > 0
+    ? `Loaded ${newTools.length} new '${category}' tools (${alreadyLoaded} already loaded). You can now use them.`
+    : `Loaded ${tools.length} '${category}' tools. You can now use them.`;
 
   return {
     success: true,
@@ -2879,6 +2890,286 @@ async function handleListApprovals(
       limit: 10,
     });
     return { success: true, data: result };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleSystemGetTime(
+  _params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const now = new Date();
+    return {
+      success: true,
+      data: {
+        iso: now.toISOString(),
+        local: now.toLocaleString(),
+        date: now.toLocaleDateString(),
+        time: now.toLocaleTimeString(),
+        timestamp: now.getTime(),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        offset: now.getTimezoneOffset(),
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleSystemExec(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const { exec } = await import("child_process");
+  const util = await import("util");
+  const execPromise = util.promisify(exec);
+
+  const command = String(params.command || "");
+  const cwd = String(params.cwd || process.cwd());
+  const timeout = Number(params.timeout) || 30000;
+
+  // Block dangerous patterns
+  const dangerousPatterns = [
+    "rm -rf",
+    "rmdir /s",
+    "del /f",
+    "format",
+    "mkfs",
+    "dd if=",
+    "shutdown",
+    "reboot",
+    "sudo rm",
+    "chmod -R 777",
+  ];
+
+  for (const pattern of dangerousPatterns) {
+    if (command.includes(pattern)) {
+      return {
+        success: false,
+        error: `Blocked dangerous command pattern: "${pattern}". Use with explicit user approval via approvals system.`,
+      };
+    }
+  }
+
+  try {
+    const { stdout, stderr } = await execPromise(command, {
+      cwd,
+      timeout,
+      maxBuffer: 10 * 1024 * 1024, // 10MB
+      env: process.env,
+    });
+
+    return {
+      success: true,
+      data: {
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        command,
+        cwd,
+      },
+      message: stderr ? `Command completed with warnings` : "Command completed successfully",
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: error.message || "Command execution failed",
+      data: {
+        stdout: error.stdout?.trim(),
+        stderr: error.stderr?.trim(),
+        code: error.code,
+        signal: error.signal,
+      },
+    };
+  }
+}
+
+async function handleSystemReadEnv(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const namesStr = String(params.names || "");
+    const names = namesStr ? namesStr.split(",").map((n) => n.trim()).filter(Boolean) : [];
+    const secrets = ["password", "secret", "key", "token", "auth", "credential", "private"];
+
+    const maskValue = (name: string, value: string): string => {
+      const lowerName = name.toLowerCase();
+      if (secrets.some(s => lowerName.includes(s))) {
+        return value ? `${value.substring(0, 3)}***REDACTED***` : "(empty)";
+      }
+      return value || "(empty)";
+    };
+
+    if (names.length > 0) {
+      const result: Record<string, string> = {};
+      const maskedNames: string[] = [];
+      for (const name of names) {
+        const masked = maskValue(name, process.env[name] || "");
+        result[name] = masked;
+        if (masked.includes("***REDACTED***")) maskedNames.push(name);
+      }
+      return {
+        success: true,
+        data: maskedNames.length > 0
+          ? {
+              values: result,
+              _warning: `Values for [${maskedNames.join(", ")}] are masked for security. The returned strings are NOT the real values and CANNOT be used as API credentials. Do not pass them to any tool. Use the server's built-in configuration instead (omit the credential params from tool calls).`,
+            }
+          : result,
+      };
+    }
+
+    // Return all env vars (secrets masked)
+    const result: Record<string, string> = {};
+    const maskedNames: string[] = [];
+    for (const [key, value] of Object.entries(process.env)) {
+      const masked = maskValue(key, value || "");
+      result[key] = masked;
+      if (masked.includes("***REDACTED***")) maskedNames.push(key);
+    }
+
+    return {
+      success: true,
+      data: {
+        values: result,
+        _warning: `${maskedNames.length} secret variable(s) are masked and cannot be used as credentials. Use the server's built-in configuration instead.`,
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleSystemDiskUsage(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const pathMod = await import("path");
+
+  try {
+    const checkPath = String(params.path || process.cwd());
+
+    // Windows-specific: use powershell for disk info
+    if (process.platform === "win32") {
+      const { exec } = await import("child_process");
+      const util = await import("util");
+      const execPromise = util.promisify(exec);
+
+      const drive = pathMod.parse(checkPath).root || "C:";
+      const { stdout } = await execPromise(
+        `powershell -c "Get-PSDrive -Name '${drive.replace(":", "")}' | Select-Object Used,Free,Name | ConvertTo-Json"`
+      );
+
+      const driveInfo = JSON.parse(stdout.trim());
+      const GB = 1024 * 1024 * 1024;
+      const usedGB = Math.round((driveInfo.Used / GB) * 100) / 100;
+      const freeGB = Math.round((driveInfo.Free / GB) * 100) / 100;
+      const totalGB = usedGB + freeGB;
+
+      return {
+        success: true,
+        data: {
+          path: checkPath,
+          drive: driveInfo.Name,
+          usedGB,
+          freeGB,
+          totalGB,
+          percentUsed: Math.round((usedGB / totalGB) * 100),
+        },
+      };
+    }
+
+    // Unix-like: use df
+    const { exec } = await import("child_process");
+    const util = await import("util");
+    const execPromise = util.promisify(exec);
+
+    const { stdout } = await execPromise(`df -h "${checkPath}" | tail -1`);
+    const parts = stdout.trim().split(/\s+/);
+
+    return {
+      success: true,
+      data: {
+        path: checkPath,
+        filesystem: parts[0],
+        size: parts[1],
+        used: parts[2],
+        available: parts[3],
+        percentUsed: parts[4],
+        mount: parts[5],
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleSystemProcessInfo(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const { exec } = await import("child_process");
+    const util = await import("util");
+    const execPromise = util.promisify(exec);
+
+    const filter = String(params.filter || "");
+
+    if (process.platform === "win32") {
+      const whereClause = filter ? `WHERE Name LIKE '%${filter}%'` : "";
+      const { stdout } = await execPromise(
+        `powershell -c "Get-CimInstance Win32_Process ${whereClause} | Select-Object ProcessId,ProcessName,CPU,WorkingSet | ConvertTo-Json"`
+      );
+
+      const processes = JSON.parse(stdout.trim());
+      return {
+        success: true,
+        data: {
+          platform: "windows",
+          count: Array.isArray(processes) ? processes.length : 0,
+          processes: (Array.isArray(processes) ? processes : [processes]).map((p: any) => ({
+            pid: p.ProcessId,
+            name: p.ProcessName,
+            cpu: p.CPU,
+            memoryKB: p.WorkingSet,
+          })),
+        },
+      };
+    }
+
+    // Unix-like: use ps
+    const cmd = filter ? `ps aux | grep -i "${filter}" | grep -v grep` : "ps aux";
+    const { stdout } = await execPromise(cmd);
+
+    const lines = stdout.trim().split("\n").filter(Boolean);
+    const processes = lines.slice(1).map(line => {
+      const parts = line.split(/\s+/);
+      return {
+        pid: parts[1],
+        user: parts[0],
+        cpu: parts[2],
+        memory: parts[3],
+        command: parts.slice(10).join(" "),
+      };
+    });
+
+    return {
+      success: true,
+      data: {
+        platform: "unix",
+        count: processes.length,
+        processes,
+      },
+    };
   } catch (error) {
     return {
       success: false,
@@ -3758,6 +4049,444 @@ async function handleLocalFileChunks(
   }
 
   return { success: true, data: result };
+}
+
+// Local file write/edit handlers
+async function handleLocalWriteFile(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const fs = await import("fs");
+  const pathMod = await import("path");
+
+  const filePath = String(params.path || "");
+  const content = String(params.content || "");
+
+  if (!filePath) return { success: false, error: "path is required" };
+  if (!content) return { success: false, error: "content is required" };
+
+  try {
+    const absolutePath = pathMod.isAbsolute(filePath)
+      ? filePath
+      : pathMod.join(PROJECT_ROOT, filePath);
+
+    const dir = pathMod.dirname(absolutePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    fs.writeFileSync(absolutePath, content, "utf8");
+
+    return {
+      success: true,
+      data: { path: absolutePath, bytesWritten: content.length },
+      message: `Successfully wrote ${content.length} bytes`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleLocalEditFile(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const fs = await import("fs");
+  const pathMod = await import("path");
+
+  const filePath = String(params.path || "");
+  const oldString = String(params.old_string || "");
+  const newString = String(params.new_string || "");
+  const replaceAll = Boolean(params.replace_all);
+
+  if (!filePath) return { success: false, error: "path is required" };
+  if (!oldString) return { success: false, error: "old_string is required" };
+  if (newString === undefined) return { success: false, error: "new_string is required" };
+
+  try {
+    const absolutePath = pathMod.isAbsolute(filePath)
+      ? filePath
+      : pathMod.join(PROJECT_ROOT, filePath);
+
+    if (!fs.existsSync(absolutePath)) {
+      return { success: false, error: `File not found: ${absolutePath}` };
+    }
+
+    const content = fs.readFileSync(absolutePath, "utf8");
+    const occurrences = content.split(oldString).length - 1;
+
+    if (occurrences === 0) {
+      return { success: false, error: "old_string not found in file" };
+    }
+
+    if (occurrences > 1 && !replaceAll) {
+      return {
+        success: false,
+        error: `Found ${occurrences} occurrences. Use replace_all: true to replace all, or make old_string more specific.`,
+      };
+    }
+
+    const newContent = replaceAll
+      ? content.split(oldString).join(newString)
+      : content.replace(oldString, newString);
+
+    fs.writeFileSync(absolutePath, newContent, "utf8");
+
+    return {
+      success: true,
+      data: { path: absolutePath, occurrences: replaceAll ? occurrences : 1 },
+      message: `Successfully replaced ${replaceAll ? occurrences : 1} occurrence(s)`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleLocalDeleteFile(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const fs = await import("fs");
+  const pathMod = await import("path");
+
+  const filePath = String(params.path || "");
+
+  if (!filePath) return { success: false, error: "path is required" };
+
+  try {
+    const absolutePath = pathMod.isAbsolute(filePath)
+      ? filePath
+      : pathMod.join(PROJECT_ROOT, filePath);
+
+    if (!fs.existsSync(absolutePath)) {
+      return { success: false, error: `File not found: ${absolutePath}` };
+    }
+
+    fs.unlinkSync(absolutePath);
+
+    return {
+      success: true,
+      data: { path: absolutePath },
+      message: `Successfully deleted`,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleLocalListDir(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const fs = await import("fs");
+  const pathMod = await import("path");
+
+  const dirPath = String(params.path || PROJECT_ROOT);
+
+  try {
+    const absolutePath = pathMod.isAbsolute(dirPath)
+      ? dirPath
+      : pathMod.join(PROJECT_ROOT, dirPath);
+
+    if (!fs.existsSync(absolutePath)) {
+      return { success: false, error: `Directory not found: ${absolutePath}` };
+    }
+
+    const entries = fs.readdirSync(absolutePath, { withFileTypes: true });
+    const items = entries.map((entry) => {
+      const fullPath = pathMod.join(absolutePath, entry.name);
+      const stats = fs.statSync(fullPath);
+      return {
+        name: entry.name,
+        type: entry.isDirectory() ? "directory" : entry.isFile() ? "file" : "other",
+        size: stats.size,
+        modified: stats.mtime.toISOString(),
+      };
+    });
+
+    return {
+      success: true,
+      data: { path: absolutePath, items },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+// Git handlers
+async function handleGitStatus(
+  _params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const { exec } = await import("child_process");
+  const util = await import("util");
+  const execPromise = util.promisify(exec);
+
+  try {
+    const [statusResult, branchResult] = await Promise.all([
+      execPromise("git status --porcelain"),
+      execPromise("git branch --show-current"),
+    ]);
+
+    const statusLines = statusResult.stdout.trim().split("\n").filter(Boolean);
+    const untracked: string[] = [];
+    const staged: string[] = [];
+    const unstaged: string[] = [];
+
+    for (const line of statusLines) {
+      const status = line.slice(0, 2);
+      const file = line.slice(3);
+      if (status.startsWith("??")) {
+        untracked.push(file);
+      } else if (status.startsWith("M ") || status.startsWith("A ") || status.startsWith("D ")) {
+        staged.push(file);
+      } else {
+        unstaged.push(file);
+      }
+    }
+
+    return {
+      success: true,
+      data: {
+        branch: branchResult.stdout.trim(),
+        untracked,
+        staged,
+        unstaged,
+        hasChanges: untracked.length > 0 || staged.length > 0 || unstaged.length > 0,
+      },
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: error.message || "Git status failed",
+    };
+  }
+}
+
+async function handleGitDiff(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const { exec } = await import("child_process");
+  const util = await import("util");
+  const execPromise = util.promisify(exec);
+
+  const staged = Boolean(params.staged);
+  const filePath = String(params.path || "");
+
+  try {
+    let cmd = staged ? "git diff --staged" : "git diff";
+    if (filePath) cmd += ` -- "${filePath}"`;
+
+    const { stdout } = await execPromise(cmd);
+
+    return {
+      success: true,
+      data: {
+        staged,
+        path: filePath || null,
+        diff: stdout.trim() || "(no changes)",
+      },
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: error.message || "Git diff failed",
+    };
+  }
+}
+
+async function handleGitLog(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const { exec } = await import("child_process");
+  const util = await import("util");
+  const execPromise = util.promisify(exec);
+
+  const limit = Number(params.limit) || 10;
+  const branch = String(params.branch || "");
+
+  try {
+    const cmd = `git log -n ${limit} --oneline${branch ? ` ${branch}` : ""}`;
+    const { stdout } = await execPromise(cmd);
+
+    const commits = stdout.trim().split("\n").map((line) => {
+      const [hash, ...message] = line.split(" ");
+      return { hash, message: message.join(" ") };
+    });
+
+    return {
+      success: true,
+      data: { branch: branch || "current", commits },
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: error.message || "Git log failed",
+    };
+  }
+}
+
+async function handleGitAdd(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const { exec } = await import("child_process");
+  const util = await import("util");
+  const execPromise = util.promisify(exec);
+
+  const files = params.files as string[];
+  if (!files || files.length === 0) {
+    return { success: false, error: "files array is required" };
+  }
+
+  try {
+    const cmd = `git add ${files.map((f) => `"${f}"`).join(" ")}`;
+    await execPromise(cmd);
+
+    return {
+      success: true,
+      data: { files },
+      message: `Successfully staged ${files.length} file(s)`,
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: error.message || "Git add failed",
+    };
+  }
+}
+
+async function handleGitCommit(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const { exec } = await import("child_process");
+  const util = await import("util");
+  const execPromise = util.promisify(exec);
+
+  const message = String(params.message || "");
+  const amend = Boolean(params.amend);
+
+  if (!message) return { success: false, error: "message is required" };
+
+  try {
+    const cmd = `git commit${amend ? " --amend" : ""} -m ${JSON.stringify(message)}`;
+    const { stdout } = await execPromise(cmd);
+
+    const hashMatch = stdout.match(/\[([^\]]+)\s([a-f0-9]+)\]/);
+    const branch = hashMatch ? hashMatch[1] : null;
+    const hash = hashMatch ? hashMatch[2] : null;
+
+    return {
+      success: true,
+      data: { branch, hash, message, amended: amend },
+      message: amend ? "Successfully amended commit" : "Successfully committed",
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: error.message || "Git commit failed",
+    };
+  }
+}
+
+async function handleGitPush(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const { exec } = await import("child_process");
+  const util = await import("util");
+  const execPromise = util.promisify(exec);
+
+  const remote = String(params.remote || "origin");
+  const branch = String(params.branch || "");
+  const force = Boolean(params.force);
+
+  if (force) {
+    return {
+      success: false,
+      error: "Force push requires approval via system.approve_action",
+    };
+  }
+
+  try {
+    let cmd = `git push ${remote}`;
+    if (branch) cmd += ` ${branch}`;
+
+    const { stdout } = await execPromise(cmd);
+
+    return {
+      success: true,
+      data: { remote, branch, force },
+      message: stdout.trim() || "Successfully pushed",
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: error.message || "Git push failed",
+    };
+  }
+}
+
+async function handleGitBranch(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const { exec } = await import("child_process");
+  const util = await import("util");
+  const execPromise = util.promisify(exec);
+
+  const action = String(params.action || "");
+  const name = String(params.name || "");
+
+  if (!action) return { success: false, error: "action is required (list/create/checkout/delete)" };
+
+  try {
+    let cmd: string;
+    let message: string;
+
+    switch (action) {
+      case "list":
+        cmd = "git branch -a";
+        const { stdout } = await execPromise(cmd);
+        const branches = stdout.trim().split("\n").map((l) => l.trim());
+        return { success: true, data: { branches } };
+      case "create":
+        if (!name) return { success: false, error: "name is required for create" };
+        cmd = `git branch "${name}"`;
+        await execPromise(cmd);
+        message = `Created branch ${name}`;
+        break;
+      case "checkout":
+        if (!name) return { success: false, error: "name is required for checkout" };
+        cmd = `git checkout "${name}"`;
+        await execPromise(cmd);
+        message = `Switched to branch ${name}`;
+        break;
+      case "delete":
+        if (!name) return { success: false, error: "name is required for delete" };
+        cmd = `git branch -d "${name}"`;
+        await execPromise(cmd);
+        message = `Deleted branch ${name}`;
+        break;
+      default:
+        return { success: false, error: `Unknown action: ${action}` };
+    }
+
+    return {
+      success: true,
+      data: { action, name },
+      message,
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: error.message || `Git branch ${action} failed`,
+    };
+  }
 }
 
 async function handleTodoCreateList(
@@ -5942,6 +6671,1268 @@ async function handleHawkIrExecuteHybridTool(
   return { success: true, data };
 }
 
+// ── Tenable Cloud Handlers ──────────────────────────────────────────────────
+
+// Tracks export completeness per export UUID so chunk download responses can
+// report progress and warn when reports would be based on partial data.
+const exportTracker = new Map<string, { totalChunks: number; downloadedChunks: Set<number> }>();
+
+function tenableOpts(params: Record<string, unknown>) {
+  const accessKey = params.accessKey as string | undefined;
+  const secretKey = params.secretKey as string | undefined;
+  return accessKey || secretKey ? { accessKey, secretKey } : undefined;
+}
+
+function tenableConfigCheck(params: Record<string, unknown>): string | null {
+  const accessKey = params.accessKey as string | undefined;
+  const secretKey = params.secretKey as string | undefined;
+  if (accessKey?.includes("***REDACTED***") || secretKey?.includes("***REDACTED***")) {
+    return "Redacted credentials detected. system.read_env masks secret values for security — the returned value is NOT the real key and cannot be used for API calls. To query Tenable: either omit accessKey/secretKey and use the server's configured credentials, or ask the user to provide the actual key value directly.";
+  }
+  if (!tenableCloudService.isConfigured(tenableOpts(params))) {
+    return "Tenable Cloud not configured. Set TENABLE_CLOUD_ACCESS_KEY and TENABLE_CLOUD_SECRET_KEY, or pass accessKey/secretKey params.";
+  }
+  return null;
+}
+
+async function handleTenableListVulnerabilities(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const requestedPage = (params.page as number | undefined) ?? 1;
+  const requestedNumAssets = (params.num_assets as number | undefined) ?? 100;
+  const items = await tenableCloudService.listVulnerabilities({
+    date_range: params.date_range as number | undefined,
+    num_assets: requestedNumAssets,
+    page: requestedPage,
+  }, tenableOpts(params));
+  const hasMore = items.length >= requestedNumAssets;
+  return {
+    success: true,
+    data: {
+      vulnerabilities: items,
+      pagination: {
+        page: requestedPage,
+        num_assets: requestedNumAssets,
+        returned: items.length,
+        has_more: hasMore,
+        next_page: hasMore ? requestedPage + 1 : null,
+        _guidance: hasMore
+          ? `Page ${requestedPage} is full (${items.length} items). Call again with page=${requestedPage + 1} to get more. Repeat until has_more=false. For complete exports use tenable.export_vulnerabilities.`
+          : `All results returned (${items.length} items on page ${requestedPage}).`,
+      },
+    },
+  };
+}
+
+async function handleTenableGetVulnerabilityDetails(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const pluginId = params.plugin_id as number;
+  if (!pluginId) return { success: false, error: "plugin_id is required" };
+  const data = await tenableCloudService.getVulnerabilityDetails(pluginId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableExportVulnerabilities(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.exportVulnerabilities({
+    since: params.since as number | undefined,
+    severity: params.severity as any,
+    state: params.state as string[] | undefined,
+    plugin_id: params.plugin_id as number[] | undefined,
+    tag: params.tag as any,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetVulnExportStatus(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const exportUuid = params.export_uuid as string;
+  if (!exportUuid) return { success: false, error: "export_uuid is required" };
+  const status = await tenableCloudService.getVulnExportStatus(exportUuid, tenableOpts(params));
+  const chunksAvailable = status.chunks_available ?? [];
+  const totalChunks = chunksAvailable.length;
+  // Register/update tracker so download handler can report progress
+  if (status.status === "FINISHED" && totalChunks > 0) {
+    if (!exportTracker.has(exportUuid)) {
+      exportTracker.set(exportUuid, { totalChunks, downloadedChunks: new Set() });
+    } else {
+      exportTracker.get(exportUuid)!.totalChunks = totalChunks;
+    }
+  }
+  const tracker = exportTracker.get(exportUuid);
+  const downloadedCount = tracker?.downloadedChunks.size ?? 0;
+  const remainingChunks = chunksAvailable.filter(id => !tracker?.downloadedChunks.has(id));
+  let guidance: string;
+  if (status.status === "FINISHED") {
+    if (downloadedCount === 0) {
+      guidance = `Export finished. ${totalChunks} chunk(s) to download: [${chunksAvailable.join(", ")}]. Download ALL ${totalChunks} chunk(s) with tenable.download_vuln_export_chunk before writing any report.`;
+    } else if (remainingChunks.length > 0) {
+      guidance = `Export finished. Progress: ${downloadedCount}/${totalChunks} chunks downloaded. Still need: [${remainingChunks.join(", ")}]. Do NOT write a report until all ${totalChunks} chunks are downloaded.`;
+    } else {
+      guidance = `Export finished. All ${totalChunks} chunks downloaded. Data is complete — you may now summarize.`;
+    }
+  } else if (status.status === "PROCESSING") {
+    guidance = `Export is still processing. Poll again in a few seconds.`;
+  } else {
+    guidance = `Export status: ${status.status}.`;
+  }
+  return {
+    success: true,
+    data: {
+      ...status,
+      total_chunks: totalChunks,
+      chunks_downloaded: downloadedCount,
+      chunks_remaining: remainingChunks.length,
+      all_chunks_downloaded: downloadedCount === totalChunks && totalChunks > 0,
+      _guidance: guidance,
+    },
+  };
+}
+
+async function handleTenableDownloadVulnExportChunk(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const exportUuid = params.export_uuid as string;
+  const chunkId = params.chunk_id as number;
+  if (!exportUuid) return { success: false, error: "export_uuid is required" };
+  if (chunkId === undefined) return { success: false, error: "chunk_id is required" };
+  const vulns = await tenableCloudService.downloadVulnExportChunk(exportUuid, chunkId, tenableOpts(params));
+  // Record this chunk as downloaded
+  if (!exportTracker.has(exportUuid)) {
+    exportTracker.set(exportUuid, { totalChunks: 0, downloadedChunks: new Set() });
+  }
+  const tracker = exportTracker.get(exportUuid)!;
+  tracker.downloadedChunks.add(chunkId);
+  const downloadedCount = tracker.downloadedChunks.size;
+  const totalChunks = tracker.totalChunks;
+  const remaining = totalChunks > 0 ? totalChunks - downloadedCount : null;
+  const allDone = totalChunks > 0 && downloadedCount >= totalChunks;
+  let guidance: string;
+  if (allDone) {
+    guidance = `All ${totalChunks} chunks downloaded. Dataset is complete — you may now summarize.`;
+  } else if (totalChunks > 0) {
+    guidance = `Progress: ${downloadedCount}/${totalChunks} chunks downloaded (${remaining} remaining). Do NOT write a report until all ${totalChunks} chunks are downloaded.`;
+  } else {
+    guidance = `Chunk ${chunkId} downloaded. Call tenable.get_vuln_export_status to see total chunk count, then download all remaining chunks before summarizing.`;
+  }
+  return {
+    success: true,
+    data: {
+      chunk_id: chunkId,
+      count: vulns.length,
+      chunks_downloaded: downloadedCount,
+      total_chunks: totalChunks > 0 ? totalChunks : "unknown — call get_vuln_export_status",
+      chunks_remaining: remaining,
+      all_chunks_downloaded: allDone,
+      vulnerabilities: vulns,
+      _guidance: guidance,
+    },
+  };
+}
+
+async function handleTenableListWorkbenchAssets(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const requestedPage = (params.page as number | undefined) ?? 1;
+  const requestedNumAssets = (params.num_assets as number | undefined) ?? 100;
+  const items = await tenableCloudService.listWorkbenchAssets({
+    date_range: params.date_range as number | undefined,
+    num_assets: requestedNumAssets,
+    page: requestedPage,
+  }, tenableOpts(params));
+  const hasMore = items.length >= requestedNumAssets;
+  return {
+    success: true,
+    data: {
+      assets: items,
+      pagination: {
+        page: requestedPage,
+        num_assets: requestedNumAssets,
+        returned: items.length,
+        has_more: hasMore,
+        next_page: hasMore ? requestedPage + 1 : null,
+        _guidance: hasMore
+          ? `Page ${requestedPage} is full (${items.length} items). Call again with page=${requestedPage + 1} to get more. Repeat until has_more=false.`
+          : `All results returned (${items.length} items on page ${requestedPage}).`,
+      },
+    },
+  };
+}
+
+async function handleTenableGetAssetVulnerabilities(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const assetId = params.asset_id as string;
+  if (!assetId) return { success: false, error: "asset_id is required" };
+  const data = await tenableCloudService.getAssetVulnerabilities(assetId, {
+    date_range: params.date_range as number | undefined,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableListAssets(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listAssets(tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetAsset(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const assetId = params.asset_id as string;
+  if (!assetId) return { success: false, error: "asset_id is required" };
+  const data = await tenableCloudService.getAsset(assetId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableDeleteAsset(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const assetId = params.asset_id as string;
+  if (!assetId) return { success: false, error: "asset_id is required" };
+  await tenableCloudService.deleteAsset(assetId, tenableOpts(params));
+  return { success: true, data: { deleted: assetId } };
+}
+
+async function handleTenableImportAssets(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const assets = params.assets as unknown[];
+  if (!Array.isArray(assets) || assets.length === 0) return { success: false, error: "assets must be a non-empty array" };
+  const data = await tenableCloudService.importAssets(assets, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableExportAssets(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.exportAssets({
+    chunk_size: params.chunk_size as number | undefined,
+    filters: {
+      has_plugin_results: params.has_plugin_results as boolean | undefined,
+      tag: params.tag as any,
+    },
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetAssetExportStatus(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const exportUuid = params.export_uuid as string;
+  if (!exportUuid) return { success: false, error: "export_uuid is required" };
+  const data = await tenableCloudService.getAssetExportStatus(exportUuid, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableDownloadAssetExportChunk(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const exportUuid = params.export_uuid as string;
+  const chunkId = params.chunk_id as number;
+  if (!exportUuid) return { success: false, error: "export_uuid is required" };
+  if (chunkId === undefined) return { success: false, error: "chunk_id is required" };
+  const data = await tenableCloudService.downloadAssetExportChunk(exportUuid, chunkId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableBulkDeleteAssets(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.query) return { success: false, error: "query is required" };
+  const data = await tenableCloudService.bulkDeleteAssets(params.query, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableListScans(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listScans({
+    folder_id: params.folder_id as number | undefined,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetScan(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const scanId = params.scan_id as number;
+  if (!scanId) return { success: false, error: "scan_id is required" };
+  const data = await tenableCloudService.getScan(scanId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableCreateScan(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.template_uuid) return { success: false, error: "template_uuid is required" };
+  if (!params.name) return { success: false, error: "name is required" };
+  const settings: Record<string, unknown> = {
+    template_uuid: params.template_uuid,
+    name: params.name,
+    description: params.description,
+    text_targets: params.targets,
+    policy_id: params.policy_id,
+    scanner_id: params.scanner_id,
+    enabled: params.schedule_enabled,
+  };
+  const data = await tenableCloudService.createScan(settings, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableUpdateScan(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const scanId = params.scan_id as number;
+  if (!scanId) return { success: false, error: "scan_id is required" };
+  const settings: Record<string, unknown> = {};
+  if (params.name !== undefined) settings.name = params.name;
+  if (params.description !== undefined) settings.description = params.description;
+  if (params.targets !== undefined) settings.text_targets = params.targets;
+  if (params.enabled !== undefined) settings.enabled = params.enabled;
+  const data = await tenableCloudService.updateScan(scanId, settings, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableDeleteScan(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const scanId = params.scan_id as number;
+  if (!scanId) return { success: false, error: "scan_id is required" };
+  await tenableCloudService.deleteScan(scanId, tenableOpts(params));
+  return { success: true, data: { deleted: scanId } };
+}
+
+async function handleTenableLaunchScan(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const scanId = params.scan_id as number;
+  if (!scanId) return { success: false, error: "scan_id is required" };
+  const data = await tenableCloudService.launchScan(scanId, params.alt_targets as string[] | undefined, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableStopScan(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const scanId = params.scan_id as number;
+  if (!scanId) return { success: false, error: "scan_id is required" };
+  await tenableCloudService.stopScan(scanId, tenableOpts(params));
+  return { success: true, data: { stopped: scanId } };
+}
+
+async function handleTenablePauseScan(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const scanId = params.scan_id as number;
+  if (!scanId) return { success: false, error: "scan_id is required" };
+  await tenableCloudService.pauseScan(scanId, tenableOpts(params));
+  return { success: true, data: { paused: scanId } };
+}
+
+async function handleTenableResumeScan(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const scanId = params.scan_id as number;
+  if (!scanId) return { success: false, error: "scan_id is required" };
+  await tenableCloudService.resumeScan(scanId, tenableOpts(params));
+  return { success: true, data: { resumed: scanId } };
+}
+
+async function handleTenableCopyScan(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const scanId = params.scan_id as number;
+  if (!scanId) return { success: false, error: "scan_id is required" };
+  const data = await tenableCloudService.copyScan(scanId, params.folder_id as number | undefined, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableExportScan(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const scanId = params.scan_id as number;
+  if (!scanId) return { success: false, error: "scan_id is required" };
+  const data = await tenableCloudService.exportScan(scanId, params.format as string | undefined, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableImportScan(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const file = params.file as string;
+  if (!file) return { success: false, error: "file is required" };
+  const data = await tenableCloudService.importScan(file, params.folder_id as number | undefined, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetScanHistory(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const scanId = params.scan_id as number;
+  if (!scanId) return { success: false, error: "scan_id is required" };
+  const data = await tenableCloudService.getScanHistory(scanId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableListScanTemplates(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listScanTemplates(tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableListPolicies(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listPolicies(tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetPolicy(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const policyId = params.policy_id as number;
+  if (!policyId) return { success: false, error: "policy_id is required" };
+  const data = await tenableCloudService.getPolicy(policyId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableCreatePolicy(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.uuid) return { success: false, error: "uuid (template UUID) is required" };
+  if (!params.name) return { success: false, error: "name is required" };
+  const data = await tenableCloudService.createPolicy({
+    uuid: params.uuid,
+    settings: { name: params.name, description: params.description },
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableUpdatePolicy(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const policyId = params.policy_id as number;
+  if (!policyId) return { success: false, error: "policy_id is required" };
+  const settings: Record<string, unknown> = {};
+  if (params.name !== undefined) settings.name = params.name;
+  if (params.description !== undefined) settings.description = params.description;
+  const data = await tenableCloudService.updatePolicy(policyId, { settings }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableDeletePolicy(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const policyId = params.policy_id as number;
+  if (!policyId) return { success: false, error: "policy_id is required" };
+  await tenableCloudService.deletePolicy(policyId, tenableOpts(params));
+  return { success: true, data: { deleted: policyId } };
+}
+
+async function handleTenableCopyPolicy(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const policyId = params.policy_id as number;
+  if (!policyId) return { success: false, error: "policy_id is required" };
+  const data = await tenableCloudService.copyPolicy(policyId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableListNetworks(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listNetworks(tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetNetwork(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const networkId = params.network_id as string;
+  if (!networkId) return { success: false, error: "network_id is required" };
+  const data = await tenableCloudService.getNetwork(networkId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableCreateNetwork(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.name) return { success: false, error: "name is required" };
+  const data = await tenableCloudService.createNetwork({
+    name: params.name as string,
+    description: params.description as string | undefined,
+    assets_ttl_days: params.assets_ttl_days as number | undefined,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableUpdateNetwork(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const networkId = params.network_id as string;
+  if (!networkId) return { success: false, error: "network_id is required" };
+  const data = await tenableCloudService.updateNetwork(networkId, {
+    name: params.name as string | undefined,
+    description: params.description as string | undefined,
+    assets_ttl_days: params.assets_ttl_days as number | undefined,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableDeleteNetwork(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const networkId = params.network_id as string;
+  if (!networkId) return { success: false, error: "network_id is required" };
+  await tenableCloudService.deleteNetwork(networkId, tenableOpts(params));
+  return { success: true, data: { deleted: networkId } };
+}
+
+async function handleTenableListNetworkScanners(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const networkId = params.network_id as string;
+  if (!networkId) return { success: false, error: "network_id is required" };
+  const data = await tenableCloudService.listNetworkScanners(networkId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableAssignScannerToNetwork(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const networkId = params.network_id as string;
+  const scannerId = params.scanner_id as number;
+  if (!networkId) return { success: false, error: "network_id is required" };
+  if (!scannerId) return { success: false, error: "scanner_id is required" };
+  await tenableCloudService.assignScannerToNetwork(networkId, scannerId, tenableOpts(params));
+  return { success: true, data: { assigned: { networkId, scannerId } } };
+}
+
+async function handleTenableListTagCategories(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listTagCategories(tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableCreateTagCategory(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.name) return { success: false, error: "name is required" };
+  const data = await tenableCloudService.createTagCategory({
+    name: params.name as string,
+    description: params.description as string | undefined,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableUpdateTagCategory(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const categoryUuid = params.category_uuid as string;
+  if (!categoryUuid) return { success: false, error: "category_uuid is required" };
+  const data = await tenableCloudService.updateTagCategory(categoryUuid, {
+    name: params.name as string | undefined,
+    description: params.description as string | undefined,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableDeleteTagCategory(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const categoryUuid = params.category_uuid as string;
+  if (!categoryUuid) return { success: false, error: "category_uuid is required" };
+  await tenableCloudService.deleteTagCategory(categoryUuid, tenableOpts(params));
+  return { success: true, data: { deleted: categoryUuid } };
+}
+
+async function handleTenableListTagValues(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listTagValues(params.category_uuid as string | undefined, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableCreateTagValue(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.category_uuid) return { success: false, error: "category_uuid is required" };
+  if (!params.value) return { success: false, error: "value is required" };
+  const data = await tenableCloudService.createTagValue({
+    category_uuid: params.category_uuid as string,
+    value: params.value as string,
+    description: params.description as string | undefined,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableUpdateTagValue(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const valueUuid = params.value_uuid as string;
+  if (!valueUuid) return { success: false, error: "value_uuid is required" };
+  const data = await tenableCloudService.updateTagValue(valueUuid, {
+    value: params.value as string | undefined,
+    description: params.description as string | undefined,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableDeleteTagValue(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const valueUuid = params.value_uuid as string;
+  if (!valueUuid) return { success: false, error: "value_uuid is required" };
+  await tenableCloudService.deleteTagValue(valueUuid, tenableOpts(params));
+  return { success: true, data: { deleted: valueUuid } };
+}
+
+async function handleTenableAssignTagsToAssets(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!Array.isArray(params.asset_uuids)) return { success: false, error: "asset_uuids must be an array" };
+  if (!Array.isArray(params.tag_uuids)) return { success: false, error: "tag_uuids must be an array" };
+  const data = await tenableCloudService.assignTagsToAssets(params.asset_uuids as string[], params.tag_uuids as string[], tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableRemoveTagsFromAssets(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!Array.isArray(params.asset_uuids)) return { success: false, error: "asset_uuids must be an array" };
+  if (!Array.isArray(params.tag_uuids)) return { success: false, error: "tag_uuids must be an array" };
+  const data = await tenableCloudService.removeTagsFromAssets(params.asset_uuids as string[], params.tag_uuids as string[], tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableListUsers(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listUsers(tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetUser(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const userId = params.user_id as number;
+  if (!userId) return { success: false, error: "user_id is required" };
+  const data = await tenableCloudService.getUser(userId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableCreateUser(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.username) return { success: false, error: "username is required" };
+  if (!params.password) return { success: false, error: "password is required" };
+  if (params.permissions === undefined) return { success: false, error: "permissions is required" };
+  const data = await tenableCloudService.createUser({
+    username: params.username as string,
+    password: params.password as string,
+    permissions: params.permissions as number,
+    name: params.name as string | undefined,
+    email: params.email as string | undefined,
+    type: params.type as string | undefined,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableUpdateUser(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const userId = params.user_id as number;
+  if (!userId) return { success: false, error: "user_id is required" };
+  const data = await tenableCloudService.updateUser(userId, {
+    permissions: params.permissions as number | undefined,
+    name: params.name as string | undefined,
+    email: params.email as string | undefined,
+    enabled: params.enabled as boolean | undefined,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableDeleteUser(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const userId = params.user_id as number;
+  if (!userId) return { success: false, error: "user_id is required" };
+  await tenableCloudService.deleteUser(userId, tenableOpts(params));
+  return { success: true, data: { deleted: userId } };
+}
+
+async function handleTenableGetUserKeys(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const userId = params.user_id as number;
+  if (!userId) return { success: false, error: "user_id is required" };
+  const data = await tenableCloudService.getUserKeys(userId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableEnableUser(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const userId = params.user_id as number;
+  if (!userId) return { success: false, error: "user_id is required" };
+  await tenableCloudService.enableUser(userId, tenableOpts(params));
+  return { success: true, data: { enabled: userId } };
+}
+
+async function handleTenableDisableUser(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const userId = params.user_id as number;
+  if (!userId) return { success: false, error: "user_id is required" };
+  await tenableCloudService.disableUser(userId, tenableOpts(params));
+  return { success: true, data: { disabled: userId } };
+}
+
+async function handleTenableListGroups(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listGroups(tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableCreateGroup(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.name) return { success: false, error: "name is required" };
+  const data = await tenableCloudService.createGroup(params.name as string, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableUpdateGroup(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const groupId = params.group_id as number;
+  if (!groupId) return { success: false, error: "group_id is required" };
+  if (!params.name) return { success: false, error: "name is required" };
+  const data = await tenableCloudService.updateGroup(groupId, params.name as string, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableDeleteGroup(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const groupId = params.group_id as number;
+  if (!groupId) return { success: false, error: "group_id is required" };
+  await tenableCloudService.deleteGroup(groupId, tenableOpts(params));
+  return { success: true, data: { deleted: groupId } };
+}
+
+async function handleTenableListGroupUsers(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const groupId = params.group_id as number;
+  if (!groupId) return { success: false, error: "group_id is required" };
+  const data = await tenableCloudService.listGroupUsers(groupId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableAddUserToGroup(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const groupId = params.group_id as number;
+  const userId = params.user_id as number;
+  if (!groupId) return { success: false, error: "group_id is required" };
+  if (!userId) return { success: false, error: "user_id is required" };
+  await tenableCloudService.addUserToGroup(groupId, userId, tenableOpts(params));
+  return { success: true, data: { added: { groupId, userId } } };
+}
+
+async function handleTenableRemoveUserFromGroup(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const groupId = params.group_id as number;
+  const userId = params.user_id as number;
+  if (!groupId) return { success: false, error: "group_id is required" };
+  if (!userId) return { success: false, error: "user_id is required" };
+  await tenableCloudService.removeUserFromGroup(groupId, userId, tenableOpts(params));
+  return { success: true, data: { removed: { groupId, userId } } };
+}
+
+async function handleTenableListScanners(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listScanners(tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetScanner(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const scannerId = params.scanner_id as number;
+  if (!scannerId) return { success: false, error: "scanner_id is required" };
+  const data = await tenableCloudService.getScanner(scannerId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableUpdateScanner(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const scannerId = params.scanner_id as number;
+  if (!scannerId) return { success: false, error: "scanner_id is required" };
+  const data = await tenableCloudService.updateScanner(scannerId, {
+    name: params.name as string | undefined,
+    link_permission: params.link_permission as boolean | undefined,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableDeleteScanner(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const scannerId = params.scanner_id as number;
+  if (!scannerId) return { success: false, error: "scanner_id is required" };
+  await tenableCloudService.deleteScanner(scannerId, tenableOpts(params));
+  return { success: true, data: { deleted: scannerId } };
+}
+
+async function handleTenableToggleScannerLink(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const scannerId = params.scanner_id as number;
+  if (!scannerId) return { success: false, error: "scanner_id is required" };
+  if (params.linked === undefined) return { success: false, error: "linked is required" };
+  await tenableCloudService.toggleScannerLink(scannerId, params.linked as boolean, tenableOpts(params));
+  return { success: true, data: { scannerId, linked: params.linked } };
+}
+
+async function handleTenableListAgents(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listAgents({
+    offset: params.offset as number | undefined,
+    limit: params.limit as number | undefined,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetAgent(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const agentId = params.agent_id as number;
+  if (!agentId) return { success: false, error: "agent_id is required" };
+  const data = await tenableCloudService.getAgent(agentId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableDeleteAgent(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.scanner_id) return { success: false, error: "scanner_id is required" };
+  if (!params.agent_id) return { success: false, error: "agent_id is required" };
+  await tenableCloudService.deleteAgent(params.scanner_id as number, params.agent_id as number, tenableOpts(params));
+  return { success: true, data: { deleted: params.agent_id } };
+}
+
+async function handleTenableUnlinkAgent(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.scanner_id) return { success: false, error: "scanner_id is required" };
+  if (!params.agent_id) return { success: false, error: "agent_id is required" };
+  await tenableCloudService.unlinkAgent(params.scanner_id as number, params.agent_id as number, tenableOpts(params));
+  return { success: true, data: { unlinked: params.agent_id } };
+}
+
+async function handleTenableBulkDeleteAgents(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.scanner_id) return { success: false, error: "scanner_id is required" };
+  if (!Array.isArray(params.agent_ids)) return { success: false, error: "agent_ids must be an array" };
+  const data = await tenableCloudService.bulkDeleteAgents(params.scanner_id as number, params.agent_ids as number[], tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableBulkUnlinkAgents(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.scanner_id) return { success: false, error: "scanner_id is required" };
+  if (!Array.isArray(params.agent_ids)) return { success: false, error: "agent_ids must be an array" };
+  const data = await tenableCloudService.bulkUnlinkAgents(params.scanner_id as number, params.agent_ids as number[], tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableListAgentGroups(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.scanner_id) return { success: false, error: "scanner_id is required" };
+  const data = await tenableCloudService.listAgentGroups(params.scanner_id as number, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableCreateAgentGroup(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.scanner_id) return { success: false, error: "scanner_id is required" };
+  if (!params.name) return { success: false, error: "name is required" };
+  const data = await tenableCloudService.createAgentGroup(params.scanner_id as number, params.name as string, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableUpdateAgentGroup(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.scanner_id) return { success: false, error: "scanner_id is required" };
+  if (!params.group_id) return { success: false, error: "group_id is required" };
+  if (!params.name) return { success: false, error: "name is required" };
+  const data = await tenableCloudService.updateAgentGroup(params.scanner_id as number, params.group_id as number, params.name as string, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableDeleteAgentGroup(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.scanner_id) return { success: false, error: "scanner_id is required" };
+  if (!params.group_id) return { success: false, error: "group_id is required" };
+  await tenableCloudService.deleteAgentGroup(params.scanner_id as number, params.group_id as number, tenableOpts(params));
+  return { success: true, data: { deleted: params.group_id } };
+}
+
+async function handleTenableAddAgentToGroup(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.scanner_id) return { success: false, error: "scanner_id is required" };
+  if (!params.group_id) return { success: false, error: "group_id is required" };
+  if (!params.agent_id) return { success: false, error: "agent_id is required" };
+  await tenableCloudService.addAgentToGroup(params.scanner_id as number, params.group_id as number, params.agent_id as number, tenableOpts(params));
+  return { success: true, data: { added: params.agent_id } };
+}
+
+async function handleTenableRemoveAgentFromGroup(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.scanner_id) return { success: false, error: "scanner_id is required" };
+  if (!params.group_id) return { success: false, error: "group_id is required" };
+  if (!params.agent_id) return { success: false, error: "agent_id is required" };
+  await tenableCloudService.removeAgentFromGroup(params.scanner_id as number, params.group_id as number, params.agent_id as number, tenableOpts(params));
+  return { success: true, data: { removed: params.agent_id } };
+}
+
+async function handleTenableListExclusions(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listExclusions(tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableCreateExclusion(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.name) return { success: false, error: "name is required" };
+  if (!params.members) return { success: false, error: "members is required" };
+  const data = await tenableCloudService.createExclusion({
+    name: params.name as string,
+    members: params.members as string,
+    description: params.description as string | undefined,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetExclusion(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const exclusionId = params.exclusion_id as number;
+  if (!exclusionId) return { success: false, error: "exclusion_id is required" };
+  const data = await tenableCloudService.getExclusion(exclusionId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableUpdateExclusion(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const exclusionId = params.exclusion_id as number;
+  if (!exclusionId) return { success: false, error: "exclusion_id is required" };
+  const data = await tenableCloudService.updateExclusion(exclusionId, {
+    name: params.name as string | undefined,
+    members: params.members as string | undefined,
+    description: params.description as string | undefined,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableDeleteExclusion(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const exclusionId = params.exclusion_id as number;
+  if (!exclusionId) return { success: false, error: "exclusion_id is required" };
+  await tenableCloudService.deleteExclusion(exclusionId, tenableOpts(params));
+  return { success: true, data: { deleted: exclusionId } };
+}
+
+async function handleTenableListCredentials(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listCredentials(tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetCredential(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const credentialUuid = params.credential_uuid as string;
+  if (!credentialUuid) return { success: false, error: "credential_uuid is required" };
+  const data = await tenableCloudService.getCredential(credentialUuid, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableCreateCredential(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.name) return { success: false, error: "name is required" };
+  if (!params.type) return { success: false, error: "type is required" };
+  if (!params.settings) return { success: false, error: "settings is required" };
+  const data = await tenableCloudService.createCredential({
+    name: params.name,
+    description: params.description,
+    type: params.type,
+    ...(params.settings as Record<string, unknown>),
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableUpdateCredential(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const credentialUuid = params.credential_uuid as string;
+  if (!credentialUuid) return { success: false, error: "credential_uuid is required" };
+  const updates: Record<string, unknown> = {};
+  if (params.name !== undefined) updates.name = params.name;
+  if (params.description !== undefined) updates.description = params.description;
+  if (params.settings) Object.assign(updates, params.settings as Record<string, unknown>);
+  const data = await tenableCloudService.updateCredential(credentialUuid, updates, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableDeleteCredential(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const credentialUuid = params.credential_uuid as string;
+  if (!credentialUuid) return { success: false, error: "credential_uuid is required" };
+  await tenableCloudService.deleteCredential(credentialUuid, tenableOpts(params));
+  return { success: true, data: { deleted: credentialUuid } };
+}
+
+async function handleTenableListPluginFamilies(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listPluginFamilies(tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetPluginFamily(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const familyId = params.family_id as number;
+  if (!familyId) return { success: false, error: "family_id is required" };
+  const data = await tenableCloudService.getPluginFamily(familyId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetPlugin(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const pluginId = params.plugin_id as number;
+  if (!pluginId) return { success: false, error: "plugin_id is required" };
+  const data = await tenableCloudService.getPlugin(pluginId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableListAlerts(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listAlerts(tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetAlert(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const alertId = params.alert_id as number;
+  if (!alertId) return { success: false, error: "alert_id is required" };
+  const data = await tenableCloudService.getAlert(alertId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableCreateAlert(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.name) return { success: false, error: "name is required" };
+  const data = await tenableCloudService.createAlert({
+    name: params.name,
+    enabled: params.enabled,
+    filters: params.filters,
+    action: params.action,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableUpdateAlert(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const alertId = params.alert_id as number;
+  if (!alertId) return { success: false, error: "alert_id is required" };
+  const updates: Record<string, unknown> = {};
+  if (params.name !== undefined) updates.name = params.name;
+  if (params.enabled !== undefined) updates.enabled = params.enabled;
+  const data = await tenableCloudService.updateAlert(alertId, updates, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableDeleteAlert(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const alertId = params.alert_id as number;
+  if (!alertId) return { success: false, error: "alert_id is required" };
+  await tenableCloudService.deleteAlert(alertId, tenableOpts(params));
+  return { success: true, data: { deleted: alertId } };
+}
+
+async function handleTenableExecuteAlert(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const alertId = params.alert_id as number;
+  if (!alertId) return { success: false, error: "alert_id is required" };
+  await tenableCloudService.executeAlert(alertId, tenableOpts(params));
+  return { success: true, data: { executed: alertId } };
+}
+
+async function handleTenableGetAuditLog(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.getAuditLog({
+    limit: params.limit as number | undefined,
+    offset: params.offset as number | undefined,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableListAccessGroups(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listAccessGroups(tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetAccessGroup(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const groupId = params.group_id as string;
+  if (!groupId) return { success: false, error: "group_id is required" };
+  const data = await tenableCloudService.getAccessGroup(groupId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableCreateAccessGroup(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.name) return { success: false, error: "name is required" };
+  const data = await tenableCloudService.createAccessGroup({
+    name: params.name,
+    rules: params.rules,
+    principals: params.principals,
+    all_users: params.all_users,
+    all_assets: params.all_assets,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableUpdateAccessGroup(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const groupId = params.group_id as string;
+  if (!groupId) return { success: false, error: "group_id is required" };
+  const updates: Record<string, unknown> = {};
+  if (params.name !== undefined) updates.name = params.name;
+  if (params.rules !== undefined) updates.rules = params.rules;
+  if (params.principals !== undefined) updates.principals = params.principals;
+  const data = await tenableCloudService.updateAccessGroup(groupId, updates, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableDeleteAccessGroup(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const groupId = params.group_id as string;
+  if (!groupId) return { success: false, error: "group_id is required" };
+  await tenableCloudService.deleteAccessGroup(groupId, tenableOpts(params));
+  return { success: true, data: { deleted: groupId } };
+}
+
+async function handleTenableListRemediationRules(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listRemediationRules(tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableCreateRemediationRule(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  if (!params.rule_type) return { success: false, error: "rule_type is required" };
+  if (!params.description) return { success: false, error: "description is required" };
+  if (!params.plugin_id) return { success: false, error: "plugin_id is required" };
+  const data = await tenableCloudService.createRemediationRule({
+    rule_type: params.rule_type as string,
+    description: params.description as string,
+    target: { type: (params.target_type as string) || "all", id: params.target_id as string | undefined },
+    plugin: { id: params.plugin_id as number },
+    new_severity: params.new_severity as number | undefined,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableDeleteRemediationRule(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const ruleId = params.rule_id as string;
+  if (!ruleId) return { success: false, error: "rule_id is required" };
+  await tenableCloudService.deleteRemediationRule(ruleId, tenableOpts(params));
+  return { success: true, data: { deleted: ruleId } };
+}
+
+async function handleTenableListContainerImages(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.listContainerImages({
+    offset: params.offset as number | undefined,
+    limit: params.limit as number | undefined,
+  }, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetContainerReport(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const imageId = params.image_id as string;
+  if (!imageId) return { success: false, error: "image_id is required" };
+  const data = await tenableCloudService.getContainerReport(imageId, tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetServerStatus(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.getServerStatus(tenableOpts(params));
+  return { success: true, data };
+}
+
+async function handleTenableGetServerProperties(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const data = await tenableCloudService.getServerProperties(tenableOpts(params));
+  return { success: true, data };
+}
+
 async function handleWorkItemsList(
   params: Record<string, unknown>,
   _userId: string,
@@ -6596,6 +8587,125 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "hawk_ir.get_saved_searches": handleHawkIrGetSavedSearches,
   "hawk_ir.get_artefacts": handleHawkIrGetArtefacts,
   "hawk_ir.execute_hybrid_tool": handleHawkIrExecuteHybridTool,
+
+  // ── Tenable Cloud Handlers ──────────────────────────────────────────────────
+  "tenable.list_vulnerabilities": handleTenableListVulnerabilities,
+  "tenable.get_vulnerability_details": handleTenableGetVulnerabilityDetails,
+  "tenable.export_vulnerabilities": handleTenableExportVulnerabilities,
+  "tenable.get_vuln_export_status": handleTenableGetVulnExportStatus,
+  "tenable.download_vuln_export_chunk": handleTenableDownloadVulnExportChunk,
+  "tenable.list_workbench_assets": handleTenableListWorkbenchAssets,
+  "tenable.get_asset_vulnerabilities": handleTenableGetAssetVulnerabilities,
+  "tenable.list_assets": handleTenableListAssets,
+  "tenable.get_asset": handleTenableGetAsset,
+  "tenable.delete_asset": handleTenableDeleteAsset,
+  "tenable.import_assets": handleTenableImportAssets,
+  "tenable.export_assets": handleTenableExportAssets,
+  "tenable.get_asset_export_status": handleTenableGetAssetExportStatus,
+  "tenable.download_asset_export_chunk": handleTenableDownloadAssetExportChunk,
+  "tenable.bulk_delete_assets": handleTenableBulkDeleteAssets,
+  "tenable.list_scans": handleTenableListScans,
+  "tenable.get_scan": handleTenableGetScan,
+  "tenable.create_scan": handleTenableCreateScan,
+  "tenable.update_scan": handleTenableUpdateScan,
+  "tenable.delete_scan": handleTenableDeleteScan,
+  "tenable.launch_scan": handleTenableLaunchScan,
+  "tenable.stop_scan": handleTenableStopScan,
+  "tenable.pause_scan": handleTenablePauseScan,
+  "tenable.resume_scan": handleTenableResumeScan,
+  "tenable.copy_scan": handleTenableCopyScan,
+  "tenable.export_scan": handleTenableExportScan,
+  "tenable.import_scan": handleTenableImportScan,
+  "tenable.get_scan_history": handleTenableGetScanHistory,
+  "tenable.list_scan_templates": handleTenableListScanTemplates,
+  "tenable.list_policies": handleTenableListPolicies,
+  "tenable.get_policy": handleTenableGetPolicy,
+  "tenable.create_policy": handleTenableCreatePolicy,
+  "tenable.update_policy": handleTenableUpdatePolicy,
+  "tenable.delete_policy": handleTenableDeletePolicy,
+  "tenable.copy_policy": handleTenableCopyPolicy,
+  "tenable.list_networks": handleTenableListNetworks,
+  "tenable.get_network": handleTenableGetNetwork,
+  "tenable.create_network": handleTenableCreateNetwork,
+  "tenable.update_network": handleTenableUpdateNetwork,
+  "tenable.delete_network": handleTenableDeleteNetwork,
+  "tenable.list_network_scanners": handleTenableListNetworkScanners,
+  "tenable.assign_scanner_to_network": handleTenableAssignScannerToNetwork,
+  "tenable.list_tag_categories": handleTenableListTagCategories,
+  "tenable.create_tag_category": handleTenableCreateTagCategory,
+  "tenable.update_tag_category": handleTenableUpdateTagCategory,
+  "tenable.delete_tag_category": handleTenableDeleteTagCategory,
+  "tenable.list_tag_values": handleTenableListTagValues,
+  "tenable.create_tag_value": handleTenableCreateTagValue,
+  "tenable.update_tag_value": handleTenableUpdateTagValue,
+  "tenable.delete_tag_value": handleTenableDeleteTagValue,
+  "tenable.assign_tags_to_assets": handleTenableAssignTagsToAssets,
+  "tenable.remove_tags_from_assets": handleTenableRemoveTagsFromAssets,
+  "tenable.list_users": handleTenableListUsers,
+  "tenable.get_user": handleTenableGetUser,
+  "tenable.create_user": handleTenableCreateUser,
+  "tenable.update_user": handleTenableUpdateUser,
+  "tenable.delete_user": handleTenableDeleteUser,
+  "tenable.get_user_keys": handleTenableGetUserKeys,
+  "tenable.enable_user": handleTenableEnableUser,
+  "tenable.disable_user": handleTenableDisableUser,
+  "tenable.list_groups": handleTenableListGroups,
+  "tenable.create_group": handleTenableCreateGroup,
+  "tenable.update_group": handleTenableUpdateGroup,
+  "tenable.delete_group": handleTenableDeleteGroup,
+  "tenable.list_group_users": handleTenableListGroupUsers,
+  "tenable.add_user_to_group": handleTenableAddUserToGroup,
+  "tenable.remove_user_from_group": handleTenableRemoveUserFromGroup,
+  "tenable.list_scanners": handleTenableListScanners,
+  "tenable.get_scanner": handleTenableGetScanner,
+  "tenable.update_scanner": handleTenableUpdateScanner,
+  "tenable.delete_scanner": handleTenableDeleteScanner,
+  "tenable.toggle_scanner_link": handleTenableToggleScannerLink,
+  "tenable.list_agents": handleTenableListAgents,
+  "tenable.get_agent": handleTenableGetAgent,
+  "tenable.delete_agent": handleTenableDeleteAgent,
+  "tenable.unlink_agent": handleTenableUnlinkAgent,
+  "tenable.bulk_delete_agents": handleTenableBulkDeleteAgents,
+  "tenable.bulk_unlink_agents": handleTenableBulkUnlinkAgents,
+  "tenable.list_agent_groups": handleTenableListAgentGroups,
+  "tenable.create_agent_group": handleTenableCreateAgentGroup,
+  "tenable.update_agent_group": handleTenableUpdateAgentGroup,
+  "tenable.delete_agent_group": handleTenableDeleteAgentGroup,
+  "tenable.add_agent_to_group": handleTenableAddAgentToGroup,
+  "tenable.remove_agent_from_group": handleTenableRemoveAgentFromGroup,
+  "tenable.list_exclusions": handleTenableListExclusions,
+  "tenable.create_exclusion": handleTenableCreateExclusion,
+  "tenable.get_exclusion": handleTenableGetExclusion,
+  "tenable.update_exclusion": handleTenableUpdateExclusion,
+  "tenable.delete_exclusion": handleTenableDeleteExclusion,
+  "tenable.list_credentials": handleTenableListCredentials,
+  "tenable.get_credential": handleTenableGetCredential,
+  "tenable.create_credential": handleTenableCreateCredential,
+  "tenable.update_credential": handleTenableUpdateCredential,
+  "tenable.delete_credential": handleTenableDeleteCredential,
+  "tenable.list_plugin_families": handleTenableListPluginFamilies,
+  "tenable.get_plugin_family": handleTenableGetPluginFamily,
+  "tenable.get_plugin": handleTenableGetPlugin,
+  "tenable.list_alerts": handleTenableListAlerts,
+  "tenable.get_alert": handleTenableGetAlert,
+  "tenable.create_alert": handleTenableCreateAlert,
+  "tenable.update_alert": handleTenableUpdateAlert,
+  "tenable.delete_alert": handleTenableDeleteAlert,
+  "tenable.execute_alert": handleTenableExecuteAlert,
+  "tenable.get_audit_log": handleTenableGetAuditLog,
+  "tenable.list_access_groups": handleTenableListAccessGroups,
+  "tenable.get_access_group": handleTenableGetAccessGroup,
+  "tenable.create_access_group": handleTenableCreateAccessGroup,
+  "tenable.update_access_group": handleTenableUpdateAccessGroup,
+  "tenable.delete_access_group": handleTenableDeleteAccessGroup,
+  "tenable.list_remediation_rules": handleTenableListRemediationRules,
+  "tenable.create_remediation_rule": handleTenableCreateRemediationRule,
+  "tenable.delete_remediation_rule": handleTenableDeleteRemediationRule,
+  "tenable.list_container_images": handleTenableListContainerImages,
+  "tenable.get_container_report": handleTenableGetContainerReport,
+  "tenable.get_server_status": handleTenableGetServerStatus,
+  "tenable.get_server_properties": handleTenableGetServerProperties,
+
   "code_review.github_pr": handleCodeReviewGithubPr,
   "code_review.gitlab_mr": handleCodeReviewGitlabMr,
   "code_review.release_readiness": handleCodeReviewReleaseReadiness,
@@ -6653,7 +8763,12 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "system.approve_action": handleApproveAction,
   "system.reject_action": handleRejectAction,
   "system.list_approvals": handleListApprovals,
+  "system.get_time": handleSystemGetTime,
   "system.check_health": handleSystemCheckHealth,
+  "system.exec": handleSystemExec,
+  "system.read_env": handleSystemReadEnv,
+  "system.disk_usage": handleSystemDiskUsage,
+  "system.process_info": handleSystemProcessInfo,
 
   // Work Items
   "work_items.create": handleWorkItemsCreate,
@@ -6695,6 +8810,17 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "workflow.execute_phase": handleWorkflowExecutePhase,
 
   "local.read_file": handleLocalReadFile,
+  "local.write_file": handleLocalWriteFile,
+  "local.edit_file": handleLocalEditFile,
+  "local.delete_file": handleLocalDeleteFile,
+  "local.list_dir": handleLocalListDir,
+  "git.status": handleGitStatus,
+  "git.diff": handleGitDiff,
+  "git.log": handleGitLog,
+  "git.add": handleGitAdd,
+  "git.commit": handleGitCommit,
+  "git.push": handleGitPush,
+  "git.branch": handleGitBranch,
   "local.list_tree": handleLocalListTree,
   "local.search_code": handleLocalSearchCode,
   "local.file_summary": handleLocalFileSummary,
@@ -6789,7 +8915,24 @@ export async function dispatchToolCall(
 ): Promise<ToolCallResult> {
   const handler = TOOL_HANDLERS[toolName];
   if (!handler) {
-    return { success: false, error: `Unknown tool: ${toolName}` };
+    const mode = (params._mode as string) || "productivity";
+    const prefix = toolName.includes(".") ? toolName.split(".")[0] : null;
+    let hint = "";
+    if (prefix) {
+      const categoryTools = getToolsByCategory(mode, prefix);
+      if (categoryTools.length > 0) {
+        const names = categoryTools.map((t) => t.name).slice(0, 10).join(", ");
+        const more = categoryTools.length > 10 ? ` (and ${categoryTools.length - 10} more)` : "";
+        hint = ` Available '${prefix}' tools: ${names}${more}.`;
+      } else {
+        const categories = Object.keys(getToolCategories(mode));
+        hint = ` No tools found for prefix '${prefix}'. Available categories: ${categories.join(", ")}.`;
+      }
+    }
+    return {
+      success: false,
+      error: `Tool '${toolName}' does not exist.${hint} Use discover_tools to see all available tools.`,
+    };
   }
 
   if (!skipPolicyCheck && !SYSTEM_TOOLS.has(toolName)) {

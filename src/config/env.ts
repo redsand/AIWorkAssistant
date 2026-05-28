@@ -220,6 +220,10 @@ const envSchema = z.object({
     .transform((s) => s === "true")
     .default("false"),
 
+  // Tenable Cloud (cloud.tenable.com)
+  TENABLE_CLOUD_ACCESS_KEY: z.string().default(""),
+  TENABLE_CLOUD_SECRET_KEY: z.string().default(""),
+
   // Web Push (VAPID)
   VAPID_PUBLIC_KEY: z.string().default(""),
   VAPID_PRIVATE_KEY: z.string().default(""),

@@ -37,16 +37,6 @@ function canOverrideSystemPrompt(userId: string): boolean {
   return adminUserIds.size > 0 && adminUserIds.has(userId);
 }
 
-const ALLOWED_MODELS = new Set([
-  "haiku",
-  "sonnet",
-  "opus",
-  "claude-opus-4-7",
-  "claude-sonnet-4-6",
-  "claude-haiku-4-5-20251001",
-  "gpt-5.5",
-  "gpt-4o",
-]);
 
 const chatRequestSchema = z.object({
   message: z.string(),
@@ -102,6 +92,55 @@ interface ProcessingJob {
 }
 
 const processingJobs = new Map<string, ProcessingJob>();
+
+// Persists which tool categories have been discovered per session so they are
+// pre-expanded on subsequent requests instead of requiring a repeat discover_tools call.
+const sessionDiscoveredCategories = new Map<string, Set<string>>();
+
+function buildCategoryToolDefs(mode: string, category: string) {
+  return getToolsByCategory(mode, category).map((tool) => {
+    const properties: Record<string, unknown> = {};
+    for (const [key, param] of Object.entries(tool.params)) {
+      const { required: _, ...rest } = param as any;
+      properties[key] = rest;
+    }
+    return {
+      type: "function" as const,
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: {
+          type: "object",
+          properties,
+          required: Object.entries(tool.params)
+            .filter(([_, param]) => (param as any).required)
+            .map(([name]) => name),
+        },
+      },
+    };
+  });
+}
+
+function preExpandFromSession(sessionId: string, mode: string, expandedTools: Tool[]) {
+  const knownCategories = sessionDiscoveredCategories.get(sessionId);
+  if (!knownCategories) return;
+  const existingNames = new Set(expandedTools.map((t) => t.function.name));
+  for (const category of knownCategories) {
+    for (const td of buildCategoryToolDefs(mode, category)) {
+      if (!existingNames.has(td.function.name)) {
+        expandedTools.push(td);
+        existingNames.add(td.function.name);
+      }
+    }
+  }
+}
+
+function recordDiscoveredCategory(sessionId: string, category: string) {
+  if (!sessionDiscoveredCategories.has(sessionId)) {
+    sessionDiscoveredCategories.set(sessionId, new Set());
+  }
+  sessionDiscoveredCategories.get(sessionId)!.add(category);
+}
 
 function getOrCreateJob(sessionId: string): ProcessingJob {
   let job = processingJobs.get(sessionId);
@@ -255,13 +294,16 @@ async function runChatJob(
   job.completedAt = undefined;
   job.runId = null;
 
+  // Preserve the original user query for logging (survives message pruning)
+  const originalUserQuery = messages.find((m) => m.role === "user")?.content ?? "Unknown query";
+
   let runId: string | null = null;
   try { runId = agentRunDatabase.startRun({ sessionId, userId, mode }).id; job.runId = runId; } catch (e) { console.error("[AgentRuns]", e); }
 
   try {
     let stepOrder = 0;
     assertJobActive(job);
-    try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+    try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
     let response = await aiClient.chat({
       messages: messages,
       tools,
@@ -274,6 +316,7 @@ async function runChatJob(
 
     let allToolResults: Record<string, unknown> = {};
     let expandedTools = [...(tools || [])];
+    preExpandFromSession(sessionId, mode, expandedTools);
     let loopCount = 0;
 
     const getLoadedToolNames = () =>
@@ -357,32 +400,9 @@ async function runChatJob(
         if (tc.name === "discover_tools" && result.success) {
           const category = tc.params.category as string | undefined;
           if (category) {
-            const categoryTools = getToolsByCategory(mode, category);
-            const categoryToolDefs = categoryTools.map((tool) => {
-              const properties: Record<string, unknown> = {};
-              for (const [key, param] of Object.entries(tool.params)) {
-                const { required: _, ...rest } = param as any;
-                properties[key] = rest;
-              }
-              return {
-                type: "function" as const,
-                function: {
-                  name: tool.name,
-                  description: tool.description,
-                  parameters: {
-                    type: "object",
-                    properties,
-                    required: Object.entries(tool.params)
-                      .filter(([_, param]) => (param as any).required)
-                      .map(([name]) => name),
-                  },
-                },
-              };
-            });
-
-            const existingNames = new Set(
-              expandedTools.map((t) => t.function.name),
-            );
+            recordDiscoveredCategory(sessionId, category);
+            const categoryToolDefs = buildCategoryToolDefs(mode, category);
+            const existingNames = new Set(expandedTools.map((t) => t.function.name));
             for (const td of categoryToolDefs) {
               if (!existingNames.has(td.function.name)) {
                 expandedTools.push(td);
@@ -461,7 +481,8 @@ async function runChatJob(
         expandedTools.length > 0 ? expandedTools : tools || undefined;
       messages = aiClient.pruneMessages(messages, currentTools) as ChatMessage[];
 
-      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+      // Use preserved original query (pruning may remove user messages)
+      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
       assertJobActive(job);
       response = await aiClient.chat({
         messages: messages,
@@ -528,12 +549,6 @@ export async function chatRoutes(fastify: FastifyInstance) {
     try {
       const body = chatRequestSchema.parse(request.body);
 
-      if (body.model && !ALLOWED_MODELS.has(body.model)) {
-        return reply.status(400).send({
-          error: `Invalid model: ${body.model}`,
-          allowedModels: [...ALLOWED_MODELS],
-        });
-      }
 
       try { runId = agentRunDatabase.startRun({ sessionId: body.sessionId ?? null, userId: body.userId, mode: body.mode }).id; } catch (e) { console.error("[AgentRuns]", e); }
 
@@ -653,8 +668,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
         });
       }
 
+      // Preserve the original user query for logging (survives message pruning)
+      const originalUserQuery = body.message;
       let stepOrder = 0;
-      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
       let response = await aiClient.chat({
         messages: messages,
         tools,
@@ -667,6 +684,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       let allToolCalls: Array<{ id: string; name: string; params: any }> = [];
       let allToolResults: Record<string, unknown> = {};
       let expandedTools = [...(tools || [])];
+      if (sessionId) preExpandFromSession(sessionId, body.mode, expandedTools);
 
       const getLoadedToolNames = () =>
         expandedTools.map((t: Tool) => t.function.name);
@@ -741,32 +759,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
           if (tc.name === "discover_tools" && result.success) {
             const category = tc.params.category as string | undefined;
             if (category) {
-              const categoryTools = getToolsByCategory(body.mode, category);
-              const categoryToolDefs = categoryTools.map((tool) => {
-                const properties: Record<string, unknown> = {};
-                for (const [key, param] of Object.entries(tool.params)) {
-                  const { required: _, ...rest } = param as any;
-                  properties[key] = rest;
-                }
-                return {
-                  type: "function" as const,
-                  function: {
-                    name: tool.name,
-                    description: tool.description,
-                    parameters: {
-                      type: "object",
-                      properties,
-                      required: Object.entries(tool.params)
-                        .filter(([_, param]) => (param as any).required)
-                        .map(([name]) => name),
-                    },
-                  },
-                };
-              });
-
-              const existingNames = new Set(
-                expandedTools.map((t) => t.function.name),
-              );
+              if (sessionId) recordDiscoveredCategory(sessionId, category);
+              const categoryToolDefs = buildCategoryToolDefs(body.mode, category);
+              const existingNames = new Set(expandedTools.map((t) => t.function.name));
               for (const td of categoryToolDefs) {
                 if (!existingNames.has(td.function.name)) {
                   expandedTools.push(td);
@@ -799,7 +794,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
           })),
         ];
 
-        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+        // Use preserved original query (pruning may remove user messages)
+        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
         response = await aiClient.chat({
           messages: messages,
           tools: expandedTools.length > 0 ? expandedTools : undefined,
@@ -854,13 +850,6 @@ export async function chatRoutes(fastify: FastifyInstance) {
   fastify.post("/chat/stream", async (request, reply): Promise<void> => {
     const body = chatRequestSchema.parse(request.body);
 
-    if (body.model && !ALLOWED_MODELS.has(body.model)) {
-      reply.code(400);
-      return reply.send({
-        error: `Invalid model: ${body.model}`,
-        allowedModels: [...ALLOWED_MODELS],
-      });
-    }
 
     if (!aiClient.isConfigured()) {
       reply.code(503);

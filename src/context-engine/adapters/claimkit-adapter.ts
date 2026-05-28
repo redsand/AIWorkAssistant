@@ -130,10 +130,13 @@ export class ClaimKitAdapter {
       ?? (metadata?.docId as string | undefined)
       ?? (metadata?.entityId as string | undefined)
       ?? "source";
+    const trustTier = metadata?.trustTier as string | undefined;
+    const { trustTier: _drop, ...restMeta } = metadata ?? {};
     const input: SourceInput = {
       title,
       content: text,
-      metadata: metadata as Record<string, Json>,
+      ...(trustTier ? { trustTier: trustTier as Parameters<typeof this.claimKit.ingest>[0]["trustTier"] } : {}),
+      metadata: restMeta as Record<string, Json>,
     };
     const result = await this.claimKit.ingest(input);
     return { sourceId: result.ingest.source.id };

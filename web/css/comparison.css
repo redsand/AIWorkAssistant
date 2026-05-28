@@ -50,6 +50,25 @@ body {
 .comp-title { font-size: 22px; font-weight: 700; color: #333; }
 .comp-subtitle { font-size: 13px; color: #888; margin-top: 2px; }
 
+.comp-header-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+
+.clear-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 10px;
+  border: 1.5px solid #e53e3e;
+  background: #fff5f5;
+  color: #e53e3e;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.clear-btn:hover { background: #e53e3e; color: #fff; }
+.clear-btn:disabled { opacity: .5; cursor: not-allowed; }
+
 /* ── Stats Bar ──────────────────────────────────── */
 .stats-bar {
   display: grid;

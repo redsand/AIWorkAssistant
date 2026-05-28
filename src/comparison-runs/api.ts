@@ -65,6 +65,13 @@ export async function comparisonRoutes(
     return result;
   });
 
+  // ── Clear all runs ────────────────────────────────────────────────
+
+  fastify.delete("/runs", async (_request, reply) => {
+    const result = db.clearAll();
+    return reply.send({ ok: true, deletedRuns: result.deletedRuns });
+  });
+
   // ── Save run (internal — used by auto-capture) ────────────────────
 
   const API_KEY = process.env.AIWORKASSISTANT_API_KEY;

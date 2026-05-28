@@ -314,6 +314,17 @@ export async function sendMessage() {
 
   const myGeneration = nextSendGeneration();
 
+  // === SHOW PROCESSING IMMEDIATELY (before any async operations) ===
+  enableAutoScroll();
+  showTyping(true);
+  const progressElRef = { progressEl: null };
+  const immediateProgress = createToolProgress();
+  progressElRef.progressEl = immediateProgress.progressEl;
+  document.getElementById("chatMessages").appendChild(immediateProgress.progressEl);
+  document.getElementById("processingIndicator").classList.add("active");
+  scrollChatToBottom();
+  // ================================================================
+
   const { disconnectLive } = await import("./live.js?v=8");
   disconnectLive();
 
@@ -333,18 +344,6 @@ export async function sendMessage() {
     activeStreamController.abort();
     setActiveStreamController(null);
   }
-
-  enableAutoScroll();
-  showTyping(true);
-
-  const progressElRef = { progressEl: null };
-
-  // Show "AI Assistant is working..." immediately so the user sees real-time feedback
-  const immediateProgress = createToolProgress();
-  progressElRef.progressEl = immediateProgress.progressEl;
-  document.getElementById("chatMessages").appendChild(immediateProgress.progressEl);
-  document.getElementById("processingIndicator").classList.add("active");
-  scrollChatToBottom();
 
   try {
     const controller = new AbortController();
@@ -435,6 +434,17 @@ export async function sendMessage() {
 export async function resendMessage(message) {
   const myGeneration = nextSendGeneration();
 
+  // === SHOW PROCESSING IMMEDIATELY (before any async operations) ===
+  enableAutoScroll();
+  showTyping(true);
+  const progressElRef = { progressEl: null };
+  const immediateProgress = createToolProgress();
+  progressElRef.progressEl = immediateProgress.progressEl;
+  document.getElementById("chatMessages").appendChild(immediateProgress.progressEl);
+  document.getElementById("processingIndicator").classList.add("active");
+  scrollChatToBottom();
+  // ================================================================
+
   const { disconnectLive } = await import("./live.js?v=8");
   disconnectLive();
 
@@ -469,18 +479,6 @@ export async function resendMessage(message) {
     activeStreamController.abort();
     setActiveStreamController(null);
   }
-
-  enableAutoScroll();
-  showTyping(true);
-
-  const progressElRef = { progressEl: null };
-
-  // Show "AI Assistant is working..." immediately so the user sees real-time feedback
-  const immediateProgress = createToolProgress();
-  progressElRef.progressEl = immediateProgress.progressEl;
-  document.getElementById("chatMessages").appendChild(immediateProgress.progressEl);
-  document.getElementById("processingIndicator").classList.add("active");
-  scrollChatToBottom();
 
   try {
     const controller = new AbortController();

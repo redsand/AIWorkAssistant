@@ -245,7 +245,7 @@ class AgentRunDatabase {
         step.toolName ?? null,
         contentStr,
         paramsStr,
-        step.success === null ? null : step.success ? 1 : 0,
+        step.success == null ? null : step.success ? 1 : 0,
         step.errorMessage ?? null,
         step.durationMs ?? null,
         step.stepOrder,

@@ -15,6 +15,7 @@ export type Platform =
   | 'codex'
   | 'mcp'
   | 'hawk-ir'
+  | 'tenable'
   | 'cross-platform';
 
 /**
