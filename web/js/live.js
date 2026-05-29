@@ -44,6 +44,7 @@ export function subscribeLive(sessionId) {
   const abortController = new AbortController();
   activeAbortController = abortController;
 
+  function attempt() {
   fetch(url, { headers, signal: abortController.signal })
     .then((response) => {
       if (abortController.signal.aborted) return;
@@ -70,6 +71,7 @@ export function subscribeLive(sessionId) {
       let hasActiveJob = false;
       let progressEl = null;
       let contentCount = 0;
+      let shouldReconnect = true;
 
       const cleanup = () => {
         if (activeReader === reader) activeReader = null;
@@ -116,10 +118,17 @@ export function subscribeLive(sessionId) {
               const data = JSON.parse(dataStr);
 
               if (eventType === "state" && data.processing === false) {
+                shouldReconnect = false;
                 const procEl = document.getElementById("processingIndicator");
                 procEl.classList.remove("active");
                 showTyping(false);
-                return { stop: false };
+                return { stop: true };
+              }
+
+              if (eventType === "processing") {
+                const processingEl = document.getElementById("processingIndicator");
+                if (processingEl) processingEl.classList.add("active");
+                showTyping(true);
               }
 
               if (eventType === "session" && data.sessionId) {
@@ -179,7 +188,7 @@ export function subscribeLive(sessionId) {
                 contentCount++;
               }
 
-              if (data.message) {
+              if (eventType === "error" && data.message) {
                 if (progressEl) {
                   const headerText = progressEl.querySelector(".tool-progress-header-left");
                   if (headerText) {
@@ -225,11 +234,11 @@ export function subscribeLive(sessionId) {
               processChunk("\n", true);
             }
             cleanup();
-            if (sessionId && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+            if (shouldReconnect && sessionId && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
               reconnectAttempts++;
               const delay = RECONNECT_BASE_DELAY * Math.pow(2, reconnectAttempts - 1);
               console.log(`[SSE] Stream ended, reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
-              setTimeout(() => subscribeLive(sessionId), delay);
+              setTimeout(() => attempt(), delay);
             }
             break;
           }
@@ -249,4 +258,7 @@ export function subscribeLive(sessionId) {
         showTyping(false);
       }
     });
+  }
+
+  attempt();
 }

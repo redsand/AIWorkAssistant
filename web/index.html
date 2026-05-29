@@ -750,10 +750,15 @@
     <script type="module" src="/js/app.js?v=5"></script>
     <script type="module" src="/js/push-subscription.js?v=4"></script>
     <script>
+      function escAuthHeaders() {
+        const token = localStorage.getItem("authToken");
+        return token ? { "Authorization": "Bearer " + token, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
+      }
       async function openEscalationSettings() {
         const modal = document.getElementById("escalationModal");
         try {
-          const res = await fetch("/api/escalation-config");
+          const res = await fetch("/api/escalation-config", { headers: escAuthHeaders() });
+          if (!res.ok) throw new Error("HTTP " + res.status);
           const cfg = await res.json();
           document.getElementById("esc-global").checked = cfg.globalEnabled;
           const hw = cfg.sources.find(s => s.source === "hawk-ir");
@@ -775,7 +780,8 @@
           ]
         };
         try {
-          await fetch("/api/escalation-config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+          const res = await fetch("/api/escalation-config", { method: "PUT", headers: escAuthHeaders(), body: JSON.stringify(body) });
+          if (!res.ok) throw new Error("HTTP " + res.status);
           closeEscalationSettings();
         } catch(e) { alert("Failed to save: " + e.message); }
       }

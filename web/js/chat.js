@@ -92,6 +92,10 @@ async function handleStreamResponse(response, progressElRef, onError) {
               import("./sidebar.js").then(({ loadTodos }) => loadTodos());
             }
           }
+          if (eventType === "processing") {
+            document.getElementById("processingIndicator")?.classList.add("active");
+            showTyping(true);
+          }
           if (eventType === "thinking" && data.thinking) {
             currentThinking += data.thinking;
           }
@@ -106,7 +110,7 @@ async function handleStreamResponse(response, progressElRef, onError) {
             }
             contentCount++;
           }
-          if (data.message) {
+          if (eventType === "error" && data.message) {
             if (progressElRef.progressEl) {
               const headerText = progressElRef.progressEl.querySelector(".tool-progress-header-left");
               if (headerText) {
@@ -200,7 +204,7 @@ export async function initializeChat() {
   await loadChatHistory();
   ensureScrollListener();
 
-  const { subscribeLive } = await import("./live.js?v=8");
+  const { subscribeLive } = await import("./live.js?v=9");
   if (currentSessionId) {
     subscribeLive(currentSessionId);
   }
@@ -325,7 +329,7 @@ export async function sendMessage() {
   scrollChatToBottom();
   // ================================================================
 
-  const { disconnectLive } = await import("./live.js?v=8");
+  const { disconnectLive } = await import("./live.js?v=9");
   disconnectLive();
 
   input.value = "";
@@ -387,6 +391,7 @@ export async function sendMessage() {
     }
 
     const result = await handleStreamResponse(response, progressElRef);
+    setActiveStreamController(null);
 
     finalizeToolProgress();
     document.getElementById("processingIndicator")?.classList.remove("active");
@@ -406,7 +411,7 @@ export async function sendMessage() {
 
     loadConversations();
 
-    const { subscribeLive } = await import("./live.js?v=8");
+    const { subscribeLive } = await import("./live.js?v=9");
     if (currentSessionId) subscribeLive(currentSessionId);
   } catch (error) {
     finalizeToolProgress();
@@ -426,7 +431,7 @@ export async function sendMessage() {
         "assistant",
       );
     }
-    const { subscribeLive } = await import("./live.js?v=8");
+    const { subscribeLive } = await import("./live.js?v=9");
     if (currentSessionId) subscribeLive(currentSessionId);
   }
 }
@@ -445,7 +450,7 @@ export async function resendMessage(message) {
   scrollChatToBottom();
   // ================================================================
 
-  const { disconnectLive } = await import("./live.js?v=8");
+  const { disconnectLive } = await import("./live.js?v=9");
   disconnectLive();
 
   setHistoryIndex(-1);
@@ -522,6 +527,7 @@ export async function resendMessage(message) {
     }
 
     const result = await handleStreamResponse(response, progressElRef);
+    setActiveStreamController(null);
 
     finalizeToolProgress();
     document.getElementById("processingIndicator")?.classList.remove("active");
@@ -541,7 +547,7 @@ export async function resendMessage(message) {
 
     loadConversations();
 
-    const { subscribeLive } = await import("./live.js?v=8");
+    const { subscribeLive } = await import("./live.js?v=9");
     if (currentSessionId) subscribeLive(currentSessionId);
   } catch (error) {
     finalizeToolProgress();
@@ -561,7 +567,7 @@ export async function resendMessage(message) {
         "assistant",
       );
     }
-    const { subscribeLive } = await import("./live.js?v=8");
+    const { subscribeLive } = await import("./live.js?v=9");
     if (currentSessionId) subscribeLive(currentSessionId);
   }
 }

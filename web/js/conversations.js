@@ -157,7 +157,7 @@ export async function switchConversation(sessionId) {
   showChatView();
   loadConversations();
 
-  const { subscribeLive } = await import("./live.js?v=8");
+  const { subscribeLive } = await import("./live.js?v=9");
   subscribeLive(sessionId);
 }
 
@@ -192,7 +192,7 @@ export async function newChat() {
   showChatView();
   loadConversations();
 
-  const { disconnectLive } = await import("./live.js?v=8");
+  const { disconnectLive } = await import("./live.js?v=9");
   disconnectLive();
 }
 

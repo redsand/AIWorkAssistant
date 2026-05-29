@@ -43,6 +43,11 @@ export class EscalationEngine {
   }
 
   async checkAndEscalate(): Promise<void> {
+    // Per-source toggles and the global flag are read from the DB on every
+    // tick via isSourceEscalationEnabled() below. Time-thresholds and email
+    // addresses remain on the constructor default (env-based) unless we also
+    // reload them from the UI config store.
+
     const level2Items = await notificationStore.getUnacknowledgedPastThreshold(
       this.config.level2AfterMinutes
     );

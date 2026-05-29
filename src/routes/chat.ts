@@ -283,6 +283,7 @@ async function runChatJob(
   userId: string,
   model?: string,
 ) {
+  console.log("[Chat/Job] runChatJob entered for", sessionId);
   const job = getOrCreateJob(sessionId);
   if (job.cancelled) return;
   job.status = "processing";
@@ -297,13 +298,16 @@ async function runChatJob(
   // Preserve the original user query for logging (survives message pruning)
   const originalUserQuery = messages.find((m) => m.role === "user")?.content ?? "Unknown query";
 
-  let runId: string | null = null;
-  try { runId = agentRunDatabase.startRun({ sessionId, userId, mode }).id; job.runId = runId; } catch (e) { console.error("[AgentRuns]", e); }
+  let runId: string | null = job.runId ?? null;
+  if (!runId) {
+    try { runId = agentRunDatabase.startRun({ sessionId, userId, mode }).id; job.runId = runId; } catch (e) { console.error("[AgentRuns]", e); }
+  }
 
   try {
     let stepOrder = 0;
     assertJobActive(job);
     try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+    console.log("[Chat/Job] Calling aiClient.chat for", sessionId);
     let response = await aiClient.chat({
       messages: messages,
       tools,
@@ -311,6 +315,7 @@ async function runChatJob(
       top_p: 0.95,
       model,
     });
+    console.log("[Chat/Job] aiClient.chat completed for", sessionId);
     assertJobActive(job);
     try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
@@ -531,6 +536,7 @@ async function runChatJob(
 
     job.status = "failed";
     job.completedAt = new Date();
+    emitJobEvent(sessionId, "state", { processing: false, sessionId });
 
     try {
       if (runId && !cancelled) {
@@ -836,7 +842,6 @@ export async function chatRoutes(fastify: FastifyInstance) {
     } catch (error) {
       fastify.log.error(error);
       try { if (runId) agentRunDatabase.failRun(runId, error instanceof Error ? error.message : "Unknown error"); } catch (e) { console.error("[AgentRuns]", e); }
-      reply.code(500);
       return {
         error: "Failed to process chat request",
         message: error instanceof Error ? error.message : "Unknown error",
@@ -849,7 +854,6 @@ export async function chatRoutes(fastify: FastifyInstance) {
    */
   fastify.post("/chat/stream", async (request, reply): Promise<void> => {
     const body = chatRequestSchema.parse(request.body);
-
 
     if (!aiClient.isConfigured()) {
       reply.code(503);
@@ -918,10 +922,13 @@ export async function chatRoutes(fastify: FastifyInstance) {
         };
         activeJob.subscribers.add(subscriber);
 
-        request.raw.on("close", () => {
-          activeJob.subscribers.delete(subscriber);
-          cleanupConnection();
-        });
+        const socket = reply.raw.socket || request.raw.socket;
+        if (socket) {
+          socket.on("close", () => {
+            activeJob.subscribers.delete(subscriber);
+            cleanupConnection();
+          });
+        }
         return;
       }
 
@@ -937,6 +944,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       if (existingSession) {
         if (shouldUseContextEngine()) {
+          sendEvent("processing", { message: "Assembling context..." });
           const sessionMessages = await conversationManager.getSessionMessages(
             sessionId!,
             true,
@@ -986,6 +994,23 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       sendEvent("session", { sessionId });
 
+      // Create job and DB run early so the client sees activity and the
+      // agent-runs page shows the run immediately — before the slow context
+      // assembly begins.
+      const job = getOrCreateJob(sessionId!);
+      const subscriber = (event: string, data: unknown) => {
+        sendEvent(event, data);
+        if (event === "done" || event === "error") {
+          console.log(`[Chat/Stream] Subscriber received ${event}, scheduling cleanup`);
+          setTimeout(() => {
+            cleanupConnection();
+          }, 100);
+        }
+      };
+      job.subscribers.add(subscriber);
+      let earlyRunId: string | null = null;
+      try { earlyRunId = agentRunDatabase.startRun({ sessionId, userId: body.userId, mode: body.mode }).id; job.runId = earlyRunId; } catch (e) { console.error("[AgentRuns]", e); }
+
       let tools: Tool[] | undefined = undefined;
       if (body.includeTools) {
         const modeTools = getTools(body.mode);
@@ -1012,19 +1037,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
         });
       }
 
-      const job = getOrCreateJob(sessionId!);
-
-      const subscriber = (event: string, data: unknown) => {
-        sendEvent(event, data);
-        if (event === "done" || event === "error") {
-          setTimeout(() => {
-            cleanupConnection();
-          }, 100);
-        }
-      };
-      job.subscribers.add(subscriber);
-
+      console.log("[Chat/Stream] Starting runChatJob for", sessionId);
       runChatJob(sessionId!, messages, tools, body.mode, body.userId, body.model)
+        .then(() => console.log("[Chat/Stream] runChatJob completed for", sessionId))
         .catch((err) => {
           console.error("[Chat/Stream] Background job error:", err);
         })
@@ -1037,9 +1052,29 @@ export async function chatRoutes(fastify: FastifyInstance) {
           }, 5000);
         });
 
-      request.raw.on("close", () => {
-        job.subscribers.delete(subscriber);
-        cleanupConnection();
+      // Detect actual client disconnect via the underlying socket.
+      // Do NOT use request.raw.on("close") — Fastify destroys the request
+      // stream after body parsing, which fires long before the client leaves.
+      const socket = reply.raw.socket || request.raw.socket;
+      if (socket) {
+        socket.on("close", () => {
+          job.subscribers.delete(subscriber);
+          cleanupConnection();
+        });
+        socket.on("error", () => {
+          job.subscribers.delete(subscriber);
+          cleanupConnection();
+        });
+      }
+
+      // Keep the SSE connection alive until the client disconnects or the
+      // job completes and cleanupConnection() ends the response.
+      await new Promise<void>((resolve) => {
+        if (socket) {
+          socket.once("close", resolve);
+        } else {
+          setTimeout(() => resolve(), 300000);
+        }
       });
     } catch (error) {
       fastify.log.error(error);
@@ -1163,10 +1198,13 @@ export async function chatRoutes(fastify: FastifyInstance) {
       };
       job.subscribers.add(subscriber);
 
-      request.raw.on("close", () => {
-        job.subscribers.delete(subscriber);
-        cleanupConnection();
-      });
+      const socket1 = reply.raw.socket || request.raw.socket;
+      if (socket1) {
+        socket1.on("close", () => {
+          job.subscribers.delete(subscriber);
+          cleanupConnection();
+        });
+      }
     } else {
       sendEvent("state", { processing: false, sessionId });
 
@@ -1186,17 +1224,23 @@ export async function chatRoutes(fastify: FastifyInstance) {
             }
           };
           currentJob.subscribers.add(subscriber);
-          request.raw.on("close", () => {
-            currentJob.subscribers.delete(subscriber);
-            cleanupConnection();
-          });
+          const socket2 = reply.raw.socket || request.raw.socket;
+          if (socket2) {
+            socket2.on("close", () => {
+              currentJob.subscribers.delete(subscriber);
+              cleanupConnection();
+            });
+          }
         }
       }, 500);
 
-      request.raw.on("close", () => {
-        clearInterval(waitInterval);
-        cleanupConnection();
-      });
+      const socket3 = reply.raw.socket || request.raw.socket;
+      if (socket3) {
+        socket3.on("close", () => {
+          clearInterval(waitInterval);
+          cleanupConnection();
+        });
+      }
     }
   });
 
