@@ -417,7 +417,7 @@ POST   /webhooks/gitlab            # GitLab webhook endpoint
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `AI_PROVIDER` | Yes | `opencode` | `opencode`, `zai`, or `ollama` |
+| `AI_PROVIDER` | Yes | `opencode` | `opencode`, `zai`, `ollama`, or `openai` |
 | `OPENCODE_API_URL` | If opencode | — | OpenCode API URL |
 | `OPENCODE_API_KEY` | If opencode | — | OpenCode API key |
 | `OPENCODE_MODEL` | No | `GLM-5.1` | Model name |
@@ -428,6 +428,10 @@ POST   /webhooks/gitlab            # GitLab webhook endpoint
 | `OLLAMA_API_KEY` | No | — | API key (cloud models) |
 | `OLLAMA_MODEL` | No | `llama3` | Model name |
 | `OLLAMA_MAX_CONTEXT_TOKENS` | No | `128000` | Context window |
+| `OPENAI_API_URL` | If openai | `https://api.openai.com/v1` | OpenAI-compatible API URL |
+| `OPENAI_API_KEY` | If openai | — | OpenAI API key |
+| `OPENAI_MODEL` | No | `gpt-4o` | Model name |
+| `OPENAI_MAX_CONTEXT_TOKENS` | No | `128000` | Context window |
 
 ### Jira
 

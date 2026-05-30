@@ -26,6 +26,8 @@ import { conversationManager } from "../memory/conversation-manager";
 import { env } from "../config/env";
 import { agentRunDatabase } from "../agent-runs/database";
 import { sanitizeValue } from "../agent-runs/sanitizer";
+import { providerSettings } from "../agent/provider-settings";
+import type { AIProviderName } from "../agent/provider-settings";
 
 const MAX_SYSTEM_PROMPT_LENGTH = 4000;
 
@@ -50,6 +52,15 @@ const chatRequestSchema = z.object({
   includeMemory: z.boolean().default(true),
   systemPrompt: z.string().max(MAX_SYSTEM_PROMPT_LENGTH).optional(),
   model: z.string().optional(),
+});
+
+const providerSelectionSchema = z.object({
+  provider: z.enum(["opencode", "zai", "ollama", "openai"]),
+  model: z.string().optional(),
+});
+
+const providerModelsQuerySchema = z.object({
+  refresh: z.union([z.literal("true"), z.literal("false"), z.boolean()]).optional(),
 });
 
 const createSessionSchema = z.object({
@@ -561,13 +572,15 @@ export async function chatRoutes(fastify: FastifyInstance) {
       if (!aiClient.isConfigured()) {
         try { if (runId) agentRunDatabase.failRun(runId, "AI provider not configured"); } catch (e) { console.error("[AgentRuns]", e); }
         reply.code(503);
-        const provider = env.AI_PROVIDER;
+        const provider = providerSettings.getCurrent().provider;
         const keyHint =
           provider === "zai"
             ? "ZAI_API_KEY"
             : provider === "ollama"
               ? "OLLAMA_API_URL"
-              : "OPENCODE_API_KEY";
+              : provider === "openai"
+                ? "OPENAI_API_KEY"
+                : "OPENCODE_API_KEY";
         return {
           error: `AI provider (${provider}) not configured`,
           message: `Please set the ${keyHint} environment variable`,
@@ -857,13 +870,15 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
     if (!aiClient.isConfigured()) {
       reply.code(503);
-      const provider = env.AI_PROVIDER;
+      const provider = providerSettings.getCurrent().provider;
       const keyHint =
         provider === "zai"
           ? "ZAI_API_KEY"
           : provider === "ollama"
             ? "OLLAMA_API_URL"
-            : "OPENCODE_API_KEY";
+            : provider === "openai"
+              ? "OPENAI_API_KEY"
+              : "OPENCODE_API_KEY";
       return reply.send({
         error: `AI provider (${provider}) not configured`,
         message: `Please set the ${keyHint} environment variable`,
@@ -1245,7 +1260,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
   });
 
   fastify.get("/chat/health", async (_request, _reply) => {
-    const provider = env.AI_PROVIDER;
+    const currentProvider = providerSettings.getCurrent();
+    const provider = currentProvider.provider;
     const isConfigured = aiClient.isConfigured();
     const isValid = isConfigured ? await aiClient.validateConfig() : false;
 
@@ -1267,6 +1283,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       opencode: { key: env.OPENCODE_API_KEY, url: env.OPENCODE_API_URL },
       zai: { key: env.ZAI_API_KEY, url: env.ZAI_API_URL },
       ollama: { key: env.OLLAMA_API_KEY || "local", url: env.OLLAMA_API_URL },
+      openai: { key: env.OPENAI_API_KEY, url: env.OPENAI_API_URL },
     };
 
     const info = providerKeyMap[provider] || providerKeyMap.opencode;
@@ -1274,6 +1291,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
     return {
       provider: {
         active: provider,
+        model: currentProvider.model,
         configured: isConfigured,
         valid: isValid,
         baseUrl: info.url,
@@ -1285,6 +1303,40 @@ export async function chatRoutes(fastify: FastifyInstance) {
         jitbit: { configured: jitbitConfigured, valid: jitbitValid },
       },
     };
+  });
+
+  fastify.get("/chat/providers", async (_request, _reply) => {
+    const current = providerSettings.getCurrent();
+    const models = await providerSettings.getModels(current.provider);
+    return {
+      active: current.provider,
+      model: current.model,
+      providers: current.providers,
+      models,
+    };
+  });
+
+  fastify.get("/chat/providers/:provider/models", async (request, reply) => {
+    const params = z.object({ provider: z.string() }).parse(request.params);
+    const query = providerModelsQuerySchema.parse(request.query);
+    const refresh = query.refresh === true || query.refresh === "true";
+    if (!providerSettings.isProviderName(params.provider)) {
+      return reply.status(400).send({ error: `Unsupported provider '${params.provider}'` });
+    }
+
+    const models = await providerSettings.getModels(params.provider as AIProviderName, refresh);
+    return models;
+  });
+
+  fastify.post("/chat/provider", async (request, reply) => {
+    try {
+      const body = providerSelectionSchema.parse(request.body);
+      const result = await providerSettings.setProvider(body.provider, body.model);
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.status(400).send({ error: message });
+    }
   });
 
   /**
