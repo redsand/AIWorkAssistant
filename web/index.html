@@ -65,6 +65,10 @@
         <div class="status">
           <div class="status-indicator"></div>
           <span class="status-text">Connecting...</span>
+          <div class="provider-controls" aria-label="AI provider and model selection">
+            <select id="providerSelect" class="provider-select" title="AI Provider" disabled></select>
+            <select id="modelSelect" class="provider-select model-select" title="AI Model" disabled></select>
+          </div>
           <button
             class="header-icon-btn"
             onclick="openToolsModal()"

@@ -155,6 +155,117 @@ async function handleStreamResponse(response, progressElRef, onError) {
   return { error: false, roadmapTouched, contentCount };
 }
 
+
+function setProviderControlsDisabled(disabled) {
+  const providerSelect = document.getElementById("providerSelect");
+  const modelSelect = document.getElementById("modelSelect");
+  if (providerSelect) providerSelect.disabled = disabled;
+  if (modelSelect) modelSelect.disabled = disabled;
+}
+
+function renderOptions(select, values, selectedValue) {
+  if (!select) return;
+  select.innerHTML = "";
+  values.forEach((value) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value;
+    option.selected = value === selectedValue;
+    select.appendChild(option);
+  });
+}
+
+async function loadModelsForProvider(provider, selectedModel) {
+  const modelSelect = document.getElementById("modelSelect");
+  if (!modelSelect) return [];
+  modelSelect.disabled = true;
+  modelSelect.innerHTML = '<option value="">Loading models...</option>';
+
+  const response = await fetch(`${API_BASE}/chat/providers/${encodeURIComponent(provider)}/models`, {
+    headers: authHeaders(),
+  });
+  if (!response.ok) throw new Error(`Unable to load models for ${provider}`);
+
+  const data = await response.json();
+  const models = Array.isArray(data.models) ? data.models : [];
+  renderOptions(modelSelect, models, selectedModel || models[0] || "");
+  modelSelect.disabled = models.length === 0;
+  return models;
+}
+
+async function setRuntimeProvider(provider, model) {
+  setProviderControlsDisabled(true);
+  try {
+    const response = await fetch(`${API_BASE}/chat/provider`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ provider, model: model || undefined }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Unable to switch provider to ${provider}`);
+
+    renderOptions(document.getElementById("modelSelect"), data.models?.models || [], data.model);
+    const providerSelect = document.getElementById("providerSelect");
+    if (providerSelect) providerSelect.value = data.provider;
+    await initializeProviderControls(false);
+    await updateProviderHealth();
+  } catch (error) {
+    showError(error instanceof Error ? error.message : String(error));
+    await initializeProviderControls(false);
+    await updateProviderHealth();
+  } finally {
+    setProviderControlsDisabled(false);
+  }
+}
+
+async function initializeProviderControls(refreshHealth = true) {
+  const providerSelect = document.getElementById("providerSelect");
+  const modelSelect = document.getElementById("modelSelect");
+  if (!providerSelect || !modelSelect) return;
+
+  setProviderControlsDisabled(true);
+  const response = await fetch(`${API_BASE}/chat/providers`, { headers: authHeaders() });
+  if (!response.ok) throw new Error("Unable to load AI providers");
+  const data = await response.json();
+  renderOptions(providerSelect, data.providers || [], data.active);
+  renderOptions(modelSelect, data.models?.models || [], data.model);
+  providerSelect.disabled = false;
+  modelSelect.disabled = !data.models?.models?.length;
+
+  providerSelect.onchange = async () => {
+    const models = await loadModelsForProvider(providerSelect.value);
+    await setRuntimeProvider(providerSelect.value, models[0] || "");
+  };
+  modelSelect.onchange = async () => {
+    await setRuntimeProvider(providerSelect.value, modelSelect.value);
+  };
+
+  if (refreshHealth) await updateProviderHealth();
+}
+
+async function updateProviderHealth() {
+  const response = await fetch(`${API_BASE}/chat/health`, {
+    headers: authHeaders(),
+  });
+  const data = await response.json();
+
+  const statusText = document.querySelector(".status-text");
+  const statusIndicator = document.querySelector(".status-indicator");
+
+  if (statusText && statusIndicator) {
+    if (data.provider?.valid) {
+      statusText.textContent = `Connected · ${data.provider.active} · ${data.provider.model}`;
+      statusIndicator.className = "status-indicator status-ok";
+    } else if (data.provider?.configured) {
+      statusText.textContent = `Configured · ${data.provider.active} · Invalid credentials`;
+      statusIndicator.className = "status-indicator status-error";
+    } else {
+      statusText.textContent = "Not configured";
+      statusIndicator.className = "status-indicator status-error";
+    }
+  }
+}
+
 function addCompletionMarker() {
   const messages = document
     .getElementById("chatMessages")
@@ -173,26 +284,7 @@ function addCompletionMarker() {
 
 export async function initializeChat() {
   try {
-    const response = await fetch(`${API_BASE}/chat/health`, {
-      headers: authHeaders(),
-    });
-    const data = await response.json();
-
-    const statusText = document.querySelector(".status-text");
-    const statusIndicator = document.querySelector(".status-indicator");
-
-    if (statusText && statusIndicator) {
-      if (data.provider?.valid) {
-        statusText.textContent = `Connected · ${data.provider.active}`;
-        statusIndicator.className = "status-indicator status-ok";
-      } else if (data.provider?.configured) {
-        statusText.textContent = "Configured · Invalid credentials";
-        statusIndicator.className = "status-indicator status-error";
-      } else {
-        statusText.textContent = "Not configured";
-        statusIndicator.className = "status-indicator status-error";
-      }
-    }
+    await initializeProviderControls();
   } catch (error) {
     console.error("Health check failed:", error);
     const statusText = document.querySelector(".status-text");
@@ -363,6 +455,7 @@ export async function sendMessage() {
         sessionId: currentSessionId,
         includeMemory: true,
         includeTools: true,
+        model: document.getElementById("modelSelect")?.value || undefined,
       }),
       signal: controller.signal,
     });
@@ -499,6 +592,7 @@ export async function resendMessage(message) {
         sessionId: currentSessionId,
         includeMemory: true,
         includeTools: true,
+        model: document.getElementById("modelSelect")?.value || undefined,
       }),
       signal: controller.signal,
     });

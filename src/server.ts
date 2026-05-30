@@ -55,6 +55,7 @@ import { startCalendarScheduler } from "./scheduler/calendar-midnight";
 import { startKanbanCleanupScheduler } from "./scheduler/kanban-worktree-cleanup";
 import { initializeMCP } from "./integrations/mcp";
 import { codebaseIndexer } from "./agent/codebase-indexer";
+import { providerSettings } from "./agent/provider-settings";
 import path from "path";
 
 export async function buildServer() {
@@ -311,6 +312,8 @@ async function start() {
 ║                                                            ║
 ╚════════════════════════════════════════════════════════════╝
     `);
+
+    providerSettings.warmDefaultProvider();
 
     // Log configuration status
     console.log("📋 Configuration Status:");
