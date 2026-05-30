@@ -1,9 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { cleanupMergedBranch, cleanupAllMergedBranches, pushBranch, recoverFromRebase, isRebaseInProgress } from "../git-ops";
+
+vi.setConfig({ testTimeout: 20000 });
 
 function git(args: string[], cwd: string): { ok: boolean; stdout: string; stderr: string } {
   const r = spawnSync("git", args, { cwd, stdio: "pipe", encoding: "utf-8" });

@@ -44,7 +44,7 @@ import { repoDashboardRoutes } from "./routes/repo-dashboard";
 import { kanbanRoutes } from "./routes/kanban";
 import { claimKitAdapter } from "./context-engine/adapters/claimkit-adapter";
 import { comparisonRoutes } from "./comparison-runs/api";
-import { ingestKnowledgeStore, ingestGraphStore } from "./context-engine/claimkit-ingestion";
+import { ingestKnowledgeStore, ingestCodebaseStore, ingestGraphStore } from "./context-engine/claimkit-ingestion";
 import {
   authMiddleware,
   isAuthConfigured,
@@ -64,7 +64,9 @@ export async function buildServer() {
     },
     requestTimeout: 0,
     keepAliveTimeout: 120000,
-    ignoreTrailingSlash: true,
+    routerOptions: {
+      ignoreTrailingSlash: true,
+    },
   });
 
   server.addContentTypeParser(
@@ -356,8 +358,8 @@ async function start() {
       process.exit(0);
     });
 
-    if (env.RAG_INDEX_ON_STARTUP) {
-      codebaseIndexer
+    const codebaseIndexPromise = env.RAG_INDEX_ON_STARTUP
+      ? codebaseIndexer
         .indexCodebase()
         .then((result) => {
           console.log(
@@ -369,11 +371,13 @@ async function start() {
               result.errors.slice(0, 5),
             );
           }
+          return result;
         })
         .catch((err) => {
           console.error("[RAG] Indexing failed:", err);
-        });
-    }
+          return null;
+        })
+      : Promise.resolve(null);
 
     if (env.CLAIMKIT_ENABLED) {
       claimKitAdapter
@@ -386,17 +390,20 @@ async function start() {
           console.log(
             `[ClaimKit] Initialized (provider: ${env.CLAIMKIT_LLM_PROVIDER}, topK: ${env.CLAIMKIT_TOP_K}, minScore: ${env.CLAIMKIT_MIN_SCORE})`,
           );
+          await codebaseIndexPromise;
           console.log("[ClaimKit] Ingesting stores...");
-          const [knowledge, graph] = await Promise.all([
+          const [knowledge, codebase, graph] = await Promise.all([
             ingestKnowledgeStore(),
+            ingestCodebaseStore(),
             ingestGraphStore(),
           ]);
           console.log(
             `[ClaimKit] Ingestion complete — ` +
             `knowledge: ${knowledge.ingested}/${knowledge.total} | ` +
+            `codebase: ${codebase.ingested}/${codebase.total} | ` +
             `graph: ${graph.ingested}/${graph.total}` +
-            (knowledge.errors + graph.errors > 0
-              ? ` | errors: ${knowledge.errors + graph.errors}`
+            (knowledge.errors + codebase.errors + graph.errors > 0
+              ? ` | errors: ${knowledge.errors + codebase.errors + graph.errors}`
               : ""),
           );
         })

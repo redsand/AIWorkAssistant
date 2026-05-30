@@ -481,7 +481,7 @@ export function getSystemPrompt(
   contextQuery?: string,
   contextMode?: "rag" | "engine",
 ): string {
-  const toolSummary = getToolInventorySummary(mode);
+  const toolSummary = getToolInventorySummary(mode, contextQuery);
 
   // In engine mode, the context engine handles knowledge injection separately.
   // Return only the base prompt + minimal tool reference.
@@ -504,7 +504,7 @@ function getSystemPromptRAG(
   mode: "productivity" | "engineering",
   contextQuery?: string,
 ): string {
-  const toolSummary = getToolInventorySummary(mode);
+  const toolSummary = getToolInventorySummary(mode, contextQuery);
 
   let knowledgeSection = "";
   if (contextQuery) {

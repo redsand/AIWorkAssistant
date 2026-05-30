@@ -14,6 +14,8 @@ function sanitizeToolName(name: string): string {
   return name.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
+const kToolNameMap = Symbol("toolNameMap");
+
 export class ZaiProvider extends AIProvider {
   readonly name = "zai";
   readonly capabilities: ProviderCapabilities = {
@@ -24,19 +26,17 @@ export class ZaiProvider extends AIProvider {
     synthesizesToolCallIds: true,
   };
 
-  private _toolNameMap = new Map<string, string>();
-
   constructor(config: ProviderConfig) {
     super(config);
   }
 
   protected override buildRequestBody(request: ChatRequest): Record<string, unknown> {
-    this._toolNameMap.clear();
+    const toolNameMap = new Map<string, string>();
 
     const sanitizedTools = request.tools?.map((tool) => {
       const original = tool.function.name;
       const sanitized = sanitizeToolName(original);
-      if (sanitized !== original) this._toolNameMap.set(sanitized, original);
+      if (sanitized !== original) toolNameMap.set(sanitized, original);
       return { ...tool, function: { ...tool.function, name: sanitized } };
     });
 
@@ -46,13 +46,15 @@ export class ZaiProvider extends AIProvider {
         ...msg,
         tool_calls: msg.tool_calls.map((tc) => {
           const sanitized = sanitizeToolName(tc.function.name);
-          if (sanitized !== tc.function.name) this._toolNameMap.set(sanitized, tc.function.name);
+          if (sanitized !== tc.function.name) toolNameMap.set(sanitized, tc.function.name);
           return { ...tc, function: { ...tc.function, name: sanitized } };
         }),
       };
     });
 
-    return super.buildRequestBody({ ...request, tools: sanitizedTools, messages: sanitizedMessages });
+    const body = super.buildRequestBody({ ...request, tools: sanitizedTools, messages: sanitizedMessages });
+    (body as any)[kToolNameMap] = toolNameMap;
+    return body;
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
@@ -86,12 +88,13 @@ export class ZaiProvider extends AIProvider {
 
         const data = response.data;
         const message = data.choices[0].message;
+        const toolNameMap = (requestBody as any)[kToolNameMap] as Map<string, string> | undefined;
 
         const result: ChatResponse = {
           content: message.content || "",
           thinking: message.reasoning_content || undefined,
           toolCalls: message.tool_calls
-            ? this.parseToolCalls(message.tool_calls)
+            ? this.parseToolCalls(message.tool_calls, toolNameMap)
             : undefined,
           usage: {
             promptTokens: data.usage?.prompt_tokens || 0,
@@ -225,10 +228,11 @@ export class ZaiProvider extends AIProvider {
     }
   }
 
-  protected override parseToolCalls(toolCalls: any[]): ToolCall[] {
+  protected override parseToolCalls(toolCalls: any[], toolNameMap?: Map<string, string>): ToolCall[] {
+    const map = toolNameMap;
     return toolCalls.map((tc, index) => {
       const sanitizedName = tc.function?.name || "";
-      const originalName = this._toolNameMap.get(sanitizedName) ?? sanitizedName;
+      const originalName = map?.get(sanitizedName) ?? sanitizedName;
       return {
         id: tc.id || `call_${randomUUID().replace(/-/g, "").substring(0, 24)}_${index}`,
         type: tc.type || ("function" as const),

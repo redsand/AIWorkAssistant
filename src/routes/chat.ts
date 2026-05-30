@@ -7,7 +7,7 @@ import { z } from "zod";
 import { getSystemPrompt, aiClient } from "../agent";
 import { shouldUseContextEngine, assembleContext } from "../context-engine";
 import {
-  getTools,
+  getToolsForRequest,
   getToolsByCategory,
   getToolCategories,
 } from "../agent/tool-registry";
@@ -214,6 +214,34 @@ function parseStoredToolContent(content: string): unknown {
   }
 }
 
+function compactToolResultForContext(result: unknown): unknown {
+  if (!result || typeof result !== "object") return result;
+  const obj = result as Record<string, unknown>;
+  const data = obj.data as Record<string, unknown> | undefined;
+  if (data && typeof data === "object" && data.summary) {
+    return {
+      success: obj.success,
+      data: {
+        summary: data.summary,
+        export_uuid: data.export_uuid,
+        chunks_downloaded: data.chunks_downloaded,
+        total_vulnerabilities: data.total_vulnerabilities,
+        total_assets: data.total_assets,
+        elapsed_seconds: data.elapsed_seconds,
+        _guidance: data._guidance,
+      },
+    };
+  }
+  return result;
+}
+
+function stringifyToolResultForContext(result: unknown): string {
+  const content = JSON.stringify(compactToolResultForContext(result));
+  const maxChars = 25_000;
+  if (content.length <= maxChars) return content;
+  return `${content.substring(0, maxChars)}\n...[tool result truncated for chat context: ${content.length - maxChars} chars omitted]`;
+}
+
 function buildSessionRecovery(sessionId: string) {
   const session = conversationManager.getSession(sessionId);
   if (!session) return null;
@@ -293,7 +321,6 @@ async function runChatJob(
   job.startedAt = new Date();
   job.lastActivityAt = new Date();
   job.completedAt = undefined;
-  job.runId = null;
 
   // Preserve the original user query for logging (survives message pruning)
   const originalUserQuery = messages.find((m) => m.role === "user")?.content ?? "Unknown query";
@@ -392,7 +419,8 @@ async function runChatJob(
         const result = await dispatchToolCall(tc.name, dispatchParams, userId, false, { messages, mode });
         assertJobActive(job);
         const toolDuration = Date.now() - toolStart;
-        allToolResults[tc.id] = result;
+        const contextResult = compactToolResultForContext(result);
+        allToolResults[tc.id] = contextResult;
 
         try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: tc.name, success: result.success !== false, errorMessage: result.error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
@@ -419,7 +447,7 @@ async function runChatJob(
 
         conversationManager.addMessage(sessionId, {
           role: "tool",
-          content: JSON.stringify(result),
+          content: stringifyToolResultForContext(result),
           tool_call_id: tc.id,
         });
       }
@@ -459,7 +487,7 @@ async function runChatJob(
 
           conversationManager.addMessage(sessionId, {
             role: "tool",
-            content: JSON.stringify(result),
+            content: stringifyToolResultForContext(result),
             tool_call_id: id,
           });
         }
@@ -474,7 +502,7 @@ async function runChatJob(
         },
         ...toolCalls.map((tc) => ({
           role: "tool" as const,
-          content: JSON.stringify(allToolResults[tc.id]),
+          content: stringifyToolResultForContext(allToolResults[tc.id]),
           tool_call_id: tc.id,
         })),
       ];
@@ -513,16 +541,16 @@ async function runChatJob(
     if (response.content && response.content.trim()) {
       try { if (runId) agentRunDatabase.addStep({ runId, stepType: "content", content: { content: response.content }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
     }
+    job.status = "completed";
+    job.completedAt = new Date();
+
+    try { if (runId) agentRunDatabase.completeRun(runId, { model: response.model, promptTokens: response.usage?.promptTokens, completionTokens: response.usage?.completionTokens, totalTokens: response.usage?.totalTokens, toolLoopCount: loopCount }); } catch (e) { console.error("[AgentRuns]", e); }
+
     emitJobEvent(sessionId, "content", { content: response.content });
     emitJobEvent(sessionId, "done", {
       usage: response.usage,
       model: response.model,
     });
-
-    job.status = "completed";
-    job.completedAt = new Date();
-
-    try { if (runId) agentRunDatabase.completeRun(runId, { model: response.model, promptTokens: response.usage?.promptTokens, completionTokens: response.usage?.completionTokens, totalTokens: response.usage?.totalTokens, toolLoopCount: loopCount }); } catch (e) { console.error("[AgentRuns]", e); }
   } catch (error) {
     console.error(`[Chat/Job] Failed for session ${sessionId}:`, error);
     const cancelled = error instanceof JobCancelledError;
@@ -591,14 +619,14 @@ export async function chatRoutes(fastify: FastifyInstance) {
           content: body.message,
         });
 
-        if (shouldUseContextEngine()) {
+        if (body.includeMemory && shouldUseContextEngine()) {
           const sessionMessages = await conversationManager.getSessionMessages(
             sessionId!,
             body.includeMemory,
             "engine",
           );
           const estimatedToolTokens = body.includeTools
-            ? Math.min(aiClient.estimateTokens([], getTools(body.mode) as any) || 12000, 12000)
+            ? Math.min(aiClient.estimateTokens([], getToolsForRequest(body.mode, body.message) as any) || 12000, 12000)
             : 0;
           const packet = await assembleContext({
             mode: body.mode,
@@ -650,7 +678,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       let tools: Tool[] | undefined = undefined;
       if (body.includeTools) {
-        const modeTools = getTools(body.mode);
+        const modeTools = getToolsForRequest(body.mode, body.message);
         tools = modeTools.map((tool) => {
           const properties: Record<string, unknown> = {};
           for (const [key, param] of Object.entries(tool.params)) {
@@ -758,7 +786,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
             { messages: messages || [], mode: body.mode },
           );
           const toolDuration = Date.now() - toolStart;
-          allToolResults[tc.id] = result;
+          const contextResult = compactToolResultForContext(result);
+          allToolResults[tc.id] = contextResult;
 
           try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: tc.name, success: result.success !== false, errorMessage: result.error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
@@ -780,7 +809,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           if (sessionId) {
             conversationManager.addMessage(sessionId, {
               role: "tool",
-              content: JSON.stringify(result),
+              content: stringifyToolResultForContext(result),
               tool_call_id: tc.id,
             });
           }
@@ -795,10 +824,14 @@ export async function chatRoutes(fastify: FastifyInstance) {
           },
           ...toolCalls.map((tc) => ({
             role: "tool" as const,
-            content: JSON.stringify(allToolResults[tc.id]),
+            content: stringifyToolResultForContext(allToolResults[tc.id]),
             tool_call_id: tc.id,
           })),
         ];
+
+        const currentTools =
+          expandedTools.length > 0 ? expandedTools : tools || undefined;
+        messages = aiClient.pruneMessages(messages, currentTools) as ChatMessage[];
 
         // Use preserved original query (pruning may remove user messages)
         try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
@@ -943,15 +976,15 @@ export async function chatRoutes(fastify: FastifyInstance) {
       let messages: ChatMessage[];
 
       if (existingSession) {
-        if (shouldUseContextEngine()) {
+        if (body.includeMemory && shouldUseContextEngine()) {
           sendEvent("processing", { message: "Assembling context..." });
           const sessionMessages = await conversationManager.getSessionMessages(
             sessionId!,
-            true,
+            body.includeMemory,
             "engine",
           );
           const estimatedToolTokens = body.includeTools
-            ? Math.min(aiClient.estimateTokens([], getTools(body.mode) as any) || 12000, 12000)
+            ? Math.min(aiClient.estimateTokens([], getToolsForRequest(body.mode, body.message) as any) || 12000, 12000)
             : 0;
           const packet = await assembleContext({
             mode: body.mode,
@@ -972,6 +1005,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         } else {
           const sessionMessages = await conversationManager.getSessionMessages(
             sessionId!,
+            body.includeMemory,
           );
           messages = [
             { role: "system", content: systemPrompt },
@@ -1013,7 +1047,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       let tools: Tool[] | undefined = undefined;
       if (body.includeTools) {
-        const modeTools = getTools(body.mode);
+        const modeTools = getToolsForRequest(body.mode, body.message);
         tools = modeTools.map((tool) => {
           const properties: Record<string, unknown> = {};
           for (const [key, param] of Object.entries(tool.params)) {

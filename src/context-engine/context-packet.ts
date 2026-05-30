@@ -18,6 +18,7 @@ import type {
   RoutingTier,
 } from "./types";
 import { claimKitAdapter } from "./adapters/claimkit-adapter";
+import { ingestScoredDocumentsForQuery } from "./claimkit-ingestion";
 import { saveLiveComparison } from "../comparison-runs/auto-capture";
 import { createBudget, estimateTokens, enforceBudget } from "./budget";
 import { compressDocuments } from "./compressor";
@@ -77,7 +78,7 @@ export async function assembleContextPacket(
 
   const claimKitAvailable = await claimKitAdapter.initialize();
 
-  const baseSystemPrompt = getSystemPrompt(mode, undefined, "engine");
+  const baseSystemPrompt = getSystemPrompt(mode, query, "engine");
   const systemTokens = estimateTokens(baseSystemPrompt);
   systemSlot.allocatedTokens = Math.max(systemSlot.allocatedTokens, systemTokens);
 
@@ -92,6 +93,7 @@ export async function assembleContextPacket(
   let claimKitResult: Awaited<ReturnType<typeof claimKitAdapter.query>> | null = null;
   let ckMs = 0;
   if (claimKitAvailable) {
+    await ingestScoredDocumentsForQuery(docs, query, env.CLAIMKIT_QUERY_SEED_LIMIT);
     const ckStart = Date.now();
     try {
       claimKitResult = await claimKitAdapter.query(query);

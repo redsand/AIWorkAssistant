@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import { claimKitAdapter } from "../../context-engine/adapters/claimkit-adapter";
-import { ingestKnowledgeStore, ingestGraphStore } from "../../context-engine/claimkit-ingestion";
+import { ingestKnowledgeStore, ingestCodebaseStore, ingestGraphStore } from "../../context-engine/claimkit-ingestion";
 import { runClaimKitComparison } from "../../eval/comparison/claimkit-comparison";
 
 export function registerClaimKitCommand(program: Command): void {
@@ -24,12 +24,17 @@ export function registerClaimKitCommand(program: Command): void {
     .command("ingest")
     .description("Ingest all stores (knowledge, graph) into ClaimKit")
     .option("--knowledge", "Ingest knowledge store only")
+    .option("--codebase", "Ingest indexed codebase only")
     .option("--graph", "Ingest graph store only")
     .action(async (options) => {
-      const all = !options.knowledge && !options.graph;
+      const all = !options.knowledge && !options.codebase && !options.graph;
       if (all || options.knowledge) {
         const stats = await ingestKnowledgeStore();
         console.log(`Knowledge: ${stats.ingested}/${stats.total} ingested (${stats.errors} errors) in ${stats.durationMs}ms`);
+      }
+      if (all || options.codebase) {
+        const stats = await ingestCodebaseStore();
+        console.log(`Codebase: ${stats.ingested}/${stats.total} ingested (${stats.errors} errors) in ${stats.durationMs}ms`);
       }
       if (all || options.graph) {
         const stats = await ingestGraphStore();

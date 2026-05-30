@@ -102,12 +102,14 @@ describe("ingestKnowledgeStore", () => {
       docId: "kn-1",
       title: "Doc 1",
       source: "knowledge",
+      trustTier: "curated",
       tags: ["tag-a"],
     });
     expect(mockIngest).toHaveBeenNthCalledWith(2, "Doc 2\n\nContent two", {
       docId: "kn-2",
       title: "Doc 2",
       source: "knowledge",
+      trustTier: "curated",
       tags: [],
     });
   });
@@ -151,6 +153,7 @@ describe("ingestKnowledgeStore", () => {
       docId: "kn-1",
       title: "Doc",
       source: "knowledge",
+      trustTier: "curated",
       tags: [],
     });
   });
@@ -242,12 +245,12 @@ describe("ingestCodebaseStore", () => {
     expect(mockIngest).toHaveBeenNthCalledWith(
       1,
       "File: src/index.ts\n\nconsole.log('hello');",
-      { path: "src/index.ts", source: "codebase", language: "typescript" },
+      { path: "src/index.ts", title: "src/index.ts", source: "codebase", language: "typescript", trustTier: "curated" },
     );
     expect(mockIngest).toHaveBeenNthCalledWith(
       2,
       "File: README.md\n\n# Project\n\nDescription here.",
-      { path: "README.md", source: "codebase", language: "markdown" },
+      { path: "README.md", title: "README.md", source: "codebase", language: "markdown", trustTier: "curated" },
     );
   });
 
@@ -269,6 +272,68 @@ describe("ingestCodebaseStore", () => {
     expect(stats.ingested).toBe(2);
     expect(stats.errors).toBe(1);
     expect(stats.sourceIds).toEqual(["src-cb-1", "src-cb-3"]);
+  });
+});
+
+describe("ingestScoredDocumentsForQuery", () => {
+  let ingestScoredDocumentsForQuery: typeof import("../../../src/context-engine/claimkit-ingestion").ingestScoredDocumentsForQuery;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    vi.doMock("../../../src/context-engine/adapters/claimkit-adapter", () => ({
+      claimKitAdapter: mockClaimKitAdapter,
+    }));
+
+    const mod = await import("../../../src/context-engine/claimkit-ingestion");
+    ingestScoredDocumentsForQuery = mod.ingestScoredDocumentsForQuery;
+  });
+
+  it("should return early when ClaimKit is not available", async () => {
+    mockIsAvailable.mockReturnValue(false);
+
+    const stats = await ingestScoredDocumentsForQuery([], "query", 5);
+
+    expect(stats.total).toBe(0);
+    expect(stats.ingested).toBe(0);
+    expect(mockIngest).not.toHaveBeenCalled();
+  });
+
+  it("should ingest top scored documents with query seed metadata", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockIngest.mockResolvedValueOnce({ sourceId: "seed-1" });
+
+    const stats = await ingestScoredDocumentsForQuery([
+      {
+        id: "code-src:10",
+        source: "codebase",
+        content: "export async function listVulnerabilities() {}",
+        title: "src/integrations/tenable-cloud/tenable-cloud-client.ts",
+        score: 12,
+        baseScore: 12,
+        importanceScore: 0,
+        recencyScore: 1,
+        tokens: 25,
+        metadata: {
+          filePath: "src/integrations/tenable-cloud/tenable-cloud-client.ts",
+          startLine: 10,
+          endLine: 20,
+        },
+      },
+    ], "tenable report", 5);
+
+    expect(stats.ingested).toBe(1);
+    expect(stats.sourceIds).toEqual(["seed-1"]);
+    expect(mockIngest).toHaveBeenCalledWith(
+      expect.stringContaining("Matched query: tenable report"),
+      expect.objectContaining({
+        docId: "code-src:10",
+        source: "codebase",
+        trustTier: "curated",
+        querySeed: true,
+        score: 12,
+      }),
+    );
   });
 });
 
@@ -400,6 +465,7 @@ describe("ingestGraphStore", () => {
         entityId: "kg-component-1",
         entityType: "component",
         source: "graph",
+        trustTier: "curated",
       },
     );
 
@@ -411,6 +477,7 @@ describe("ingestGraphStore", () => {
         entityId: "kg-decision-1",
         entityType: "decision",
         source: "graph",
+        trustTier: "curated",
       },
     );
 
@@ -422,6 +489,7 @@ describe("ingestGraphStore", () => {
         relationshipId: "edge-1",
         relationshipType: "implements",
         source: "graph",
+        trustTier: "curated",
       },
     );
   });

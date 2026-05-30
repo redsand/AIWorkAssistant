@@ -38,6 +38,7 @@ const PLATFORM_PREFIX_MAP: Record<string, Platform> = {
   knowledge: "cross-platform",
   codebase: "cross-platform",
   graph: "cross-platform",
+  git: "cross-platform",
   system: "cross-platform",
   agent: "cross-platform",
   workflow: "cross-platform",
@@ -5920,11 +5921,12 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   // -- Vulnerabilities --
   {
     name: "tenable.list_vulnerabilities",
-    description: "List vulnerabilities from the Tenable workbench with optional filters. Returns one page of results (default 100 assets per page). IMPORTANT: If the response pagination.has_more=true, there are more pages — repeat with page+1. For complete vulnerability datasets use tenable.export_vulnerabilities instead. Provide accessKey/secretKey for per-customer access.",
+    description: "Return a comprehensive list of ALL vulnerabilities from Tenable (not capped at 5,000). Internally uses the export API to download every chunk automatically. May take 10–60 seconds for large datasets. Provide accessKey/secretKey for per-customer access.",
     params: {
-      date_range: { type: "number", description: "Days of data to return (default: 30)", required: false },
-      num_assets: { type: "number", description: "Max assets per page (default: 100). If response has_more=true, increment page and repeat until has_more=false.", required: false },
-      page: { type: "number", description: "1-based page number (default: 1). Increment to paginate through all results when has_more=true.", required: false },
+      date_range: { type: "number", description: "Days of data to return (default: all)", required: false },
+      severity: { type: "array", description: "Severity filter: critical, high, medium, low, info", required: false },
+      state: { type: "array", description: "State filter: open, reopened, fixed", required: false },
+      plugin_id: { type: "array", description: "Filter by specific plugin IDs", required: false },
       accessKey: { type: "string", description: "Tenable API access key (overrides global; use for per-customer queries)", required: false },
       secretKey: { type: "string", description: "Tenable API secret key (overrides global; use for per-customer queries)", required: false },
     },
@@ -5984,11 +5986,9 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   // -- Assets --
   {
     name: "tenable.list_workbench_assets",
-    description: "List assets from the Tenable workbench with severity summary data. Returns one page of results (default 100 per page). IMPORTANT: If pagination.has_more=true, there are more assets — repeat with page+1 until has_more=false to get the full asset inventory.",
+    description: "Return a comprehensive list of ALL assets from Tenable with severity summaries (not capped at 5,000). Internally uses the export API to download every chunk automatically. May take 10–60 seconds for large datasets. Provide accessKey/secretKey for per-customer access.",
     params: {
-      date_range: { type: "number", description: "Days of data to return", required: false },
-      num_assets: { type: "number", description: "Max assets per page (default: 100). If has_more=true, increment page and repeat.", required: false },
-      page: { type: "number", description: "1-based page number (default: 1). Increment when has_more=true to get all assets.", required: false },
+      chunk_size: { type: "number", description: "Number of assets per export chunk (default: 1000)", required: false },
       accessKey: { type: "string", description: "Tenable API access key override", required: false },
       secretKey: { type: "string", description: "Tenable API secret key override", required: false },
     },
@@ -8200,13 +8200,79 @@ export function getTools(mode: string): Tool[] {
   }
 }
 
+const TENABLE_REQUEST_PATTERN = /\b(?:tenable|nessus)\b/i;
+const TENABLE_REPORT_REQUEST_PATTERN = /\b(?:report|vulnerab|asset|patch|remediat|monthly|host|severity|critical|high|moderate|low|environment)\b/i;
+
+const TENABLE_REPORT_TOOL_NAMES = new Set([
+  "system.get_time",
+  "system.check_health",
+  "tenable.list_vulnerabilities",
+  "tenable.get_vulnerability_details",
+  "tenable.list_assets",
+  "tenable.get_asset",
+  "tenable.get_asset_vulnerabilities",
+  "tenable.get_server_status",
+  "tenable.get_server_properties",
+]);
+
+const TENABLE_SUPPORT_TOOL_NAMES = new Set([
+  "system.get_time",
+  "system.check_health",
+  "hawk_ir.get_assets",
+  "hawk_ir.get_asset_summary",
+  "hawk_ir.get_available_indexes",
+  "hawk_ir.get_fields",
+  "hawk_ir.list_dashboards",
+  "hawk_ir.run_dashboard",
+  "hawk_ir.run_dashboard_query",
+  "hawk_ir.weekly_report",
+  "hawk_ir.monthly_summary",
+  "hawk_ir.get_case_count",
+  "hawk_ir.get_recent_cases",
+  "hawk_ir.get_risky_open_cases",
+  "hawk_ir.get_escalated_cases",
+  "hawk_ir.search_logs",
+  "hawk_ir.get_log_histogram",
+]);
+
+function uniqueTools(tools: Tool[]): Tool[] {
+  const seen = new Set<string>();
+  return tools.filter((tool) => {
+    if (seen.has(tool.name)) return false;
+    seen.add(tool.name);
+    return true;
+  });
+}
+
+export function getToolsForRequest(mode: string, message: string): Tool[] {
+  if (!TENABLE_REQUEST_PATTERN.test(message)) {
+    return getTools(mode);
+  }
+
+  const allTools = getAllToolsForMode(mode);
+  const tenableTools = TENABLE_REPORT_REQUEST_PATTERN.test(message)
+    ? allTools.filter((tool) => TENABLE_REPORT_TOOL_NAMES.has(tool.name))
+    : getToolsByCategory(mode, "tenable");
+  const supportTools = allTools.filter((tool) =>
+    TENABLE_SUPPORT_TOOL_NAMES.has(tool.name),
+  );
+  const approvalTools = APPROVAL_TOOLS;
+
+  return uniqueTools([
+    ...AGENT_RUN_TOOLS,
+    ...approvalTools,
+    ...(TENABLE_REPORT_REQUEST_PATTERN.test(message) ? [] : supportTools),
+    ...tenableTools,
+  ]);
+}
+
 /**
  * Minimal tool reference for the system prompt.
  * The full tool definitions are sent via the API `tools` parameter —
  * listing them again as text would duplicate ~3K tokens per request.
  */
-export function getToolInventorySummary(mode: string): string {
-  const tools = getTools(mode);
+export function getToolInventorySummary(mode: string, message?: string): string {
+  const tools = message ? getToolsForRequest(mode, message) : getTools(mode);
   const categories = getToolCategories(mode);
   const catNames = Object.keys(categories).sort();
 

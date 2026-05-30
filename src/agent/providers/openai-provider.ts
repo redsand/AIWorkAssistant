@@ -75,6 +75,8 @@ function repairToolMessagePairs(messages: any[]): any[] {
   return result;
 }
 
+const kToolNameMap = Symbol("toolNameMap");
+
 export class OpenAIProvider extends AIProvider {
   readonly name = "openai";
   readonly capabilities: ProviderCapabilities = {
@@ -86,8 +88,6 @@ export class OpenAIProvider extends AIProvider {
   };
 
   private isContextOverflowRetry = false;
-  // Maps sanitized name → original name; populated in buildRequestBody, consumed in parseToolCalls
-  private _toolNameMap = new Map<string, string>();
 
   constructor(config: ProviderConfig) {
     super(config);
@@ -97,12 +97,12 @@ export class OpenAIProvider extends AIProvider {
     // Sanitize tool names in the tools schema AND in message history.
     // OpenAI validates ^[a-zA-Z0-9_-]+$ in both places.
     // Also strip caller-supplied temperature/top_p (chat.ts hardcodes 0.7).
-    this._toolNameMap.clear();
+    const toolNameMap = new Map<string, string>();
 
     const sanitizedTools = request.tools?.map((tool) => {
       const original = tool.function.name;
       const sanitized = sanitizeToolName(original);
-      if (sanitized !== original) this._toolNameMap.set(sanitized, original);
+      if (sanitized !== original) toolNameMap.set(sanitized, original);
       return { ...tool, function: { ...tool.function, name: sanitized } };
     });
 
@@ -114,7 +114,7 @@ export class OpenAIProvider extends AIProvider {
         tool_calls: msg.tool_calls.map((tc) => {
           const sanitized = sanitizeToolName(tc.function.name);
           if (sanitized !== tc.function.name) {
-            this._toolNameMap.set(sanitized, tc.function.name);
+            toolNameMap.set(sanitized, tc.function.name);
           }
           return { ...tc, function: { ...tc.function, name: sanitized } };
         }),
@@ -130,6 +130,7 @@ export class OpenAIProvider extends AIProvider {
     };
 
     const body = super.buildRequestBody(sanitizedRequest);
+    (body as any)[kToolNameMap] = toolNameMap;
 
     // Repair broken tool_calls/tool message pairs introduced by context pruning.
     // OpenAI requires every role:tool message to follow an assistant+tool_calls
@@ -198,10 +199,11 @@ export class OpenAIProvider extends AIProvider {
 
         const data = response.data;
         const message = data.choices[0].message;
+        const toolNameMap = (requestBody as any)[kToolNameMap] as Map<string, string> | undefined;
 
         const result: ChatResponse = {
           content: message.content || "",
-          toolCalls: message.tool_calls ? this.parseToolCalls(message.tool_calls) : undefined,
+          toolCalls: message.tool_calls ? this.parseToolCalls(message.tool_calls, toolNameMap) : undefined,
           usage: {
             promptTokens: data.usage?.prompt_tokens || 0,
             completionTokens: data.usage?.completion_tokens || 0,
@@ -289,6 +291,7 @@ export class OpenAIProvider extends AIProvider {
 
     try {
       const requestBody = this.buildRequestBody({ ...request, stream: true });
+      const toolNameMap = (requestBody as any)[kToolNameMap] as Map<string, string> | undefined;
 
       if (DEBUG) console.log("[OpenAI] Starting stream request");
 
@@ -332,7 +335,14 @@ export class OpenAIProvider extends AIProvider {
             }
 
             if (finishReason === "tool_calls" && toolCallAccumulator.length > 0) {
-              yield { type: "tool_calls", toolCalls: [...toolCallAccumulator] };
+              const mappedCalls = toolCallAccumulator.map((tc) => ({
+                ...tc,
+                function: {
+                  ...tc.function,
+                  name: toolNameMap?.get(tc.function.name) ?? tc.function.name,
+                },
+              }));
+              yield { type: "tool_calls", toolCalls: mappedCalls };
               toolCallAccumulator.length = 0;
             }
           } catch {
@@ -348,10 +358,11 @@ export class OpenAIProvider extends AIProvider {
     }
   }
 
-  protected override parseToolCalls(toolCalls: any[]): ToolCall[] {
+  protected override parseToolCalls(toolCalls: any[], toolNameMap?: Map<string, string>): ToolCall[] {
+    const map = toolNameMap;
     return toolCalls.map((tc) => {
       const sanitizedName = tc.function?.name || "";
-      const originalName = this._toolNameMap.get(sanitizedName) ?? sanitizedName;
+      const originalName = map?.get(sanitizedName) ?? sanitizedName;
       return {
         id: tc.id,
         type: tc.type || ("function" as const),

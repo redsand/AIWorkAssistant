@@ -70,6 +70,7 @@ describe("incremental ingestion", () => {
         docId: "kn-test",
         title: "Test Doc",
         source: "knowledge",
+        trustTier: "curated",
         tags: ["test"],
       });
     });
@@ -158,6 +159,7 @@ describe("incremental ingestion", () => {
         docId: "kn-notags",
         title: "No Tags",
         source: "knowledge",
+        trustTier: "curated",
         tags: [],
       });
     });
@@ -177,7 +179,13 @@ describe("incremental ingestion", () => {
 
       expect(mockIngest).toHaveBeenCalledWith(
         "File: src/utils.ts\n\nexport function foo() {}",
-        { path: "src/utils.ts", source: "codebase", language: "typescript" },
+        {
+          path: "src/utils.ts",
+          title: "src/utils.ts",
+          source: "codebase",
+          language: "typescript",
+          trustTier: "curated",
+        },
       );
     });
 
@@ -248,7 +256,12 @@ describe("incremental ingestion", () => {
 
       expect(mockIngest).toHaveBeenCalledWith(
         expect.stringContaining("Entity: Auth Service (component)"),
-        { entityId: "kg-comp-1", entityType: "component", source: "graph" },
+        {
+          entityId: "kg-comp-1",
+          entityType: "component",
+          source: "graph",
+          trustTier: "curated",
+        },
       );
     });
 
@@ -337,7 +350,12 @@ describe("incremental ingestion", () => {
 
       expect(mockIngest).toHaveBeenCalledWith(
         expect.stringContaining("Relationship: a --[depends_on]--> b"),
-        { relationshipId: "edge-1", relationshipType: "depends_on", source: "graph" },
+        {
+          relationshipId: "edge-1",
+          relationshipType: "depends_on",
+          source: "graph",
+          trustTier: "curated",
+        },
       );
     });
 

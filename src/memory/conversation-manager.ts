@@ -4,6 +4,7 @@
  */
 
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import type { ChatMessage } from "../agent/opencode-client";
@@ -56,12 +57,30 @@ export class ConversationManager {
   // Configuration thresholds — compact early to keep context lean
   private readonly MAX_MESSAGES_BEFORE_COMPACT = 40;
   private readonly MIN_RECENT_MESSAGES = 10;
+  private readonly MAX_CONTEXT_TOOL_CHARS = 12_000;
+  private readonly MAX_CONTEXT_MESSAGE_CHARS = 8_000;
   private readonly SESSION_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
 
   constructor() {
-    this.memoryBasePath = path.join(process.cwd(), "data", "memories");
+    this.memoryBasePath = this.resolveMemoryBasePath();
     this.initializeStorage();
     this.startCleanupTask();
+  }
+
+  private resolveMemoryBasePath(): string {
+    if (process.env.CONVERSATION_MEMORY_PATH) {
+      return process.env.CONVERSATION_MEMORY_PATH;
+    }
+
+    if (process.env.VITEST && path.basename(process.cwd()) === "ai-assist-tim") {
+      return path.join(
+        os.tmpdir(),
+        "ai-assist-tim-vitest-memories",
+        `${process.env.VITEST_WORKER_ID || "worker"}-${process.pid}`,
+      );
+    }
+
+    return path.join(process.cwd(), "data", "memories");
   }
 
   private initializeStorage() {
@@ -215,43 +234,39 @@ export class ConversationManager {
       return [];
     }
 
-    // In engine mode, return raw messages without compaction or system prompt.
-    // The context engine handles system prompt, history selection, and knowledge injection.
+    // In engine mode, the context engine handles system prompt, history
+    // selection, and knowledge injection. It still needs bounded session input:
+    // raw long-running sessions can contain huge tool-result JSON that drowns
+    // the current request before ranking even starts.
     if (contextMode === "engine") {
       const messages: ChatMessage[] = [];
 
-      if (includeSummaries) {
-        const summary = this.loadSessionSummary(sessionId);
-        if (summary) {
-          messages.push({
-            role: "system",
-            content: `Previous conversation summary:\n${summary.summary}\n\nKey topics discussed: ${summary.keyTopics.join(", ")}`,
-          });
+      const allMessages = session.messages;
+      if (allMessages.length > this.MAX_MESSAGES_BEFORE_COMPACT) {
+        const oldMessages = allMessages.slice(0, -this.MIN_RECENT_MESSAGES);
+        const recentMessages = allMessages.slice(-this.MIN_RECENT_MESSAGES);
+        if (includeSummaries) {
+          const summary = this.ensureActiveSessionSummary(
+            session,
+            oldMessages,
+          );
+          messages.push(this.toSummaryChatMessage(summary));
         }
-      }
 
-      for (const msg of session.messages) {
-        const chatMsg: ChatMessage = {
-          role: msg.role as "system" | "user" | "assistant" | "tool",
-          content: msg.content,
-        };
-        if (msg.toolCalls && msg.toolCalls.length > 0) {
-          chatMsg.tool_calls = msg.toolCalls.map((tc) => ({
-            id: tc.id,
-            type: "function" as const,
-            function: {
-              name: tc.name,
-              arguments:
-                typeof tc.params === "string"
-                  ? tc.params
-                  : JSON.stringify(tc.params),
-            },
-          }));
+        for (const msg of recentMessages) {
+          messages.push(this.toContextChatMessage(msg));
         }
-        if (msg.tool_call_id) {
-          chatMsg.tool_call_id = msg.tool_call_id;
+      } else {
+        if (includeSummaries) {
+          const summary = this.loadSessionSummary(sessionId);
+          if (summary) {
+            messages.push(this.toSummaryChatMessage(summary));
+          }
         }
-        messages.push(chatMsg);
+
+        for (const msg of allMessages) {
+          messages.push(this.toContextChatMessage(msg));
+        }
       }
 
       return messages;
@@ -265,83 +280,74 @@ export class ConversationManager {
       content: this.getSystemPrompt(session.mode, session.metadata),
     });
 
-    // Add summary if available
-    if (includeSummaries) {
-      const summary = this.loadSessionSummary(sessionId);
-      if (summary) {
-        messages.push({
-          role: "system",
-          content: `Previous conversation summary:\n${summary.summary}\n\nKey topics discussed: ${summary.keyTopics.join(", ")}`,
-        });
-      }
-    }
-
-    // Compact on-the-fly: if session is large, only include recent messages + summary
     const allMessages = session.messages;
     const recentCount = this.MIN_RECENT_MESSAGES;
     if (allMessages.length > this.MAX_MESSAGES_BEFORE_COMPACT) {
       const oldMessages = allMessages.slice(0, -recentCount);
       const recentMessages = allMessages.slice(-recentCount);
 
-      // Build compact summary of old messages
-      const summary = await this.buildCompactSummaryLLM(oldMessages);
-      messages.push({
-        role: "system",
-        content: summary,
-      });
+      if (includeSummaries) {
+        const summary = this.ensureActiveSessionSummary(session, oldMessages);
+        messages.push(this.toSummaryChatMessage(summary));
+      }
 
-      // Add only recent messages
       for (const msg of recentMessages) {
-        const chatMsg: ChatMessage = {
-          role: msg.role,
-          content: msg.content,
-        };
-        if (msg.toolCalls) {
-          chatMsg.tool_calls = msg.toolCalls.map((tc) => ({
-            id: tc.id,
-            type: "function" as const,
-            function: {
-              name: tc.name,
-              arguments:
-                typeof tc.params === "string"
-                  ? tc.params
-                  : JSON.stringify(tc.params),
-            },
-          }));
-        }
-        if (msg.tool_call_id) {
-          chatMsg.tool_call_id = msg.tool_call_id;
-        }
-        messages.push(chatMsg);
+        messages.push(this.toContextChatMessage(msg));
       }
     } else {
-      // Session is small enough, include all messages
+      if (includeSummaries) {
+        const summary = this.loadSessionSummary(sessionId);
+        if (summary) {
+          messages.push(this.toSummaryChatMessage(summary));
+        }
+      }
+
       for (const msg of allMessages) {
-        const chatMsg: ChatMessage = {
-          role: msg.role,
-          content: msg.content,
-        };
-        if (msg.toolCalls) {
-          chatMsg.tool_calls = msg.toolCalls.map((tc) => ({
-            id: tc.id,
-            type: "function" as const,
-            function: {
-              name: tc.name,
-              arguments:
-                typeof tc.params === "string"
-                  ? tc.params
-                  : JSON.stringify(tc.params),
-            },
-          }));
-        }
-        if (msg.tool_call_id) {
-          chatMsg.tool_call_id = msg.tool_call_id;
-        }
-        messages.push(chatMsg);
+        messages.push(this.toContextChatMessage(msg));
       }
     }
 
     return messages;
+  }
+
+  private toContextChatMessage(msg: Message): ChatMessage {
+    const chatMsg: ChatMessage = {
+      role: msg.role,
+      content: this.truncateContextContent(msg),
+    };
+    if (msg.toolCalls) {
+      chatMsg.tool_calls = msg.toolCalls.map((tc) => ({
+        id: tc.id,
+        type: "function" as const,
+        function: {
+          name: tc.name,
+          arguments:
+            typeof tc.params === "string"
+              ? tc.params
+              : JSON.stringify(tc.params),
+        },
+      }));
+    }
+    if (msg.tool_call_id) {
+      chatMsg.tool_call_id = msg.tool_call_id;
+    }
+    return chatMsg;
+  }
+
+  private truncateContextContent(msg: Message): string {
+    const limit =
+      msg.role === "tool"
+        ? this.MAX_CONTEXT_TOOL_CHARS
+        : this.MAX_CONTEXT_MESSAGE_CHARS;
+    if (msg.content.length <= limit) return msg.content;
+    return `${msg.content.substring(0, limit)}\n...[truncated for context: ${msg.content.length - limit} chars omitted]`;
+  }
+
+  private toSummaryChatMessage(summary: MemorySummary): ChatMessage {
+    return {
+      role: "system",
+      content: `Previous conversation summary:\n${summary.summary}\n\nKey topics discussed: ${summary.keyTopics.join(", ")}`,
+    };
   }
 
   /**
@@ -450,8 +456,6 @@ export class ConversationManager {
   /**
    * Build a structured summary preserving key facts, decisions, and actions
    */
-  private cachedSummary: string | null = null;
-
   private async generateTitleLLM(
     sessionId: string,
     firstMessage: string,
@@ -528,8 +532,7 @@ ${conversationText}
       ]);
 
       if (response.content && response.content.trim().length > 50) {
-        this.cachedSummary = `[LLM Summary — ${messages.length} earlier messages]\n\n${response.content.trim()}`;
-        return this.cachedSummary;
+        return `[LLM Summary — ${messages.length} earlier messages]\n\n${response.content.trim()}`;
       }
     } catch (error) {
       console.error(
@@ -679,6 +682,52 @@ ${conversationText}
     return lines.join("\n");
   }
 
+  private ensureActiveSessionSummary(
+    session: ConversationSession,
+    summarizedMessages: Message[],
+  ): MemorySummary {
+    const existing = this.loadSessionSummary(session.id);
+    if (existing && existing.messageCount >= summarizedMessages.length) {
+      return existing;
+    }
+
+    const summary = this.buildDeterministicSessionSummary(
+      session,
+      summarizedMessages,
+    );
+    this.saveSessionSummary(summary);
+    return summary;
+  }
+
+  private buildDeterministicSessionSummary(
+    session: ConversationSession,
+    messages: Message[],
+  ): MemorySummary {
+    const timeRange = {
+      start: messages[0]?.timestamp || session.createdAt,
+      end: messages[messages.length - 1]?.timestamp || session.updatedAt,
+    };
+
+    return {
+      id: uuidv4(),
+      userId: session.userId,
+      sessionId: session.id,
+      title:
+        session.metadata.title || `Session ${new Date().toLocaleDateString()}`,
+      summary: this.buildCompactSummaryFallback(messages),
+      keyTopics: this.extractTopics(messages),
+      startDate: timeRange.start,
+      endDate: timeRange.end,
+      messageCount: messages.length,
+      createdAt: new Date(),
+      metadata: {
+        mode: session.mode,
+        tags: session.metadata.tags,
+        active: true,
+      },
+    };
+  }
+
   /**
    * Generate session summary for long-term storage
    */
@@ -734,6 +783,12 @@ ${conversationText}
     console.log(`[MemoryManager] Saved long-term summary to ${filepath}`);
   }
 
+  private saveSessionSummary(summary: MemorySummary): void {
+    const filepath = this.sessionSummaryPath(summary.sessionId);
+    const content = this.formatLongTermSummary(summary);
+    fs.writeFileSync(filepath, content, "utf-8");
+  }
+
   /**
    * Format long-term summary as markdown
    */
@@ -770,45 +825,57 @@ ${summary.keyTopics.map((topic) => `- ${topic}`).join("\n")}
    * Parse markdown summary back into object
    */
   private parseMarkdownSummary(content: string): MemorySummary {
-    // Simple parsing - can be enhanced with proper markdown parser
     const lines = content.split("\n");
     const summary: Partial<MemorySummary> = {};
 
     let currentSection = "";
     let summaryText = "";
+    const keyTopics: string[] = [];
 
     lines.forEach((line) => {
       if (line.startsWith("**Session ID:**")) {
         summary.sessionId = line.split("**Session ID:**")[1].trim();
-      } else if (line.startsWith("**Date:**")) {
-        // Parse date range
+      } else if (line.startsWith("**Messages:**")) {
+        summary.messageCount =
+          Number(line.split("**Messages:**")[1].trim()) || 0;
+      } else if (line.startsWith("- **Created:**")) {
+        const value = line.split("- **Created:**")[1].trim();
+        const createdAt = new Date(value);
+        if (!Number.isNaN(createdAt.getTime())) {
+          summary.createdAt = createdAt;
+        }
+      } else if (line.startsWith("- **User ID:**")) {
+        summary.userId = line.split("- **User ID:**")[1].trim();
       } else if (line.startsWith("# ")) {
         summary.title = line.replace("# ", "").trim();
       } else if (line.startsWith("## Summary")) {
         currentSection = "summary";
       } else if (line.startsWith("## Key Topics")) {
         currentSection = "topics";
+      } else if (line.startsWith("## Metadata")) {
+        currentSection = "metadata";
       } else if (
         currentSection === "summary" &&
         line.trim() &&
         !line.startsWith("##")
       ) {
         summaryText += line + "\n";
+      } else if (currentSection === "topics" && line.startsWith("- ")) {
+        keyTopics.push(line.slice(2).trim());
       }
     });
 
     summary.summary = summaryText.trim();
-    summary.keyTopics = [];
     summary.id = uuidv4();
-    summary.createdAt = new Date();
-    summary.userId = "unknown";
+    summary.createdAt = summary.createdAt || new Date();
+    summary.userId = summary.userId || "unknown";
     summary.sessionId = summary.sessionId || "unknown";
     summary.title = summary.title || "Untitled Session";
     summary.summary = summary.summary || "";
-    summary.keyTopics = summary.keyTopics || [];
+    summary.keyTopics = keyTopics;
     summary.startDate = new Date();
     summary.endDate = new Date();
-    summary.messageCount = 0;
+    summary.messageCount = summary.messageCount || 0;
     summary.metadata = {};
 
     return summary as MemorySummary;
@@ -974,17 +1041,18 @@ ${summary.keyTopics.map((topic) => `- ${topic}`).join("\n")}
     if (fs.existsSync(filepath)) {
       fs.unlinkSync(filepath);
     }
+
+    const summaryPath = this.sessionSummaryPath(sessionId);
+    if (fs.existsSync(summaryPath)) {
+      fs.unlinkSync(summaryPath);
+    }
   }
 
   /**
    * Load session summary
    */
   private loadSessionSummary(sessionId: string): MemorySummary | null {
-    const filepath = path.join(
-      this.memoryBasePath,
-      "sessions",
-      `${sessionId}.summary.md`,
-    );
+    const filepath = this.sessionSummaryPath(sessionId);
 
     if (!fs.existsSync(filepath)) {
       return null;
@@ -1002,19 +1070,22 @@ ${summary.keyTopics.map((topic) => `- ${topic}`).join("\n")}
     }
   }
 
+  private sessionSummaryPath(sessionId: string): string {
+    return path.join(this.memoryBasePath, "sessions", `${sessionId}.summary.md`);
+  }
+
   /**
    * Start cleanup task for old sessions
    */
   private startCleanupTask(): void {
-    // Run cleanup every hour
-    setInterval(
+    const cleanupTimer = setInterval(
       () => {
         this.cleanupOldSessions();
       },
       60 * 60 * 1000,
     );
+    cleanupTimer.unref();
 
-    // Initial cleanup
     this.cleanupOldSessions();
   }
 

@@ -5,6 +5,7 @@ import fs from "fs";
 import {
   getToolByName,
   getTools,
+  getToolsForRequest,
   getAllToolsForMode,
   getToolCategories,
   getPlatformForToolName,
@@ -109,6 +110,40 @@ describe("Agent Runs Tool Registry", () => {
     expect(getPlatformForToolName("agent.list_runs")).toBe("cross-platform");
     expect(getPlatformForToolName("agent.get_run")).toBe("cross-platform");
     expect(getPlatformForToolName("agent.spawn")).toBe("cross-platform");
+  });
+
+  it("narrows Tenable report requests to report-safe Tenable tools", () => {
+    const tools = getToolsForRequest(
+      "productivity",
+      "Give me a monthly Tenable vulnerability report",
+    );
+    const names = tools.map((t) => t.name);
+
+    expect(names).toContain("tenable.list_vulnerabilities");
+    expect(names).toContain("tenable.list_assets");
+    expect(names).toContain("tenable.get_vulnerability_details");
+    expect(names).toContain("system.get_time");
+    expect(names).not.toContain("tenable.delete_asset");
+    expect(names).not.toContain("hawk_ir.get_assets");
+    expect(names).not.toContain("personal_os.brief");
+    expect(names).not.toContain("product.workflow_brief");
+    expect(names).not.toContain("jira.list_assigned");
+  });
+
+  it("keeps the full Tenable set for non-report Tenable administration requests", () => {
+    const tools = getToolsForRequest("productivity", "Create a Tenable scan policy");
+    const names = tools.map((t) => t.name);
+
+    expect(names).toContain("tenable.create_policy");
+    expect(names).toContain("tenable.list_scans");
+  });
+
+  it("keeps the normal tool set for non-Tenable requests", () => {
+    const tools = getToolsForRequest("productivity", "What Jira tickets are assigned to me?");
+    const names = tools.map((t) => t.name);
+
+    expect(names).toContain("jira.list_assigned");
+    expect(names).toContain("personal_os.brief");
   });
 });
 

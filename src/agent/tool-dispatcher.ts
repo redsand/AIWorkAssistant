@@ -14,6 +14,7 @@ import { personalOsBriefGenerator } from "../personal-os/brief-generator";
 import { productChiefOfStaff } from "../product/product-chief-of-staff";
 import { hawkIrService } from "../integrations/hawk-ir/hawk-ir-service";
 import { tenableCloudService } from "../integrations/tenable-cloud/tenable-cloud-service";
+import type { TenableExportStatus } from "../integrations/tenable-cloud/types";
 import { roadmapDatabase } from "../roadmap/database";
 import { auditLogger } from "../audit/logger";
 import { env } from "../config/env";
@@ -6695,33 +6696,233 @@ function tenableConfigCheck(params: Record<string, unknown>): string | null {
   return null;
 }
 
+function tenableSeverityLabel(vuln: any): string {
+  const risk = String(vuln?.plugin?.risk_factor ?? "").toLowerCase();
+  if (risk) return risk === "medium" ? "moderate" : risk;
+  const severity = Number(vuln?.severity_id ?? vuln?.severity ?? 0);
+  if (severity >= 4) return "critical";
+  if (severity === 3) return "high";
+  if (severity === 2) return "moderate";
+  if (severity === 1) return "low";
+  return "info";
+}
+
+function tenableAssetName(asset: any): string {
+  const first = (value: unknown): string | undefined =>
+    Array.isArray(value) ? value.find((v) => typeof v === "string") : typeof value === "string" ? value : undefined;
+  return (
+    first(asset?.hostname) ??
+    first(asset?.fqdn) ??
+    asset?.hostname ??
+    asset?.netbios_name ??
+    first(asset?.ipv4) ??
+    first(asset?.asset?.fqdn) ??
+    asset?.asset?.hostname ??
+    first(asset?.asset?.ipv4) ??
+    asset?.id ??
+    asset?.asset?.id ??
+    "unknown"
+  );
+}
+
+function summarizeTenableVulnerabilities(vulnerabilities: any[]) {
+  const severityCounts: Record<string, number> = {
+    critical: 0,
+    high: 0,
+    moderate: 0,
+    low: 0,
+    info: 0,
+  };
+  const hosts = new Map<string, {
+    host: string;
+    critical: number;
+    high: number;
+    moderate: number;
+    low: number;
+    info: number;
+    exploitAvailable: number;
+    score: number;
+    topVulnerabilities: Map<number, { pluginId: number; name: string; severity: string; count: number }>;
+  }>();
+  const plugins = new Map<number, { pluginId: number; name: string; severity: string; count: number; solution?: string }>();
+
+  for (const vuln of vulnerabilities) {
+    const severity = tenableSeverityLabel(vuln);
+    severityCounts[severity] = (severityCounts[severity] ?? 0) + 1;
+    const pluginId = Number(vuln?.plugin?.id ?? 0);
+    const pluginName = String(vuln?.plugin?.name ?? "Unknown plugin");
+    const solution = typeof vuln?.plugin?.solution === "string" ? vuln.plugin.solution.slice(0, 500) : undefined;
+    const plugin = plugins.get(pluginId) ?? { pluginId, name: pluginName, severity, count: 0, solution };
+    plugin.count += 1;
+    plugins.set(pluginId, plugin);
+
+    const host = tenableAssetName(vuln);
+    const hostStats = hosts.get(host) ?? {
+      host,
+      critical: 0,
+      high: 0,
+      moderate: 0,
+      low: 0,
+      info: 0,
+      exploitAvailable: 0,
+      score: 0,
+      topVulnerabilities: new Map(),
+    };
+    if (severity === "critical") hostStats.critical += 1;
+    else if (severity === "high") hostStats.high += 1;
+    else if (severity === "moderate") hostStats.moderate += 1;
+    else if (severity === "low") hostStats.low += 1;
+    else hostStats.info += 1;
+    if (vuln?.plugin?.exploit_available) hostStats.exploitAvailable += 1;
+    hostStats.score +=
+      severity === "critical" ? 100 :
+      severity === "high" ? 25 :
+      severity === "moderate" ? 5 :
+      severity === "low" ? 1 :
+      0;
+    if (pluginId) {
+      const hostPlugin = hostStats.topVulnerabilities.get(pluginId) ?? { pluginId, name: pluginName, severity, count: 0 };
+      hostPlugin.count += 1;
+      hostStats.topVulnerabilities.set(pluginId, hostPlugin);
+    }
+    hosts.set(host, hostStats);
+  }
+
+  const hostsByPriority = Array.from(hosts.values())
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 15)
+    .map((host) => ({
+      host: host.host,
+      score: host.score,
+      critical: host.critical,
+      high: host.high,
+      moderate: host.moderate,
+      low: host.low,
+      info: host.info,
+      exploitAvailable: host.exploitAvailable,
+      topVulnerabilities: Array.from(host.topVulnerabilities.values())
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 3),
+    }));
+
+  return {
+    total: vulnerabilities.length,
+    severityCounts,
+    affectedHostCount: hosts.size,
+    topHostsToPatchFirst: hostsByPriority,
+    topVulnerabilities: Array.from(plugins.values())
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 15),
+  };
+}
+
+function summarizeTenableAssets(assets: any[]) {
+  const deviceTypes: Record<string, number> = {};
+  const operatingSystems: Record<string, number> = {};
+  let withPluginResults = 0;
+  let licensed = 0;
+  let authenticated = 0;
+
+  for (const asset of assets) {
+    if (asset?.has_plugin_results) withPluginResults += 1;
+    if (asset?.last_licensed_scan_date) licensed += 1;
+    if (asset?.last_authenticated_scan_date) authenticated += 1;
+    const deviceType = Array.isArray(asset?.device_type) ? asset.device_type[0] : asset?.device_type;
+    if (deviceType) deviceTypes[String(deviceType)] = (deviceTypes[String(deviceType)] ?? 0) + 1;
+    const osName = Array.isArray(asset?.operating_system) ? asset.operating_system[0] : asset?.operating_system;
+    if (osName) operatingSystems[String(osName)] = (operatingSystems[String(osName)] ?? 0) + 1;
+  }
+
+  const topCounts = (counts: Record<string, number>) =>
+    Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 20)
+      .map(([name, count]) => ({ name, count }));
+
+  return {
+    total: assets.length,
+    withPluginResults,
+    authenticated,
+    licensed,
+    topDeviceTypes: topCounts(deviceTypes),
+    topOperatingSystems: topCounts(operatingSystems),
+  };
+}
+
+/** Poll a Tenable export job until FINISHED, then download all chunks. */
+async function runTenableExportPipeline<T>(
+  _exportUuid: string,
+  getStatus: () => Promise<TenableExportStatus>,
+  downloadChunk: (chunkId: number) => Promise<T[]>,
+  opts: { pollIntervalMs?: number; timeoutMs?: number } = {},
+): Promise<{ items: T[]; chunksDownloaded: number; totalChunks: number; elapsedMs: number }> {
+  const pollInterval = opts.pollIntervalMs ?? 5000;
+  const timeoutMs = opts.timeoutMs ?? 600_000;
+  const startTime = Date.now();
+
+  while (true) {
+    const status = await getStatus();
+    if (status.status === "FINISHED") {
+      const chunks = status.chunks_available ?? [];
+      const items: T[] = [];
+      for (const chunkId of chunks) {
+        const chunkItems = await downloadChunk(chunkId);
+        items.push(...chunkItems);
+      }
+      return {
+        items,
+        chunksDownloaded: chunks.length,
+        totalChunks: chunks.length,
+        elapsedMs: Date.now() - startTime,
+      };
+    }
+    if (Date.now() - startTime > timeoutMs) {
+      throw new Error(`Export timed out after ${timeoutMs / 1000}s. Last status: ${status.status}`);
+    }
+    await new Promise((r) => setTimeout(r, pollInterval));
+  }
+}
+
 async function handleTenableListVulnerabilities(params: Record<string, unknown>): Promise<ToolCallResult> {
   const err = tenableConfigCheck(params);
   if (err) return { success: false, error: err };
-  const requestedPage = (params.page as number | undefined) ?? 1;
-  const requestedNumAssets = (params.num_assets as number | undefined) ?? 100;
-  const items = await tenableCloudService.listVulnerabilities({
-    date_range: params.date_range as number | undefined,
-    num_assets: requestedNumAssets,
-    page: requestedPage,
-  }, tenableOpts(params));
-  const hasMore = items.length >= requestedNumAssets;
-  return {
-    success: true,
-    data: {
-      vulnerabilities: items,
-      pagination: {
-        page: requestedPage,
-        num_assets: requestedNumAssets,
-        returned: items.length,
-        has_more: hasMore,
-        next_page: hasMore ? requestedPage + 1 : null,
-        _guidance: hasMore
-          ? `Page ${requestedPage} is full (${items.length} items). Call again with page=${requestedPage + 1} to get more. Repeat until has_more=false. For complete exports use tenable.export_vulnerabilities.`
-          : `All results returned (${items.length} items on page ${requestedPage}).`,
+  const opts = tenableOpts(params);
+
+  // Map date_range (days) to since (unix timestamp) for the export API
+  let since: number | undefined;
+  const dateRange = params.date_range as number | undefined;
+  if (dateRange) {
+    since = Math.floor(Date.now() / 1000) - dateRange * 24 * 60 * 60;
+  }
+
+  // Start async export — this returns every vulnerability, not just the 5,000 workbench limit
+  const { export_uuid } = await tenableCloudService.exportVulnerabilities(
+    { since, severity: params.severity as any, state: params.state as string[] | undefined, plugin_id: params.plugin_id as number[] | undefined, tag: params.tag as any },
+    opts,
+  );
+
+  try {
+    const result = await runTenableExportPipeline(
+      export_uuid,
+      () => tenableCloudService.getVulnExportStatus(export_uuid, opts),
+      (chunkId) => tenableCloudService.downloadVulnExportChunk(export_uuid, chunkId, opts),
+    );
+
+    return {
+      success: true,
+      data: {
+        summary: summarizeTenableVulnerabilities(result.items),
+        export_uuid,
+        chunks_downloaded: result.chunksDownloaded,
+        total_vulnerabilities: result.items.length,
+        elapsed_seconds: Math.round(result.elapsedMs / 1000),
+        _guidance: `Comprehensive vulnerability export complete: ${result.items.length} vulnerabilities across ${result.chunksDownloaded} chunk(s).`,
       },
-    },
-  };
+    };
+  } catch (pipelineErr) {
+    const message = pipelineErr instanceof Error ? pipelineErr.message : String(pipelineErr);
+    return { success: false, error: `Vulnerability export failed: ${message}` };
+  }
 }
 
 async function handleTenableGetVulnerabilityDetails(params: Record<string, unknown>): Promise<ToolCallResult> {
@@ -6827,7 +7028,7 @@ async function handleTenableDownloadVulnExportChunk(params: Record<string, unkno
       total_chunks: totalChunks > 0 ? totalChunks : "unknown — call get_vuln_export_status",
       chunks_remaining: remaining,
       all_chunks_downloaded: allDone,
-      vulnerabilities: vulns,
+      summary: summarizeTenableVulnerabilities(vulns),
       _guidance: guidance,
     },
   };
@@ -6836,30 +7037,36 @@ async function handleTenableDownloadVulnExportChunk(params: Record<string, unkno
 async function handleTenableListWorkbenchAssets(params: Record<string, unknown>): Promise<ToolCallResult> {
   const err = tenableConfigCheck(params);
   if (err) return { success: false, error: err };
-  const requestedPage = (params.page as number | undefined) ?? 1;
-  const requestedNumAssets = (params.num_assets as number | undefined) ?? 100;
-  const items = await tenableCloudService.listWorkbenchAssets({
-    date_range: params.date_range as number | undefined,
-    num_assets: requestedNumAssets,
-    page: requestedPage,
-  }, tenableOpts(params));
-  const hasMore = items.length >= requestedNumAssets;
-  return {
-    success: true,
-    data: {
-      assets: items,
-      pagination: {
-        page: requestedPage,
-        num_assets: requestedNumAssets,
-        returned: items.length,
-        has_more: hasMore,
-        next_page: hasMore ? requestedPage + 1 : null,
-        _guidance: hasMore
-          ? `Page ${requestedPage} is full (${items.length} items). Call again with page=${requestedPage + 1} to get more. Repeat until has_more=false.`
-          : `All results returned (${items.length} items on page ${requestedPage}).`,
+  const opts = tenableOpts(params);
+
+  // Start async asset export — returns every asset, not just the 5,000 workbench limit
+  const { export_uuid } = await tenableCloudService.exportAssets(
+    { chunk_size: params.chunk_size as number | undefined },
+    opts,
+  );
+
+  try {
+    const result = await runTenableExportPipeline(
+      export_uuid,
+      () => tenableCloudService.getAssetExportStatus(export_uuid, opts),
+      (chunkId) => tenableCloudService.downloadAssetExportChunk(export_uuid, chunkId, opts),
+    );
+
+    return {
+      success: true,
+      data: {
+        summary: summarizeTenableAssets(result.items),
+        export_uuid,
+        chunks_downloaded: result.chunksDownloaded,
+        total_assets: result.items.length,
+        elapsed_seconds: Math.round(result.elapsedMs / 1000),
+        _guidance: `Comprehensive asset export complete: ${result.items.length} assets across ${result.chunksDownloaded} chunk(s).`,
       },
-    },
-  };
+    };
+  } catch (pipelineErr) {
+    const message = pipelineErr instanceof Error ? pipelineErr.message : String(pipelineErr);
+    return { success: false, error: `Asset export failed: ${message}` };
+  }
 }
 
 async function handleTenableGetAssetVulnerabilities(params: Record<string, unknown>): Promise<ToolCallResult> {
@@ -6877,7 +7084,7 @@ async function handleTenableListAssets(params: Record<string, unknown>): Promise
   const err = tenableConfigCheck(params);
   if (err) return { success: false, error: err };
   const data = await tenableCloudService.listAssets(tenableOpts(params));
-  return { success: true, data };
+  return { success: true, data: { summary: summarizeTenableAssets(data), total_assets: data.length } };
 }
 
 async function handleTenableGetAsset(params: Record<string, unknown>): Promise<ToolCallResult> {
@@ -8899,6 +9106,18 @@ const SYSTEM_TOOLS = new Set([
   "calendar.get_event",
 ]);
 
+const SANITIZED_TOOL_NAME_MAP = new Map(
+  Object.keys(TOOL_HANDLERS).map((name) => [
+    name.replace(/[^a-zA-Z0-9_-]/g, "_"),
+    name,
+  ]),
+);
+
+function resolveToolName(toolName: string): string {
+  if (TOOL_HANDLERS[toolName]) return toolName;
+  return SANITIZED_TOOL_NAME_MAP.get(toolName) ?? toolName;
+}
+
 export interface DispatchContext {
   /** Recent conversation messages for platform intent detection */
   messages?: import("../agent/providers/types").ChatMessage[];
@@ -8913,7 +9132,8 @@ export async function dispatchToolCall(
   skipPolicyCheck: boolean = false,
   context?: DispatchContext,
 ): Promise<ToolCallResult> {
-  const handler = TOOL_HANDLERS[toolName];
+  const resolvedToolName = resolveToolName(toolName);
+  const handler = TOOL_HANDLERS[resolvedToolName];
   if (!handler) {
     const mode = (params._mode as string) || "productivity";
     const prefix = toolName.includes(".") ? toolName.split(".")[0] : null;
@@ -8931,21 +9151,21 @@ export async function dispatchToolCall(
     }
     return {
       success: false,
-      error: `Tool '${toolName}' does not exist.${hint} Use discover_tools to see all available tools.`,
+      error: `Unknown tool: Tool '${toolName}' does not exist.${hint} Use discover_tools to see all available tools.`,
     };
   }
 
-  if (!skipPolicyCheck && !SYSTEM_TOOLS.has(toolName)) {
+  if (!skipPolicyCheck && !SYSTEM_TOOLS.has(resolvedToolName)) {
     const toolDef = getToolByName(
-      toolName,
+      resolvedToolName,
       (params._mode as string) || "productivity",
     );
-    const actionType = toolDef?.actionType || toolName;
+    const actionType = toolDef?.actionType || resolvedToolName;
 
     const action = {
       id: `action-${Date.now()}`,
       type: actionType,
-      description: `Execute ${toolName}`,
+      description: `Execute ${resolvedToolName}`,
       params: { ...params },
       userId,
       timestamp: new Date(),
@@ -8964,7 +9184,7 @@ export async function dispatchToolCall(
       });
       return {
         success: false,
-        error: `Action "${toolName}" is blocked by policy: ${decision.reason}. This action cannot be performed.`,
+        error: `Action "${resolvedToolName}" is blocked by policy: ${decision.reason}. This action cannot be performed.`,
       };
     }
 
@@ -8988,7 +9208,7 @@ export async function dispatchToolCall(
         success: false,
         requiresApproval: true,
         approvalId: approvalRequest.id,
-        error: `⚠️ This action requires your approval before proceeding.\n\n**Action:** ${toolName}\n**Approval ID:** ${approvalRequest.id}\n**Risk Level:** ${decision.riskLevel}\n**Reason:** ${decision.reason}\n\nSay "approve ${approvalRequest.id}" to allow this action, or "reject ${approvalRequest.id}" to deny it.`,
+        error: `⚠️ This action requires your approval before proceeding.\n\n**Action:** ${resolvedToolName}\n**Approval ID:** ${approvalRequest.id}\n**Risk Level:** ${decision.riskLevel}\n**Reason:** ${decision.reason}\n\nSay "approve ${approvalRequest.id}" to allow this action, or "reject ${approvalRequest.id}" to deny it.`,
         data: {
           approvalId: approvalRequest.id,
           action: actionType,
@@ -9000,10 +9220,10 @@ export async function dispatchToolCall(
   }
 
   // Platform alignment check (after policy, before execution)
-  if (context?.messages && !SYSTEM_TOOLS.has(toolName)) {
+  if (context?.messages && !SYSTEM_TOOLS.has(resolvedToolName)) {
     const intent = detectPlatformIntent(context.messages);
     const alignment = validatePlatformAlignment(
-      toolName,
+      resolvedToolName,
       intent,
     );
 
@@ -9014,7 +9234,7 @@ export async function dispatchToolCall(
         action: `platform.cross_contamination`,
         actor: userId,
         details: {
-          toolName,
+          toolName: resolvedToolName,
           toolPlatform: alignment.toolPlatform,
           intentPlatform: alignment.intentPlatform,
           reason: alignment.reason,
@@ -9023,15 +9243,15 @@ export async function dispatchToolCall(
       });
 
       const toolDef = getToolByName(
-        toolName,
+        resolvedToolName,
         context.mode || (params._mode as string) || "productivity",
       );
-      const actionType = toolDef?.actionType || toolName;
+      const actionType = toolDef?.actionType || resolvedToolName;
 
       const action = {
         id: `action-${Date.now()}`,
         type: actionType,
-        description: `Execute ${toolName} (platform mismatch: ${alignment.reason})`,
+        description: `Execute ${resolvedToolName} (platform mismatch: ${alignment.reason})`,
         params: { ...params },
         userId,
         timestamp: new Date(),
@@ -9085,7 +9305,7 @@ export async function dispatchToolCall(
     await auditLogger.log({
       id: "",
       timestamp: new Date(),
-      action: `tool.${toolName}`,
+      action: `tool.${resolvedToolName}`,
       actor: userId,
       details: { params, result: result.success ? "success" : "failed" },
       severity: result.success ? "info" : "warn",
@@ -9096,7 +9316,7 @@ export async function dispatchToolCall(
     await auditLogger.log({
       id: "",
       timestamp: new Date(),
-      action: `tool.${toolName}`,
+      action: `tool.${resolvedToolName}`,
       actor: userId,
       details: { params, error: message },
       severity: "error",
