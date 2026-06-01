@@ -60,21 +60,25 @@ export function stripJsonFromLlmResponse(content: string): string {
 }
 
 export class AIProviderLLMAdapter implements LLMAdapter {
-  private provider: AIProvider;
+  private provider?: AIProvider;
   private model?: string;
   private fallback: MemoryLLMAdapter;
 
   constructor(provider?: AIProvider, model?: string) {
-    this.provider = provider ?? getProvider();
+    this.provider = provider;
     this.model = model || undefined;
     this.fallback = new MemoryLLMAdapter();
+  }
+
+  private getActiveProvider(): AIProvider {
+    return this.provider ?? getProvider();
   }
 
   async generateText(
     messages: readonly LLMMessage[],
     options?: LLMGenerateOptions,
   ): Promise<LLMGenerateResult> {
-    const response = await this.provider.chat({
+    const response = await this.getActiveProvider().chat({
       messages: toChatMessages(messages),
       model: this.model ?? options?.model,
       temperature: options?.temperature,
@@ -89,7 +93,7 @@ export class AIProviderLLMAdapter implements LLMAdapter {
     _schema: LLMJsonSchema,
     options?: LLMGenerateOptions,
   ): Promise<T> {
-    const response = await this.provider.chat({
+    const response = await this.getActiveProvider().chat({
       messages: toChatMessages(messages),
       model: this.model ?? options?.model,
       temperature: options?.temperature,

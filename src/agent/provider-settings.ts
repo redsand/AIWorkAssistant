@@ -1,4 +1,6 @@
 import axios from "axios";
+import fs from "fs";
+import path from "path";
 import { env } from "../config/env";
 import { aiClient } from "./opencode-client";
 
@@ -22,16 +24,54 @@ const modelCache = new Map<
   { models: string[]; fetchedAt: number }
 >();
 
+interface PersistedProviderSelection {
+  provider: AIProviderName;
+  model: string;
+  updatedAt: string;
+}
+
+function settingsPath(): string {
+  if (process.env.PROVIDER_SETTINGS_PATH) return process.env.PROVIDER_SETTINGS_PATH;
+  return path.join(process.cwd(), "data", "provider-settings.json");
+}
+
+function readPersistedSelection(): PersistedProviderSelection | null {
+  if (process.env.VITEST && !process.env.PROVIDER_SETTINGS_PATH) return null;
+  try {
+    const file = settingsPath();
+    if (!fs.existsSync(file)) return null;
+    const parsed = JSON.parse(fs.readFileSync(file, "utf-8")) as Partial<PersistedProviderSelection>;
+    if (!parsed.provider || !isProviderName(parsed.provider)) return null;
+    return {
+      provider: parsed.provider,
+      model: typeof parsed.model === "string" ? parsed.model : rawDefaultModelForProvider(parsed.provider),
+      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date(0).toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writePersistedSelection(selection: PersistedProviderSelection): void {
+  if (process.env.VITEST && !process.env.PROVIDER_SETTINGS_PATH) return;
+  const file = settingsPath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(selection, null, 2)}\n`, "utf-8");
+}
+
 function providerFromEnv(): AIProviderName {
+  const persisted = readPersistedSelection();
+  if (persisted) return persisted.provider;
   const value = process.env.AI_PROVIDER || env.AI_PROVIDER;
   return isProviderName(value) ? value : "opencode";
 }
 
-function isProviderName(value: string): value is AIProviderName {
+function isProviderName(value: string | undefined): value is AIProviderName {
+  if (!value) return false;
   return providerSet.has(value);
 }
 
-function defaultModelForProvider(provider: AIProviderName): string {
+function rawDefaultModelForProvider(provider: AIProviderName): string {
   switch (provider) {
     case "zai":
       return process.env.ZAI_MODEL || env.ZAI_MODEL;
@@ -42,6 +82,14 @@ function defaultModelForProvider(provider: AIProviderName): string {
     case "opencode":
       return process.env.OPENCODE_MODEL || env.OPENCODE_MODEL || "glm-5";
   }
+}
+
+function defaultModelForProvider(provider: AIProviderName): string {
+  const persisted = readPersistedSelection();
+  if (persisted?.provider === provider && persisted.model) {
+    return persisted.model;
+  }
+  return rawDefaultModelForProvider(provider);
 }
 
 function providerConfig(provider: AIProviderName): {
@@ -171,6 +219,14 @@ export const providerSettings = {
 
   isProviderName,
 
+  applyPersistedSelection(): void {
+    const persisted = readPersistedSelection();
+    if (!persisted) return;
+    process.env.AI_PROVIDER = persisted.provider;
+    process.env[modelEnvKey(persisted.provider)] = persisted.model;
+    aiClient.refresh();
+  },
+
   getCurrent(): {
     provider: AIProviderName;
     model: string;
@@ -229,6 +285,11 @@ export const providerSettings = {
 
     process.env.AI_PROVIDER = provider;
     process.env[modelEnvKey(provider)] = selectedModel;
+    writePersistedSelection({
+      provider,
+      model: selectedModel,
+      updatedAt: new Date().toISOString(),
+    });
     aiClient.refresh();
 
     return { provider, model: selectedModel, models };
@@ -245,3 +306,10 @@ export const providerSettings = {
     });
   },
 };
+
+// Auto-apply persisted selection on module load so child processes (aicoder,
+// reviewer) that read process.env see the user’s chosen provider/model.
+// Guarded in test environments where PROVIDER_SETTINGS_PATH is not set.
+if (!process.env.VITEST || process.env.PROVIDER_SETTINGS_PATH) {
+  providerSettings.applyPersistedSelection();
+}

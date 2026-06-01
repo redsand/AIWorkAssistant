@@ -125,6 +125,12 @@
 (function () {
   "use strict";
 
+  // ─── Auth helper ───────────────────────────────────────────────────────────
+  function getAuthHeaders() {
+    var token = localStorage.getItem("authToken");
+    return token ? { Authorization: "Bearer " + token } : {};
+  }
+
   // ─── DOM refs ──────────────────────────────────────────────────────────────
 
   var loadingEl = document.getElementById("kanban-loading");
@@ -546,7 +552,7 @@
     return fetch("/api/kanban/cards/" + encodeURIComponent(platform) + "/" +
       encodeURIComponent(repo) + "/" + encodeURIComponent(id) + "/move", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
       body: JSON.stringify({ column: targetColumn }),
     });
   }
@@ -704,7 +710,7 @@
   // ─── Agents Rail ───────────────────────────────────────────────────────────
 
   function fetchAgents() {
-    fetch("/api/kanban/agents")
+    fetch("/api/kanban/agents", { headers: getAuthHeaders() })
       .then(function (res) { return res.ok ? res.json() : []; })
       .then(function (agents) {
         agents.forEach(function (a) {
@@ -801,7 +807,7 @@
 
     fetch("/api/kanban/cards/" + encodeURIComponent(platform) + "/" + encodeURIComponent(id) + "/stop", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
       body: JSON.stringify({ repo: repo }),
     }).catch(function () { /* UI will update via SSE */ });
   }
@@ -1396,7 +1402,7 @@
 
     var url = "/api/kanban/cards/" + encodeURIComponent(platform) + "/" + encodeURIComponent(repo) + "/" + encodeURIComponent(id);
 
-    fetch(url)
+    fetch(url, { headers: getAuthHeaders() })
       .then(function (res) { return res.ok ? res.json() : null; })
       .then(function (data) {
         if (!data) return;
@@ -1632,7 +1638,7 @@
 
     drawerDiffContent.innerHTML = '<p class="kdrawer-empty-tab">Loading diff…</p>';
 
-    fetch(url)
+    fetch(url, { headers: getAuthHeaders() })
       .then(function (res) {
         if (!res.ok) throw new Error("No diff");
         return res.text();
@@ -1726,7 +1732,7 @@
 
         fetch(commentUrl, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
           body: JSON.stringify({ body: body }),
         })
           .then(function (res) {
@@ -1735,7 +1741,7 @@
               if (ta) ta.value = "";
               // Refresh comments in overview tab
               var url2 = "/api/kanban/cards/" + encodeURIComponent(card.platform) + "/" + encodeURIComponent(card.repo) + "/" + encodeURIComponent(card.id);
-              fetch(url2)
+              fetch(url2, { headers: getAuthHeaders() })
                 .then(function (r2) { return r2.ok ? r2.json() : null; })
                 .then(function (d2) {
                   if (d2 && d2.comments) {
@@ -1966,7 +1972,7 @@
   var worktreeTbody = document.getElementById("worktree-tbody");
 
   function fetchWorktreeCount() {
-    fetch("/api/kanban/worktrees")
+    fetch("/api/kanban/worktrees", { headers: getAuthHeaders() })
       .then(function (res) { return res.ok ? res.json() : []; })
       .then(function (entries) {
         worktreeCount.textContent = entries.length;
@@ -1986,7 +1992,7 @@
   function loadWorktreeModal() {
     worktreeTbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#9ca3af;padding:20px;">Loading…</td></tr>';
 
-    fetch("/api/kanban/worktrees")
+    fetch("/api/kanban/worktrees", { headers: getAuthHeaders() })
       .then(function (res) { return res.ok ? res.json() : []; })
       .then(function (entries) {
         worktreeCount.textContent = entries.length;
@@ -2061,7 +2067,7 @@
         var url = "/api/kanban/worktrees/" + encodeURIComponent(runId);
         if (!isClean) url += "?force=true";
 
-        fetch(url, { method: "DELETE" })
+        fetch(url, { method: "DELETE", headers: getAuthHeaders() })
           .then(function (res) {
             if (res.ok) {
               loadWorktreeModal();
@@ -2159,7 +2165,7 @@
 
   function openSettingsModal() {
     settingsBackdrop.classList.add("kmodal-backdrop--active");
-    fetch("/api/kanban/settings")
+    fetch("/api/kanban/settings", { headers: getAuthHeaders() })
       .then(function (res) { return res.ok ? res.json() : {}; })
       .then(function (s) {
         settingAutoCommit.checked = !!s.autoCommit;
@@ -2176,7 +2182,7 @@
   function saveSettings() {
     fetch("/api/kanban/settings", {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
       body: JSON.stringify({
         autoCommit: settingAutoCommit.checked,
         autoPR: settingAutoPR.checked,
@@ -2327,7 +2333,7 @@
 
     fetch("/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
       body: JSON.stringify({
         message: message,
         includeTools: false,
@@ -2379,7 +2385,7 @@
 
     fetch("/api/kanban/cards/bulk", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
       body: JSON.stringify({
         items: items,
         platform: platform,
@@ -2463,7 +2469,7 @@
   window.addEventListener("resize", scheduleDepRedraw);
 
   // Fetch token status to determine read-only platforms
-  fetch("/api/kanban/token-status")
+  fetch("/api/kanban/token-status", { headers: getAuthHeaders() })
     .then(function (res) { return res.ok ? res.json() : {}; })
     .then(function (status) {
       Object.keys(status).forEach(function (platform) {

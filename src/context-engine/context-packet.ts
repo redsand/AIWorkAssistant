@@ -7,6 +7,7 @@ import { gitlabClient } from "../integrations/gitlab/gitlab-client";
 import { jiraClient } from "../integrations/jira/jira-client";
 import { env } from "../config/env";
 import { getSystemPrompt } from "../agent/prompts";
+import { providerSettings } from "../agent/provider-settings";
 import type { ChatMessage } from "../agent/providers/types";
 import type {
   AssembleContextParams,
@@ -483,7 +484,7 @@ async function buildHealthStatus(): Promise<string | null> {
     const lines: string[] = ["CURRENT SYSTEM HEALTH:"];
 
     const providerIcon = providerValid ? "OK" : providerConfigured ? "INVALID" : "NOT CONFIGURED";
-    lines.push(`- AI Provider: ${env.AI_PROVIDER} (${providerIcon})`);
+    lines.push(`- AI Provider: ${providerSettings.getCurrent().provider} (${providerIcon})`);
 
     const integrations: Array<{ name: string; configured: boolean; valid: boolean }> = [
       { name: "GitHub", configured: githubConfigured, valid: githubValid },

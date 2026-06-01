@@ -125,10 +125,14 @@ export abstract class AIProvider {
   abstract validateConfig(): Promise<boolean>;
 
   protected buildRequestBody(request: ChatRequest): Record<string, unknown> {
-    const messages = this.pruneToContextWindow(
+    const pruned = this.pruneToContextWindow(
       request.messages,
       request.tools,
     );
+
+    // Many APIs (Z.ai, Qwen, etc.) reject multiple system messages; merge
+    // all system-role entries into one so every provider works consistently.
+    const messages = this.mergeSystemMessages(pruned);
 
     const body: Record<string, unknown> = {
       model: request.model || this.config.model,
@@ -166,6 +170,24 @@ export abstract class AIProvider {
     );
 
     return body;
+  }
+
+  private mergeSystemMessages(messages: ChatMessage[]): ChatMessage[] {
+    const parts: string[] = [];
+    const rest: ChatMessage[] = [];
+    for (const msg of messages) {
+      if (msg.role === "system") {
+        const text = typeof msg.content === "string" ? msg.content.trim() : "";
+        if (text) parts.push(text);
+      } else {
+        rest.push(msg);
+      }
+    }
+    if (parts.length === 0) return messages;
+    const originalSystemCount = messages.length - rest.length;
+    // No-op only when the array is already clean: exactly one non-empty system message.
+    if (parts.length === 1 && originalSystemCount === 1) return messages;
+    return [{ role: "system", content: parts.join("\n\n---\n\n") }, ...rest];
   }
 
   protected pruneToContextWindow(

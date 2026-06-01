@@ -147,7 +147,11 @@ export function buildAgentArgs(
       ];
       if (resumeSessionId) args.push("--resume", resumeSessionId);
       if (apiProvider && model) {
-        args.push("--model", "opus");
+        if (isClaudeModel(model)) {
+          args.push("--model", model);
+        } else {
+          args.push("--model", "opus");
+        }
       } else if (model && isClaudeModel(model)) {
         args.push("--model", model);
       }

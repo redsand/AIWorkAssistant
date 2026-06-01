@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   getCurrent: vi.fn(),
   getModels: vi.fn(),
   setProvider: vi.fn(),
+  applyPersistedSelection: vi.fn(),
   isProviderName: vi.fn(),
   aiIsConfigured: vi.fn(),
   aiValidateConfig: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock("../../../src/agent/provider-settings", () => ({
     getCurrent: mocks.getCurrent,
     getModels: mocks.getModels,
     setProvider: mocks.setProvider,
+    applyPersistedSelection: mocks.applyPersistedSelection,
     isProviderName: mocks.isProviderName,
   },
 }));

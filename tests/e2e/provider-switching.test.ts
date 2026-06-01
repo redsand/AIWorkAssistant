@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   },
   getModels: vi.fn(),
   setProvider: vi.fn(),
+  applyPersistedSelection: vi.fn(),
   aiChat: vi.fn(),
   sessionMessages: [] as Array<{ role: string; content: string }>,
 }));
@@ -18,6 +19,7 @@ vi.mock("../../src/agent/provider-settings", () => ({
     getCurrent: vi.fn(() => mocks.currentProvider),
     getModels: mocks.getModels,
     setProvider: mocks.setProvider,
+    applyPersistedSelection: mocks.applyPersistedSelection,
     isProviderName: vi.fn((value: string) =>
       ["opencode", "zai", "ollama", "openai"].includes(value),
     ),

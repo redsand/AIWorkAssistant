@@ -202,6 +202,7 @@ async function start() {
   const server = await buildServer();
 
   try {
+    providerSettings.applyPersistedSelection();
     const port = env.PORT;
     const host = "0.0.0.0";
     let staleRunInterval: NodeJS.Timeout | undefined;
@@ -317,15 +318,17 @@ async function start() {
 
     // Log configuration status
     console.log("📋 Configuration Status:");
-    const providerLabel = env.AI_PROVIDER.toUpperCase();
+    const currentProvider = providerSettings.getCurrent();
+    const providerLabel = currentProvider.provider.toUpperCase();
     const providerKeys: Record<string, string> = {
       opencode: env.OPENCODE_API_KEY,
       zai: env.ZAI_API_KEY,
       ollama: env.OLLAMA_API_KEY,
+      openai: env.OPENAI_API_KEY,
     };
-    const providerKey = providerKeys[env.AI_PROVIDER] || "";
+    const providerKey = providerKeys[currentProvider.provider] || "";
     console.log(
-      `   AI Provider (${providerLabel}): ${providerKey ? "✅ Configured" : "⚠️  Not configured"}`,
+      `   AI Provider (${providerLabel}/${currentProvider.model}): ${providerKey ? "✅ Configured" : "⚠️  Not configured"}`,
     );
     console.log(
       `   Jira: ${env.JIRA_API_TOKEN ? "✅ Configured" : "⚠️  Not configured"}`,

@@ -57,6 +57,7 @@ export class ZaiProvider extends AIProvider {
     return body;
   }
 
+
   async chat(request: ChatRequest): Promise<ChatResponse> {
     if (!this.isConfigured()) {
       throw new Error(
@@ -258,16 +259,16 @@ export class ZaiProvider extends AIProvider {
   }
 
   private getRateLimitDelay(error: AxiosError, attempt: number): number {
+    const maxDelay = 60000;
     const retryAfter = error.response?.headers?.["retry-after"];
     if (retryAfter) {
       const seconds = Number(retryAfter);
       if (!isNaN(seconds) && seconds > 0) {
-        return seconds * 1000 + Math.random() * 500;
+        return Math.min(seconds * 1000 + Math.random() * 500, maxDelay);
       }
     }
 
     const baseDelay = 4000;
-    const maxDelay = 60000;
     const exponentialDelay = Math.min(
       baseDelay * Math.pow(2, attempt - 1),
       maxDelay,

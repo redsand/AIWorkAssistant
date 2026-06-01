@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "fs";
+import os from "os";
+import path from "path";
 
 const mocks = vi.hoisted(() => ({
   axiosGet: vi.fn(),
@@ -41,6 +44,7 @@ describe("providerSettings", () => {
     delete process.env.ZAI_MODEL;
     delete process.env.OLLAMA_MODEL;
     delete process.env.OPENAI_MODEL;
+    delete process.env.PROVIDER_SETTINGS_PATH;
   });
 
   it("discovers OpenAI-compatible models and reuses the 24-hour cache", async () => {
@@ -159,6 +163,8 @@ describe("providerSettings", () => {
   });
 
   it("updates runtime provider environment and refreshes the AI client", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "provider-settings-test-"));
+    process.env.PROVIDER_SETTINGS_PATH = path.join(tempDir, "provider-settings.json");
     mocks.axiosGet.mockResolvedValue({
       data: { data: [{ id: "gpt-selected" }] },
     });
@@ -170,7 +176,40 @@ describe("providerSettings", () => {
     expect(result).toMatchObject({ provider: "openai", model: "gpt-selected" });
     expect(process.env.AI_PROVIDER).toBe("openai");
     expect(process.env.OPENAI_MODEL).toBe("gpt-selected");
+    expect(JSON.parse(fs.readFileSync(process.env.PROVIDER_SETTINGS_PATH, "utf-8"))).toMatchObject({
+      provider: "openai",
+      model: "gpt-selected",
+    });
     expect(mocks.refresh).toHaveBeenCalledTimes(1);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("loads a persisted provider selection after restart", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "provider-settings-test-"));
+    process.env.PROVIDER_SETTINGS_PATH = path.join(tempDir, "provider-settings.json");
+    fs.writeFileSync(
+      process.env.PROVIDER_SETTINGS_PATH,
+      JSON.stringify({
+        provider: "zai",
+        model: "glm-persisted",
+        updatedAt: "2026-05-30T00:00:00.000Z",
+      }),
+    );
+    const { providerSettings } =
+      await import("../../../src/agent/provider-settings");
+
+    expect(providerSettings.getCurrent()).toEqual({
+      provider: "zai",
+      model: "glm-persisted",
+      providers: ["opencode", "zai", "ollama", "openai"],
+    });
+
+    providerSettings.applyPersistedSelection();
+    expect(process.env.AI_PROVIDER).toBe("zai");
+    expect(process.env.ZAI_MODEL).toBe("glm-persisted");
+    // Auto-applied on import + explicit call = 2 refreshes
+    expect(mocks.refresh).toHaveBeenCalledTimes(2);
+    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
   it("rejects models that are not available for the selected provider", async () => {

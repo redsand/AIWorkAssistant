@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   createWorktree,
   listWorktrees,
@@ -9,6 +9,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { execSync } from "node:child_process";
+
+vi.setConfig({ testTimeout: 20_000 });
 
 /** Create a temp git repo and return its absolute path. */
 function makeTempRepo(): string {

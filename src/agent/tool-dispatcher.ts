@@ -18,6 +18,7 @@ import type { TenableExportStatus } from "../integrations/tenable-cloud/types";
 import { roadmapDatabase } from "../roadmap/database";
 import { auditLogger } from "../audit/logger";
 import { env } from "../config/env";
+import { providerSettings } from "./provider-settings";
 import { reviewGate, formatGateBlockComment } from "../autonomous-loop/review-gate";
 import { loadReviewGateState } from "../autonomous-loop/review-gate-state";
 import {
@@ -3209,9 +3210,11 @@ async function handleSystemCheckHealth(
         : false,
     ]);
 
+    const currentProvider = providerSettings.getCurrent();
     const result: Record<string, unknown> = {
       provider: {
-        active: env.AI_PROVIDER,
+        active: currentProvider.provider,
+        model: currentProvider.model,
         configured: providerConfigured,
         valid: providerValid,
       },
@@ -3233,8 +3236,12 @@ async function handleSystemCheckHealth(
           key: env.OLLAMA_API_KEY || "local",
           url: env.OLLAMA_API_URL,
         },
+        openai: {
+          key: env.OPENAI_API_KEY,
+          url: env.OPENAI_API_URL,
+        },
       };
-      const info = providerKeyMap[env.AI_PROVIDER] || providerKeyMap.opencode;
+      const info = providerKeyMap[currentProvider.provider] || providerKeyMap.opencode;
       const providerObj = result.provider as Record<string, unknown>;
       result.provider = {
         ...providerObj,

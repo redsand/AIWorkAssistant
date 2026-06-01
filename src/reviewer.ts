@@ -1,5 +1,7 @@
 #!/usr/bin/env tsx
 import "dotenv/config";
+import { providerSettings } from "./agent/provider-settings";
+providerSettings.applyPersistedSelection();
 import { execSync } from "child_process";
 import fs from "fs";
 import path from "path";

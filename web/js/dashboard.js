@@ -7,6 +7,12 @@
 (function () {
   "use strict";
 
+  // ─── Auth helper ───────────────────────────────────────────────────────────
+  function getAuthHeaders() {
+    const token = localStorage.getItem("authToken");
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
+
   // ─── DOM refs ──────────────────────────────────────────────────────────────
 
   const repoSelect = document.getElementById("repo-select");
@@ -739,7 +745,7 @@
     try {
       var resp = await fetch("/api/repo-dashboard/transition", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify({ issueId: issueId, platform: platform, repo: repo, status: newStatus }),
       });
       var result = await resp.json();
@@ -832,7 +838,7 @@
     repoSelect.innerHTML = '<option value="">Loading repositories…</option>';
     repoSelect.disabled = true;
     try {
-      var resp = await fetch("/api/repo-dashboard/repos");
+      var resp = await fetch("/api/repo-dashboard/repos", { headers: getAuthHeaders() });
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       var data = await resp.json();
 
@@ -895,13 +901,14 @@
       }
 
       var results = await Promise.all([
-        fetch(issuesUrl),
+        fetch(issuesUrl, { headers: getAuthHeaders() }),
         fetch(
           "/api/repo-dashboard/dependencies?platform=" +
             encodeURIComponent(platform) +
             "&repo=" +
             encodeURIComponent(repoKey) +
             "&includeExternal=true",
+          { headers: getAuthHeaders() },
         ),
       ]);
 
@@ -1008,6 +1015,7 @@
           encodeURIComponent(platform) +
           "&repo=" +
           encodeURIComponent(repoKey),
+        { headers: getAuthHeaders() },
       );
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       var data = await resp.json();
@@ -1067,6 +1075,7 @@
           encodeURIComponent(repoKey) +
           "&sprintId=" +
           encodeURIComponent(sprintId),
+        { headers: getAuthHeaders() },
       );
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       var data = await resp.json();
@@ -1284,7 +1293,7 @@
       }
       var resp = await fetch(url, {
         method: method,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify(body),
       });
       if (!resp.ok) {
@@ -1310,7 +1319,7 @@
         "/api/repo-dashboard/sprints/" + encodeURIComponent(sprintId),
         {
           method: "DELETE",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
           body: JSON.stringify({ platform: platform, repo: repoKey }),
         },
       );

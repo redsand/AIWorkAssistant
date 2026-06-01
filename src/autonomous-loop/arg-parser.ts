@@ -10,6 +10,7 @@ import { EXIT_SUCCESS } from "../aicoder-pipeline";
 import type { ProviderType } from "../integrations/ollama-launcher";
 import type { TicketSourceType, LookupMode } from "../integrations/source-resolver";
 import type { PriorityMode } from "../integrations/ollama-launcher/priority-sorter";
+import "../agent/provider-settings"; // side-effect: applies persisted provider/model to process.env
 
 export function parseArgv(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -143,7 +144,7 @@ export const PRIORITY = (ARGV.priority || process.env.AICODER_PRIORITY || "label
 export const SOURCE = (ARGV.source || process.env.AICODER_SOURCE || "auto") as TicketSourceType | "auto";
 export const LOOKUP = (ARGV.lookup || process.env.AICODER_LOOKUP || "memory") as LookupMode;
 export const USE_OLLAMA = "ollama" in ARGV || process.env.AICODER_OLLAMA === "true";
-export const API_PROVIDER = (ARGV.api || process.env.AICODER_API || null) as "opencode" | "zai" | null;
+export const API_PROVIDER = (ARGV.api || process.env.AICODER_API || process.env.AI_PROVIDER || null) as "opencode" | "zai" | null;
 export const DEBUG = "debug" in ARGV || process.env.AICODER_DEBUG === "true";
 export const SKIP_BASELINE = "skip-baseline" in ARGV || process.env.AICODER_SKIP_BASELINE === "true";
 export const SKIP_AGENT = "skip-agent" in ARGV || process.env.AICODER_SKIP_AGENT === "true";

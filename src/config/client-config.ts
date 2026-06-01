@@ -21,8 +21,10 @@ export function resolveClientConfig(): ClientConfig {
     opencode: env.OPENCODE_API_KEY,
     zai: env.ZAI_API_KEY,
     ollama: env.OLLAMA_API_KEY,
+    openai: env.OPENAI_API_KEY,
   };
-  const token = providerKeys[env.AI_PROVIDER] || "";
+  const provider = process.env.AI_PROVIDER || env.AI_PROVIDER;
+  const token = providerKeys[provider] || "";
 
   return {
     apiBaseUrl: `http://localhost:${env.PORT}`,

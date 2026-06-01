@@ -8,6 +8,7 @@ const {
   mockSendEmail,
   mockIsEmailConfigured,
   mockGetActiveProviderName,
+  mockIsSourceEscalationEnabled,
   mockEnv,
 } = vi.hoisted(() => ({
   mockGetUnacknowledgedPastThreshold: vi.fn(),
@@ -15,6 +16,7 @@ const {
   mockSendEmail: vi.fn(),
   mockIsEmailConfigured: vi.fn(),
   mockGetActiveProviderName: vi.fn(),
+  mockIsSourceEscalationEnabled: vi.fn(),
   mockEnv: {
     PUSH_ESCALATION_L2_MINUTES: 5,
     PUSH_ESCALATION_L3_MINUTES: 15,
@@ -41,6 +43,10 @@ vi.mock("../../../src/push/escalation/email", () => ({
   sendEmail: mockSendEmail,
   isEmailConfigured: mockIsEmailConfigured,
   getActiveProviderName: mockGetActiveProviderName,
+}));
+
+vi.mock("../../../src/push/escalation/config-store", () => ({
+  isSourceEscalationEnabled: mockIsSourceEscalationEnabled,
 }));
 
 // Import after mocks are established
@@ -73,6 +79,7 @@ describe("EscalationEngine", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
+    mockIsSourceEscalationEnabled.mockReturnValue(true);
   });
 
   afterEach(() => {

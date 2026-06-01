@@ -28,6 +28,8 @@ const PUBLIC_PATHS = new Set([
   "/manifest.json",
   // ClaimKit comparison dashboard — read-only stats, no sensitive config
   "/comparison",
+  // Repository issue dashboard — HTML shell, data fetched via protected APIs
+  "/dashboard",
 ]);
 
 const SESSION_TOKEN_BYTES = 32;
@@ -117,7 +119,7 @@ export function getAuthPassword(): string {
 export function getApiKeyForAuth(): string {
   // Dedicated loop key takes priority — used by aicoder + reviewer
   if (env.AIWORKASSISTANT_API_KEY) return env.AIWORKASSISTANT_API_KEY;
-  const provider = env.AI_PROVIDER;
+  const provider = process.env.AI_PROVIDER || env.AI_PROVIDER;
   if (provider === "zai") return env.ZAI_API_KEY || "";
   if (provider === "ollama") return env.OLLAMA_API_KEY || "";
   return env.OPENCODE_API_KEY || "";
