@@ -531,19 +531,16 @@ describe("reviewAssistant.reviewGitHubPullRequest — AI path", () => {
     expect(review.mustFix.some((m) => /truncated/i.test(m))).toBe(true);
   });
 
-  it("falls back gracefully when AI chat throws", async () => {
+  it("throws when all AI chat attempts fail so caller sets serviceUnavailable", async () => {
     mockAiChat.mockRejectedValue(new Error("Connection timeout"));
 
-    const review = await reviewAssistant.reviewGitHubPullRequest({
-      owner: "org",
-      repo: "repo",
-      prNumber: 1,
-    });
-
-    // Fell through to heuristic fallback — still escalates due to AI unavailable notice
-    expect(review.riskLevel).toBe("high");
-    expect(review.recommendation).toBe("needs_changes");
-    expect(review.generatedAt).toBeTruthy();
+    await expect(
+      reviewAssistant.reviewGitHubPullRequest({
+        owner: "org",
+        repo: "repo",
+        prNumber: 1,
+      }),
+    ).rejects.toThrow("Connection timeout");
   });
 });
 

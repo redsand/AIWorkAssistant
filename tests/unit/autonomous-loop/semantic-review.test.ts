@@ -142,6 +142,7 @@ describe("AutonomousLoopReviewer semantic integration", () => {
           file: "src/auth.ts",
           line: 12,
           message: "Empty PR claims to fix a security issue but changes no security code.",
+          suggestedFix: "Modify the auth token comparison code with a timing-safe comparison.",
         },
       ],
       summary: "Security fix is missing.",
@@ -174,6 +175,7 @@ describe("AutonomousLoopReviewer semantic integration", () => {
       file: "src/run-state.ts",
       line: 42,
       message: "ctx.run_state is written outside _kpi_lock.",
+      suggestedFix: "Move the ctx.run_state write under _kpi_lock.",
     };
     mockResponse({
       findings: [finding],

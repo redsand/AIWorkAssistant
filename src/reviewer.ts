@@ -104,8 +104,13 @@ Jira (for re-linking review failures):
   JIRA_API_TOKEN            Jira API token
 `);
       process.exit(0);
-    }
-    if (argv[i].startsWith("--") && argv[i + 1] && !argv[i + 1].startsWith("--")) {
+    } else if (argv[i] === "--ollama") {
+      out["provider"] = "ollama";
+    } else if (argv[i] === "--zai") {
+      out["provider"] = "zai";
+    } else if (argv[i] === "--opencode") {
+      out["provider"] = "opencode";
+    } else if (argv[i].startsWith("--") && argv[i + 1] && !argv[i + 1].startsWith("--")) {
       out[argv[i].slice(2)] = argv[i + 1];
       i++;
     }

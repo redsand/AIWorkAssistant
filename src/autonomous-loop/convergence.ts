@@ -53,6 +53,16 @@ export interface ConvergenceState {
   noProgressCount: number;
   /** Set of finding hashes seen in the PREVIOUS round (for delta detection) */
   lastRoundFindings: Set<string>;
+  roundSummaries: ConvergenceRoundSummary[];
+}
+
+export interface ConvergenceRoundSummary {
+  roundNumber: number;
+  findingsCount: number;
+  prHadChanges: boolean;
+  changedFiles: string[];
+  diffStat?: string;
+  note?: string;
 }
 
 export type StopReason =
@@ -127,6 +137,7 @@ export function initConvergenceState(): ConvergenceState {
     findingsNew: 0,
     noProgressCount: 0,
     lastRoundFindings: new Set(),
+    roundSummaries: [],
   };
 }
 
@@ -138,8 +149,10 @@ export function recordRoundFindings(
   state: ConvergenceState,
   findings: Array<{ file?: string; severity?: string; category?: string; message?: string }>,
   prHadChanges: boolean,
+  summary?: Partial<Omit<ConvergenceRoundSummary, "roundNumber" | "findingsCount" | "prHadChanges">>,
 ): ConvergenceState {
   const currentHashes = new Set(findings.map(hashFinding));
+  const roundNumber = state.roundNumber + 1;
 
   // Find findings that were in the last round but NOT in this round (resolved)
   const resolved = [...state.lastRoundFindings].filter((h) => !currentHashes.has(h)).length;
@@ -158,7 +171,7 @@ export function recordRoundFindings(
   const newNoProgressCount = hadProgress ? 0 : state.noProgressCount + 1;
 
   return {
-    roundNumber: state.roundNumber + 1,
+    roundNumber,
     previousFindings: [...new Set([...state.previousFindings, ...currentHashes])],
     identicalCount: newIdenticalCount,
     emptyPRCount: prHadChanges ? 0 : state.emptyPRCount + 1,
@@ -166,6 +179,17 @@ export function recordRoundFindings(
     findingsNew: newFindings,
     noProgressCount: newNoProgressCount,
     lastRoundFindings: currentHashes,
+    roundSummaries: [
+      ...state.roundSummaries,
+      {
+        roundNumber,
+        findingsCount: findings.length,
+        prHadChanges,
+        changedFiles: summary?.changedFiles ?? [],
+        diffStat: summary?.diffStat,
+        note: summary?.note,
+      },
+    ].slice(-10),
   };
 }
 
@@ -269,6 +293,10 @@ export function formatConvergenceReport(
     `| Consecutive empty PRs | ${state.emptyPRCount} |`,
     `| Stuck findings (>${config.maxIdenticalFindings} occurrences) | ${[...state.identicalCount.entries()].filter(([, c]) => c > config.maxIdenticalFindings).length} |`,
     ``,
+    `| Round | Findings | Changed files | Diff summary | Note |`,
+    `|-------|----------|---------------|--------------|------|`,
+    ...formatRoundSummaries(state.roundSummaries),
+    ``,
     `**Reason**: ${result.reason}`,
     `**Action**: ${result.recommendation}`,
     ``,
@@ -276,6 +304,26 @@ export function formatConvergenceReport(
   ];
 
   return lines.join("\n");
+}
+
+function formatRoundSummaries(summaries: ConvergenceRoundSummary[]): string[] {
+  if (summaries.length === 0) return [`| None | 0 | None | None | None |`];
+  return summaries.map((summary) => [
+    `| ${summary.roundNumber}`,
+    `${summary.findingsCount}`,
+    formatList(summary.changedFiles),
+    formatCell(summary.diffStat || (summary.prHadChanges ? "changes detected" : "no changes")),
+    formatCell(summary.note || "None") + ` |`,
+  ].join(" | "));
+}
+
+function formatList(values: string[]): string {
+  if (values.length === 0) return "None";
+  return formatCell(values.slice(0, 5).join(", ") + (values.length > 5 ? `, +${values.length - 5} more` : ""));
+}
+
+function formatCell(value: string): string {
+  return value.replace(/\r?\n/g, "<br>").replace(/\|/g, "\\|").trim() || "None";
 }
 
 export function createConvergencePromptDecision(

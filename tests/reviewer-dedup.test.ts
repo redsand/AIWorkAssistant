@@ -26,6 +26,7 @@ const specificFinding: SemanticFinding = {
   file: "src/hybrid_tools_mixin.py",
   line: 93,
   message: "Data race on ctx.run_state in hybrid_tools_mixin.py line 93 writes outside _kpi_lock.",
+  suggestedFix: "Move the ctx.run_state write under _kpi_lock or make the state update atomic.",
 };
 
 function mockFindings(findings: SemanticFinding[]) {

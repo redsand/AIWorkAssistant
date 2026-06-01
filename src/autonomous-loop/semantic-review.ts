@@ -14,6 +14,7 @@ export interface SemanticFinding {
   category: "security" | "correctness" | "testing" | "performance" | "style";
   file: string;
   line?: number;
+  symbol?: string;
   message: string;
   suggestedFix?: string;
 }
@@ -77,12 +78,16 @@ export function validateSpecificity(finding: SemanticFinding): SpecificityValida
     return { valid: false, reason: "Finding must specify a file" };
   }
 
-  if (finding.severity === "critical" && !finding.message.toLowerCase().includes("line") && !finding.line) {
-    return { valid: false, reason: "Critical findings must specify a line number or range" };
+  if ((finding.severity === "critical" || finding.severity === "high") && !finding.line && !finding.symbol) {
+    return { valid: false, reason: "Critical/high findings must specify a line number or symbol" };
   }
 
-  if (finding.message.length < 20) {
+  if (finding.message.length < 40) {
     return { valid: false, reason: "Finding message is too short to be actionable" };
+  }
+
+  if ((finding.severity === "critical" || finding.severity === "high") && (!finding.suggestedFix || finding.suggestedFix.length < 10)) {
+    return { valid: false, reason: "Critical/high findings must include a concrete suggested fix" };
   }
 
   const genericPatterns = [
@@ -90,6 +95,11 @@ export function validateSpecificity(finding: SemanticFinding): SpecificityValida
     /review.*carefully/i,
     /general concern/i,
     /potential issue/i,
+    /needs? tests?/i,
+    /may be (?:a )?problem/i,
+    /could be (?:an )?issue/i,
+    /looks suspicious/i,
+    /not actionable/i,
   ];
 
   for (const pattern of genericPatterns) {
@@ -263,7 +273,9 @@ function buildMessages(diff: string, issueContext: string, config: SemanticRevie
       content: [
         "You are a senior code reviewer for an autonomous coding loop.",
         "Return only valid JSON with keys: findings, summary, riskLevel, recommendation.",
-        "Each finding must include severity, category, file, message, and may include line and suggestedFix.",
+        "Each finding must include severity, category, file, message, and may include line, symbol, and suggestedFix.",
+        "Critical and high findings must include file, line or symbol, a concrete defect claim, and suggestedFix.",
+        "Do not emit generic findings. If you cannot identify a specific actionable defect, return no findings.",
         "Use severities critical, high, medium, low.",
         "Use categories security, correctness, testing, performance, style.",
       ].join("\n"),
@@ -348,6 +360,10 @@ function normalizeFinding(value: unknown): SemanticFinding | null {
 
   if (typeof input.line === "number" && Number.isInteger(input.line) && input.line > 0) {
     finding.line = input.line;
+  }
+
+  if (typeof input.symbol === "string" && input.symbol.trim()) {
+    finding.symbol = input.symbol.trim();
   }
 
   if (typeof input.suggestedFix === "string" && input.suggestedFix.trim()) {

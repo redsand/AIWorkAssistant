@@ -292,18 +292,17 @@ describe("smoke: non-streaming path — network errors on all attempts", () => {
     mockAiChat.mockRejectedValue(new Error("ECONNREFUSED"));
   });
 
-  it("falls through to heuristic fallback after all retries throw", async () => {
-    const review = await reviewAssistant.reviewGitHubPullRequest({
-      owner: "org",
-      repo: "hawk-soar-cloud-v3",
-      prNumber: 98,
-    });
+  it("throws after all retries throw so caller can set serviceUnavailable", async () => {
+    await expect(
+      reviewAssistant.reviewGitHubPullRequest({
+        owner: "org",
+        repo: "hawk-soar-cloud-v3",
+        prNumber: 98,
+      }),
+    ).rejects.toThrow("ECONNREFUSED");
 
+    // All 3 attempts must have been tried before throwing
     expect(mockAiChat).toHaveBeenCalledTimes(3);
-    // Heuristic fallback always escalates
-    expect(review.riskLevel).toBe("high");
-    expect(review.recommendation).toBe("needs_changes");
-    expect(review.mustFix.some((m) => /AI review was unavailable/i.test(m))).toBe(true);
   });
 });
 

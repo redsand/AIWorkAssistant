@@ -14,7 +14,7 @@ import * as fs from "fs";
 import * as path from "path";
 import type { ReviewGateFinding, ReviewGateState } from "./review-gate";
 import { initReviewGateState } from "./review-gate";
-import { WORKSPACE } from "./arg-parser";
+const WORKSPACE = process.env.AICODER_WORKSPACE || process.cwd();
 
 function getStateFile(issueKey: string): string {
   return path.join(WORKSPACE, ".aicoder", `review-gate-state-${issueKey}.json`);

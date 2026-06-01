@@ -699,6 +699,17 @@ function validateOutput(baseBranch: string): ReturnType<typeof validateOutputFro
   return validateOutputFromDiff(statResult.stdout, diffResult.stdout, SKIP_AGENT);
 }
 
+function getChangedFiles(fromRef: string, toRef: string = "HEAD"): string[] {
+  const result = gitRunWithOutput(["diff", "--name-only", `${fromRef}...${toRef}`], WORKSPACE);
+  if (!result.ok) return [];
+  return result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function summarizeDiffStat(stat: string): string {
+  const lines = stat.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return lines.slice(-1)[0] ?? "";
+}
+
 
 
 /**
@@ -762,8 +773,12 @@ function ensureCleanWorkspace(): boolean {
   const hasStagedChanges = cachedResult.status !== 0;
 
   if (hasUncommittedChanges || hasStagedChanges) {
-    runLogger.logGit("Committing uncommitted changes during workspace cleanup");
-    stageAndCommit("[AI] auto-cleanup: committing pending changes");
+    const stat = gitRunWithOutput(["diff", "--stat"], WORKSPACE);
+    runLogger.logGit("WARN", `Preserving dirty workspace in git stash during cleanup${stat.ok && stat.stdout.trim() ? `: ${summarizeDiffStat(stat.stdout)}` : ""}`);
+    if (!gitRun(["stash", "push", "--include-untracked", "-m", "[AI] auto-cleanup: pending changes preserved"], WORKSPACE)) {
+      runLogger.logError("Could not preserve dirty workspace in stash during cleanup");
+      return false;
+    }
   }
 
   // 4. Check for detached HEAD
@@ -3395,14 +3410,15 @@ async function runReviewLoop(
         ...reviewState.convergenceState,
         identicalCount: new Map(Object.entries(reviewState.convergenceState.identicalCount)),
         lastRoundFindings: new Set(reviewState.convergenceState.lastRoundFindings),
+        roundSummaries: reviewState.convergenceState.roundSummaries ?? [],
       }
     : loadConvergenceState(item.id);
   const convergenceConfig: ConvergenceConfig = { ...DEFAULT_CONVERGENCE_CONFIG };
 
   // Extract finding-like hashes from a rework prompt string.
   // Looks for file paths (e.g., "src/foo.ts") and severity keywords to produce stable hashes.
-  function extractFindingsFromPrompt(prompt: string): Array<{ file?: string; severity?: string; category?: string }> {
-    const findings: Array<{ file?: string; severity?: string; category?: string }> = [];
+  function extractFindingsFromPrompt(prompt: string): Array<{ file?: string; severity?: string; category?: string; message?: string }> {
+    const findings: Array<{ file?: string; severity?: string; category?: string; message?: string }> = [];
     // Match patterns like "src/path/file.ts" which appear in review findings
     const fileRegex = /(?:^|\s|`)([\w./-]+\.(?:ts|js|py|rs|go|java|rb|yml|yaml|json|md))\b/gim;
     const severityRegex = /\b(critical|high|medium|low|info|blocker|major|minor)\b/gi;
@@ -3422,9 +3438,6 @@ async function runReviewLoop(
         const firstSev = sevIter.next().value;
         findings.push({ file, severity: firstSev || "high", category: "review" });
       }
-    } else {
-      // No files found — create a single generic finding from the prompt hash
-      findings.push({ file: undefined, severity: "high", category: "generic" });
     }
     return findings;
   }
@@ -3623,7 +3636,35 @@ async function runReviewLoop(
       const roundFindings = persistedGateFindings.length > 0
         ? persistedGateFindings.map((f) => ({ file: f.file, severity: f.severity, category: f.category }))
         : regexFindings;
-      convergenceState = recordRoundFindings(convergenceState, roundFindings, true);
+      if (roundFindings.length === 0) {
+        previousFailures.push("NON_ACTIONABLE_REVIEW_FEEDBACK");
+        convergenceState = recordRoundFindings(convergenceState, [], true, {
+          note: "Reviewer feedback did not include actionable file-specific findings.",
+        });
+        saveConvergenceState(convergenceState, item.id);
+        const report = formatConvergenceReport(
+          {
+            shouldStop: true,
+            reason: "identical_findings",
+            message: "Reviewer feedback did not include file-specific actionable findings. Escalating instead of asking the aicoder to guess.",
+            recommendation: "escalate_human",
+          },
+          convergenceState,
+          convergenceConfig,
+        );
+        runLogger.logError("Reviewer feedback is non-actionable — escalating to human review");
+        runLogger.logWork(report);
+        lastPipelineExitCode = EXIT_REVIEW_FAILED;
+        if (jiraClient.isConfigured()) {
+          try { await jiraClient.addComment(item.id, report); } catch {}
+        }
+        saveProcessedIssue(item.id);
+        clearRunState(item.id);
+        return;
+      }
+      convergenceState = recordRoundFindings(convergenceState, roundFindings, true, {
+        note: "Review findings received before rework.",
+      });
       saveConvergenceState(convergenceState, item.id);
 
       // Review gate: persist findings so jira.close_issue can block Done transitions
@@ -3747,11 +3788,19 @@ async function runReviewLoop(
         // "[SKIP] already reviewed (SHA unchanged)" loop — skip the push instead.
         runLogger.logGit("WARN", `Rework #${reworkCount} staged nothing — skipping push to avoid SHA-unchanged reviewer loop`);
         previousFailures.push("EMPTY_PR");
-        convergenceState = recordRoundFindings(convergenceState, [], false);
+        convergenceState = recordRoundFindings(convergenceState, [], false, {
+          changedFiles: [],
+          note: "Aicoder completed but produced no staged changes.",
+        });
         saveConvergenceState(convergenceState, item.id);
         const emptyConvergence = checkConvergence(convergenceState, convergenceConfig);
         if (emptyConvergence.shouldStop) {
           runLogger.logError(`Convergence detected (${emptyConvergence.reason}): ${emptyConvergence.message}`);
+          const report = formatConvergenceReport(emptyConvergence, convergenceState, convergenceConfig);
+          runLogger.logWork(report);
+          if (jiraClient.isConfigured()) {
+            try { await jiraClient.addComment(item.id, report); } catch {}
+          }
           lastPipelineExitCode = EXIT_NO_CHANGES;
           clearRunState(item.id);
           return;
@@ -3761,6 +3810,7 @@ async function runReviewLoop(
 
       // Convergence: check if rework produced actual changes (empty PR detection)
       const baseBranch = getBaseBranch();
+      const changedFilesThisRound = reworkHeadBefore.ok ? getChangedFiles(reworkHeadBefore.stdout.trim(), "HEAD") : [];
       let reworkDiffStat = gitRunWithOutput(["diff", `${baseBranch}...HEAD`, "--stat"], WORKSPACE);
       let reworkDiffContent = gitRunWithOutput(["diff", `${baseBranch}...HEAD`], WORKSPACE);
       let reworkValidation = validateDiffBeforePush(
@@ -3772,7 +3822,11 @@ async function runReviewLoop(
         runLogger.logError(`Rework produced no meaningful changes (${reworkValidation.reason}) — empty PR cycle ${convergenceState.emptyPRCount + 1}`);
         previousFailures.push("EMPTY_PR");
       }
-      convergenceState = recordRoundFindings(convergenceState, [], prHadChanges);
+      convergenceState = recordRoundFindings(convergenceState, [], prHadChanges, {
+        changedFiles: changedFilesThisRound,
+        diffStat: reworkDiffStat.ok ? summarizeDiffStat(reworkDiffStat.stdout) : "",
+        note: prHadChanges ? "Aicoder produced a rework commit." : `Aicoder changes failed validation: ${reworkValidation.reason}`,
+      });
       saveConvergenceState(convergenceState, item.id);
       if (!prHadChanges) {
         const convergence = checkConvergence(convergenceState, convergenceConfig);
@@ -3811,7 +3865,11 @@ async function runReviewLoop(
             }
           }
           if (prHadChanges) {
-            convergenceState = recordRoundFindings(convergenceState, [], true);
+            convergenceState = recordRoundFindings(convergenceState, [], true, {
+              changedFiles: getChangedFiles(reworkHeadBefore.ok ? reworkHeadBefore.stdout.trim() : baseBranch, "HEAD"),
+              diffStat: reworkDiffStat.ok ? summarizeDiffStat(reworkDiffStat.stdout) : "",
+              note: "Recovery prompt produced meaningful changes.",
+            });
             saveConvergenceState(convergenceState, item.id);
           } else {
           runLogger.logError(`Convergence detected (${convergence.reason}): ${convergence.message}`);

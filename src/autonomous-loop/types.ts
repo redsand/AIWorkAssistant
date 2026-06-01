@@ -94,6 +94,14 @@ export interface RunState {
     findingsNew: number;
     noProgressCount: number;
     lastRoundFindings: string[];
+    roundSummaries?: Array<{
+      roundNumber: number;
+      findingsCount: number;
+      prHadChanges: boolean;
+      changedFiles: string[];
+      diffStat?: string;
+      note?: string;
+    }>;
   };
   apiUrl: string;
   apiKey: string;

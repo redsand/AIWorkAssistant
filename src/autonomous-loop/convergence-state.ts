@@ -40,6 +40,7 @@ function deserializeConvergence(data: Record<string, unknown>): ConvergenceState
     findingsNew: typeof data.findingsNew === "number" ? data.findingsNew : 0,
     noProgressCount: typeof data.noProgressCount === "number" ? data.noProgressCount : 0,
     lastRoundFindings: new Set(Array.isArray(data.lastRoundFindings) ? data.lastRoundFindings : []),
+    roundSummaries: Array.isArray(data.roundSummaries) ? data.roundSummaries : [],
   };
 }
 
@@ -52,6 +53,7 @@ export interface SerializedConvergenceState {
   findingsNew: number;
   noProgressCount: number;
   lastRoundFindings: string[];
+  roundSummaries: ConvergenceState["roundSummaries"];
 }
 
 /** Serialize a ConvergenceState to a JSON-safe plain object. */
@@ -65,6 +67,7 @@ export function serializeConvergence(state: ConvergenceState): SerializedConverg
     findingsNew: state.findingsNew,
     noProgressCount: state.noProgressCount,
     lastRoundFindings: [...state.lastRoundFindings],
+    roundSummaries: state.roundSummaries,
   };
 }
 

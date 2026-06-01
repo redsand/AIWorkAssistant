@@ -987,6 +987,8 @@ class ReviewAssistant {
 
     let parsed: Partial<CodeReview> = {};
     let aiSucceeded = false;
+    let lastApiError: Error | null = null;
+    let apiErrorCount = 0;
 
     if (aiClient.isConfigured()) {
       for (let attempt = 1; attempt <= MAX_REVIEW_RETRIES && !aiSucceeded; attempt++) {
@@ -1032,12 +1034,18 @@ class ReviewAssistant {
             break;
           }
         } catch (err) {
-          console.error(`[CodeReview] Attempt ${attempt} AI call failed:`, (err as Error).message);
+          lastApiError = err instanceof Error ? err : new Error(String(err));
+          apiErrorCount++;
+          console.error(`[CodeReview] Attempt ${attempt} AI call failed:`, lastApiError.message);
         }
       }
 
-      // All retries exhausted (JSON.parse kept throwing or AI kept throwing) — escalate
+      // All retries threw API errors (no content produced) — hard stop so the caller
+      // sets serviceUnavailable instead of posting a rework prompt.
       if (!aiSucceeded) {
+        if (apiErrorCount >= MAX_REVIEW_RETRIES) {
+          throw lastApiError ?? new Error("AI review unavailable after retries");
+        }
         console.warn("[CodeReview] All retries exhausted — escalating to needs_changes");
         parsed = {
           riskLevel: "high" as const,
@@ -1107,6 +1115,7 @@ class ReviewAssistant {
     let parsed: Partial<CodeReview> = {};
     let aiSucceeded = false;
     let lastStreamContent = "";
+    let lastStreamApiError: Error | null = null;
 
     if (aiClient.isConfigured()) {
       for (let attempt = 1; attempt <= MAX_REVIEW_RETRIES && !aiSucceeded; attempt++) {
@@ -1199,11 +1208,17 @@ class ReviewAssistant {
             onProgress?.({ type: "progress", message: `AI review response truncated on attempt ${attempt} — retrying...` });
           }
         } catch (err) {
-          console.error(`[CodeReview] Stream attempt ${attempt} failed:`, (err as Error).message);
+          lastStreamApiError = err instanceof Error ? err : new Error(String(err));
+          console.error(`[CodeReview] Stream attempt ${attempt} failed:`, lastStreamApiError.message);
         }
       }
 
       if (!aiSucceeded) {
+        // If every attempt threw before producing any content, the LLM/API is down.
+        // Throw so the outer handler sets serviceUnavailable instead of posting rework.
+        if (!lastStreamContent) {
+          throw lastStreamApiError ?? new Error("AI review unavailable after retries");
+        }
         // Try to salvage real findings from the last (best) truncated response
         // The model consistently completes riskLevel/mustFix/securityConcerns before
         // getting cut off in the verbose suggestedReviewComment field
