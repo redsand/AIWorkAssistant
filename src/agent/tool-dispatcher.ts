@@ -50,6 +50,8 @@ import { mcpClient } from "../integrations/mcp";
 import { codebaseIndexer } from "./codebase-indexer";
 import { knowledgeGraph } from "./knowledge-graph";
 import { entityMemory } from "../memory/entity-memory";
+import { agentMemory } from "../memory/agent-memory";
+import { createMemoryManageHandler } from "./handlers/memory-manage";
 import type { EntityType, FindEntitiesQuery } from "../memory/entity-types";
 import { lspManager } from "../integrations/lsp/index.js";
 import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
@@ -2294,6 +2296,8 @@ async function handleMemoryAddEntityFact(
     return { success: false, error: String(error) };
   }
 }
+
+const handleMemoryManage = createMemoryManageHandler(agentMemory);
 
 async function handleCtoDailyCommandCenter(
   params: Record<string, unknown>,
@@ -9016,6 +9020,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "memory.find_entities": handleMemoryFindEntities,
   "memory.get_entity_context": handleMemoryGetEntityContext,
   "memory.add_entity_fact": handleMemoryAddEntityFact,
+  "memory.manage": handleMemoryManage,
 
   "workflow.create": handleWorkflowCreate,
   "workflow.advance": handleWorkflowAdvance,
@@ -9073,6 +9078,7 @@ const SYSTEM_TOOLS = new Set([
   "agent.get_run",
   "agent.get_run_stats",
   "agent.get_aicoder_status",
+  "memory.manage",
   "engineering.workflow_brief",
   "engineering.architecture_proposal",
   "engineering.scaffolding_plan",
@@ -9130,6 +9136,24 @@ export interface DispatchContext {
   messages?: import("../agent/providers/types").ChatMessage[];
   /** Agent mode (productivity, engineering) */
   mode?: string;
+}
+
+const sessionToolCounters = new Map<string, number>();
+const MEMORY_NUDGE_INTERVAL = 15;
+
+export function resetToolCallCounter(userId?: string): void {
+  if (userId) {
+    sessionToolCounters.delete(userId);
+  } else {
+    sessionToolCounters.clear();
+  }
+}
+
+export function getToolCallCounter(userId?: string): number {
+  if (userId) {
+    return sessionToolCounters.get(userId) ?? 0;
+  }
+  return 0;
 }
 
 export async function dispatchToolCall(
@@ -9309,6 +9333,16 @@ export async function dispatchToolCall(
 
   try {
     const result = await handler(params, userId);
+
+    // Self-nudge: after every 15 tool calls per session, remind the agent to consider memory updates
+    const currentCount = sessionToolCounters.get(userId) ?? 0;
+    const newCount = currentCount + 1;
+    sessionToolCounters.set(userId, newCount);
+    if (result && typeof result === "object" && newCount > 0 && newCount % MEMORY_NUDGE_INTERVAL === 0) {
+      const nudge = "\n[Memory nudge] Consider whether your recent work revealed anything worth remembering. Use the memory tool to add, replace, or remove entries.";
+      result.message = result.message ? `${result.message}${nudge}` : nudge.trim();
+    }
+
     await auditLogger.log({
       id: "",
       timestamp: new Date(),
