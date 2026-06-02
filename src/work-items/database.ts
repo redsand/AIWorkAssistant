@@ -251,7 +251,7 @@ class WorkItemDatabase {
       conditions.push("(title LIKE ? OR description LIKE ?)");
       params.push(`%${filters.search}%`, `%${filters.search}%`);
     }
-    if (!filters?.includeArchived) {
+    if (!filters?.includeArchived && filters?.status !== "done" && filters?.status !== "archived") {
       conditions.push("archived = 0");
     }
 

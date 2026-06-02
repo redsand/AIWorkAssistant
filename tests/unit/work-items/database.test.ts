@@ -132,6 +132,14 @@ describe("WorkItemDatabase", () => {
       expect(result.items[0].title).toBe("B");
     });
 
+    it("should return done items when filtering by done status", () => {
+      db.createWorkItem({ type: "task", title: "A", status: "done" });
+      const result = db.listWorkItems({ status: "done" });
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].title).toBe("A");
+      expect(result.items[0].archived).toBe(true);
+    });
+
     it("should exclude archived by default", () => {
       db.createWorkItem({ type: "task", title: "A" });
       const toArchive = db.createWorkItem({ type: "task", title: "B" });
