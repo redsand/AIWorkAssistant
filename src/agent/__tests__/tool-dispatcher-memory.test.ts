@@ -73,9 +73,10 @@ describe("handleMemoryManage", () => {
       expect(store.getUsage).toHaveBeenCalledWith("user");
     });
 
-    it("should treat invalid target as 'memory'", async () => {
-      await handleMemoryManage({ action: "status", target: "invalid" });
-      expect(store.getUsage).toHaveBeenCalledWith("memory");
+    it("should reject invalid target", async () => {
+      const result = await handleMemoryManage({ action: "status", target: "invalid" });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Unknown target 'invalid'");
     });
 
     it("should treat non-string target as 'memory'", async () => {
@@ -131,7 +132,7 @@ describe("handleMemoryManage", () => {
       });
       handleMemoryManage = createMemoryManageHandler(store);
 
-      const result = await handleMemoryManage({ action: "add", key: "big", value: "x".repeat(3000) });
+      const result = await handleMemoryManage({ action: "add", key: "big", value: "reasonable_value" });
       expect(result.success).toBe(false);
       expect(result.error).toContain("exceeds limit");
       expect(result.data).toMatchObject({ entries: expect.any(Array) });
@@ -351,6 +352,91 @@ describe("handleMemoryManage", () => {
       });
       expect(result.success).toBe(false);
       expect(result.error).toBe("string error");
+    });
+  });
+
+  // ── input sanitization ────────────────────────────────────────────────
+
+  describe("input sanitization", () => {
+    it("should strip control characters from key", async () => {
+      const result = await handleMemoryManage({
+        action: "add", key: "key\x00with\x07ctrl", value: "value",
+      });
+      expect(result.success).toBe(true);
+      expect(store.add).toHaveBeenCalledWith("memory", "keywithctrl", "value");
+    });
+
+    it("should strip control characters from value", async () => {
+      const result = await handleMemoryManage({
+        action: "add", key: "k", value: "val\x1Fue",
+      });
+      expect(result.success).toBe(true);
+      expect(store.add).toHaveBeenCalledWith("memory", "k", "value");
+    });
+
+    it("should normalize CRLF to LF in values", async () => {
+      const result = await handleMemoryManage({
+        action: "add", key: "k", value: "line1\r\nline2\rline3",
+      });
+      expect(result.success).toBe(true);
+      expect(store.add).toHaveBeenCalledWith("memory", "k", "line1\nline2\nline3");
+    });
+
+    it("should trim whitespace from key and value", async () => {
+      const result = await handleMemoryManage({
+        action: "add", key: "  key  ", value: "  value  ",
+      });
+      expect(result.success).toBe(true);
+      expect(store.add).toHaveBeenCalledWith("memory", "key", "value");
+    });
+  });
+
+  // ── input length caps ─────────────────────────────────────────────────
+
+  describe("input length caps", () => {
+    it("should reject key exceeding max length", async () => {
+      const result = await handleMemoryManage({
+        action: "add", key: "k".repeat(200), value: "v",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("key exceeds max length");
+    });
+
+    it("should reject value exceeding max length", async () => {
+      const result = await handleMemoryManage({
+        action: "add", key: "k", value: "v".repeat(2500),
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("value exceeds max length");
+    });
+
+    it("should accept key at exactly max length", async () => {
+      const result = await handleMemoryManage({
+        action: "add", key: "k".repeat(120), value: "v",
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("should reject oversized merged_key in consolidate", async () => {
+      const result = await handleMemoryManage({
+        action: "consolidate",
+        source_keys: "a,b",
+        merged_key: "k".repeat(200),
+        merged_value: "v",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("merged_key exceeds max length");
+    });
+
+    it("should reject oversized merged_value in consolidate", async () => {
+      const result = await handleMemoryManage({
+        action: "consolidate",
+        source_keys: "a,b",
+        merged_key: "m",
+        merged_value: "v".repeat(2500),
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("merged_value exceeds max length");
     });
   });
 });

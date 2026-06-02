@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { getToolByName, getToolCategories, getToolsByCategory, getTools } from "../tool-registry";
+import { getToolByName, getToolCategories, getToolsByCategory } from "../tool-registry";
 
 describe("tool-registry memory.manage schema", () => {
   const mode = "productivity";
@@ -15,9 +15,9 @@ describe("tool-registry memory.manage schema", () => {
     expect(tool!.actionType).toBe("memory.manage");
   });
 
-  it("should have low risk level", () => {
+  it("should have medium risk level", () => {
     const tool = getToolByName("memory.manage", mode);
-    expect(tool!.riskLevel).toBe("low");
+    expect(tool!.riskLevel).toBe("medium");
   });
 
   it("should mark action as required", () => {

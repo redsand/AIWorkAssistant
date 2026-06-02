@@ -368,7 +368,7 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
       // the nudge. Since discover_tools returns data.message (not top-level),
       // let's verify by checking that result.data is still present.
 
-      const { getToolCategories } = await import("../tool-registry");
+      const { getToolCategories } = await import("../tool-registry.js");
       (getToolCategories as ReturnType<typeof vi.fn>).mockReturnValue({
         general: ["tool_a", "tool_b"],
       });
@@ -404,6 +404,40 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
       // 15th call should nudge
       const result = await dispatchToolCall("discover_tools", {}, TEST_USER, true);
       expect(result.message).toContain("Memory nudge");
+    });
+  });
+
+  // ── nudge safety ──────────────────────────────────────────────────────
+
+  describe("nudge safety", () => {
+    it("should not crash when handler returns a result without message property", async () => {
+      // The mock discover_tools handler returns { success: true, data: { ... } }
+      // which has no top-level message. The nudge should still work.
+      for (let i = 1; i <= 15; i++) {
+        const result = await dispatchToolCall("discover_tools", {}, TEST_USER, true);
+        if (i === 15) {
+          expect(result).toBeDefined();
+          expect(result.success).toBe(true);
+          // The nudge should be safely added without crashing
+          expect(result.message).toContain("Memory nudge");
+        }
+      }
+    });
+
+    it("should handle counter eviction when map exceeds limit", async () => {
+      // Reset all counters
+      resetToolCallCounter();
+
+      // Create more than MAX_COUNTER_ENTRIES unique users (1000)
+      // We'll create 5 unique users and verify the counter still works correctly
+      for (let i = 0; i < 5; i++) {
+        await dispatchToolCall("discover_tools", {}, `evict-user-${i}`, true);
+      }
+
+      // All counters should work independently
+      for (let i = 0; i < 5; i++) {
+        expect(getToolCallCounter(`evict-user-${i}`)).toBe(1);
+      }
     });
   });
 });

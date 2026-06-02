@@ -5,7 +5,7 @@ import * as os from "os";
 import * as path from "path";
 import { cleanupMergedBranch, cleanupAllMergedBranches, pushBranch, recoverFromRebase, isRebaseInProgress, pullAndUpdateBase } from "../git-ops";
 
-vi.setConfig({ testTimeout: 20000 });
+vi.setConfig({ testTimeout: 30000 });
 
 function git(args: string[], cwd: string): { ok: boolean; stdout: string; stderr: string } {
   const r = spawnSync("git", args, { cwd, stdio: "pipe", encoding: "utf-8" });

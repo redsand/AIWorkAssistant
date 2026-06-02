@@ -79,8 +79,10 @@ export async function assembleContextPacket(
   const graphSlot = budget.slots.find((s) => s.name === "graph")!;
 
   // Load agent memory snapshots (MEMORY.md + USER.md) — slot #1, before system prompt
-  const memorySnapshot = agentMemory.getMemorySnapshot();
-  const userSnapshot = agentMemory.getUserSnapshot();
+  // Sanitize to reduce prompt injection risk from persisted markdown content
+  const sanitizeForPrompt = (s: string) => s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+  const memorySnapshot = sanitizeForPrompt(agentMemory.getMemorySnapshot());
+  const userSnapshot = sanitizeForPrompt(agentMemory.getUserSnapshot());
   const memorySection: ContextSection | null = memorySnapshot
     ? { name: "agent_memory", content: memorySnapshot, tokens: estimateTokens(memorySnapshot) }
     : null;

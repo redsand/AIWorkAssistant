@@ -108,7 +108,7 @@ const envSchema = z.object({
   DATABASE_URL: z.string().default("sqlite:./data/app.db"),
 
   // Agent Memory (MEMORY.md / USER.md)
-  AGENT_MEMORY_PATH: z.string().default(""),
+  AGENT_MEMORY_PATH: z.string().default("data/memories"),
 
   // Audit
   AUDIT_LOG_FILE: z.string().default("./logs/audit.log"),

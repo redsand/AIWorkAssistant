@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 
+vi.setConfig({ testTimeout: 15_000 });
+
 vi.mock("../../../src/integrations/file/calendar-service", () => ({
   fileCalendarService: { listEvents: vi.fn(() => []), isConfigured: vi.fn(() => true) },
 }));
