@@ -50,6 +50,7 @@ import { mcpClient } from "../integrations/mcp";
 import { codebaseIndexer } from "./codebase-indexer";
 import { knowledgeGraph } from "./knowledge-graph";
 import { entityMemory } from "../memory/entity-memory";
+import { agentMemory } from "../memory/agent-memory";
 import type { EntityType, FindEntitiesQuery } from "../memory/entity-types";
 import { lspManager } from "../integrations/lsp/index.js";
 import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
@@ -2292,6 +2293,88 @@ async function handleMemoryAddEntityFact(
     return { success: true, data: { entity, fact: stored } };
   } catch (error) {
     return { success: false, error: String(error) };
+  }
+}
+
+async function handleMemoryManage(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const action = params.action as string;
+    const target = (params.target as "memory" | "user") || "memory";
+
+    if (!action) {
+      return { success: false, error: "action is required (add, replace, remove, consolidate, status)" };
+    }
+
+    switch (action) {
+      case "add": {
+        const key = params.key as string;
+        const value = params.value as string;
+        if (!key || !value) {
+          return { success: false, error: "key and value are required for add" };
+        }
+        const result = agentMemory.add(target, key, value);
+        if (!result.success) {
+          return { success: false, error: result.error, data: { entries: result.entries } };
+        }
+        return { success: true, data: { message: `Added '${key}' to ${target}` } };
+      }
+      case "replace": {
+        const key = params.key as string;
+        const value = params.value as string;
+        if (!key || !value) {
+          return { success: false, error: "key and value are required for replace" };
+        }
+        const result = agentMemory.replace(target, key, value);
+        if (!result.success) {
+          return { success: false, error: result.error };
+        }
+        return { success: true, data: { message: `Replaced '${key}' in ${target}` } };
+      }
+      case "remove": {
+        const key = params.key as string;
+        if (!key) {
+          return { success: false, error: "key is required for remove" };
+        }
+        const result = agentMemory.remove(target, key);
+        if (!result.success) {
+          return { success: false, error: result.error };
+        }
+        return { success: true, data: { message: `Removed '${key}' from ${target}` } };
+      }
+      case "consolidate": {
+        const sourceKeysStr = params.source_keys as string;
+        const mergedKey = params.merged_key as string;
+        const mergedValue = params.merged_value as string;
+        if (!sourceKeysStr || !mergedKey || !mergedValue) {
+          return { success: false, error: "source_keys, merged_key, and merged_value are required for consolidate" };
+        }
+        const sourceKeys = sourceKeysStr.split(",").map((k) => k.trim());
+        const result = agentMemory.consolidate(target, sourceKeys, mergedKey, mergedValue);
+        if (!result.success) {
+          return { success: false, error: result.error };
+        }
+        return { success: true, data: { message: `Consolidated ${sourceKeys.length} entries into '${mergedKey}' in ${target}` } };
+      }
+      case "status": {
+        const usage = agentMemory.getUsage(target);
+        const entries = agentMemory.getEntries(target);
+        return {
+          success: true,
+          data: {
+            target,
+            usage,
+            entries,
+            shouldConsolidate: agentMemory.shouldConsolidate(target),
+          },
+        };
+      }
+      default:
+        return { success: false, error: `Unknown action '${action}'. Valid: add, replace, remove, consolidate, status` };
+    }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -9016,6 +9099,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "memory.find_entities": handleMemoryFindEntities,
   "memory.get_entity_context": handleMemoryGetEntityContext,
   "memory.add_entity_fact": handleMemoryAddEntityFact,
+  "memory.manage": handleMemoryManage,
 
   "workflow.create": handleWorkflowCreate,
   "workflow.advance": handleWorkflowAdvance,
@@ -9073,6 +9157,7 @@ const SYSTEM_TOOLS = new Set([
   "agent.get_run",
   "agent.get_run_stats",
   "agent.get_aicoder_status",
+  "memory.manage",
   "engineering.workflow_brief",
   "engineering.architecture_proposal",
   "engineering.scaffolding_plan",
@@ -9130,6 +9215,17 @@ export interface DispatchContext {
   messages?: import("../agent/providers/types").ChatMessage[];
   /** Agent mode (productivity, engineering) */
   mode?: string;
+}
+
+let toolCallCounter = 0;
+const MEMORY_NUDGE_INTERVAL = 15;
+
+export function resetToolCallCounter(): void {
+  toolCallCounter = 0;
+}
+
+export function getToolCallCounter(): number {
+  return toolCallCounter;
 }
 
 export async function dispatchToolCall(
@@ -9309,6 +9405,13 @@ export async function dispatchToolCall(
 
   try {
     const result = await handler(params, userId);
+
+    // Self-nudge: after every 15 tool calls, remind the agent to consider memory updates
+    toolCallCounter++;
+    if (toolCallCounter > 0 && toolCallCounter % MEMORY_NUDGE_INTERVAL === 0) {
+      result.message = "Consider whether your recent work revealed anything worth remembering. Use the memory tool to add, replace, or remove entries.";
+    }
+
     await auditLogger.log({
       id: "",
       timestamp: new Date(),
