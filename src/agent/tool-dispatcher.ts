@@ -9141,17 +9141,17 @@ export interface DispatchContext {
 const sessionToolCounters = new Map<string, number>();
 const MEMORY_NUDGE_INTERVAL = 15;
 
-export function resetToolCallCounter(sessionId?: string): void {
-  if (sessionId) {
-    sessionToolCounters.delete(sessionId);
+export function resetToolCallCounter(userId?: string): void {
+  if (userId) {
+    sessionToolCounters.delete(userId);
   } else {
     sessionToolCounters.clear();
   }
 }
 
-export function getToolCallCounter(sessionId?: string): number {
-  if (sessionId) {
-    return sessionToolCounters.get(sessionId) ?? 0;
+export function getToolCallCounter(userId?: string): number {
+  if (userId) {
+    return sessionToolCounters.get(userId) ?? 0;
   }
   return 0;
 }
@@ -9338,8 +9338,9 @@ export async function dispatchToolCall(
     const currentCount = sessionToolCounters.get(userId) ?? 0;
     const newCount = currentCount + 1;
     sessionToolCounters.set(userId, newCount);
-    if (newCount > 0 && newCount % MEMORY_NUDGE_INTERVAL === 0) {
-      result.message = "Consider whether your recent work revealed anything worth remembering. Use the memory tool to add, replace, or remove entries.";
+    if (result && typeof result === "object" && newCount > 0 && newCount % MEMORY_NUDGE_INTERVAL === 0) {
+      const nudge = "\n[Memory nudge] Consider whether your recent work revealed anything worth remembering. Use the memory tool to add, replace, or remove entries.";
+      result.message = result.message ? `${result.message}${nudge}` : nudge.trim();
     }
 
     await auditLogger.log({
