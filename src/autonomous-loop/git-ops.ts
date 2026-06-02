@@ -143,6 +143,50 @@ export function resetBaseBranchCache(): void {
   _baseBranchCache.clear();
 }
 
+function parseUntrackedOverwriteFiles(stderr: string): string[] {
+  const match = stderr.match(
+    /The following untracked working tree files would be overwritten by (?:checkout|merge):\s*\n((?:\s+.+\n?)+)/,
+  );
+  if (!match) return [];
+  return match[1]
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function preserveUntrackedOverwriteFiles(
+  workspace: string,
+  files: string[],
+  logger: PipelineLogger,
+): boolean {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const preserveRoot = path.join(workspace, ".aicoder", "preserved-untracked", stamp);
+
+  for (const file of files) {
+    const source = path.resolve(workspace, file);
+    const relative = path.relative(workspace, source);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      logger.logError(`Refusing to preserve untracked file outside workspace: ${file}`);
+      return false;
+    }
+    if (!fs.existsSync(source)) continue;
+
+    const target = path.join(preserveRoot, relative);
+    try {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.renameSync(source, target);
+      logger.logGit("Preserved untracked file before pull", `${file} -> ${path.relative(workspace, target)}`);
+    } catch (error) {
+      logger.logError(
+        `Could not preserve untracked file ${file}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return false;
+    }
+  }
+
+  return true;
+}
+
 // ── Rebase recovery ───────────────────────────────────────────────────────────
 
 /**
@@ -548,7 +592,18 @@ export function pullAndUpdateBase(
     logger.logError(`Failed to switch to ${base}`);
     return false;
   }
-  if (!gitRun(["pull", "--ff-only", "origin", base], workspace, logger)) {
+  const pull = gitRunWithOutput(["pull", "--ff-only", "origin", base], workspace, logger);
+  if (!pull.ok) {
+    const conflictingFiles = parseUntrackedOverwriteFiles(pull.stderr);
+    if (conflictingFiles.length > 0) {
+      logger.logGit("WARN", `Pull blocked by ${conflictingFiles.length} untracked file(s); preserving and retrying`);
+      if (
+        preserveUntrackedOverwriteFiles(workspace, conflictingFiles, logger) &&
+        gitRun(["pull", "--ff-only", "origin", base], workspace, logger)
+      ) {
+        return true;
+      }
+    }
     logger.logError(`Pull --ff-only failed for ${base} — base branch may be stale`);
     if (previousBranch && previousBranch !== base) {
       forceCheckoutFn(previousBranch, workspace);

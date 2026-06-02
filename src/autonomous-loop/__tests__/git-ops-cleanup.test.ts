@@ -3,7 +3,7 @@ import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { cleanupMergedBranch, cleanupAllMergedBranches, pushBranch, recoverFromRebase, isRebaseInProgress } from "../git-ops";
+import { cleanupMergedBranch, cleanupAllMergedBranches, pushBranch, recoverFromRebase, isRebaseInProgress, pullAndUpdateBase } from "../git-ops";
 
 vi.setConfig({ testTimeout: 20000 });
 
@@ -21,6 +21,14 @@ function listLocalBranches(cwd: string): string[] {
   const r = git(["for-each-ref", "--format=%(refname:short)", "refs/heads/"], cwd);
   return r.stdout ? r.stdout.split("\n").map((s) => s.trim()).filter(Boolean) : [];
 }
+
+const testLogger = {
+  logGit: () => {},
+  logError: () => {},
+  logConfig: () => {},
+  logWork: () => {},
+  logAgent: () => {},
+};
 
 /**
  * Build a "remote" bare repo and a clone with origin → bare.
@@ -250,7 +258,7 @@ describe("pushBranch", () => {
     const normalPush = git(["push", "origin", "ai/test-push-force"], workspace);
     expect(normalPush.ok).toBe(false); // rejected (non-fast-forward)
 
-    const result = pushBranch("ai/test-push-force", workspace, undefined, { force: true });
+    const result = pushBranch("ai/test-push-force", workspace, testLogger, { force: true });
     expect(result).toBe(true);
   });
 
@@ -266,7 +274,7 @@ describe("pushBranch", () => {
     gitMust(["add", "."], workspace);
     gitMust(["commit", "--amend", "-m", "fwl v2"], workspace);
 
-    const result = pushBranch("ai/test-push-fwl", workspace, undefined, { forceWithLease: true });
+    const result = pushBranch("ai/test-push-fwl", workspace, testLogger, { forceWithLease: true });
     expect(result).toBe(true);
   });
 
@@ -292,6 +300,59 @@ describe("pushBranch", () => {
 
     const result = pushBranch("ai/test-push-reject", workspace);
     expect(result).toBe(false);
+  });
+});
+
+describe("pullAndUpdateBase", () => {
+  let workspace: string;
+  let remote: string;
+  let root: string;
+
+  beforeEach(() => {
+    const pair = makeRepoPair();
+    workspace = pair.workspace;
+    remote = pair.remote;
+    root = path.dirname(workspace);
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(root, { recursive: true, force: true });
+    } catch {
+      /* Windows sometimes holds the lock briefly in tests */
+    }
+  });
+
+  it("preserves untracked files that would be overwritten by a base-branch pull", () => {
+    const upstream = path.join(root, "upstream");
+    gitMust(["clone", remote, upstream], root);
+    gitMust(["config", "user.email", "test@example.com"], upstream);
+    gitMust(["config", "user.name", "Test"], upstream);
+
+    fs.writeFileSync(path.join(upstream, "branch_style.css"), "remote tracked\n");
+    gitMust(["add", "branch_style.css"], upstream);
+    gitMust(["commit", "-m", "track generated style artifact"], upstream);
+    gitMust(["push", "origin", "main"], upstream);
+
+    fs.writeFileSync(path.join(workspace, "branch_style.css"), "local untracked\n");
+
+    const result = pullAndUpdateBase(
+      workspace,
+      ["main"],
+      testLogger,
+      (branch, cwd) => git(["checkout", branch], cwd).ok,
+    );
+
+    expect(result).toBe(true);
+    expect(fs.readFileSync(path.join(workspace, "branch_style.css"), "utf-8").replace(/\r\n/g, "\n")).toBe("remote tracked\n");
+
+    const preservedRoot = path.join(workspace, ".aicoder", "preserved-untracked");
+    const preservedCopies = fs
+      .readdirSync(preservedRoot, { recursive: true })
+      .map((entry) => String(entry).replace(/\\/g, "/"))
+      .filter((entry) => entry.endsWith("branch_style.css"));
+    expect(preservedCopies.length).toBe(1);
+    expect(fs.readFileSync(path.join(preservedRoot, preservedCopies[0]), "utf-8").replace(/\r\n/g, "\n")).toBe("local untracked\n");
   });
 });
 
