@@ -37,4 +37,27 @@ describe("aicoder arg parser provider aliases", () => {
     expect(parser.API_PROVIDER).toBe("opencode");
     expect(parser.MODEL).toBe("DeepSeek V4 Pro");
   });
+
+  it("maps --provider zia typo to zai", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const parser = await loadArgParser(["--provider", "zia", "--model", "glm-5.1"]);
+
+    expect(parser.API_PROVIDER).toBe("zai");
+    expect(parser.MODEL).toBe("glm-5.1");
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("zia"),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("warns on truly unknown provider", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const parser = await loadArgParser(["--provider", "unknown-provider"]);
+
+    expect(parser.API_PROVIDER).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("unknown-provider"),
+    );
+    warnSpy.mockRestore();
+  });
 });

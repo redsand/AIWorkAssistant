@@ -144,7 +144,15 @@ export const SPRINT = ARGV.sprint || process.env.AICODER_SPRINT || "";
 export const PRIORITY = (ARGV.priority || process.env.AICODER_PRIORITY || "label") as PriorityMode;
 export const SOURCE = (ARGV.source || process.env.AICODER_SOURCE || "auto") as TicketSourceType | "auto";
 export const LOOKUP = (ARGV.lookup || process.env.AICODER_LOOKUP || "memory") as LookupMode;
-const CLI_PROVIDER = (ARGV.provider || "").toLowerCase();
+const CLI_PROVIDER_RAW = (ARGV.provider || "").toLowerCase();
+const PROVIDER_ALIASES: Record<string, string> = { zia: "zai" };
+const CLI_PROVIDER = PROVIDER_ALIASES[CLI_PROVIDER_RAW] || CLI_PROVIDER_RAW;
+if (ARGV.provider && CLI_PROVIDER !== CLI_PROVIDER_RAW) {
+  console.warn(`[aicoder] Unrecognized provider "${ARGV.provider}" — did you mean "${CLI_PROVIDER}"?`);
+}
+if (CLI_PROVIDER && CLI_PROVIDER !== "opencode" && CLI_PROVIDER !== "zai" && CLI_PROVIDER !== "ollama") {
+  console.warn(`[aicoder] Unknown provider "${CLI_PROVIDER}" — expected opencode, zai, or ollama`);
+}
 export const USE_OLLAMA = "ollama" in ARGV || CLI_PROVIDER === "ollama";
 export const API_PROVIDER = (
   ARGV.api || (CLI_PROVIDER === "opencode" || CLI_PROVIDER === "zai" ? CLI_PROVIDER : null)

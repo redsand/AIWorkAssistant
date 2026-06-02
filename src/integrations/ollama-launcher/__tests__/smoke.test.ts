@@ -791,27 +791,25 @@ describe("Regression: glm-5.1:cloud must not reach Claude CLI", () => {
 });
 
 describe("Regression: direct Claude provider routing", () => {
-  it("uses a Claude alias for OpenCode-backed models in direct mode", () => {
+  it("passes OpenCode-backed models to Claude in direct mode", () => {
     const args = buildAgentArgs("claude", undefined, "DeepSeek V4 Pro", "opencode");
 
     expect(args).toContain("--model");
-    expect(args).toContain("opus");
-    expect(args).not.toContain("DeepSeek V4 Pro");
+    expect(args).toContain("DeepSeek V4 Pro");
   });
 
-  it("does not pass the Codex default model to native Claude direct mode", () => {
+  it("passes any explicit model to native Claude direct mode", () => {
     const args = buildAgentArgs("claude", undefined, "gpt-5.5");
 
-    expect(args).not.toContain("--model");
-    expect(args).not.toContain("gpt-5.5");
+    expect(args).toContain("--model");
+    expect(args).toContain("gpt-5.5");
   });
 
-  it("uses a Claude alias for Z.ai-backed models in direct mode", () => {
+  it("passes Z.ai-backed models to Claude in direct mode", () => {
     const args = buildAgentArgs("claude", undefined, "GLM-5.1", "zai");
 
     expect(args).toContain("--model");
-    expect(args).toContain("opus");
-    expect(args).not.toContain("GLM-5.1");
+    expect(args).toContain("GLM-5.1");
   });
 });
 

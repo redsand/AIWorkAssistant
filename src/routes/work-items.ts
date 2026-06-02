@@ -69,6 +69,12 @@ const linkSchema = z.object({
   label: z.string().max(500),
 });
 
+function parseOptionalNonNegativeInt(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
 export async function workItemRoutes(fastify: FastifyInstance) {
   fastify.get("/", async (request) => {
     const query = request.query as Record<string, string>;
@@ -80,8 +86,8 @@ export async function workItemRoutes(fastify: FastifyInstance) {
       owner: query.owner,
       search: query.search,
       includeArchived: query.includeArchived === "true",
-      limit: query.limit ? parseInt(query.limit, 10) : undefined,
-      offset: query.offset ? parseInt(query.offset, 10) : undefined,
+      limit: parseOptionalNonNegativeInt(query.limit),
+      offset: parseOptionalNonNegativeInt(query.offset),
     });
   });
 

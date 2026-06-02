@@ -178,13 +178,7 @@ export function buildAgentArgs(
         "--dangerously-skip-permissions",
       ];
       if (resumeSessionId) args.push("--resume", resumeSessionId);
-      if (apiProvider && model) {
-        if (isClaudeModel(model)) {
-          args.push("--model", model);
-        } else {
-          args.push("--model", "opus");
-        }
-      } else if (model && isClaudeModel(model)) {
+      if (model) {
         args.push("--model", model);
       }
       return args;

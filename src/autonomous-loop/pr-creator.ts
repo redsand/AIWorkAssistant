@@ -172,8 +172,8 @@ export async function createPR(
 
   // Default: GitHub PR
   const ghToken = process.env.GITHUB_TOKEN;
-  const owner = item.owner || cfg.owner || "redsand";
-  const repo = item.repo || cfg.repo || "";
+  const owner = cfg.owner || item.owner || "redsand";
+  const repo = cfg.repo || item.repo || "";
 
   try {
     const resp = await axios.post<{ success: boolean; prNumber: number; url: string }>(
