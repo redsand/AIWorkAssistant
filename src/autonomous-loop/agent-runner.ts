@@ -8,6 +8,9 @@
 
 import { spawn } from "child_process";
 import type { ChildProcess } from "child_process";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import type { RunResult, PipelineLogger } from "./types";
 import type { ProviderType } from "../integrations/ollama-launcher";
 import { OllamaLauncher } from "../integrations/ollama-launcher";
@@ -84,6 +87,35 @@ function getCodexOpenCodeGoError(): string {
   return `Codex CLI cannot use OpenCode Go directly: ${base} exposes /chat/completions, while this Codex CLI provider path requires a Responses-compatible endpoint. Use --agent opencode for OpenCode Go, or set OPENCODE_CODEX_API_URL/OPENCODE_RESPONSES_API_URL to a Responses-compatible endpoint.`;
 }
 
+function codexConfigPath(): string {
+  const home = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+  return path.join(home, "config.toml");
+}
+
+export function repairDeprecatedCodexWireApi(configPath: string = codexConfigPath()): boolean {
+  if (!fs.existsSync(configPath)) return false;
+  const current = fs.readFileSync(configPath, "utf-8");
+  const repaired = current.replace(/wire_api\s*=\s*"chat"/g, 'wire_api = "responses"');
+  if (repaired === current) return false;
+  fs.writeFileSync(configPath, repaired, "utf-8");
+  return true;
+}
+
+function buildAgentEnv(cfg: AgentConfig): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  if (cfg.agent === "codex" && !cfg.apiProvider) {
+    delete env.OPENAI_BASE_URL;
+    delete env.OPENAI_API_BASE;
+    delete env.AICODER_API;
+    delete env.AI_PROVIDER;
+    delete env.AICODER_MODEL;
+    delete env.OPENAI_MODEL;
+    delete env.ZAI_MODEL;
+    delete env.OPENCODE_MODEL;
+  }
+  return env;
+}
+
 export function buildAgentArgs(
   agent: string,
   resumeSessionId?: string,
@@ -92,14 +124,14 @@ export function buildAgentArgs(
 ): string[] {
   switch (agent) {
     case "codex": {
-      const codexModel = model || process.env.CODEX_MODEL || "gpt-5.5";
       const args = [
         "exec",
-        "--model",
-        codexModel,
         "--json",
         "--dangerously-bypass-approvals-and-sandbox",
       ];
+      if (model) {
+        args.splice(1, 0, "--model", model);
+      }
       if (apiProvider === "opencode") {
         const base = getOpenCodeCodexResponsesBase();
         if (base) {
@@ -124,7 +156,7 @@ export function buildAgentArgs(
           "-c", "model_providers.z_ai.name=\"z.ai - GLM Coding Plan\"",
           "-c", `model_providers.z_ai.base_url="${base}"`,
           "-c", "model_providers.z_ai.env_key=\"ZAI_API_KEY\"",
-          "-c", "model_providers.z_ai.wire_api=\"chat\"",
+          "-c", "model_providers.z_ai.wire_api=\"responses\"",
           "-c", "model_providers.z_ai.requires_openai_auth=false",
           "-c", "forced_login_method=\"api\"",
         );
@@ -187,10 +219,20 @@ export async function runAgentDirect(
     }
 
     const agentArgs = buildAgentArgs(cfg.agent, resumeSessionId, cfg.model, cfg.apiProvider);
+    if (cfg.agent === "codex") {
+      try {
+        if (repairDeprecatedCodexWireApi()) {
+          logger.logConfig("Updated Codex config: replaced deprecated wire_api=\"chat\" with wire_api=\"responses\"");
+        }
+      } catch (error) {
+        logger.logError(`Could not repair Codex config: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     const child = spawn(cfg.agent, prepareSpawnArgs(agentArgs), {
       cwd: cfg.workspace,
       stdio: ["pipe", "pipe", "pipe"],
       shell: process.platform === "win32",
+      env: buildAgentEnv(cfg),
     });
     onChildReady?.(child);
 

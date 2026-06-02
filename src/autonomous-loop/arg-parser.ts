@@ -143,8 +143,8 @@ export const SPRINT = ARGV.sprint || process.env.AICODER_SPRINT || "";
 export const PRIORITY = (ARGV.priority || process.env.AICODER_PRIORITY || "label") as PriorityMode;
 export const SOURCE = (ARGV.source || process.env.AICODER_SOURCE || "auto") as TicketSourceType | "auto";
 export const LOOKUP = (ARGV.lookup || process.env.AICODER_LOOKUP || "memory") as LookupMode;
-export const USE_OLLAMA = "ollama" in ARGV || process.env.AICODER_OLLAMA === "true";
-export const API_PROVIDER = (ARGV.api || process.env.AICODER_API || process.env.AI_PROVIDER || null) as "opencode" | "zai" | null;
+export const USE_OLLAMA = "ollama" in ARGV;
+export const API_PROVIDER = (ARGV.api || null) as "opencode" | "zai" | null;
 export const DEBUG = "debug" in ARGV || process.env.AICODER_DEBUG === "true";
 export const SKIP_BASELINE = "skip-baseline" in ARGV || process.env.AICODER_SKIP_BASELINE === "true";
 export const SKIP_AGENT = "skip-agent" in ARGV || process.env.AICODER_SKIP_AGENT === "true";
@@ -165,7 +165,7 @@ function defaultModel(agent: ProviderType, apiProvider: "opencode" | "zai" | nul
   return process.env.CODEX_MODEL || "gpt-5.5";
 }
 
-export const MODEL = ARGV.model || process.env.AICODER_MODEL || defaultModel(AGENT, API_PROVIDER);
+export const MODEL = ARGV.model || (AGENT === "codex" && !API_PROVIDER && !USE_OLLAMA ? "" : process.env.AICODER_MODEL || defaultModel(AGENT, API_PROVIDER));
 export const OLLAMA_URL = process.env.OLLAMA_API_URL || "http://localhost:11434";
 export const TARGET_ISSUE_KEY = ARGV.issue || null;
 export const PUBLISH_BRANCH = ARGV.publish || null;

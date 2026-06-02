@@ -40,6 +40,7 @@ class AgentRunDatabase {
         session_id TEXT,
         user_id TEXT NOT NULL,
         mode TEXT NOT NULL,
+        provider TEXT,
         model TEXT,
         status TEXT NOT NULL DEFAULT 'running',
         error_message TEXT,
@@ -83,6 +84,7 @@ class AgentRunDatabase {
     this.ensureColumn("agent_runs", "worktree_path", "TEXT");
     this.ensureColumn("agent_runs", "branch", "TEXT");
     this.ensureColumn("agent_runs", "agent_type", "TEXT");
+    this.ensureColumn("agent_runs", "provider", "TEXT");
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_agent_runs_last_activity_at ON agent_runs(last_activity_at);
       CREATE INDEX IF NOT EXISTS idx_agent_runs_issue ON agent_runs(issue_platform, issue_repo, issue_id);
@@ -117,14 +119,16 @@ class AgentRunDatabase {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO agent_runs (id, session_id, user_id, mode, status, started_at, last_activity_at, issue_id, issue_platform, issue_repo, worktree_path, branch, agent_type)
-         VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO agent_runs (id, session_id, user_id, mode, provider, model, status, started_at, last_activity_at, issue_id, issue_platform, issue_repo, worktree_path, branch, agent_type)
+         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
         params.sessionId ?? null,
         params.userId,
         params.mode,
+        params.provider ?? null,
+        params.model ?? null,
         now,
         now,
         params.issueId ?? null,
@@ -140,7 +144,8 @@ class AgentRunDatabase {
       sessionId: params.sessionId ?? null,
       userId: params.userId,
       mode: params.mode,
-      model: null,
+      provider: params.provider ?? null,
+      model: params.model ?? null,
       status: "running",
       errorMessage: null,
       promptTokens: null,
@@ -389,6 +394,7 @@ class AgentRunDatabase {
       sessionId: row.session_id as string | null,
       userId: row.user_id as string,
       mode: row.mode as string,
+      provider: (row.provider as string | null) ?? null,
       model: row.model as string | null,
       status: row.status as AgentRun["status"],
       errorMessage: row.error_message as string | null,

@@ -159,6 +159,54 @@ describe("ZaiProvider chatStream", () => {
   });
 
   describe("tool calls", () => {
+    it("repairs invalid tool history before sending the request", async () => {
+      const post = makePostMock({ content: "ok" });
+      const provider = makeProvider();
+
+      await provider.chat({
+        messages: [
+          { role: "user", content: "start" },
+          { role: "tool", tool_call_id: "orphan", content: "{}" },
+          {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              {
+                id: "call_missing",
+                type: "function",
+                function: { name: "repo.search", arguments: "{\"query\":\"a\"}" },
+              },
+              {
+                id: "call_present",
+                type: "function",
+                function: { name: "repo.search", arguments: "{\"query\":\"b\"}" },
+              },
+            ],
+          },
+          { role: "tool", tool_call_id: "call_present", content: "{\"matches\":[]}" },
+          { role: "user", content: "finish" },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "repo.search",
+              description: "Search repo",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+      });
+
+      const body = post.mock.calls[0][1];
+      expect(body.tools[0].function.name).toBe("repo_search");
+      expect(body.messages.some((message: any) => message.tool_call_id === "orphan")).toBe(false);
+      const assistant = body.messages.find((message: any) => message.role === "assistant");
+      expect(assistant.tool_calls).toHaveLength(1);
+      expect(assistant.tool_calls[0].id).toBe("call_present");
+      expect(assistant.tool_calls[0].function.name).toBe("repo_search");
+    });
+
     it("yields a tool_calls StreamEvent when response has toolCalls", async () => {
       const toolCalls: ToolCall[] = [
         {

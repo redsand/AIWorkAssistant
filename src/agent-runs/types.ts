@@ -3,6 +3,7 @@ export interface AgentRun {
   sessionId: string | null;
   userId: string;
   mode: string;
+  provider: string | null;
   model: string | null;
   status: "running" | "completed" | "failed";
   errorMessage: string | null;
@@ -63,6 +64,8 @@ export interface AgentRunCreateParams {
   sessionId?: string | null;
   userId: string;
   mode: string;
+  provider?: string | null;
+  model?: string | null;
   issueId?: string | null;
   issuePlatform?: string | null;
   issueRepo?: string | null;

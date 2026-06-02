@@ -36,6 +36,21 @@ describe("AgentRunDatabase", () => {
       expect(run.sessionId).toBe("sess-1");
     });
 
+    it("should persist attempted provider and model when the run fails", () => {
+      const run = db.startRun({
+        userId: "user1",
+        mode: "chat",
+        provider: "zai",
+        model: "glm-5.1",
+      });
+      db.failRun(run.id, "provider protocol failure");
+
+      const fetched = db.getRun(run.id);
+      expect(fetched?.status).toBe("failed");
+      expect(fetched?.provider).toBe("zai");
+      expect(fetched?.model).toBe("glm-5.1");
+    });
+
     it("should complete a run", () => {
       const run = db.startRun({ userId: "user1", mode: "chat" });
       db.completeRun(run.id, {

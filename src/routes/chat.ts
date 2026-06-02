@@ -27,6 +27,7 @@ import { env } from "../config/env";
 import { agentRunDatabase } from "../agent-runs/database";
 import { sanitizeValue } from "../agent-runs/sanitizer";
 import { providerSettings } from "../agent/provider-settings";
+import { runProviderPreflight } from "../agent/provider-preflight";
 import type { AIProviderName } from "../agent/provider-settings";
 
 const MAX_SYSTEM_PROMPT_LENGTH = 4000;
@@ -62,6 +63,17 @@ const providerSelectionSchema = z.object({
 const providerModelsQuerySchema = z.object({
   refresh: z.union([z.literal("true"), z.literal("false"), z.boolean()]).optional(),
 });
+
+function getRunProviderMetadata(requestedModel?: string): {
+  provider: string;
+  model: string;
+} {
+  const current = providerSettings.getCurrent();
+  return {
+    provider: current.provider,
+    model: requestedModel ?? current.model,
+  };
+}
 
 const createSessionSchema = z.object({
   userId: z.string(),
@@ -338,7 +350,11 @@ async function runChatJob(
 
   let runId: string | null = job.runId ?? null;
   if (!runId) {
-    try { runId = agentRunDatabase.startRun({ sessionId, userId, mode }).id; job.runId = runId; } catch (e) { console.error("[AgentRuns]", e); }
+    try {
+      const runProvider = getRunProviderMetadata(model);
+      runId = agentRunDatabase.startRun({ sessionId, userId, mode, ...runProvider }).id;
+      job.runId = runId;
+    } catch (e) { console.error("[AgentRuns]", e); }
   }
 
   try {
@@ -594,8 +610,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
     try {
       const body = chatRequestSchema.parse(request.body);
 
-
-      try { runId = agentRunDatabase.startRun({ sessionId: body.sessionId ?? null, userId: body.userId, mode: body.mode }).id; } catch (e) { console.error("[AgentRuns]", e); }
+      const runProvider = getRunProviderMetadata(body.model);
+      try { runId = agentRunDatabase.startRun({ sessionId: body.sessionId ?? null, userId: body.userId, mode: body.mode, ...runProvider }).id; } catch (e) { console.error("[AgentRuns]", e); }
 
       if (!aiClient.isConfigured()) {
         try { if (runId) agentRunDatabase.failRun(runId, "AI provider not configured"); } catch (e) { console.error("[AgentRuns]", e); }
@@ -1058,7 +1074,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
       };
       job.subscribers.add(subscriber);
       let earlyRunId: string | null = null;
-      try { earlyRunId = agentRunDatabase.startRun({ sessionId, userId: body.userId, mode: body.mode }).id; job.runId = earlyRunId; } catch (e) { console.error("[AgentRuns]", e); }
+      const runProvider = getRunProviderMetadata(body.model);
+      try { earlyRunId = agentRunDatabase.startRun({ sessionId, userId: body.userId, mode: body.mode, ...runProvider }).id; job.runId = earlyRunId; } catch (e) { console.error("[AgentRuns]", e); }
 
       let tools: Tool[] | undefined = undefined;
       if (body.includeTools) {
@@ -1366,11 +1383,21 @@ export async function chatRoutes(fastify: FastifyInstance) {
     try {
       const body = providerSelectionSchema.parse(request.body);
       const result = await providerSettings.setProvider(body.provider, body.model);
+      aiClient.refresh();
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return reply.status(400).send({ error: message });
     }
+  });
+
+  fastify.post("/chat/provider/preflight", async (_request, reply) => {
+    const current = providerSettings.getCurrent();
+    const report = await runProviderPreflight(aiClient, current.provider, current.model);
+    if (!report.success) {
+      return reply.status(502).send(report);
+    }
+    return report;
   });
 
   /**

@@ -816,6 +816,16 @@ describe("Regression: direct Claude provider routing", () => {
 });
 
 describe("Regression: direct Codex provider routing", () => {
+  it("calls Codex directly without model or provider overrides by default", () => {
+    const args = buildAgentArgs("codex");
+
+    expect(args).toEqual([
+      "exec",
+      "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
+    ]);
+  });
+
   it("uses a supported Responses provider config for Z.ai", () => {
     const previousCodeUrl = process.env.ZAI_CODEX_API_URL;
     const previousResponsesUrl = process.env.ZAI_RESPONSES_API_URL;
@@ -831,7 +841,7 @@ describe("Regression: direct Codex provider routing", () => {
       expect(args).toContain("model_provider=\"z_ai\"");
       expect(args).toContain("model_providers.z_ai.base_url=\"https://zai-codex.example/v1\"");
       expect(args).toContain("model_providers.z_ai.env_key=\"ZAI_API_KEY\"");
-      expect(args).toContain("model_providers.z_ai.wire_api=\"chat\"");
+      expect(args).toContain("model_providers.z_ai.wire_api=\"responses\"");
       expect(args).toContain("model_providers.z_ai.requires_openai_auth=false");
       expect(args).toContain("forced_login_method=\"api\"");
       expect(args).toContain("GLM-5.1");
@@ -866,7 +876,7 @@ describe("Regression: direct Codex provider routing", () => {
       const args = buildAgentArgs("codex", undefined, "GLM-5.1", "zai");
 
       expect(args).toContain("model_providers.z_ai.base_url=\"https://api.z.ai/api/coding/paas/v4\"");
-      expect(args).toContain("model_providers.z_ai.wire_api=\"chat\"");
+      expect(args).toContain("model_providers.z_ai.wire_api=\"responses\"");
     } finally {
       if (previousCodeUrl === undefined) {
         delete process.env.ZAI_CODEX_API_URL;

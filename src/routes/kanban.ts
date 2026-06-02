@@ -940,6 +940,8 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
     const run = agentRunDatabase.startRun({
       userId: "kanban",
       mode: "interactive",
+      provider: body.apiProvider ?? null,
+      model: body.model ?? null,
       issueId: id,
       issuePlatform: platform,
       issueRepo: repo,

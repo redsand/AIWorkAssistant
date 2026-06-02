@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   setProvider: vi.fn(),
   applyPersistedSelection: vi.fn(),
   isProviderName: vi.fn(),
+  aiChat: vi.fn(),
+  aiRefresh: vi.fn(),
   aiIsConfigured: vi.fn(),
   aiValidateConfig: vi.fn(),
   githubConfigured: vi.fn(),
@@ -34,7 +36,8 @@ vi.mock("../../../src/agent", () => ({
   aiClient: {
     isConfigured: mocks.aiIsConfigured,
     validateConfig: mocks.aiValidateConfig,
-    chat: vi.fn(),
+    chat: mocks.aiChat,
+    refresh: mocks.aiRefresh,
     pruneMessages: vi.fn((messages) => messages),
     estimateTokens: vi.fn(() => 0),
     getMaxContextTokens: vi.fn(() => 64000),
@@ -174,6 +177,11 @@ describe("chat provider routes", () => {
     mocks.isProviderName.mockImplementation((value: string) =>
       ["opencode", "zai", "ollama", "openai"].includes(value),
     );
+    mocks.aiChat.mockResolvedValue({
+      content: "OK",
+      model: "gpt-current",
+      done: true,
+    });
     mocks.aiIsConfigured.mockReturnValue(true);
     mocks.aiValidateConfig.mockResolvedValue(true);
     mocks.githubConfigured.mockResolvedValue(false);
@@ -254,6 +262,7 @@ describe("chat provider routes", () => {
       model: "gpt-next",
     });
     expect(mocks.setProvider).toHaveBeenCalledWith("openai", "gpt-next");
+    expect(mocks.aiRefresh).toHaveBeenCalledTimes(1);
 
     await app.close();
   });
@@ -273,6 +282,58 @@ describe("chat provider routes", () => {
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({
       error: "Model 'gpt-missing' is not available for provider 'openai'",
+    });
+
+    await app.close();
+  });
+
+  it("runs provider preflight checks for the active provider and model", async () => {
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/chat/provider/preflight",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      provider: "openai",
+      model: "gpt-current",
+      success: true,
+    });
+    expect(response.json().results).toHaveLength(5);
+    expect(mocks.aiChat).toHaveBeenCalledTimes(5);
+    expect(mocks.aiChat).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "gpt-current" }),
+    );
+
+    await app.close();
+  });
+
+  it("returns 502 when provider preflight detects an incompatible request shape", async () => {
+    mocks.aiChat.mockResolvedValueOnce({
+      content: "OK",
+      model: "gpt-current",
+      done: true,
+    });
+    mocks.aiChat.mockRejectedValueOnce(new Error("messages parameter is illegal"));
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/chat/provider/preflight",
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toMatchObject({
+      provider: "openai",
+      model: "gpt-current",
+      success: false,
+    });
+    expect(response.json().results[1]).toMatchObject({
+      name: "json_mode",
+      success: false,
+      error: "messages parameter is illegal",
     });
 
     await app.close();

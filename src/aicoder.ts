@@ -2114,6 +2114,7 @@ async function fetchGitLabReworkPrompt(
 
 const processedIssues = new Set<string>();
 const failedAttempts = new Map<string, number>(); // Track consecutive failures per issue
+const infrastructureBlockedIssues = new Set<string>();
 const MAX_FAILED_ATTEMPTS = 3;
 // Items dep-blocked in the current poll cycle — cleared each cycle, used by focusedLoop
 // to skip past blocked items and try the next one rather than stalling the whole cycle.
@@ -2265,8 +2266,37 @@ function failRunTrack(runId: string, errorMessage: string): void {
   }
 }
 
+function isAgentInfrastructureFailure(stderr: string | undefined): boolean {
+  if (!stderr) return false;
+  return /Error loading config\.toml|wire_api\s*=\s*"chat"|Failed to start|cannot use OpenCode Go directly/i.test(stderr);
+}
+
+async function escalateAgentInfrastructureFailure(issueKey: string, stderr: string | undefined): Promise<void> {
+  const details = stderr?.slice(-2000) || "Agent failed before producing output.";
+  const body = [
+    "## Agent Infrastructure Failure",
+    "",
+    `The coding agent failed before implementation could run. Aicoder is stopping retries for ${issueKey} in this process instead of looping on the same ticket.`,
+    "",
+    "```text",
+    details,
+    "```",
+  ].join("\n");
+  infrastructureBlockedIssues.add(issueKey);
+  saveProcessedIssue(issueKey);
+  if (jiraClient.isConfigured()) {
+    try {
+      await jiraClient.addComment(issueKey, body);
+    } catch {}
+  }
+}
+
 async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prNumber: number } | null> {
   const issueKey = item.id || String(item.number);
+  if (infrastructureBlockedIssues.has(issueKey)) {
+    runLogger.logSkip(`Issue ${issueKey} has an agent infrastructure failure in this run — skipping to avoid a retry loop`);
+    return null;
+  }
   if (processedIssues.has(issueKey) && !FORCE_REPROCESS) {
     runLogger.logSkip(`Issue ${issueKey} already processed (use --force to re-process)`);
     return null;
@@ -2601,8 +2631,12 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   if (!finDetected && exitCode !== 0) {
     runLogger.log(`WARN`, `Agent exited with code ${exitCode} and no FIN signal — skipping push`);
     if (agentStderr) runLogger.logError(`Agent stderr: ${agentStderr.slice(-1000)}`);
+    if (isAgentInfrastructureFailure(agentStderr)) {
+      runLogger.logError("Agent infrastructure failure detected — escalating and suppressing retries for this process");
+      await escalateAgentInfrastructureFailure(issueKey, agentStderr);
+      lastPipelineExitCode = EXIT_REVIEW_FAILED;
+    }
     runLogger.endRun(exitCode);
-    // Don't save to processedIssues — allow retry on next aicoder cycle
     failRunTrack(run.id, `Agent exited with code ${exitCode}, no FIN signal`);
     return null;
   }
@@ -2883,6 +2917,9 @@ async function continueFromBaselineTestsPass(cfg: ServerConfig, item: WorkItem, 
       if (!freshResult.finDetected && freshResult.exitCode !== 0) {
         runLogger.logError(`Agent exited with code ${freshResult.exitCode} on retry — aborting`);
         if (freshResult.stderr) runLogger.logError(`Agent stderr: ${freshResult.stderr.slice(-1000)}`);
+        if (isAgentInfrastructureFailure(freshResult.stderr)) {
+          await escalateAgentInfrastructureFailure(state.issueKey, freshResult.stderr);
+        }
         clearRunState(state.issueKey);
         return;
       }
@@ -2890,6 +2927,9 @@ async function continueFromBaselineTestsPass(cfg: ServerConfig, item: WorkItem, 
     } else {
       runLogger.logError(`Agent exited with code ${agentResult.exitCode} — aborting`);
       if (agentResult.stderr) runLogger.logError(`Agent stderr: ${agentResult.stderr.slice(-1000)}`);
+      if (isAgentInfrastructureFailure(agentResult.stderr)) {
+        await escalateAgentInfrastructureFailure(state.issueKey, agentResult.stderr);
+      }
       clearRunState(state.issueKey);
       return;
     }
