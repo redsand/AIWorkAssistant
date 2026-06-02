@@ -52,7 +52,7 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
 
       switch (resolvedSource) {
         case "github":
-          items = await fetchGitHubWork(label, limit, query, skipPromptCheck);
+          items = await fetchGitHubWork(label, limit, query, skipPromptCheck, query.sprint);
           break;
         case "gitlab":
           items = await fetchGitLabWork(label, limit, skipPromptCheck);
@@ -266,6 +266,7 @@ async function fetchGitHubWork(
   limit: number,
   query: { owner?: string; repo?: string },
   skipPromptCheck: boolean = false,
+  sprintFocus?: string,
 ): Promise<NormalizedWorkItem[]> {
   const owner = query.owner || env.GITHUB_DEFAULT_OWNER;
   const repo = query.repo || env.GITHUB_DEFAULT_REPO;
@@ -304,7 +305,34 @@ async function fetchGitHubWork(
     }
   }
 
-  return filtered
+  const explicitSprint = normalizeSprintFocus(sprintFocus);
+  const autoSprint = explicitSprint === null ? getEarliestGitHubSprintNumber(filtered) : null;
+  if (explicitSprint) {
+    console.log(`[GitHub] Sprint focus: ${explicitSprint.label}`);
+  } else if (autoSprint !== null) {
+    console.log(`[GitHub] Auto sprint focus: sprint-${autoSprint}`);
+  }
+
+  const sprintFiltered = filtered.filter((issue) => {
+    if (explicitSprint) {
+      const issueSprint = extractGitHubSprintNumber(issue);
+      const matches = matchesGitHubSprintFocus(issue, explicitSprint);
+      if (!matches) {
+        console.log(`[GitHub] Skipping issue #${issue.number}: outside sprint focus ${explicitSprint.label}${issueSprint === null ? "" : ` (issue sprint-${issueSprint})`}`);
+      }
+      return matches;
+    }
+    if (autoSprint !== null) {
+      const issueSprint = extractGitHubSprintNumber(issue);
+      if (issueSprint !== autoSprint) {
+        console.log(`[GitHub] Skipping issue #${issue.number}: outside auto sprint focus sprint-${autoSprint}${issueSprint === null ? "" : ` (issue sprint-${issueSprint})`}`);
+        return false;
+      }
+    }
+    return true;
+  });
+
+  return sprintFiltered
     .slice(0, limit)
     .map((issue: any) => ({
       id: String(issue.number),
@@ -583,6 +611,22 @@ export function extractJiraSprintNumber(issue: any): number | null {
   return null;
 }
 
+export function extractGitHubSprintNumber(issue: any): number | null {
+  const title = String(issue.title || "");
+  const titleMatch = title.match(/\[\s*sprint[\s\-]+(\d+)\s*\]/i);
+  if (titleMatch) return parseInt(titleMatch[1], 10);
+
+  const labels: string[] = (issue.labels || []).map((label: any) =>
+    typeof label === "string" ? label : label.name,
+  );
+  for (const label of labels) {
+    const labelMatch = String(label).match(/^(?:sprint[\s\-:]*|s)(\d+)$/i);
+    if (labelMatch) return parseInt(labelMatch[1], 10);
+  }
+
+  return null;
+}
+
 export function matchesSprintFocus(issue: any, focus: { number: number | null; label: string }): boolean {
   if (focus.number !== null) {
     return extractJiraSprintNumber(issue) === focus.number;
@@ -595,9 +639,28 @@ export function matchesSprintFocus(issue: any, focus: { number: number | null; l
   return haystack.includes(focus.label);
 }
 
+export function matchesGitHubSprintFocus(issue: any, focus: { number: number | null; label: string }): boolean {
+  if (focus.number !== null) {
+    return extractGitHubSprintNumber(issue) === focus.number;
+  }
+
+  const labels = (issue.labels || []).map((label: any) =>
+    typeof label === "string" ? label : label.name,
+  );
+  const haystack = [issue.title || "", ...labels].join(" ").toLowerCase();
+  return haystack.includes(focus.label);
+}
+
 export function getEarliestSprintNumber(issues: any[]): number | null {
   const sprints = issues
     .map((issue) => extractJiraSprintNumber(issue))
+    .filter((sprint): sprint is number => sprint !== null);
+  return sprints.length === 0 ? null : Math.min(...sprints);
+}
+
+export function getEarliestGitHubSprintNumber(issues: any[]): number | null {
+  const sprints = issues
+    .map((issue) => extractGitHubSprintNumber(issue))
     .filter((sprint): sprint is number => sprint !== null);
   return sprints.length === 0 ? null : Math.min(...sprints);
 }

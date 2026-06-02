@@ -11,8 +11,11 @@ import { WorkItemDatabase } from "../../../src/work-items/database";
 import { hashUuidToNumber, parseWorkItemTagsJson } from "../../../src/autonomous-loop/work-item-utils";
 import { ticketToTaskGenerator } from "../../../src/engineering/ticket-to-task";
 import {
+  extractGitHubSprintNumber,
   extractJiraSprintNumber,
+  getEarliestGitHubSprintNumber,
   getEarliestSprintNumber,
+  matchesGitHubSprintFocus,
   matchesSprintFocus,
   normalizeSprintFocus,
 } from "../../../src/routes/autonomous-loop";
@@ -232,5 +235,36 @@ describe("Jira sprint focus helpers", () => {
     expect(focus).not.toBeNull();
     expect(matchesSprintFocus(issue("SIEM-15", "[SPRINT-1] Scaffold"), focus!)).toBe(true);
     expect(matchesSprintFocus(issue("SIEM-31", "[SPRINT-4] Cleanup"), focus!)).toBe(false);
+  });
+});
+
+describe("GitHub sprint focus helpers", () => {
+  const issue = (number: number, title: string, labels: Array<string | { name: string }> = []) => ({
+    number,
+    title,
+    labels,
+  });
+
+  it("extracts sprint numbers from GitHub issue titles and labels", () => {
+    expect(extractGitHubSprintNumber(issue(180, "[SPRINT-1] Add memory"))).toBe(1);
+    expect(extractGitHubSprintNumber(issue(184, "Add session search", ["ready-for-agent", "sprint-2"]))).toBe(2);
+    expect(extractGitHubSprintNumber(issue(186, "Add subagents", [{ name: "s3" }]))).toBe(3);
+  });
+
+  it("auto-focuses the earliest GitHub sprint present", () => {
+    const issues = [
+      issue(184, "[SPRINT-2] Session search"),
+      issue(180, "[SPRINT-1] Memory"),
+      issue(186, "[SPRINT-3] Subagents"),
+    ];
+
+    expect(getEarliestGitHubSprintNumber(issues)).toBe(1);
+  });
+
+  it("rejects later sprint GitHub issues when sprint focus is earlier", () => {
+    const focus = normalizeSprintFocus("sprint-1");
+    expect(focus).not.toBeNull();
+    expect(matchesGitHubSprintFocus(issue(180, "[SPRINT-1] Memory"), focus!)).toBe(true);
+    expect(matchesGitHubSprintFocus(issue(184, "[SPRINT-2] Session search"), focus!)).toBe(false);
   });
 });
