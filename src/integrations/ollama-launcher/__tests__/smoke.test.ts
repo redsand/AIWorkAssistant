@@ -542,13 +542,13 @@ describe("sprint-aware ordering in prioritizeItems", () => {
     expect(result.map((i) => i.number)).toEqual([2, 1]);
   });
 
-  it("unsprinted item beats sprinted item only on priority — sprint does not penalize", async () => {
+  it("sprinted item beats unsprinted item even when unsprinted has higher priority", async () => {
     const items = [
       { number: 1, title: "[SPRINT-3] Sprinted medium", url: "", labels: ["medium"] },
       { number: 2, title: "Unsprinted critical hotfix", url: "", labels: ["critical"] },
     ];
     const result = await prioritizeItems(items, "label", "http://localhost:3050", "key");
-    expect(result.map((i) => i.number)).toEqual([2, 1]);
+    expect(result.map((i) => i.number)).toEqual([1, 2]);
   });
 
   it("label-based sprint marker also works", async () => {

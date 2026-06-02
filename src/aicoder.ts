@@ -2393,7 +2393,13 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     depBody = await fetchIssueBody(ghToken, owner, repo, item.number);
   }
 
-  const allDeps = [...new Set(parseDependencies(depBody))];
+  const selfRefs = new Set([
+    item.id?.toUpperCase(),
+    issueKey.toUpperCase(),
+    String(item.number),
+  ].filter(Boolean));
+  const allDeps = [...new Set(parseDependencies(depBody))]
+    .filter((dep) => !selfRefs.has(dep.toUpperCase()));
   if (allDeps.length > 0) {
     runLogger.logGit("Found dependencies", allDeps.join(", "));
     const jiraDeps = allDeps.filter((dep) => /^[A-Z]+-\d+$/.test(dep));

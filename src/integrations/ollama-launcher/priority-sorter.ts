@@ -56,8 +56,7 @@ export function extractTrackingNumber(title: string): number {
 /**
  * Extract a sprint number from a work item.  Checks the title first (e.g.
  * `[SPRINT-2] foo`) then labels (`sprint-1`, `sprint:1`, `s1`).  Returns null
- * when no sprint marker is present — callers must not penalize unsprinted
- * items so that one-off hotfixes don't sink to the bottom of the queue.
+ * when no sprint marker is present.
  */
 export function extractSprintNumber(item: PrioritizableItem): number | null {
   const titleMatch = item.title.match(TITLE_SPRINT_RE);
@@ -107,11 +106,11 @@ export function extractPriority(item: PrioritizableItem): number {
  * Compare two items for priority ordering.
  *
  * Ordering rules (in priority order):
- * 1. Sprint ordering — when BOTH items have a sprint number, lower sprint
+ * 1. Sprint ordering — sprint-marked tickets come before unsprinted tickets.
+ *    When both items have a sprint number, lower sprint
  *    first.  Sprints are sequential goals: Sprint N typically depends on
  *    Sprint N-1, so a low-priority Sprint 1 ticket outranks a high-priority
- *    Sprint 2 ticket.  Items without a sprint number fall through to step 2
- *    so unsprinted hotfixes are not penalized.
+ *    Sprint 2 ticket.
  * 2. Explicit priority from [P0]–[P4] title prefix or label (lower = first)
  * 3. Tracking/sequence number from [ProjectName #N] title patterns (lower = first)
  * 4. Stable by original position
@@ -120,9 +119,11 @@ export function extractPriority(item: PrioritizableItem): number {
  * by enforceDependencyOrder() after the primary sort.
  */
 function comparePriority(a: PrioritizableItem, b: PrioritizableItem): number {
-  // 1. Sprint — only when both items have a sprint marker
+  // 1. Sprint — sprint-marked items beat unsprinted items
   const sprintA = extractSprintNumber(a);
   const sprintB = extractSprintNumber(b);
+  if (sprintA !== null && sprintB === null) return -1;
+  if (sprintA === null && sprintB !== null) return 1;
   if (sprintA !== null && sprintB !== null && sprintA !== sprintB) {
     return sprintA - sprintB;
   }
