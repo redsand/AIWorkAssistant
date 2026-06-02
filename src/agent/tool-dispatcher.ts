@@ -51,6 +51,7 @@ import { codebaseIndexer } from "./codebase-indexer";
 import { knowledgeGraph } from "./knowledge-graph";
 import { entityMemory } from "../memory/entity-memory";
 import { agentMemory } from "../memory/agent-memory";
+import { createMemoryManageHandler } from "./handlers/memory-manage";
 import type { EntityType, FindEntitiesQuery } from "../memory/entity-types";
 import { lspManager } from "../integrations/lsp/index.js";
 import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
@@ -2296,87 +2297,7 @@ async function handleMemoryAddEntityFact(
   }
 }
 
-async function handleMemoryManage(
-  params: Record<string, unknown>,
-): Promise<ToolCallResult> {
-  try {
-    const action = params.action as string;
-    const target = (params.target as "memory" | "user") || "memory";
-
-    if (!action) {
-      return { success: false, error: "action is required (add, replace, remove, consolidate, status)" };
-    }
-
-    switch (action) {
-      case "add": {
-        const key = params.key as string;
-        const value = params.value as string;
-        if (!key || !value) {
-          return { success: false, error: "key and value are required for add" };
-        }
-        const result = agentMemory.add(target, key, value);
-        if (!result.success) {
-          return { success: false, error: result.error, data: { entries: result.entries } };
-        }
-        return { success: true, data: { message: `Added '${key}' to ${target}` } };
-      }
-      case "replace": {
-        const key = params.key as string;
-        const value = params.value as string;
-        if (!key || !value) {
-          return { success: false, error: "key and value are required for replace" };
-        }
-        const result = agentMemory.replace(target, key, value);
-        if (!result.success) {
-          return { success: false, error: result.error };
-        }
-        return { success: true, data: { message: `Replaced '${key}' in ${target}` } };
-      }
-      case "remove": {
-        const key = params.key as string;
-        if (!key) {
-          return { success: false, error: "key is required for remove" };
-        }
-        const result = agentMemory.remove(target, key);
-        if (!result.success) {
-          return { success: false, error: result.error };
-        }
-        return { success: true, data: { message: `Removed '${key}' from ${target}` } };
-      }
-      case "consolidate": {
-        const sourceKeysStr = params.source_keys as string;
-        const mergedKey = params.merged_key as string;
-        const mergedValue = params.merged_value as string;
-        if (!sourceKeysStr || !mergedKey || !mergedValue) {
-          return { success: false, error: "source_keys, merged_key, and merged_value are required for consolidate" };
-        }
-        const sourceKeys = sourceKeysStr.split(",").map((k) => k.trim());
-        const result = agentMemory.consolidate(target, sourceKeys, mergedKey, mergedValue);
-        if (!result.success) {
-          return { success: false, error: result.error };
-        }
-        return { success: true, data: { message: `Consolidated ${sourceKeys.length} entries into '${mergedKey}' in ${target}` } };
-      }
-      case "status": {
-        const usage = agentMemory.getUsage(target);
-        const entries = agentMemory.getEntries(target);
-        return {
-          success: true,
-          data: {
-            target,
-            usage,
-            entries,
-            shouldConsolidate: agentMemory.shouldConsolidate(target),
-          },
-        };
-      }
-      default:
-        return { success: false, error: `Unknown action '${action}'. Valid: add, replace, remove, consolidate, status` };
-    }
-  } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : String(error) };
-  }
-}
+const handleMemoryManage = createMemoryManageHandler(agentMemory);
 
 async function handleCtoDailyCommandCenter(
   params: Record<string, unknown>,
@@ -9217,15 +9138,22 @@ export interface DispatchContext {
   mode?: string;
 }
 
-let toolCallCounter = 0;
+const sessionToolCounters = new Map<string, number>();
 const MEMORY_NUDGE_INTERVAL = 15;
 
-export function resetToolCallCounter(): void {
-  toolCallCounter = 0;
+export function resetToolCallCounter(sessionId?: string): void {
+  if (sessionId) {
+    sessionToolCounters.delete(sessionId);
+  } else {
+    sessionToolCounters.clear();
+  }
 }
 
-export function getToolCallCounter(): number {
-  return toolCallCounter;
+export function getToolCallCounter(sessionId?: string): number {
+  if (sessionId) {
+    return sessionToolCounters.get(sessionId) ?? 0;
+  }
+  return 0;
 }
 
 export async function dispatchToolCall(
@@ -9406,9 +9334,11 @@ export async function dispatchToolCall(
   try {
     const result = await handler(params, userId);
 
-    // Self-nudge: after every 15 tool calls, remind the agent to consider memory updates
-    toolCallCounter++;
-    if (toolCallCounter > 0 && toolCallCounter % MEMORY_NUDGE_INTERVAL === 0) {
+    // Self-nudge: after every 15 tool calls per session, remind the agent to consider memory updates
+    const currentCount = sessionToolCounters.get(userId) ?? 0;
+    const newCount = currentCount + 1;
+    sessionToolCounters.set(userId, newCount);
+    if (newCount > 0 && newCount % MEMORY_NUDGE_INTERVAL === 0) {
       result.message = "Consider whether your recent work revealed anything worth remembering. Use the memory tool to add, replace, or remove entries.";
     }
 
