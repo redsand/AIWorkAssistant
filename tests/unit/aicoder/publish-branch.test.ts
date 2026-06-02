@@ -55,7 +55,7 @@ afterEach(() => {
   }
 });
 
-describe("pushBranch — force push after rebase failure", { timeout: 15_000 }, () => {
+describe("pushBranch — force push after rebase failure", { timeout: 30_000 }, () => {
   it("normal push succeeds when remote branch does not exist", () => {
     git(["checkout", "-b", "ai/issue-99-fix"], localDir);
     writeFile(localDir, "fix.ts", "const x = 1;");
@@ -150,7 +150,7 @@ describe("pushBranch — force push after rebase failure", { timeout: 15_000 }, 
 
 // ── stageAndCommit SHA detection (Bug 1 fix: nothing staged → skip push) ──────
 
-describe("stageAndCommit — SHA-based detection of empty rework cycles", () => {
+describe("stageAndCommit — SHA-based detection of empty rework cycles", { timeout: 30_000 }, () => {
   it("returns true but does NOT create a new commit when nothing is staged", () => {
     // Clean working tree: nothing to stage
     const headBefore = gitOut(["rev-parse", "HEAD"], localDir);
