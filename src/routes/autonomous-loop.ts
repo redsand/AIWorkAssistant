@@ -8,6 +8,7 @@ import { workItemDatabase } from "../work-items/database";
 import { hashUuidToNumber, parseWorkItemTagsJson } from "../autonomous-loop/work-item-utils";
 import { env } from "../config/env";
 import type { TicketSourceType } from "../integrations/source-resolver";
+import { invalidateBoardCache } from "./kanban";
 
 const AI_BRANCH_PREFIX = "ai/issue-";
 const DEFAULT_WORK_LABEL = "ready-for-agent";
@@ -117,6 +118,7 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
         repo,
       );
 
+      invalidateBoardCache();
       return { success: true, prNumber: pr.number, url: pr.html_url };
     } catch (err: any) {
       // Surface GitHub API error details for 422 and other client errors
@@ -160,6 +162,7 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
         repo,
       );
 
+      invalidateBoardCache();
       return { success: true, acknowledged: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -197,6 +200,7 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
         removeSourceBranch: body.removeSourceBranch ?? true,
       });
 
+      invalidateBoardCache();
       return {
         success: true,
         mrIid: mr.iid,
@@ -226,6 +230,7 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
 
       await jiraClient.addComment(body.issueKey, commentBody);
 
+      invalidateBoardCache();
       return { success: true, acknowledged: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -696,7 +701,7 @@ async function fetchWorkItemsWork(
 
   for (const wi of result.items) {
     // Skip done and archived items
-    if (wi.archived) continue;
+    if (wi.archived || wi.status === "done" || wi.status === "archived") continue;
 
     const tags = parseWorkItemTagsJson(wi.tagsJson);
     // Only include items with the label tag (e.g., "ready-for-agent")

@@ -1,6 +1,9 @@
 import { FastifyInstance } from "fastify";
 import { agentRunDatabase, AgentRunDatabase } from "./database";
 import type { AgentRunCreateParams, AgentRunCompleteParams, AgentRunStepCreate } from "./types";
+import { invalidateBoardCache } from "../routes/kanban";
+import { kanbanEvents } from "../kanban/events";
+import type { KanbanAgent } from "../kanban/types";
 
 function safeParseInt(value: string | undefined, min: number, max: number, fallback: number): number {
   if (value === undefined) return fallback;
@@ -162,6 +165,24 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
       return reply.code(400).send({ error: "userId and mode are required" });
     }
     const run = db.startRun(body);
+
+    const VALID_AGENT_TYPES = new Set(["claude", "codex", "opencode"]);
+    const agent: KanbanAgent = {
+      agentRunId: run.id,
+      agent: VALID_AGENT_TYPES.has(run.agentType as any) ? (run.agentType as KanbanAgent["agent"]) : "claude",
+      model: run.model,
+      status: "running",
+      cardKey: run.issueId && run.issuePlatform && run.issueRepo
+        ? `${run.issuePlatform}:${run.issueRepo}:${run.issueId}`
+        : null,
+      startedAt: run.startedAt,
+      lastActivityAt: run.lastActivityAt,
+      toolLoopCount: run.toolLoopCount,
+      lastTool: null,
+    };
+    kanbanEvents.emitEvent({ type: "agent.started", agent });
+    invalidateBoardCache();
+
     return reply.code(201).send(run);
   });
 
@@ -178,6 +199,8 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
       }
       const body = request.body as AgentRunCompleteParams;
       db.completeRun(request.params.id, body);
+      kanbanEvents.emitEvent({ type: "agent.completed", agentRunId: request.params.id, status: "completed" });
+      invalidateBoardCache();
       return { success: true };
     },
   );
@@ -198,6 +221,8 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
         return reply.code(400).send({ error: "errorMessage is required" });
       }
       db.failRun(request.params.id, body.errorMessage);
+      kanbanEvents.emitEvent({ type: "agent.completed", agentRunId: request.params.id, status: "failed", errorMessage: body.errorMessage });
+      invalidateBoardCache();
       return { success: true };
     },
   );
@@ -218,6 +243,8 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
         return reply.code(400).send({ error: "stepType and stepOrder are required" });
       }
       const step = db.addStep({ ...body, runId: request.params.id });
+      kanbanEvents.emitEvent({ type: "agent.step", agentRunId: request.params.id, toolName: body.toolName || body.stepType, stepOrder: body.stepOrder });
+      invalidateBoardCache();
       return reply.code(201).send(step);
     },
   );
@@ -234,6 +261,7 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
         return reply.code(404).send({ error: "Run not found" });
       }
       db.touchRun(request.params.id);
+      invalidateBoardCache();
       return { success: true };
     },
   );
@@ -245,6 +273,7 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
     }
     const body = request.body as { olderThanMinutes?: number };
     const count = db.markStaleRunsAsFailed(body?.olderThanMinutes);
+    invalidateBoardCache();
     return { success: true, markedFailed: count };
   });
 }

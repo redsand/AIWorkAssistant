@@ -2,6 +2,7 @@ import { FastifyInstance } from "fastify";
 import { workItemDatabase } from "../work-items/database";
 import type { WorkItemCreateParams, WorkItemUpdateParams, WorkItemListFilters } from "../work-items/types";
 import { z } from "zod";
+import { invalidateBoardCache } from "./kanban";
 
 const createSchema = z.object({
   type: z.enum([
@@ -95,6 +96,7 @@ export async function workItemRoutes(fastify: FastifyInstance) {
     const item = workItemDatabase.createWorkItem(
       parsed.data as WorkItemCreateParams,
     );
+    invalidateBoardCache();
     return reply.status(201).send(item);
   });
 
@@ -121,6 +123,7 @@ export async function workItemRoutes(fastify: FastifyInstance) {
       parsed.data as WorkItemUpdateParams,
     );
     if (!item) return reply.status(404).send({ error: "Work item not found" });
+    invalidateBoardCache();
     return item;
   });
 
@@ -141,6 +144,7 @@ export async function workItemRoutes(fastify: FastifyInstance) {
       );
       if (!item)
         return reply.status(404).send({ error: "Work item not found" });
+      invalidateBoardCache();
       return item;
     },
   );
@@ -161,6 +165,7 @@ export async function workItemRoutes(fastify: FastifyInstance) {
       );
       if (!item)
         return reply.status(404).send({ error: "Work item not found" });
+      invalidateBoardCache();
       return item;
     },
   );
@@ -171,6 +176,7 @@ export async function workItemRoutes(fastify: FastifyInstance) {
       const item = workItemDatabase.completeWorkItem(request.params.id);
       if (!item)
         return reply.status(404).send({ error: "Work item not found" });
+      invalidateBoardCache();
       return item;
     },
   );
@@ -181,6 +187,7 @@ export async function workItemRoutes(fastify: FastifyInstance) {
       const item = workItemDatabase.archiveWorkItem(request.params.id);
       if (!item)
         return reply.status(404).send({ error: "Work item not found" });
+      invalidateBoardCache();
       return item;
     },
   );

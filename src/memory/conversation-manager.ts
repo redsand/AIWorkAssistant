@@ -992,7 +992,16 @@ ${summary.keyTopics.map((topic) => `- ${topic}`).join("\n")}
       })),
     };
 
-    fs.writeFileSync(filepath, JSON.stringify(data, null, 2), "utf-8");
+    try {
+      const tmpPath = filepath + ".tmp";
+      fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf-8");
+      fs.renameSync(tmpPath, filepath);
+    } catch (err) {
+      console.error(
+        `[MemoryManager] Failed to persist session ${session.id}:`,
+        err,
+      );
+    }
   }
 
   /**

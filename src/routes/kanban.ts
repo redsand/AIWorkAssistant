@@ -132,6 +132,7 @@ const MAX_CACHE_SIZE = 50;
 
 export function invalidateBoardCache(): void {
   boardCache.clear();
+  kanbanEvents.emitEvent({ type: "board.changed" });
 }
 
 // ─── Issue fetchers (reuse repo-dashboard logic) ────────────────────────────

@@ -638,6 +638,15 @@ export async function chatRoutes(fastify: FastifyInstance) {
         ? conversationManager.getSession(sessionId)
         : null;
 
+      if (sessionId && !existingSession) {
+        console.error(`[Chat] Session ${sessionId} not found. Client sent a sessionId that does not exist in memory or on disk.`);
+        reply.code(404);
+        return {
+          error: "Session not found",
+          message: `Session ${sessionId} no longer exists. It may have expired or been cleaned up.`,
+        };
+      }
+
       const systemPrompt = (body.systemPrompt && canOverrideSystemPrompt(body.userId))
         ? body.systemPrompt
         : getSystemPrompt(body.mode, body.message);
@@ -680,15 +689,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
           messages = [
             { role: "system", content: systemPrompt },
             ...sessionMessages,
-          ];
+          ]
         }
       } else {
-        if (sessionId) {
-          console.log(
-            `[Chat] Session ${sessionId} not found, creating new session`,
-          );
-        }
-
         sessionId = conversationManager.startSession(body.userId, body.mode, {
           title: `Chat on ${new Date().toLocaleDateString()}`,
           context: body.context,
@@ -1003,6 +1006,16 @@ export async function chatRoutes(fastify: FastifyInstance) {
       const existingSession = sessionId
         ? conversationManager.getSession(sessionId)
         : null;
+
+      if (sessionId && !existingSession) {
+        console.error(`[Chat/Stream] Session ${sessionId} not found. Client sent a sessionId that does not exist in memory or on disk.`);
+        sendEvent("error", {
+          error: "Session not found",
+          message: `Session ${sessionId} no longer exists. It may have expired or been cleaned up.`,
+        });
+        cleanupConnection();
+        return;
+      }
 
       let messages: ChatMessage[];
 

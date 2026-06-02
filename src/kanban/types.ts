@@ -60,6 +60,7 @@ export interface KanbanBoardResponse {
 }
 
 export type KanbanSSEEvent =
+  | { type: "board.changed" }
   | { type: "card.updated"; card: KanbanCard }
   | { type: "agent.started"; agent: KanbanAgent }
   | { type: "agent.step"; agentRunId: string; toolName: string; stepOrder: number }

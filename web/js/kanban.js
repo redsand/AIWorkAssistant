@@ -71,6 +71,11 @@
  */
 
 /**
+ * @typedef {object} KanbanSSEEventBoardChanged
+ * @property {"board.changed"} type
+ */
+
+/**
  * @typedef {object} KanbanSSEEventCardUpdated
  * @property {"card.updated"} type
  * @property {KanbanCard} card
@@ -113,7 +118,7 @@
  */
 
 /**
- * @typedef {KanbanSSEEventCardUpdated|KanbanSSEEventAgentStarted|KanbanSSEEventAgentStep|KanbanSSEEventAgentCompleted|KanbanSSEEventDependencyUnblocked|KanbanSSEEventWorktreeChanged} KanbanSSEEvent
+ * @typedef {KanbanSSEEventBoardChanged|KanbanSSEEventCardUpdated|KanbanSSEEventAgentStarted|KanbanSSEEventAgentStep|KanbanSSEEventAgentCompleted|KanbanSSEEventDependencyUnblocked|KanbanSSEEventWorktreeChanged} KanbanSSEEvent
  */
 
 /**
@@ -1890,6 +1895,12 @@
             debounceMoveCard(card.key, card.column || "backlog");
           }
         }
+      } catch (ex) { /* ignore */ }
+    });
+
+    source.addEventListener("board.changed", function (e) {
+      try {
+        fetchBoard();
       } catch (ex) { /* ignore */ }
     });
 

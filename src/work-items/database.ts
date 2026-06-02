@@ -101,12 +101,14 @@ class WorkItemDatabase {
   createWorkItem(params: WorkItemCreateParams): WorkItem {
     const id = uuidv4();
     const now = new Date().toISOString();
+    const status = params.status ?? "proposed";
+    const isTerminal = status === "done" || status === "archived";
     const item: WorkItem = {
       id,
       type: params.type,
       title: params.title,
       description: params.description ?? "",
-      status: params.status ?? "proposed",
+      status,
       priority: params.priority ?? "medium",
       owner: params.owner ?? "",
       source: params.source ?? "manual",
@@ -115,8 +117,8 @@ class WorkItemDatabase {
       dueAt: params.dueAt ?? null,
       createdAt: now,
       updatedAt: now,
-      completedAt: null,
-      archived: false,
+      completedAt: status === "done" ? now : null,
+      archived: isTerminal,
       tagsJson: params.tags ? JSON.stringify(params.tags) : null,
       linkedResourcesJson: params.linkedResources
         ? JSON.stringify(params.linkedResources)

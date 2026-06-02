@@ -53,6 +53,16 @@ describe("WorkItemDatabase", () => {
       expect(JSON.parse(item.linkedResourcesJson!)).toHaveLength(1);
       expect(JSON.parse(item.metadataJson!)).toEqual({ jiraKey: "PROJ-123" });
     });
+
+    it("should auto-archive terminal statuses on create", () => {
+      const done = db.createWorkItem({ type: "task", title: "Done", status: "done" });
+      const archived = db.createWorkItem({ type: "task", title: "Archived", status: "archived" });
+
+      expect(done.archived).toBe(true);
+      expect(done.completedAt).toBeDefined();
+      expect(archived.archived).toBe(true);
+      expect(archived.completedAt).toBeNull();
+    });
   });
 
   describe("updateWorkItem", () => {
@@ -128,6 +138,14 @@ describe("WorkItemDatabase", () => {
       db.archiveWorkItem(toArchive.id);
       const result = db.listWorkItems({});
       expect(result.items).toHaveLength(1);
+    });
+
+    it("should exclude items created with done status by default", () => {
+      db.createWorkItem({ type: "task", title: "A" });
+      db.createWorkItem({ type: "task", title: "B", status: "done" });
+      const result = db.listWorkItems({});
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].title).toBe("A");
     });
 
     it("should include archived when flag is set", () => {
