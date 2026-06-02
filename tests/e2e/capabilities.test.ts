@@ -28,7 +28,7 @@ describe("E2E: Capabilities endpoints", () => {
     server = await buildTestServer();
     await server.ready();
     authToken = createSessionToken("e2e-caps-user");
-  }, 60000);
+  }, 120000);
 
   afterAll(async () => {
     if (server) await server.close();

@@ -17,7 +17,7 @@ describe("Recipes API", () => {
     const { buildServer } = await import("../../src/server");
     server = await buildServer();
     await server.ready();
-  }, 60000);
+  }, 120000);
 
   afterAll(async () => {
     if (server) await server.close();

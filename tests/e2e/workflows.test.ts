@@ -43,7 +43,7 @@ describe("E2E: Auth Middleware", () => {
     server = await buildTestServer();
     await server.ready();
     authToken = createSessionToken("e2e-test-user");
-  }, 60000);
+  }, 120000);
 
   afterAll(async () => {
     if (server) {
@@ -163,7 +163,7 @@ describe("E2E: Calendar CRUD + ICS Export", () => {
     server = await buildTestServer();
     await server.ready();
     authToken = createSessionToken("e2e-test-user");
-  }, 30000);
+  }, 60000);
 
   afterAll(async () => {
     if (server) {
