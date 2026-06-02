@@ -1,6 +1,54 @@
 import { describe, it, expect } from "vitest";
 import { getToolByName, getToolCategories, getToolsByCategory } from "../tool-registry";
 
+describe("tool-registry skill.manage schema", () => {
+  const mode = "productivity";
+
+  it("should find skill.manage tool by name", () => {
+    const tool = getToolByName("skill.manage", mode);
+    expect(tool).toBeDefined();
+    expect(tool!.name).toBe("skill.manage");
+  });
+
+  it("should have the correct actionType", () => {
+    const tool = getToolByName("skill.manage", mode);
+    expect(tool!.actionType).toBe("skill.manage");
+  });
+
+  it("should have low risk level", () => {
+    const tool = getToolByName("skill.manage", mode);
+    expect(tool!.riskLevel).toBe("low");
+  });
+
+  it("should mark action as required", () => {
+    const tool = getToolByName("skill.manage", mode);
+    expect(tool!.params.action.required).toBe(true);
+  });
+
+  it("should enumerate valid actions in the action description", () => {
+    const tool = getToolByName("skill.manage", mode);
+    const desc = tool!.params.action.description;
+    for (const action of ["create", "patch", "edit", "delete", "list", "search", "load"]) {
+      expect(desc).toContain(action);
+    }
+  });
+
+  it("should define skill_path as string type", () => {
+    const tool = getToolByName("skill.manage", mode);
+    expect(tool!.params.skill_path.type).toBe("string");
+  });
+
+  it("should define body as string type", () => {
+    const tool = getToolByName("skill.manage", mode);
+    expect(tool!.params.body.type).toBe("string");
+  });
+
+  it("should be available in engineering mode", () => {
+    const tool = getToolByName("skill.manage", "engineering");
+    expect(tool).toBeDefined();
+  });
+});
+
 describe("tool-registry memory.manage schema", () => {
   const mode = "productivity";
 

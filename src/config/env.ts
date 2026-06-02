@@ -110,6 +110,9 @@ const envSchema = z.object({
   // Agent Memory (MEMORY.md / USER.md)
   AGENT_MEMORY_PATH: z.string().default("data/memories"),
 
+  // Agent Skills (SKILL.md)
+  SKILLS_PATH: z.string().default(""),
+
   // Audit
   AUDIT_LOG_FILE: z.string().default("./logs/audit.log"),
   AUDIT_LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),

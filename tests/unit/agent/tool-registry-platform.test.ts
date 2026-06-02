@@ -233,7 +233,7 @@ describe("getToolsByPlatform", () => {
     expect(tools.length).toBeGreaterThan(0);
     for (const tool of tools) {
       const prefix = tool.name.split(".")[0];
-      expect(["productivity", "todo", "knowledge", "system", "agent", "workflow", "roadmap", "engineering", "codebase", "graph", "git", "discover", "work_items", "cto", "personal_os", "product", "memory", "hawk_ir", "code_review"]).toContain(prefix);
+      expect(["productivity", "todo", "knowledge", "system", "agent", "workflow", "roadmap", "engineering", "codebase", "graph", "git", "discover", "work_items", "cto", "personal_os", "product", "memory", "hawk_ir", "code_review", "skill"]).toContain(prefix);
     }
   });
 });

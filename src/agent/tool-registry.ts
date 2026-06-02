@@ -3306,6 +3306,56 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     actionType: "memory.manage",
     riskLevel: "medium",
   },
+  {
+    name: "skill.manage",
+    description:
+      "Create, patch, edit, archive, list, search, or load reusable skill procedures. Skills capture successful multi-step workflows as markdown documents with YAML frontmatter. Use 'create' to codify a workflow, 'list' to browse available skills, 'search' to find skills by name/description/tags, 'load' to read the full procedure, 'patch' to update a specific section, 'edit' to replace the entire body, or 'delete' to archive a skill.",
+    params: {
+      action: {
+        type: "string",
+        description: "Action: create, patch, edit, delete, list, search, load",
+        required: true,
+      },
+      name: {
+        type: "string",
+        description: "Skill name (for create)",
+      },
+      description: {
+        type: "string",
+        description: "One-line description, max 60 chars (for create)",
+      },
+      category: {
+        type: "string",
+        description: "Skill category, e.g. 'debugging', 'deployment' (for create, optional filter for list)",
+      },
+      tags: {
+        type: "array",
+        description: "Tags for searchability (for create)",
+      },
+      body: {
+        type: "string",
+        description: "Markdown body with sections: When to Use, Prerequisites, How to Run, Quick Reference, Procedure, Pitfalls, Verification (for create/edit)",
+      },
+      section: {
+        type: "string",
+        description: "Which section to update (for patch)",
+      },
+      new_content: {
+        type: "string",
+        description: "New content for the section (for patch)",
+      },
+      skill_path: {
+        type: "string",
+        description: "Path to the skill, e.g. 'debugging/fix-auth-flow/SKILL.md' (for patch/edit/delete/load)",
+      },
+      query: {
+        type: "string",
+        description: "Search query (for search)",
+      },
+    },
+    actionType: "skill.manage",
+    riskLevel: "low",
+  },
 
   // ── Personal OS Tools ──────────────────────────────────────────
   {
