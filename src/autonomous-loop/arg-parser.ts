@@ -34,6 +34,7 @@ Options:
   --opencode           Route through OpenCode Go API (sets OPENAI_BASE_URL to OPENCODE_API_URL)
   --zai                Route through Z.ai API (sets OPENAI_BASE_URL to ZAI_BASE_URL)
   --ollama             Route agent through Ollama launcher (sets OPENAI_BASE_URL, etc.)
+  --provider <name>    Provider alias: ollama | zai | opencode
   --model <name>       Override model for the agent (e.g. glm-5.1:cloud)
   --label <label>      Issue label to filter (default: ready-for-agent)
   --priority <mode>    Ticket priority: label | auto (default: label)
@@ -143,8 +144,11 @@ export const SPRINT = ARGV.sprint || process.env.AICODER_SPRINT || "";
 export const PRIORITY = (ARGV.priority || process.env.AICODER_PRIORITY || "label") as PriorityMode;
 export const SOURCE = (ARGV.source || process.env.AICODER_SOURCE || "auto") as TicketSourceType | "auto";
 export const LOOKUP = (ARGV.lookup || process.env.AICODER_LOOKUP || "memory") as LookupMode;
-export const USE_OLLAMA = "ollama" in ARGV;
-export const API_PROVIDER = (ARGV.api || null) as "opencode" | "zai" | null;
+const CLI_PROVIDER = (ARGV.provider || "").toLowerCase();
+export const USE_OLLAMA = "ollama" in ARGV || CLI_PROVIDER === "ollama";
+export const API_PROVIDER = (
+  ARGV.api || (CLI_PROVIDER === "opencode" || CLI_PROVIDER === "zai" ? CLI_PROVIDER : null)
+) as "opencode" | "zai" | null;
 export const DEBUG = "debug" in ARGV || process.env.AICODER_DEBUG === "true";
 export const SKIP_BASELINE = "skip-baseline" in ARGV || process.env.AICODER_SKIP_BASELINE === "true";
 export const SKIP_AGENT = "skip-agent" in ARGV || process.env.AICODER_SKIP_AGENT === "true";

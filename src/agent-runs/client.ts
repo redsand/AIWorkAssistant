@@ -9,6 +9,25 @@ import type { AgentRun, AgentRunStep, AgentRunCreateParams, AgentRunCompletePara
 
 const DEFAULT_TIMEOUT = 5000;
 
+function describeClientError(err: unknown): string {
+  if (axios.isAxiosError(err)) {
+    const status = err.response?.status;
+    const data = err.response?.data;
+    const body = data == null
+      ? ""
+      : typeof data === "string"
+        ? data
+        : JSON.stringify(data);
+    const parts = [
+      err.message || err.code || "Axios error",
+      status ? `status=${status}` : "",
+      body ? `body=${body.slice(0, 500)}` : "",
+    ].filter(Boolean);
+    return parts.join(" ");
+  }
+  return err instanceof Error ? err.message || err.name : String(err);
+}
+
 export class AgentRunsClient {
   private baseUrl: string;
   private apiKey: string;
@@ -30,7 +49,7 @@ export class AgentRunsClient {
       });
       return resp.data;
     } catch (err) {
-      console.error(`[AgentRunsClient] startRun failed: ${err instanceof Error ? err.message : err}`);
+      console.error(`[AgentRunsClient] startRun failed: ${describeClientError(err)}`);
       return null;
     }
   }
@@ -43,7 +62,7 @@ export class AgentRunsClient {
       });
       return true;
     } catch (err) {
-      console.error(`[AgentRunsClient] completeRun failed: ${err instanceof Error ? err.message : err}`);
+      console.error(`[AgentRunsClient] completeRun failed: ${describeClientError(err)}`);
       return false;
     }
   }
@@ -56,7 +75,7 @@ export class AgentRunsClient {
       });
       return true;
     } catch (err) {
-      console.error(`[AgentRunsClient] failRun failed: ${err instanceof Error ? err.message : err}`);
+      console.error(`[AgentRunsClient] failRun failed: ${describeClientError(err)}`);
       return false;
     }
   }
@@ -69,7 +88,7 @@ export class AgentRunsClient {
       });
       return resp.data;
     } catch (err) {
-      console.error(`[AgentRunsClient] addStep failed: ${err instanceof Error ? err.message : err}`);
+      console.error(`[AgentRunsClient] addStep failed: ${describeClientError(err)}`);
       return null;
     }
   }
@@ -82,7 +101,7 @@ export class AgentRunsClient {
       });
       return true;
     } catch (err) {
-      console.error(`[AgentRunsClient] touchRun failed: ${err instanceof Error ? err.message : err}`);
+      console.error(`[AgentRunsClient] touchRun failed: ${describeClientError(err)}`);
       return false;
     }
   }
@@ -95,7 +114,7 @@ export class AgentRunsClient {
       });
       return resp.data?.markedFailed ?? 0;
     } catch (err) {
-      console.error(`[AgentRunsClient] markStaleRunsAsFailed failed: ${err instanceof Error ? err.message : err}`);
+      console.error(`[AgentRunsClient] markStaleRunsAsFailed failed: ${describeClientError(err)}`);
       return 0;
     }
   }
