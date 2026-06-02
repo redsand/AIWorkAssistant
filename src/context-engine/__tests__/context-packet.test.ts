@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { determineRoutingTier } from "../context-packet";
 import { createBudget, estimateTokens, enforceBudget } from "../budget";
-import type { ContextSection, BudgetSlotDefinition, AllocatedBudget } from "../types";
+import type { ContextSection, AllocatedBudget } from "../types";
 import { DEFAULT_SLOT_DEFINITIONS, CHARS_PER_TOKEN } from "../types";
 import type { ClaimKitQueryResult } from "../adapters/claimkit-adapter";
 
@@ -352,4 +352,27 @@ describe("memory injection ordering in context packet", () => {
       remainingTokens: 0,
     };
   }
+});
+
+// ── memory sanitization ────────────────────────────────────────────────────
+
+describe("memory sanitization for prompt injection prevention", () => {
+  it("should strip control characters from memory content before injection", () => {
+    const sanitizeForPrompt = (s: string) => s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+
+    const dirty = "clean\x00text\x07here\x1F";
+    const clean = sanitizeForPrompt(dirty);
+    expect(clean).toBe("cleantexthere");
+
+    // Normal markdown should pass through unchanged
+    const normal = "§ my_key\n_added: 2026-01-01\nsome value";
+    expect(sanitizeForPrompt(normal)).toBe(normal);
+  });
+
+  it("should preserve valid markdown formatting in sanitized content", () => {
+    const sanitizeForPrompt = (s: string) => s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+
+    const markdown = "§ key1\n_added: date\n**bold** and _italic_\n- list item";
+    expect(sanitizeForPrompt(markdown)).toBe(markdown);
+  });
 });

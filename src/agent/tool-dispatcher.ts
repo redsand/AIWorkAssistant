@@ -9138,20 +9138,21 @@ export interface DispatchContext {
   mode?: string;
 }
 
-const sessionToolCounters = new Map<string, number>();
+const userToolCounters = new Map<string, number>();
 const MEMORY_NUDGE_INTERVAL = 15;
+const MAX_COUNTER_ENTRIES = 1000;
 
 export function resetToolCallCounter(userId?: string): void {
   if (userId) {
-    sessionToolCounters.delete(userId);
+    userToolCounters.delete(userId);
   } else {
-    sessionToolCounters.clear();
+    userToolCounters.clear();
   }
 }
 
 export function getToolCallCounter(userId?: string): number {
   if (userId) {
-    return sessionToolCounters.get(userId) ?? 0;
+    return userToolCounters.get(userId) ?? 0;
   }
   return 0;
 }
@@ -9334,13 +9335,20 @@ export async function dispatchToolCall(
   try {
     const result = await handler(params, userId);
 
-    // Self-nudge: after every 15 tool calls per session, remind the agent to consider memory updates
-    const currentCount = sessionToolCounters.get(userId) ?? 0;
+    // Self-nudge: after every 15 tool calls per user, remind the agent to consider memory updates
+    const currentCount = userToolCounters.get(userId) ?? 0;
     const newCount = currentCount + 1;
-    sessionToolCounters.set(userId, newCount);
-    if (result && typeof result === "object" && newCount > 0 && newCount % MEMORY_NUDGE_INTERVAL === 0) {
+    // Evict oldest entries if the map exceeds the limit
+    if (userToolCounters.size >= MAX_COUNTER_ENTRIES && !userToolCounters.has(userId)) {
+      const firstKey = userToolCounters.keys().next().value;
+      if (firstKey !== undefined) userToolCounters.delete(firstKey);
+    }
+    userToolCounters.set(userId, newCount);
+    if (result && typeof result === "object" && !Array.isArray(result) && newCount > 0 && newCount % MEMORY_NUDGE_INTERVAL === 0) {
       const nudge = "\n[Memory nudge] Consider whether your recent work revealed anything worth remembering. Use the memory tool to add, replace, or remove entries.";
-      result.message = result.message ? `${result.message}${nudge}` : nudge.trim();
+      const existingMsg = typeof result.message === "string" ? result.message : "";
+      result.message = existingMsg ? `${existingMsg}${nudge}` : nudge.trim();
+      console.log(`[AgentMemory] nudge fired for user ${userId} at call count ${newCount}`);
     }
 
     await auditLogger.log({

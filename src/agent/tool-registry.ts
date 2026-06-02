@@ -3304,7 +3304,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       },
     },
     actionType: "memory.manage",
-    riskLevel: "low",
+    riskLevel: "medium",
   },
 
   // ── Personal OS Tools ──────────────────────────────────────────
