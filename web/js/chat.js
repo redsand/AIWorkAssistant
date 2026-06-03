@@ -31,6 +31,7 @@ import {
   isAutoScrollEnabled,
   setCurrentStreamingMessageId,
   markStreamingMessageInterrupted,
+  finalizeStreamingMessage,
 } from "./messages.js";
 import { loadRoadmaps } from "./sidebar.js";
 import { loadConversations } from "./conversations.js";
@@ -77,6 +78,16 @@ async function handleStreamResponse(response, progressElRef, onError) {
             localStorage.setItem("currentSessionId", data.sessionId);
             updateSessionHash(data.sessionId);
           }
+          if (eventType === "response_start") {
+            // Server is starting a new response turn (after tool calls). Reset the
+            // streaming message ID so the next token creates a fresh message bubble.
+            if (streamingMessageId !== null) {
+              finalizeStreamingMessage(streamingMessageId);
+              setCurrentStreamingMessageId(null);
+              streamingMessageId = null;
+            }
+            accumulatedContent = "";
+          }
           if (eventType === "tool_start") {
             ensureProgressEl();
             addToolCall(data.id, data.name, data.params);
@@ -94,12 +105,26 @@ async function handleStreamResponse(response, progressElRef, onError) {
           }
           if (eventType === "processing") {
             document.getElementById("processingIndicator")?.classList.add("active");
+            const statusEl = document.getElementById("processingStatusText");
+            if (statusEl) statusEl.textContent = data.message || "Processing your request...";
             showTyping(true);
           }
           if (eventType === "thinking" && data.thinking) {
             currentThinking += data.thinking;
           }
-          if (data.content && data.content.trim()) {
+          if (eventType === "token" && data.token !== undefined) {
+            accumulatedContent += data.token;
+            if (streamingMessageId === null) {
+              streamingMessageId = addMessage(accumulatedContent, "assistant", currentThinking || undefined, { streaming: true });
+              setCurrentStreamingMessageId(streamingMessageId);
+              currentThinking = "";
+            } else {
+              addMessage(accumulatedContent, "assistant", undefined, { messageId: streamingMessageId, streaming: true });
+            }
+            contentCount++;
+          }
+          // Legacy content event (non-streaming fallback — no token events)
+          if (eventType === "content" && data.content && data.content.trim() && contentCount === 0) {
             accumulatedContent += data.content;
             if (streamingMessageId === null) {
               streamingMessageId = addMessage(accumulatedContent, "assistant", currentThinking || undefined);
@@ -110,7 +135,13 @@ async function handleStreamResponse(response, progressElRef, onError) {
             }
             contentCount++;
           }
+          if (eventType === "done") {
+            // Finalize streaming: do a full markdown render of accumulated content
+            finalizeStreamingMessage(streamingMessageId);
+            return { error: false, roadmapTouched, contentCount };
+          }
           if (eventType === "error" && data.message) {
+            finalizeStreamingMessage(streamingMessageId);
             if (progressElRef.progressEl) {
               const headerText = progressElRef.progressEl.querySelector(".tool-progress-header-left");
               if (headerText) {
@@ -418,6 +449,8 @@ export async function sendMessage() {
   progressElRef.progressEl = immediateProgress.progressEl;
   document.getElementById("chatMessages").appendChild(immediateProgress.progressEl);
   document.getElementById("processingIndicator").classList.add("active");
+  const _statusReset = document.getElementById("processingStatusText");
+  if (_statusReset) _statusReset.textContent = "Processing your request...";
   scrollChatToBottom();
   // ================================================================
 
@@ -540,6 +573,8 @@ export async function resendMessage(message) {
   progressElRef.progressEl = immediateProgress.progressEl;
   document.getElementById("chatMessages").appendChild(immediateProgress.progressEl);
   document.getElementById("processingIndicator").classList.add("active");
+  const _statusReset = document.getElementById("processingStatusText");
+  if (_statusReset) _statusReset.textContent = "Processing your request...";
   scrollChatToBottom();
   // ================================================================
 

@@ -134,7 +134,20 @@ export function showError(message) {
   chatMessages.insertBefore(errorDiv, chatMessages.firstChild);
 }
 
-export function addMessage(content, type, thinking, { scroll = true, messageId = null } = {}) {
+export function finalizeStreamingMessage(messageId) {
+  if (!messageId) return;
+  const el = document.getElementById(messageId);
+  if (!el) return;
+  const contentEl = el.querySelector(".message-content");
+  if (!contentEl) return;
+  const raw = contentEl.dataset.streamRaw;
+  if (raw !== undefined) {
+    contentEl.innerHTML = renderMarkdown(raw);
+    delete contentEl.dataset.streamRaw;
+  }
+}
+
+export function addMessage(content, type, thinking, { scroll = true, messageId = null, streaming = false } = {}) {
   const messagesDiv = document.getElementById("chatMessages");
 
   if (messageId) {
@@ -148,7 +161,14 @@ export function addMessage(content, type, thinking, { scroll = true, messageId =
           contentEl.className = "message-content";
           bubble.appendChild(contentEl);
         }
-        contentEl.innerHTML = renderMarkdown(content);
+        if (streaming) {
+          // Raw text during streaming — no markdown parse overhead
+          contentEl.textContent = content;
+          contentEl.dataset.streamRaw = content;
+        } else {
+          contentEl.innerHTML = renderMarkdown(content);
+          delete contentEl.dataset.streamRaw;
+        }
         if (scroll && autoScrollEnabled) scrollChatToBottom();
       }
       return messageId;

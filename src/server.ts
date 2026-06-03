@@ -232,7 +232,22 @@ async function start() {
       }
     });
 
-    await server.listen({ port, host });
+    // On Windows, tsx watch restarts can hit EADDRINUSE for a brief window
+    // while the OS releases the previous child's TCP socket. Retry a few
+    // times before giving up so tsx watch restarts succeed reliably.
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      try {
+        await server.listen({ port, host });
+        break;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "EADDRINUSE" && attempt < 5) {
+          console.warn(`[Server] Port ${port} busy (attempt ${attempt}/5), retrying in 2s…`);
+          await new Promise((r) => setTimeout(r, 2000));
+        } else {
+          throw err;
+        }
+      }
+    }
 
     // Mark stale agent runs as failed on startup (crashed/restarted mid-run)
     const staleCount = agentRunDatabase.markStaleRunsAsFailed();

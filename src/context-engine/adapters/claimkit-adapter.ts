@@ -46,6 +46,7 @@ export class ClaimKitAdapter {
   private redisClient: ReturnType<typeof createRedisClient> | null = null;
   private lastInitAttempt = 0;
   private static readonly INIT_RETRY_INTERVAL_MS = 60_000;
+  private initPromise: Promise<boolean> | null = null;
 
   async initialize(): Promise<boolean> {
     if (this.initialized) return true;
@@ -53,11 +54,19 @@ export class ClaimKitAdapter {
       this.initError = "ClaimKit is disabled (CLAIMKIT_ENABLED=false)";
       return false;
     }
-    // Don't retry a failed init more than once per minute — avoids hammering
-    // the embedding service on every chat request when providers are down.
+    // Don't retry a failed init more than once per minute.
     if (this.initError && Date.now() - this.lastInitAttempt < ClaimKitAdapter.INIT_RETRY_INTERVAL_MS) {
       return false;
     }
+    // If an init is already in flight (e.g. startup + first chat request
+    // racing), wait on it instead of running a second concurrent probe.
+    if (this.initPromise) return this.initPromise;
+    this.initPromise = this._doInitialize().finally(() => { this.initPromise = null; });
+    return this.initPromise;
+  }
+
+  private async _doInitialize(): Promise<boolean> {
+    if (!env.CLAIMKIT_ENABLED) return false;
     this.lastInitAttempt = Date.now();
     this.initError = null;
     try {

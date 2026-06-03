@@ -9,6 +9,7 @@ import {
   showTyping,
   scrollChatToBottom,
   ensureScrollListener,
+  finalizeStreamingMessage,
 } from "./messages.js";
 import { loadRoadmaps } from "./sidebar.js";
 import { loadConversations } from "./conversations.js";
@@ -66,12 +67,14 @@ export function subscribeLive(sessionId) {
       reconnectAttempts = 0;
       const decoder = new TextDecoder();
       let buffer = "";
-      let currentThinking = "";
       let eventType = "";
       let hasActiveJob = false;
       let progressEl = null;
       let contentCount = 0;
       let shouldReconnect = true;
+      let streamingMessageId = null;
+      let accumulatedContent = "";
+      let currentThinking = "";
 
       const cleanup = () => {
         if (activeReader === reader) activeReader = null;
@@ -136,17 +139,22 @@ export function subscribeLive(sessionId) {
                 localStorage.setItem("currentSessionId", data.sessionId);
               }
 
+              if (eventType === "response_start") {
+                // New response turn — finalize any in-progress streaming message and reset
+                if (streamingMessageId !== null) {
+                  finalizeStreamingMessage(streamingMessageId);
+                  streamingMessageId = null;
+                }
+                accumulatedContent = "";
+              }
+
               if (eventType === "tool_start") {
                 if (!hasActiveJob) {
                   hasActiveJob = true;
-                  const processingEl = document.getElementById(
-                    "processingIndicator",
-                  );
+                  const processingEl = document.getElementById("processingIndicator");
                   processingEl.classList.add("active");
                   progressEl = createToolProgress().progressEl;
-                  document
-                    .getElementById("chatMessages")
-                    .appendChild(progressEl);
+                  document.getElementById("chatMessages").appendChild(progressEl);
                 }
                 addToolCall(data.id, data.name, data.params);
               }
@@ -156,9 +164,7 @@ export function subscribeLive(sessionId) {
               }
 
               if (eventType === "todo_changed") {
-                if (
-                  document.getElementById("todoPanel").style.display !== "none"
-                ) {
+                if (document.getElementById("todoPanel").style.display !== "none") {
                   import("./sidebar.js").then(({ loadTodos }) => loadTodos());
                 }
               }
@@ -167,48 +173,62 @@ export function subscribeLive(sessionId) {
                 currentThinking += data.thinking;
               }
 
-              if (data.content && data.content.trim()) {
+              if (eventType === "token" && data.token !== undefined) {
+                accumulatedContent += data.token;
                 if (!hasActiveJob) {
                   hasActiveJob = true;
-                  const processingEl = document.getElementById(
-                    "processingIndicator",
-                  );
+                  const processingEl = document.getElementById("processingIndicator");
                   processingEl.classList.add("active");
                   progressEl = createToolProgress().progressEl;
-                  document
-                    .getElementById("chatMessages")
-                    .appendChild(progressEl);
+                  document.getElementById("chatMessages").appendChild(progressEl);
                 }
-                addMessage(
-                  data.content,
-                  "assistant",
-                  currentThinking || undefined,
-                );
+                if (streamingMessageId === null) {
+                  streamingMessageId = addMessage(accumulatedContent, "assistant", currentThinking || undefined, { streaming: true });
+                  currentThinking = "";
+                } else {
+                  addMessage(accumulatedContent, "assistant", undefined, { messageId: streamingMessageId, streaming: true });
+                }
+                contentCount++;
+              }
+
+              // Legacy content event (non-streaming providers)
+              if (eventType === "content" && data.content && data.content.trim() && contentCount === 0) {
+                if (!hasActiveJob) {
+                  hasActiveJob = true;
+                  const processingEl = document.getElementById("processingIndicator");
+                  processingEl.classList.add("active");
+                  progressEl = createToolProgress().progressEl;
+                  document.getElementById("chatMessages").appendChild(progressEl);
+                }
+                addMessage(data.content, "assistant", currentThinking || undefined);
                 currentThinking = "";
                 contentCount++;
               }
 
               if (eventType === "error" && data.message) {
+                finalizeStreamingMessage(streamingMessageId);
+                streamingMessageId = null;
                 if (progressEl) {
                   const headerText = progressEl.querySelector(".tool-progress-header-left");
                   if (headerText) {
                     headerText.innerHTML = `<span class="tool-call-status error"></span> Error occurred`;
                   }
                 }
-                addMessage(
-                  "Sorry, I encountered an error: " + data.message,
-                  "assistant",
-                );
+                addMessage("Sorry, I encountered an error: " + data.message, "assistant");
                 cleanup();
                 return { stop: true };
               }
 
               if (eventType === "done") {
+                finalizeStreamingMessage(streamingMessageId);
+                streamingMessageId = null;
                 cleanup();
                 return { stop: true };
               }
 
               if (eventType === "error") {
+                finalizeStreamingMessage(streamingMessageId);
+                streamingMessageId = null;
                 cleanup();
                 return { stop: true };
               }

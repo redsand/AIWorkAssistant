@@ -5,6 +5,7 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getSystemPrompt, aiClient } from "../agent";
+import type { ToolCall } from "../agent/providers/types";
 import { shouldUseContextEngine, assembleContext } from "../context-engine";
 import {
   getToolsForRequest,
@@ -30,6 +31,7 @@ import { providerSettings } from "../agent/provider-settings";
 import { runProviderPreflight } from "../agent/provider-preflight";
 import type { AIProviderName } from "../agent/provider-settings";
 import { errorLog } from "../observability/error-log";
+import { claimKitAdapter } from "../context-engine/adapters/claimkit-adapter";
 
 const MAX_SYSTEM_PROMPT_LENGTH = 4000;
 
@@ -381,6 +383,46 @@ function buildSessionRecovery(sessionId: string) {
   };
 }
 
+// Consume one chatStream iteration, emitting token/thinking/response_start events.
+// Returns the accumulated content, thinking, and any tool calls when the stream ends.
+async function streamChatIteration(
+  sessionId: string,
+  job: ProcessingJob,
+  messages: ChatMessage[],
+  tools: Tool[] | undefined,
+  model: string | undefined,
+): Promise<{ content: string; thinking: string; toolCalls?: ToolCall[] }> {
+  let content = "";
+  let thinking = "";
+  let toolCalls: ToolCall[] | undefined;
+
+  emitJobEvent(sessionId, "response_start", {});
+
+  const gen = aiClient.chatStream({ messages, tools, temperature: 0.7, top_p: 0.95, model });
+  for await (const event of gen) {
+    assertJobActive(job);
+    if (typeof event === "string") {
+      if (event.startsWith("<<THINKING>>")) {
+        const thinkContent = event.slice("<<THINKING>>".length).replace(/<<\/\/THINKING>>$/, "");
+        if (thinkContent) {
+          thinking += thinkContent;
+          emitJobEvent(sessionId, "thinking", { thinking: thinkContent });
+        }
+      } else if (event) {
+        content += event;
+        emitJobEvent(sessionId, "token", { token: event });
+      }
+    } else if (event.type === "thinking") {
+      thinking += event.content;
+      emitJobEvent(sessionId, "thinking", { thinking: event.content });
+    } else if (event.type === "tool_calls") {
+      toolCalls = event.toolCalls;
+    }
+  }
+
+  return { content, thinking, toolCalls };
+}
+
 async function runChatJob(
   sessionId: string,
   messages: ChatMessage[],
@@ -392,8 +434,6 @@ async function runChatJob(
   console.log("[Chat/Job] runChatJob entered for", sessionId);
   const job = getOrCreateJob(sessionId);
   if (job.cancelled) {
-    // Stale cancel flag from a previous run that wasn't cleared before this
-    // call. Emit an error so waiting subscribers don't hang indefinitely.
     emitJobEvent(sessionId, "error", {
       error: "Run could not start",
       message: "Previous run was cancelled. Please try again.",
@@ -408,7 +448,6 @@ async function runChatJob(
   job.lastActivityAt = new Date();
   job.completedAt = undefined;
 
-  // Preserve the original user query for logging (survives message pruning)
   const originalUserQuery = messages.find((m) => m.role === "user")?.content ?? "Unknown query";
 
   let runId: string | null = job.runId ?? null;
@@ -422,104 +461,68 @@ async function runChatJob(
 
   try {
     let stepOrder = 0;
-    assertJobActive(job);
-    try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
-    console.log("[Chat/Job] Calling aiClient.chat for", sessionId);
-    let response = await aiClient.chat({
-      messages: messages,
-      tools,
-      temperature: 0.7,
-      top_p: 0.95,
-      model,
-    });
-    console.log("[Chat/Job] aiClient.chat completed for", sessionId);
-    assertJobActive(job);
-    try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
-
-    let allToolResults: Record<string, unknown> = {};
+    let loopCount = 0;
     let expandedTools = [...(tools || [])];
     preExpandFromSession(sessionId, mode, expandedTools);
     expandedTools = capExpandedTools(expandedTools, tools || []);
-    let loopCount = 0;
 
-    const getLoadedToolNames = () =>
-      expandedTools.map((t: Tool) => t.function.name);
+    const getLoadedToolNames = () => expandedTools.map((t: Tool) => t.function.name);
 
-    while (response.toolCalls && response.toolCalls.length > 0) {
+    assertJobActive(job);
+    try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+
+    let { content, toolCalls } = await streamChatIteration(
+      sessionId, job, messages, expandedTools.length > 0 ? expandedTools : tools, model,
+    );
+
+    assertJobActive(job);
+    try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { responsePreview: content.slice(0, 500) }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+
+    while (toolCalls && toolCalls.length > 0) {
       assertJobActive(job);
       loopCount++;
-
       if (loopCount > MAX_TOOL_LOOPS) {
-        console.warn(
-          `[Chat/Job] Tool loop limit (${MAX_TOOL_LOOPS}) reached for ${sessionId}`,
-        );
+        console.warn(`[Chat/Job] Tool loop limit (${MAX_TOOL_LOOPS}) reached for ${sessionId}`);
         throw new ToolLoopLimitError(MAX_TOOL_LOOPS);
       }
 
-      if (response.thinking) {
-        emitJobEvent(sessionId, "thinking", { thinking: response.thinking });
-        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "thinking", content: { thinking: response.thinking }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
-      }
-      if (response.content && response.content.trim()) {
-        emitJobEvent(sessionId, "content", { content: response.content });
-        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "content", content: { content: response.content }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+      if (content.trim()) {
+        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "content", content: { content }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
       }
 
       conversationManager.addMessage(sessionId, {
         role: "assistant",
-        content: response.content,
-        toolCalls: response.toolCalls.map((tc) => {
+        content,
+        toolCalls: toolCalls.map((tc) => {
           let parsedArgs: any = {};
-          try {
-            parsedArgs = JSON.parse(tc.function.arguments);
-          } catch {
-            parsedArgs = { raw: tc.function.arguments };
-          }
-          return {
-            id: tc.id,
-            name: tc.function.name,
-            params: parsedArgs,
-          };
+          try { parsedArgs = JSON.parse(tc.function.arguments); } catch { parsedArgs = { raw: tc.function.arguments }; }
+          return { id: tc.id, name: tc.function.name, params: parsedArgs };
         }),
       });
 
-      const toolCalls = response.toolCalls.map((tc) => {
+      const parsedToolCalls = toolCalls.map((tc) => {
         let parsedArgs: any = {};
-        try {
-          parsedArgs = JSON.parse(tc.function.arguments);
-        } catch {
-          parsedArgs = { raw: tc.function.arguments };
-        }
+        try { parsedArgs = JSON.parse(tc.function.arguments); } catch { parsedArgs = { raw: tc.function.arguments }; }
         return { id: tc.id, name: tc.function.name, params: parsedArgs };
       });
 
-      const spawnCalls = toolCalls.filter((tc) => tc.name === "agent.spawn");
-      const regularCalls = toolCalls.filter((tc) => tc.name !== "agent.spawn");
+      const allToolResults: Record<string, unknown> = {};
+      const spawnCalls = parsedToolCalls.filter((tc) => tc.name === "agent.spawn");
+      const regularCalls = parsedToolCalls.filter((tc) => tc.name !== "agent.spawn");
 
       for (const tc of regularCalls) {
         assertJobActive(job);
-        emitJobEvent(sessionId, "tool_start", {
-          id: tc.id,
-          name: tc.name,
-          params: tc.params,
-        });
-
+        emitJobEvent(sessionId, "tool_start", { id: tc.id, name: tc.name, params: tc.params });
         try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_call", toolName: tc.name, sanitizedParams: sanitizeValue(tc.params), stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
         const toolStart = Date.now();
         const dispatchParams = { ...tc.params, _mode: mode, _loadedTools: getLoadedToolNames() };
         const result = await dispatchToolCall(tc.name, dispatchParams, userId, false, { messages, mode });
         assertJobActive(job);
         const toolDuration = Date.now() - toolStart;
-        const contextResult = compactToolResultForContext(result);
-        allToolResults[tc.id] = contextResult;
-
+        allToolResults[tc.id] = compactToolResultForContext(result);
         try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: tc.name, success: result.success !== false, errorMessage: result.error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
-
         emitJobEvent(sessionId, "tool_result", { id: tc.id, result });
-
-        if (tc.name.startsWith("todo.")) {
-          emitJobEvent(sessionId, "todo_changed", { action: tc.name });
-        }
+        if (tc.name.startsWith("todo.")) emitJobEvent(sessionId, "todo_changed", { action: tc.name });
 
         if (tc.name === "discover_tools" && result.success) {
           const singleCategory = tc.params.category as string | undefined;
@@ -550,106 +553,60 @@ async function runChatJob(
       }
 
       if (spawnCalls.length > 0) {
-        for (const tc of spawnCalls) {
-          emitJobEvent(sessionId, "tool_start", {
-            id: tc.id,
-            name: tc.name,
-            params: tc.params,
-          });
-        }
-
-        const spawnPromises = spawnCalls.map(async (tc) => {
+        for (const tc of spawnCalls) emitJobEvent(sessionId, "tool_start", { id: tc.id, name: tc.name, params: tc.params });
+        const spawnResults = await Promise.all(spawnCalls.map(async (tc) => {
           assertJobActive(job);
           try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_call", toolName: tc.name, sanitizedParams: sanitizeValue(tc.params), stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
           const spawnStart = Date.now();
           const dispatchParams = { ...tc.params, _mode: mode, _loadedTools: getLoadedToolNames() };
-          const result = await dispatchToolCall(
-            tc.name,
-            dispatchParams,
-            userId,
-            false,
-            { messages, mode },
-          );
+          const result = await dispatchToolCall(tc.name, dispatchParams, userId, false, { messages, mode });
           assertJobActive(job);
           const spawnDuration = Date.now() - spawnStart;
           try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: tc.name, success: result.success !== false, errorMessage: result.error, durationMs: spawnDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
           return { id: tc.id, result, name: tc.name };
-        });
-
-        const spawnResults = await Promise.all(spawnPromises);
-
+        }));
         for (const { id, result, name } of spawnResults) {
           allToolResults[id] = result;
           emitJobEvent(sessionId, "tool_result", { id, result });
-
-          conversationManager.addMessage(sessionId, {
-            role: "tool",
-            content: stringifyToolResultForContext(result),
-            name,
-            tool_call_id: id,
-          });
+          conversationManager.addMessage(sessionId, { role: "tool", content: stringifyToolResultForContext(result), name, tool_call_id: id });
         }
       }
 
       messages = [
         ...messages,
-        {
-          role: "assistant",
-          content: response.content,
-          tool_calls: response.toolCalls,
-        },
-        ...toolCalls.map((tc) => ({
+        { role: "assistant", content, tool_calls: toolCalls },
+        ...parsedToolCalls.map((tc) => ({
           role: "tool" as const,
           content: stringifyToolResultForContext(allToolResults[tc.id]),
           name: tc.name,
           tool_call_id: tc.id,
         })),
       ];
+      messages = aiClient.pruneMessages(messages, expandedTools.length > 0 ? expandedTools : tools || undefined) as ChatMessage[];
 
-      // Re-prune to stay within context limits during tool loops.
-      // The chat() call prunes via buildRequestBody, but messages accumulate
-      // across iterations and expandedTools can grow via discover_tools.
-      const currentTools =
-        expandedTools.length > 0 ? expandedTools : tools || undefined;
-      messages = aiClient.pruneMessages(messages, currentTools) as ChatMessage[];
-
-      // Use preserved original query (pruning may remove user messages)
+      assertJobActive(job);
       try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+
+      const next = await streamChatIteration(
+        sessionId, job, messages, expandedTools.length > 0 ? expandedTools : undefined, model,
+      );
+      content = next.content;
+      toolCalls = next.toolCalls;
+
       assertJobActive(job);
-      response = await aiClient.chat({
-        messages: messages,
-        tools: expandedTools.length > 0 ? expandedTools : undefined,
-        temperature: 0.7,
-        top_p: 0.95,
-        model,
-      });
-      assertJobActive(job);
-      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { responsePreview: content.slice(0, 500) }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
     }
 
     assertJobActive(job);
-    conversationManager.addMessage(sessionId, {
-      role: "assistant",
-      content: response.content,
-    });
-
-    if (response.thinking) {
-      emitJobEvent(sessionId, "thinking", { thinking: response.thinking });
-      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "thinking", content: { thinking: response.thinking }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
-    }
-    if (response.content && response.content.trim()) {
-      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "content", content: { content: response.content }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+    conversationManager.addMessage(sessionId, { role: "assistant", content });
+    if (content.trim()) {
+      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "content", content: { content }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
     }
     job.status = "completed";
     job.completedAt = new Date();
+    try { if (runId) agentRunDatabase.completeRun(runId, { toolLoopCount: loopCount }); } catch (e) { console.error("[AgentRuns]", e); }
 
-    try { if (runId) agentRunDatabase.completeRun(runId, { model: response.model, promptTokens: response.usage?.promptTokens, completionTokens: response.usage?.completionTokens, totalTokens: response.usage?.totalTokens, toolLoopCount: loopCount }); } catch (e) { console.error("[AgentRuns]", e); }
-
-    emitJobEvent(sessionId, "content", { content: response.content });
-    emitJobEvent(sessionId, "done", {
-      usage: response.usage,
-      model: response.model,
-    });
+    emitJobEvent(sessionId, "done", {});
   } catch (error) {
     console.error(`[Chat/Job] Failed for session ${sessionId}:`, error);
     const cancelled = error instanceof JobCancelledError;
@@ -1096,18 +1053,22 @@ export async function chatRoutes(fastify: FastifyInstance) {
       const activeJob = sessionId ? processingJobs.get(sessionId) : null;
 
       if (activeJob?.status === "processing") {
-        // If the job has been idle for more than 90 s it is almost certainly
-        // stuck (the AI call hung, the client disconnected mid-stream, etc.).
-        // Cancel it so this new submission starts fresh instead of attaching
-        // to a job that will never complete.
-        const idleMs = Date.now() - activeJob.lastActivityAt.getTime();
-        if (idleMs > 90_000) {
+        if (!body.resend) {
+          // A brand-new message submission while a job is running: cancel the
+          // old job and fall through to start a fresh one. Without this the
+          // new message is never persisted and disappears on page refresh.
           console.warn(
-            `[Chat/Stream] Job for ${sessionId} idle for ${Math.round(idleMs / 1000)}s — cancelling and starting fresh`,
+            `[Chat/Stream] New message submitted while job running for ${sessionId} — cancelling old job`,
           );
-          cancelProcessingJob(sessionId!, "Stale job replaced by new submission");
-          // Fall through to the normal new-job path below.
+          cancelProcessingJob(sessionId!, "Superseded by new message");
+          // Remove the old job from the map immediately so getOrCreateJob
+          // below produces a fresh object. The old runChatJob coroutine still
+          // holds a reference to the cancelled object and will terminate on
+          // its next assertJobActive call.
+          processingJobs.delete(sessionId!);
         } else {
+          // Resend / SSE reconnect: reattach to the in-flight job so the
+          // client picks up buffered events and stays in sync.
           sendEvent("session", { sessionId });
           for (const evt of activeJob.events) {
             sendEvent(evt.event, evt.data);
@@ -1161,9 +1122,29 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       let messages: ChatMessage[];
 
+      // Persist the user message immediately — before any async context
+      // assembly — so it survives hangs, timeouts, or errors downstream.
+      if (!body.resend) {
+        if (existingSession) {
+          conversationManager.addMessage(sessionId!, {
+            role: "user",
+            content: body.message,
+          });
+        }
+        // New-session case: startSession + addMessage happens in the else
+        // branch below after we know the sessionId.
+      }
+
       if (existingSession) {
         if (body.includeMemory && shouldUseContextEngine()) {
+          // If ClaimKit is still initializing (e.g. first request after restart),
+          // wait for it here and tell the user — rather than hanging silently.
+          if (env.CLAIMKIT_ENABLED && !claimKitAdapter.isAvailable()) {
+            sendEvent("processing", { message: "Knowledge engine starting up, your message is queued..." });
+            await claimKitAdapter.initialize();
+          }
           sendEvent("processing", { message: "Assembling context..." });
+          // getSessionMessages now includes the message we just persisted.
           const sessionMessages = await conversationManager.getSessionMessages(
             sessionId!,
             body.includeMemory,
@@ -1183,16 +1164,14 @@ export async function chatRoutes(fastify: FastifyInstance) {
             toolTokens: estimatedToolTokens,
             userId: body.userId,
           });
+          // Message is already the last entry in sessionMessages / packet —
+          // do not push it again.
           messages = packet.messages;
-          // On resend the user message is already the last entry in the session;
-          // only append it when this is a fresh submission.
-          if (!body.resend) {
-            messages.push({ role: "user", content: body.message });
-          }
           console.log(
             `[ContextEngine] Packet assembled: ${packet.diagnostics.finalMessageCount} messages, ${packet.totalTokens} tokens, compression=${packet.diagnostics.compressionRatio.toFixed(2)}, budget=${JSON.stringify(packet.diagnostics.budgetUtilization)}`,
           );
         } else {
+          // Message already persisted above; getSessionMessages includes it.
           const sessionMessages = await conversationManager.getSessionMessages(
             sessionId!,
             body.includeMemory,
@@ -1201,27 +1180,24 @@ export async function chatRoutes(fastify: FastifyInstance) {
             { role: "system", content: systemPrompt },
             ...sessionMessages,
           ];
-          // On resend the user message is already at the end of sessionMessages.
-          if (!body.resend) {
-            messages.push({ role: "user", content: body.message });
+          // Resend: message was persisted on the original send; it is already
+          // the last entry in sessionMessages, so don't push again.
+          if (body.resend) {
+            // nothing to append
           }
         }
       } else {
         sessionId = conversationManager.startSession(body.userId, body.mode);
+        if (!body.resend) {
+          conversationManager.addMessage(sessionId, {
+            role: "user",
+            content: body.message,
+          });
+        }
         messages = [
           { role: "system", content: systemPrompt },
           { role: "user", content: body.message },
         ];
-      }
-
-      // On resend the user message is already stored in the session from the
-      // original send. Adding it again would create a duplicate user turn that
-      // confuses the model and produces an empty or garbled response.
-      if (!body.resend) {
-        conversationManager.addMessage(sessionId!, {
-          role: "user",
-          content: body.message,
-        });
       }
 
       sendEvent("session", { sessionId });

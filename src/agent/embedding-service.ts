@@ -289,7 +289,7 @@ class EmbeddingService {
           headers: this.apiKey
             ? { Authorization: `Bearer ${this.apiKey}` }
             : {},
-          timeout: 10000,
+          timeout: 3000,
         },
       );
       return !!(response.data && response.data.embedding);
@@ -298,18 +298,15 @@ class EmbeddingService {
     }
   }
 
+  // Uses /api/embeddings (same endpoint as ollamaEmbed) so check and embed are consistent.
   private async checkOllamaEmbed(baseUrl: string, model: string): Promise<boolean> {
     try {
       const response = await axios.post(
-        `${baseUrl}/api/embed`,
-        { model, input: "test" },
-        { timeout: 10000 },
+        `${baseUrl}/api/embeddings`,
+        { model, prompt: "test" },
+        { timeout: 3000 },
       );
-      return !!(
-        response.data &&
-        response.data.embeddings &&
-        response.data.embeddings.length > 0
-      );
+      return !!(response.data && response.data.embedding);
     } catch {
       return false;
     }
@@ -329,7 +326,7 @@ class EmbeddingService {
             "Content-Type": "application/json",
             Authorization: `Bearer ${key}`,
           },
-          timeout: 10000,
+          timeout: 3000,
         },
       );
       return !!(
