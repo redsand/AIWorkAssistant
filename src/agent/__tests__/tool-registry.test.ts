@@ -43,6 +43,15 @@ describe("tool-registry skill.manage schema", () => {
     expect(tool!.params.body.type).toBe("string");
   });
 
+  it("should mark create-required params (name, description, category, body) as required", () => {
+    const tool = getToolByName("skill.manage", mode);
+    const requiredParams = Object.entries(tool!.params)
+      .filter(([, def]) => def.required)
+      .map(([name]) => name)
+      .sort();
+    expect(requiredParams).toEqual(["action", "body", "category", "description", "name"].sort());
+  });
+
   it("should be available in engineering mode", () => {
     const tool = getToolByName("skill.manage", "engineering");
     expect(tool).toBeDefined();

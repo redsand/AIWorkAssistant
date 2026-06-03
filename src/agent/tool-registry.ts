@@ -3319,15 +3319,18 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       },
       name: {
         type: "string",
-        description: "Skill name (for create)",
+        description: "Skill name — required for create",
+        required: true,
       },
       description: {
         type: "string",
-        description: "One-line description, max 60 chars (for create)",
+        description: "One-line description, max 60 chars — required for create",
+        required: true,
       },
       category: {
         type: "string",
-        description: "Skill category, e.g. 'debugging', 'deployment' (for create, optional filter for list)",
+        description: "Skill category, e.g. 'debugging', 'deployment' — required for create, optional filter for list",
+        required: true,
       },
       tags: {
         type: "array",
@@ -3335,7 +3338,8 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       },
       body: {
         type: "string",
-        description: "Markdown body with sections: When to Use, Prerequisites, How to Run, Quick Reference, Procedure, Pitfalls, Verification (for create/edit)",
+        description: "Markdown body with sections: When to Use, Prerequisites, How to Run, Quick Reference, Procedure, Pitfalls, Verification — required for create/edit",
+        required: true,
       },
       section: {
         type: "string",

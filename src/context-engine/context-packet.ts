@@ -106,7 +106,19 @@ export async function assembleContextPacket(
   const memoryTokens = (memorySection?.tokens ?? 0) + (userProfileSection?.tokens ?? 0);
 
   // Load skill summaries — after memory/user, before system prompt
-  const skillsText = skillManager.getSummariesText();
+  // Cap at ~500 tokens to prevent context bloat from large skill lists
+  const MAX_SKILL_TOKENS = 500;
+  const rawSkillsText = skillManager.getSummariesText();
+  let skillsText = rawSkillsText;
+  if (rawSkillsText) {
+    const estimatedTokens = estimateTokens(rawSkillsText);
+    if (estimatedTokens > MAX_SKILL_TOKENS) {
+      const maxChars = MAX_SKILL_TOKENS * 4; // ~4 chars/token
+      const truncated = rawSkillsText.substring(0, maxChars);
+      const lastNewline = truncated.lastIndexOf("\n");
+      skillsText = lastNewline > 0 ? truncated.substring(0, lastNewline) + "\n...(truncated)" : truncated + "\n...(truncated)";
+    }
+  }
   const skillsSection: ContextSection | null = skillsText
     ? { name: "skills", content: skillsText, tokens: estimateTokens(skillsText) }
     : null;
