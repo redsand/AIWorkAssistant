@@ -3354,7 +3354,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       },
     },
     actionType: "skill.manage",
-    riskLevel: "low",
+    riskLevel: "medium",
   },
 
   // ── Personal OS Tools ──────────────────────────────────────────

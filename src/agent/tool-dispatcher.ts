@@ -9174,7 +9174,8 @@ const userToolCounters = new Map<string, number>();
 const MEMORY_NUDGE_INTERVAL = 15;
 const MAX_COUNTER_ENTRIES = 1000;
 const SKILL_SUGGEST_THRESHOLD = 5;
-const skilledUsers = new Set<string>();
+const MAX_SKILLED_USERS = 1000;
+const skilledUsers = new Map<string, number>();
 
 export function resetToolCallCounter(userId?: string): void {
   if (userId) {
@@ -9392,7 +9393,11 @@ export async function dispatchToolCall(
       newCount >= SKILL_SUGGEST_THRESHOLD &&
       !skilledUsers.has(userId)
     ) {
-      skilledUsers.add(userId);
+      if (skilledUsers.size >= MAX_SKILLED_USERS) {
+        const oldest = skilledUsers.keys().next().value;
+        if (oldest !== undefined) skilledUsers.delete(oldest);
+      }
+      skilledUsers.set(userId, Date.now());
       const skillNudge = "\n[Skill suggestion] You just completed a multi-step task. Consider whether this workflow is worth saving as a reusable skill using the skill.manage tool.";
       result.message = result.message ? `${result.message}${skillNudge}` : skillNudge.trim();
     }

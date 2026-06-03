@@ -175,6 +175,50 @@ describe("SkillCurator", () => {
     const result = curator.curate();
     expect(result.totalEvaluated).toBe(2);
   });
+
+  // ── Date validation edge cases ──────────────────────────────────────
+
+  describe("date validation", () => {
+    it("should skip skills with missing date fields (NaN guard)", () => {
+      manager.create({
+        name: "no-date-skill",
+        description: "No date",
+        category: "test",
+        tags: [],
+        body: "## When to Use\nTest.",
+      });
+
+      // Manually write a file with empty date fields
+      const skill = manager.loadFull("test/no-date-skill/SKILL.md")!;
+      const fm = { ...skill.frontmatter };
+      fm.updated_at = "";
+      fm.last_used_at = undefined;
+      const content = serialize(fm, skill.body);
+      fs.writeFileSync(skill.filePath, content, "utf-8");
+
+      const result = curator.curate();
+      // Should not throw, should skip gracefully
+      expect(result.decisions.every((d) => d.skillPath !== "test/no-date-skill/SKILL.md")).toBe(true);
+    });
+
+    it("should handle skill with only updated_at and no last_used_at", () => {
+      const recentDate = new Date();
+      recentDate.setDate(recentDate.getDate() - 5);
+      createSkillWithDate("no-last-used", undefined);
+
+      // Manually override to set updated_at but ensure no last_used_at
+      const skill = manager.loadFull("test/no-last-used/SKILL.md")!;
+      const fm = { ...skill.frontmatter };
+      fm.last_used_at = undefined;
+      fm.updated_at = recentDate.toISOString();
+      const content = serialize(fm, skill.body);
+      fs.writeFileSync(skill.filePath, content, "utf-8");
+
+      const result = curator.curate();
+      // Should use updated_at as fallback — not stale since 5 < 30
+      expect(result.decisions.some((d) => d.action === "stale" && d.skillPath.includes("no-last-used"))).toBe(false);
+    });
+  });
 });
 
 // ── Serialization helper for tests ─────────────────────────────────

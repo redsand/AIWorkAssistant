@@ -637,4 +637,75 @@ describe("SkillManager", () => {
       expect(manager.getSummariesText()).toBe("");
     });
   });
+
+  // ── Path traversal defenses ──────────────────────────────────────────
+
+  describe("path traversal defenses", () => {
+    it("should reject create with ../ in category", () => {
+      const result = manager.create({
+        name: "evil",
+        description: "Escape attempt",
+        category: "../etc",
+        tags: [],
+        body: "body",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid category");
+    });
+
+    it("should reject create with ../ in name", () => {
+      const result = manager.create({
+        name: "../../etc/passwd",
+        description: "Escape attempt",
+        category: "test",
+        tags: [],
+        body: "body",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid name");
+    });
+
+    it("should reject create with special characters in category", () => {
+      const result = manager.create({
+        name: "test",
+        description: "test",
+        category: "cat/evil",
+        tags: [],
+        body: "body",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid category");
+    });
+
+    it("should reject loadFull with absolute path", () => {
+      const skill = manager.loadFull("/etc/passwd");
+      expect(skill).toBeNull();
+    });
+
+    it("should reject loadFull with Windows absolute path", () => {
+      const skill = manager.loadFull("C:\\Windows\\System32\\config\\SAM");
+      expect(skill).toBeNull();
+    });
+
+    it("should reject loadFull with path traversal", () => {
+      const skill = manager.loadFull("../../../etc/passwd");
+      expect(skill).toBeNull();
+    });
+
+    it("should reject list with traversal in category filter", () => {
+      const results = manager.list("../etc");
+      expect(results).toEqual([]);
+    });
+
+    it("should allow valid alphanumeric names and categories", () => {
+      const result = manager.create({
+        name: "my-skill_v2.1",
+        description: "Valid name",
+        category: "debugging-tools",
+        tags: [],
+        body: "body",
+      });
+      expect(result.success).toBe(true);
+    });
+  });
 });

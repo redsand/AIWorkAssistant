@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
+import crypto from "crypto";
 import type {
   Skill,
   SkillFrontmatter,
@@ -8,6 +9,25 @@ import type {
   SkillCreateParams,
   SkillManageResult,
 } from "./skill-types";
+
+const VALID_SEGMENT_RE = /^[a-zA-Z0-9._-]+$/;
+
+function sanitizePathSegment(segment: string, label: string): string {
+  if (!segment || !VALID_SEGMENT_RE.test(segment)) {
+    throw new Error(
+      `Invalid ${label}: must contain only alphanumeric, dash, underscore, or dot characters`,
+    );
+  }
+  return segment;
+}
+
+function resolveUnderBase(basePath: string, relativePath: string): string {
+  const resolved = path.resolve(basePath, relativePath);
+  if (!resolved.startsWith(path.resolve(basePath) + path.sep) && resolved !== path.resolve(basePath)) {
+    throw new Error("Path escapes the skills directory");
+  }
+  return resolved;
+}
 
 export class SkillManager {
   private basePath: string;
@@ -53,6 +73,13 @@ export class SkillManager {
       };
     }
 
+    try {
+      sanitizePathSegment(category, "category");
+      sanitizePathSegment(name, "name");
+    } catch (e) {
+      return { success: false, error: (e as Error).message };
+    }
+
     const now = new Date().toISOString();
     const frontmatter: SkillFrontmatter = {
       name,
@@ -80,7 +107,7 @@ export class SkillManager {
 
     fs.mkdirSync(skillDir, { recursive: true });
     const content = serializeSkill(frontmatter, body);
-    const tmpPath = filePath + ".tmp";
+    const tmpPath = `${filePath}.${crypto.randomUUID()}.tmp`;
     fs.writeFileSync(tmpPath, content, "utf-8");
     fs.renameSync(tmpPath, filePath);
 
@@ -113,7 +140,7 @@ export class SkillManager {
     skill.frontmatter.patch_count++;
 
     const content = serializeSkill(skill.frontmatter, updated);
-    const tmpPath = skill.filePath + ".tmp";
+    const tmpPath = `${skill.filePath}.${crypto.randomUUID()}.tmp`;
     fs.writeFileSync(tmpPath, content, "utf-8");
     fs.renameSync(tmpPath, skill.filePath);
 
@@ -133,7 +160,7 @@ export class SkillManager {
     skill.frontmatter.patch_count++;
 
     const content = serializeSkill(skill.frontmatter, newBody);
-    const tmpPath = skill.filePath + ".tmp";
+    const tmpPath = `${skill.filePath}.${crypto.randomUUID()}.tmp`;
     fs.writeFileSync(tmpPath, content, "utf-8");
     fs.renameSync(tmpPath, skill.filePath);
 
@@ -160,7 +187,7 @@ export class SkillManager {
     skill.frontmatter.updated_at = new Date().toISOString();
 
     const content = serializeSkill(skill.frontmatter, skill.body);
-    const tmpPath = skill.filePath + ".tmp";
+    const tmpPath = `${skill.filePath}.${crypto.randomUUID()}.tmp`;
     fs.writeFileSync(tmpPath, content, "utf-8");
     fs.renameSync(tmpPath, skill.filePath);
 
@@ -176,7 +203,7 @@ export class SkillManager {
     if (!fs.existsSync(this.basePath)) return summaries;
 
     const categories = category
-      ? [category]
+      ? (() => { try { return [sanitizePathSegment(category, "category")]; } catch { return []; } })()
       : fs.readdirSync(this.basePath, { withFileTypes: true })
           .filter((d) => d.isDirectory())
           .map((d) => d.name);
@@ -225,9 +252,15 @@ export class SkillManager {
   }
 
   loadFull(skillPath: string): Skill | null {
-    const filePath = path.isAbsolute(skillPath)
-      ? skillPath
-      : path.join(this.basePath, skillPath);
+    if (path.isAbsolute(skillPath)) {
+      return null;
+    }
+    let filePath: string;
+    try {
+      filePath = resolveUnderBase(this.basePath, skillPath);
+    } catch {
+      return null;
+    }
 
     if (!fs.existsSync(filePath)) return null;
 
@@ -254,7 +287,7 @@ export class SkillManager {
     skill.frontmatter.last_used_at = new Date().toISOString();
 
     const content = serializeSkill(skill.frontmatter, skill.body);
-    const tmpPath = skill.filePath + ".tmp";
+    const tmpPath = `${skill.filePath}.${crypto.randomUUID()}.tmp`;
     fs.writeFileSync(tmpPath, content, "utf-8");
     fs.renameSync(tmpPath, skill.filePath);
 
@@ -271,7 +304,7 @@ export class SkillManager {
     skill.frontmatter.updated_at = new Date().toISOString();
 
     const content = serializeSkill(skill.frontmatter, skill.body);
-    const tmpPath = skill.filePath + ".tmp";
+    const tmpPath = `${skill.filePath}.${crypto.randomUUID()}.tmp`;
     fs.writeFileSync(tmpPath, content, "utf-8");
     fs.renameSync(tmpPath, skill.filePath);
 
@@ -291,7 +324,7 @@ export class SkillManager {
     skill.frontmatter.updated_at = new Date().toISOString();
 
     const content = serializeSkill(skill.frontmatter, skill.body);
-    const tmpPath = skill.filePath + ".tmp";
+    const tmpPath = `${skill.filePath}.${crypto.randomUUID()}.tmp`;
     fs.writeFileSync(tmpPath, content, "utf-8");
     fs.renameSync(tmpPath, skill.filePath);
 

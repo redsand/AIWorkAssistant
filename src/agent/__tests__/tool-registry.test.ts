@@ -15,9 +15,9 @@ describe("tool-registry skill.manage schema", () => {
     expect(tool!.actionType).toBe("skill.manage");
   });
 
-  it("should have low risk level", () => {
+  it("should have medium risk level", () => {
     const tool = getToolByName("skill.manage", mode);
-    expect(tool!.riskLevel).toBe("low");
+    expect(tool!.riskLevel).toBe("medium");
   });
 
   it("should mark action as required", () => {

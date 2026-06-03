@@ -50,6 +50,7 @@ export class SkillCurator {
       const fm = skill.frontmatter;
       const lastActivity = fm.last_used_at ?? fm.updated_at;
       const lastDate = new Date(lastActivity);
+      if (isNaN(lastDate.getTime())) continue;
       const daysSinceUse = daysBetween(lastDate, now);
 
       if (fm.status === "active" && daysSinceUse > this.staleThresholdDays) {
