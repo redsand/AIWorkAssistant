@@ -41,6 +41,21 @@ vi.doMock("../../../src/config/env", () => ({
   },
 }));
 
+vi.doMock("../../../src/agent/embedding-service", () => ({
+  embeddingService: {
+    isAvailable: vi.fn().mockResolvedValue(true),
+    embed: vi.fn().mockResolvedValue({
+      embedding: new Array(1536).fill(0),
+      model: "mock-model",
+      provider: "mock-provider",
+    }),
+    getProviderInfo: vi.fn().mockReturnValue({
+      provider: "mock-provider",
+      model: "mock-model",
+    }),
+  },
+}));
+
 describe("ClaimKitAdapter", () => {
   let adapter: {
     initialize: () => Promise<boolean>;
