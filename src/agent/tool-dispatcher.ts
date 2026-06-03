@@ -54,6 +54,8 @@ import { agentMemory } from "../memory/agent-memory";
 import { createMemoryManageHandler } from "./handlers/memory-manage";
 import { skillManager } from "../skills/skill-manager";
 import { createSkillManageHandler } from "./handlers/skill-manage";
+import { soulManager } from "../memory/soul-manager";
+import { createSoulManageHandler } from "./handlers/soul-manage";
 import type { EntityType, FindEntitiesQuery } from "../memory/entity-types";
 import { lspManager } from "../integrations/lsp/index.js";
 import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
@@ -2301,6 +2303,7 @@ async function handleMemoryAddEntityFact(
 
 const handleMemoryManage = createMemoryManageHandler(agentMemory);
 const handleSkillManage = createSkillManageHandler(skillManager);
+const handleSoulManage = createSoulManageHandler(soulManager);
 
 async function handleCtoDailyCommandCenter(
   params: Record<string, unknown>,
@@ -9052,6 +9055,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "memory.add_entity_fact": handleMemoryAddEntityFact,
   "memory.manage": handleMemoryManage,
   "skill.manage": handleSkillManage,
+  "soul.manage": handleSoulManage,
 
   "workflow.create": handleWorkflowCreate,
   "workflow.advance": handleWorkflowAdvance,

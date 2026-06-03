@@ -27,6 +27,7 @@ import { rerank } from "./reranker";
 import { scoreMessages, deduplicateByJaccard, selectMessages } from "./memory-decay";
 import type { ClaimKitQueryResult } from "./adapters/claimkit-adapter";
 import { agentMemory } from "../memory/agent-memory";
+import { soulManager } from "../memory/soul-manager";
 import { skillManager } from "../skills/skill-manager";
 
 export interface RoutingDecision {
@@ -82,6 +83,12 @@ export async function assembleContextPacket(
   // Load agent memory snapshots (MEMORY.md + USER.md) — slot #1, before system prompt
   // Sanitize to reduce prompt injection risk from persisted markdown content
   const sanitizeForPrompt = (s: string) => s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+
+  // SOUL.md — absolute first section (slot #1), before everything else
+  const soulContent = sanitizeForPrompt(soulManager.load());
+  const soulSection: ContextSection = { name: "soul", content: soulContent, tokens: estimateTokens(soulContent) };
+  const soulTokens = soulSection.tokens;
+
   const memorySnapshot = sanitizeForPrompt(agentMemory.getMemorySnapshot());
   const userSnapshot = sanitizeForPrompt(agentMemory.getUserSnapshot());
   const memorySection: ContextSection | null = memorySnapshot
@@ -103,7 +110,7 @@ export async function assembleContextPacket(
 
   const baseSystemPrompt = getSystemPrompt(mode, query, "engine");
   const systemTokens = estimateTokens(baseSystemPrompt);
-  systemSlot.allocatedTokens = Math.max(systemSlot.allocatedTokens, systemTokens + memoryTokens + skillsTokens);
+  systemSlot.allocatedTokens = Math.max(systemSlot.allocatedTokens, systemTokens + memoryTokens + skillsTokens + soulTokens);
 
   const scored = scoreMessages(sessionMessages, query);
   const deduped = deduplicateByJaccard(scored);
@@ -248,6 +255,9 @@ export async function assembleContextPacket(
 
   const sections: ContextSection[] = [];
 
+  // SOUL.md — absolute first section (slot #0, before everything)
+  sections.push(soulSection);
+
   // Slot #1: Agent memory + user profile + skills (before system prompt)
   if (memorySection) {
     sections.push(memorySection);
@@ -282,6 +292,14 @@ export async function assembleContextPacket(
   const systemEnforced = enforced.find((s) => s.name === "system");
 
   const messages: ChatMessage[] = [];
+
+  const soulEnforced = enforced.find((s) => s.name === "soul");
+  if (soulEnforced?.content.trim()) {
+    const personalityTag = soulManager.getActivePersonality()
+      ? ` [personality: ${soulManager.getActivePersonality()}]`
+      : "";
+    messages.push({ role: "system", content: `=== IDENTITY${personalityTag} ===\n${soulEnforced.content}` });
+  }
 
   if (memoryEnforced?.content.trim()) {
     messages.push({ role: "system", content: `=== AGENT MEMORY ===\n${memoryEnforced.content}` });
