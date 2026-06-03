@@ -6,6 +6,7 @@ import type {
   SkillFrontmatter,
   SkillSummary,
   SkillCreateParams,
+  SkillManageResult,
 } from "./skill-types";
 
 export class SkillManager {
@@ -464,13 +465,5 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// ── Module types for handler ────────────────────────────────────
-
-interface SkillManageResult {
-  success: boolean;
-  data?: unknown;
-  error?: string;
-  message?: string;
-}
 
 export const skillManager = new SkillManager();
