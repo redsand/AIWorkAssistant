@@ -52,6 +52,8 @@ import { knowledgeGraph } from "./knowledge-graph";
 import { entityMemory } from "../memory/entity-memory";
 import { agentMemory } from "../memory/agent-memory";
 import { createMemoryManageHandler } from "./handlers/memory-manage";
+import { skillManager } from "../skills/skill-manager";
+import { createSkillManageHandler } from "./handlers/skill-manage";
 import type { EntityType, FindEntitiesQuery } from "../memory/entity-types";
 import { lspManager } from "../integrations/lsp/index.js";
 import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
@@ -2298,6 +2300,7 @@ async function handleMemoryAddEntityFact(
 }
 
 const handleMemoryManage = createMemoryManageHandler(agentMemory);
+const handleSkillManage = createSkillManageHandler(skillManager);
 
 async function handleCtoDailyCommandCenter(
   params: Record<string, unknown>,
@@ -9048,6 +9051,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "memory.get_entity_context": handleMemoryGetEntityContext,
   "memory.add_entity_fact": handleMemoryAddEntityFact,
   "memory.manage": handleMemoryManage,
+  "skill.manage": handleSkillManage,
 
   "workflow.create": handleWorkflowCreate,
   "workflow.advance": handleWorkflowAdvance,
@@ -9106,6 +9110,7 @@ const SYSTEM_TOOLS = new Set([
   "agent.get_run_stats",
   "agent.get_aicoder_status",
   "memory.manage",
+  "skill.manage",
   "engineering.workflow_brief",
   "engineering.architecture_proposal",
   "engineering.scaffolding_plan",
@@ -9168,6 +9173,9 @@ export interface DispatchContext {
 const userToolCounters = new Map<string, number>();
 const MEMORY_NUDGE_INTERVAL = 15;
 const MAX_COUNTER_ENTRIES = 1000;
+const SKILL_SUGGEST_THRESHOLD = 5;
+const MAX_SKILLED_USERS = 1000;
+const skilledUsers = new Map<string, number>();
 
 export function resetToolCallCounter(userId?: string): void {
   if (userId) {
@@ -9376,6 +9384,23 @@ export async function dispatchToolCall(
       const existingMsg = typeof result.message === "string" ? result.message : "";
       result.message = existingMsg ? `${existingMsg}${nudge}` : nudge.trim();
       console.log(`[AgentMemory] nudge fired for user ${userId} at call count ${newCount}`);
+    }
+
+    // Skill suggestion: after 5+ tool calls in a turn, suggest codifying as a skill (once per session)
+    if (
+      result &&
+      typeof result === "object" &&
+      newCount >= SKILL_SUGGEST_THRESHOLD &&
+      !skilledUsers.has(userId)
+    ) {
+      if (skilledUsers.size >= MAX_SKILLED_USERS) {
+        const oldest = skilledUsers.keys().next().value;
+        if (oldest !== undefined) skilledUsers.delete(oldest);
+      }
+      skilledUsers.set(userId, Date.now());
+      const skillNudge = "\n[Skill suggestion] You just completed a multi-step task. Consider whether this workflow is worth saving as a reusable skill using the skill.manage tool.";
+      const existing = typeof result.message === "string" ? result.message : "";
+      result.message = existing ? `${existing}${skillNudge}` : skillNudge.trim();
     }
 
     await auditLogger.log({

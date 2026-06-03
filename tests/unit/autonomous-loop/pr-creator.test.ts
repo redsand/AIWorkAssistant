@@ -15,12 +15,11 @@ import type { ServerConfig } from "../../../src/autonomous-loop/types";
 let repoDir: string;
 
 function initRepo(dir: string, remoteUrl?: string): void {
-  execSync("git init", { cwd: dir, stdio: "pipe" });
-  execSync('git config user.email "test@test.com"', { cwd: dir, stdio: "pipe" });
-  execSync('git config user.name "Test"', { cwd: dir, stdio: "pipe" });
-  if (remoteUrl) {
-    execSync(`git remote add origin ${remoteUrl}`, { cwd: dir, stdio: "pipe" });
-  }
+  const remote = remoteUrl ? ` && git remote add origin ${remoteUrl}` : "";
+  execSync(
+    `git init && git config user.email "test@test.com" && git config user.name "Test"${remote}`,
+    { cwd: dir, stdio: "pipe", timeout: 10000 },
+  );
 }
 
 beforeEach(() => {

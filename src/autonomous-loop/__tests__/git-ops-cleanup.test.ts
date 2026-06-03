@@ -1,11 +1,27 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { spawnSync } from "child_process";
+import { spawnSync, execSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { cleanupMergedBranch, cleanupAllMergedBranches, pushBranch, recoverFromRebase, isRebaseInProgress, pullAndUpdateBase } from "../git-ops";
 
-vi.setConfig({ testTimeout: 30000 });
+vi.setConfig({ testTimeout: 60000 });
+
+/**
+ * Run multiple git commands in a single process spawn using && chaining.
+ * Significantly faster on Windows where process creation is expensive.
+ */
+function gitChain(commands: string[][], cwd: string): void {
+  const cmd = commands
+    .map(args => `git ${args.map(a => /[ "]/.test(a) ? `"${a}"` : a).join(" ")}`)
+    .join(" && ");
+  try {
+    execSync(cmd, { cwd, stdio: "pipe", timeout: 60000 });
+  } catch (e: any) {
+    const stderr = e.stderr?.toString().trim() || "";
+    throw new Error(`gitChain failed: ${cmd}: ${stderr || e.message}`);
+  }
+}
 
 function git(args: string[], cwd: string): { ok: boolean; stdout: string; stderr: string } {
   const r = spawnSync("git", args, { cwd, stdio: "pipe", encoding: "utf-8" });
@@ -43,41 +59,45 @@ function makeRepoPair(): { workspace: string; remote: string } {
 
   gitMust(["init", "--bare", "--initial-branch=main"], remote);
 
-  gitMust(["init", "--initial-branch=main"], workspace);
-  gitMust(["config", "user.email", "test@example.com"], workspace);
-  gitMust(["config", "user.name", "Test"], workspace);
-  gitMust(["remote", "add", "origin", remote], workspace);
+  gitChain([
+    ["init", "--initial-branch=main"],
+    ["config", "user.email", "test@example.com"],
+    ["config", "user.name", "Test"],
+    ["remote", "add", "origin", remote],
+  ], workspace);
 
   fs.writeFileSync(path.join(workspace, "README.md"), "# test\n");
-  gitMust(["add", "README.md"], workspace);
-  gitMust(["commit", "-m", "init"], workspace);
-  gitMust(["push", "-u", "origin", "main"], workspace);
+  gitChain([
+    ["add", "README.md"],
+    ["commit", "-m", "init"],
+    ["push", "-u", "origin", "main"],
+  ], workspace);
 
   return { workspace, remote };
 }
 
 function makeAiBranchMergedIntoMain(workspace: string, branchName: string): void {
-  // Create the AI branch with a commit, then merge it into main on the remote.
   gitMust(["checkout", "-b", branchName], workspace);
   fs.writeFileSync(path.join(workspace, `${branchName.replace(/[\/]/g, "_")}.txt`), "ai\n");
-  gitMust(["add", "."], workspace);
-  gitMust(["commit", "-m", `ai work ${branchName}`], workspace);
-  gitMust(["push", "-u", "origin", branchName], workspace);
-
-  // Merge into main on the remote via a local fast-forward + push.
-  gitMust(["checkout", "main"], workspace);
-  gitMust(["merge", "--no-ff", "-m", `merge ${branchName}`, branchName], workspace);
-  gitMust(["push", "origin", "main"], workspace);
-  // Refresh remote-tracking refs so cleanup's --is-ancestor check sees the merge.
-  gitMust(["fetch", "origin"], workspace);
+  gitChain([
+    ["add", "."],
+    ["commit", "-m", `ai work ${branchName}`],
+    ["push", "-u", "origin", branchName],
+    ["checkout", "main"],
+    ["merge", "--no-ff", "-m", `merge ${branchName}`, branchName],
+    ["push", "origin", "main"],
+    ["fetch", "origin"],
+  ], workspace);
 }
 
 function makeAiBranchUnmerged(workspace: string, branchName: string): void {
   gitMust(["checkout", "-b", branchName], workspace);
   fs.writeFileSync(path.join(workspace, `${branchName.replace(/[\/]/g, "_")}.txt`), "ai\n");
-  gitMust(["add", "."], workspace);
-  gitMust(["commit", "-m", `unmerged work ${branchName}`], workspace);
-  gitMust(["checkout", "main"], workspace);
+  gitChain([
+    ["add", "."],
+    ["commit", "-m", `unmerged work ${branchName}`],
+    ["checkout", "main"],
+  ], workspace);
 }
 
 describe("cleanupMergedBranch", () => {
@@ -195,7 +215,7 @@ describe("cleanupAllMergedBranches", () => {
     } catch { /* non-fatal on Windows */ }
   });
 
-  it("deletes only merged AI branches, leaves unmerged + non-AI alone", () => {
+  it("deletes only merged AI branches, leaves unmerged + non-AI alone", { timeout: 180_000 }, () => {
     makeAiBranchMergedIntoMain(workspace, "ai/issue-merged-1");
     makeAiBranchMergedIntoMain(workspace, "ai/issue-merged-2");
     makeAiBranchUnmerged(workspace, "ai/issue-unmerged");

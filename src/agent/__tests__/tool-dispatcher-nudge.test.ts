@@ -227,6 +227,14 @@ vi.mock("../file-symbol-parser", () => ({
   readFileSection: vi.fn(),
   getFileChunks: vi.fn(),
 }));
+vi.mock("../../skills/skill-manager", () => ({
+  skillManager: { getSummariesText: vi.fn().mockReturnValue("") },
+}));
+vi.mock("../handlers/skill-manage", () => ({
+  createSkillManageHandler: vi.fn().mockReturnValue(
+    async () => ({ success: true, data: { message: "ok" } }),
+  ),
+}));
 
 // ── Import after mocks ────────────────────────────────────────────────────
 
@@ -437,6 +445,67 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
       // All counters should work independently
       for (let i = 0; i < 5; i++) {
         expect(getToolCallCounter(`evict-user-${i}`)).toBe(1);
+      }
+    });
+  });
+
+  // ── Skill suggestion nudge ──────────────────────────────────────────────
+
+  describe("skill suggestion nudge", () => {
+    it("should inject skill suggestion after 5 tool calls", async () => {
+      const user = "skill-test-" + Date.now();
+      for (let i = 1; i <= 5; i++) {
+        const result = await dispatchToolCall("discover_tools", {}, user, true);
+        if (i === 5) {
+          expect(result.message).toBeTruthy();
+          expect(result.message).toContain("Skill suggestion");
+          expect(result.message).toContain("skill.manage");
+        } else {
+          expect(result.message).toBeFalsy();
+        }
+      }
+    });
+
+    it("should only inject skill suggestion once per user", async () => {
+      const user = "skill-once-" + Date.now();
+      for (let i = 1; i <= 10; i++) {
+        const result = await dispatchToolCall("discover_tools", {}, user, true);
+        const msg = result.message ?? "";
+        if (i === 5) {
+          expect(msg).toContain("Skill suggestion");
+        } else {
+          expect(msg).not.toContain("Skill suggestion");
+        }
+      }
+    });
+
+    it("should inject skill suggestion independently per user", async () => {
+      const userA = "skill-ind-a-" + Date.now();
+      const userB = "skill-ind-b-" + Date.now();
+
+      for (let i = 1; i <= 5; i++) {
+        await dispatchToolCall("discover_tools", {}, userA, true);
+      }
+      // userA got the skill suggestion at call 5; call 6 should not re-inject
+      const lastA = await dispatchToolCall("discover_tools", {}, userA, true);
+      expect(lastA.message ?? "").not.toContain("Skill suggestion");
+
+      // userB has not gotten it yet
+      for (let i = 1; i <= 4; i++) {
+        const r = await dispatchToolCall("discover_tools", {}, userB, true);
+        expect(r.message ?? "").not.toContain("Skill suggestion");
+      }
+
+      const r5 = await dispatchToolCall("discover_tools", {}, userB, true);
+      expect(r5.message).toBeTruthy();
+      expect(r5.message).toContain("Skill suggestion");
+    });
+
+    it("should not inject skill suggestion before threshold", async () => {
+      const user = "skill-pre-" + Date.now();
+      for (let i = 1; i <= 4; i++) {
+        const result = await dispatchToolCall("discover_tools", {}, user, true);
+        expect(result.message ?? "").not.toContain("Skill suggestion");
       }
     });
   });
