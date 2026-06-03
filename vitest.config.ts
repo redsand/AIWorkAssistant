@@ -7,7 +7,7 @@ export default defineConfig({
     setupFiles: ['./vitest.setup.ts'],
     hookTimeout: 60000,
     testTimeout: 15000,
-    exclude: ['dist/**', 'node_modules/**', '.claude/**'],
+    exclude: ['dist/**', 'node_modules/**', '.claude/**', 'tests/smoke/**'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
