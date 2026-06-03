@@ -9399,7 +9399,8 @@ export async function dispatchToolCall(
       }
       skilledUsers.set(userId, Date.now());
       const skillNudge = "\n[Skill suggestion] You just completed a multi-step task. Consider whether this workflow is worth saving as a reusable skill using the skill.manage tool.";
-      result.message = result.message ? `${result.message}${skillNudge}` : skillNudge.trim();
+      const existing = typeof result.message === "string" ? result.message : "";
+      result.message = existing ? `${existing}${skillNudge}` : skillNudge.trim();
     }
 
     await auditLogger.log({

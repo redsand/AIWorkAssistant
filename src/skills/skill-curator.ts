@@ -1,5 +1,6 @@
 import type { SkillSummary } from "./skill-types";
 import { SkillManager } from "./skill-manager";
+import { errorLog } from "../observability/error-log";
 
 const STALE_THRESHOLD_DAYS = 30;
 const ARCHIVE_THRESHOLD_DAYS = 14;
@@ -123,7 +124,13 @@ export class SkillCurator {
 }
 
 function logSkillEvent(action: string, data: Record<string, unknown>): void {
-  console.log(JSON.stringify({ source: "SkillCurator", action, timestamp: new Date().toISOString(), ...data }));
+  errorLog.log({
+    source: "SkillCurator",
+    category: action,
+    message: `Curation event: ${action}`,
+    severity: "info",
+    context: data,
+  });
 }
 
 function daysBetween(a: Date, b: Date): number {

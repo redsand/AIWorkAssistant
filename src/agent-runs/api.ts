@@ -279,8 +279,8 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
 
   // GET /agent-runs/blacklist — list blacklisted issues
   fastify.get("/agent-runs/blacklist", async (request, reply) => {
-    if (!authenticateWrite(request)) {
-      return reply.code(401).send({ error: "Invalid API key" });
+    if (!request.userId) {
+      return reply.code(401).send({ error: "Authentication required" });
     }
     const query = request.query as { workspace?: string };
     const items = db.getBlacklistedIssues(query.workspace);

@@ -235,6 +235,49 @@ describe("handleSkillManage", () => {
     });
   });
 
+  // ── path traversal validation ─────────────────────────────────────────
+
+  describe("path traversal validation", () => {
+    it("should reject patch with path traversal in skill_path", async () => {
+      const result = await handleSkillManage({
+        action: "patch",
+        skill_path: "../etc/passwd",
+        section: "Procedure",
+        new_content: "evil",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("path traversal");
+    });
+
+    it("should reject edit with absolute path in skill_path", async () => {
+      const result = await handleSkillManage({
+        action: "edit",
+        skill_path: "/etc/passwd",
+        body: "evil",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("path traversal");
+    });
+
+    it("should reject delete with path traversal in skill_path", async () => {
+      const result = await handleSkillManage({
+        action: "delete",
+        skill_path: "../../secret/SKILL.md",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("path traversal");
+    });
+
+    it("should reject load with absolute Windows path in skill_path", async () => {
+      const result = await handleSkillManage({
+        action: "load",
+        skill_path: "C:\\Windows\\System32\\SKILL.md",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("path traversal");
+    });
+  });
+
   // ── error handling ─────────────────────────────────────────────────
 
   describe("error handling", () => {

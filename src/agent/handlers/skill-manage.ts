@@ -1,4 +1,15 @@
+import path from "path";
 import type { SkillManageResult, SkillFrontmatter } from "../../skills/skill-types";
+import { errorLog } from "../../observability/error-log";
+
+const TRAVERSAL_RE = /(^|[/\\])\.\.([/\\]|$)|\0/;
+
+function validateSkillPath(skillPath: string): string | null {
+  if (!skillPath || TRAVERSAL_RE.test(skillPath) || path.isAbsolute(skillPath)) {
+    return "skill_path contains invalid characters or path traversal";
+  }
+  return null;
+}
 
 const VALID_ACTIONS = [
   "create",
@@ -126,6 +137,9 @@ export function createSkillManageHandler(store: SkillStore) {
             };
           }
 
+          const pathErr = validateSkillPath(skillPath);
+          if (pathErr) return { success: false, error: pathErr };
+
           return store.patch(skillPath, section, newContent);
         }
         case "edit": {
@@ -140,6 +154,9 @@ export function createSkillManageHandler(store: SkillStore) {
             };
           }
 
+          const pathErr = validateSkillPath(skillPath);
+          if (pathErr) return { success: false, error: pathErr };
+
           return store.edit(skillPath, newBody);
         }
         case "delete": {
@@ -152,6 +169,9 @@ export function createSkillManageHandler(store: SkillStore) {
               error: "skill_path is required for delete",
             };
           }
+
+          const pathErr = validateSkillPath(skillPath);
+          if (pathErr) return { success: false, error: pathErr };
 
           return store.delete(skillPath);
         }
@@ -194,6 +214,9 @@ export function createSkillManageHandler(store: SkillStore) {
             };
           }
 
+          const pathErr = validateSkillPath(skillPath);
+          if (pathErr) return { success: false, error: pathErr };
+
           const skill = store.loadFull(skillPath);
           if (!skill) {
             return {
@@ -216,7 +239,13 @@ export function createSkillManageHandler(store: SkillStore) {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[SkillManage] handler error: ${message}`);
+      errorLog.log({
+        source: "SkillManage",
+        category: "handler_error",
+        message,
+        error,
+        severity: "error",
+      });
       return {
         success: false,
         error: message,
