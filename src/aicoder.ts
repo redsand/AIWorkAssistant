@@ -221,7 +221,13 @@ const runTestSuite = (suiteKind: TestSuiteKind = "all") => _runTestSuite(suiteKi
 const checkCoverage = () => _checkCoverage(getProjectConfig(), WORKSPACE, runLogger);
 const agentCfg: AgentConfig = { agent: AGENT, workspace: WORKSPACE, model: MODEL, apiProvider: API_PROVIDER, debug: DEBUG, ollamaUrl: OLLAMA_URL };
 let activeChild: import("child_process").ChildProcess | null = null;
-const runAgent = (prompt: string, resumeSessionId?: string) => _runAgent(prompt, agentCfg, ollamaLauncher, resumeSessionId, runLogger, (child) => { activeChild = child; });
+function runAgent(prompt: string, resumeSessionId?: string, runId?: string) {
+  const cfg: AgentConfig = {
+    ...agentCfg,
+    onHeartbeat: runId ? () => { agentRunDatabase.touchRun(runId); } : undefined,
+  };
+  return _runAgent(prompt, cfg, ollamaLauncher, resumeSessionId, runLogger, (child) => { activeChild = child; });
+}
 const createPR = (cfg: ServerConfig, item: WorkItem, branchName: string) => _createPR(cfg, item, branchName, WORKSPACE, getBaseBranch(), runLogger);
 const notifyComplete = (cfg: ServerConfig, item: WorkItem, prNumber: number, branchName: string, exitCode: number | null) => _notifyComplete(cfg, item, prNumber, branchName, exitCode, WORKSPACE, runLogger);
 
@@ -1102,6 +1108,17 @@ async function checkoutBranch(branchName: string, fromBranch?: string): Promise<
     }
   }
 
+  // Delete stale local branches that were never pushed (left over from prior runs that died early).
+  // If the branch exists locally but has no remote tracking ref, it is almost certainly stale.
+  const localRef = gitRunWithOutput(["rev-parse", "--verify", `refs/heads/${branchName}`], WORKSPACE);
+  if (localRef.ok) {
+    const remoteRef = gitRunWithOutput(["rev-parse", "--verify", `refs/remotes/origin/${branchName}`], WORKSPACE);
+    if (!remoteRef.ok) {
+      runLogger.logGit("Deleting stale local branch (no remote tracking)", branchName);
+      gitRun(["branch", "-D", branchName], WORKSPACE);
+    }
+  }
+
   // Already on the target branch — stage any pending changes, sync with remote,
   // then rebase onto base
   const current = getCurrentBranch();
@@ -1155,13 +1172,15 @@ async function checkoutBranch(branchName: string, fromBranch?: string): Promise<
     }
   } else {
     if (!pullAndUpdateBase()) {
+      runLogger.logError(`Could not pull and update base branch — aborting`);
       return false;
     }
   }
 
   runLogger.logGit("Creating branch", branchName);
-  const create = gitRun(["checkout", "-b", branchName], WORKSPACE);
-  if (!create) {
+  const createResult = gitRunWithOutput(["checkout", "-b", branchName], WORKSPACE);
+  if (!createResult.ok) {
+    runLogger.logError(`git checkout -b failed: ${createResult.stderr || "unknown error"}`);
     // Branch already exists — checkout, sync with remote, then rebase onto base
     runLogger.logGit("Switching to existing branch", branchName);
     if (!forceCheckout(branchName, WORKSPACE)) {
@@ -2113,7 +2132,6 @@ async function fetchGitLabReworkPrompt(
 
 
 const processedIssues = new Set<string>();
-const failedAttempts = new Map<string, number>(); // Track consecutive failures per issue
 const infrastructureBlockedIssues = new Set<string>();
 const MAX_FAILED_ATTEMPTS = 3;
 // Items dep-blocked in the current poll cycle — cleared each cycle, used by focusedLoop
@@ -2302,6 +2320,12 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     return null;
   }
 
+  // Blacklist pre-check: permanently skip issues that failed too many times
+  if (!FORCE_REPROCESS && agentRunDatabase.isIssueBlacklisted(issueKey, WORKSPACE)) {
+    runLogger.logSkip(`Issue ${issueKey} is blacklisted after repeated failures — skipping (use --force to override)`);
+    return null;
+  }
+
   // Convergence pre-check: if a previous run already determined this issue is stuck
   // (no progress across multiple rounds), refuse to re-run even if the reviewer
   // re-added the ready-for-agent label. Use --force to override.
@@ -2322,14 +2346,14 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   }
 
   // Track consecutive failures — after MAX_FAILED_ATTEMPTS, mark as processed to stop the loop
-  const attempts = (failedAttempts.get(issueKey) || 0) + 1;
+  const attempts = agentRunDatabase.incrementFailedAttempt(issueKey, WORKSPACE);
   if (attempts >= MAX_FAILED_ATTEMPTS) {
-    runLogger.logError(`Issue ${issueKey} failed ${attempts} times — marking as processed to stop retry loop`);
+    runLogger.logError(`Issue ${issueKey} failed ${attempts} times — blacklisting to stop retry loop`);
     saveProcessedIssue(issueKey);
-    failedAttempts.delete(issueKey);
+    agentRunDatabase.blacklistIssue(issueKey, WORKSPACE, `Failed ${attempts} consecutive times`);
+    agentRunDatabase.clearFailedAttempt(issueKey, WORKSPACE);
     return null;
   }
-  failedAttempts.set(issueKey, attempts);
   if (FORCE_REPROCESS && processedIssues.has(issueKey)) {
     runLogger.logConfig(`Force re-processing issue ${issueKey} (--force)`);
     processedIssues.delete(issueKey);
@@ -2359,16 +2383,27 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
 
   // Create agent-runs record for API visibility
   currentRunStepOrder = 0;
+  const runParams = {
+    userId: "aicoder",
+    mode: `issue:${issueKey}`,
+    model: MODEL || null,
+    provider: API_PROVIDER || AGENT,
+    issueId: issueKey,
+    issueRepo: cfg.repo || item.repo || process.env.AICODER_REPO || "",
+    worktreePath: WORKSPACE,
+    branch: item.suggestedBranch,
+    agentType: AGENT,
+  };
   let run: AgentRunRecord;
   if (agentRunsClient) {
-    const apiRun = await agentRunsClient.startRun({ userId: "aicoder", mode: `issue:${issueKey}` });
+    const apiRun = await agentRunsClient.startRun(runParams);
     if (apiRun) {
       run = apiRun;
     } else {
-      run = agentRunDatabase.startRun({ userId: "aicoder", mode: `issue:${issueKey}` });
+      run = agentRunDatabase.startRun(runParams);
     }
   } else {
-    run = agentRunDatabase.startRun({ userId: "aicoder", mode: `issue:${issueKey}` });
+    run = agentRunDatabase.startRun(runParams);
   }
   trackStep(run.id, "note", `Starting work on ${issueKey}: ${item.title}`);
 
@@ -2411,7 +2446,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
         trackStep(run.id, "note", message);
         runLogger.endRun(null);
         completeRunTrack(run.id, { model: MODEL, toolLoopCount: 0, totalTokens: 0 });
-        failedAttempts.delete(issueKey); // dep-blocked is not a failure — don't burn retry budget
+        agentRunDatabase.clearFailedAttempt(issueKey, WORKSPACE); // dep-blocked is not a failure — don't burn retry budget
         depBlockedThisCycle.add(issueKey);
         return null;
       }
@@ -2421,7 +2456,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     if (numericDeps.length > 0) {
       const resolved = await resolveDependencyBranch(ghToken || "", owner, repo, numericDeps);
       if (!resolved) {
-        failedAttempts.delete(issueKey); // dep-blocked is not a failure — don't burn retry budget
+        agentRunDatabase.clearFailedAttempt(issueKey, WORKSPACE); // dep-blocked is not a failure — don't burn retry budget
         depBlockedThisCycle.add(issueKey);
         if (WAIT_FOR_DEPS) {
           runLogger.logGit("Waiting for dependencies", "will retry later");
@@ -2452,7 +2487,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
       } else if (currentResp.data?.status === "done" || currentResp.data?.status === "archived") {
         runLogger.logSkip(`${item.id} is already Done/Archived — skipping`);
         saveProcessedIssue(item.id);
-        failedAttempts.delete(item.id);
+        agentRunDatabase.clearFailedAttempt(item.id, WORKSPACE);
         return null;
       } else {
         await axios.patch(
@@ -2475,7 +2510,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
       if (isDone) {
         runLogger.logSkip(`${item.id} is already Done/Closed at source — skipping (use --force-reopen to override)`);
         saveProcessedIssue(item.id);
-        failedAttempts.delete(item.id);
+        agentRunDatabase.clearFailedAttempt(item.id, WORKSPACE);
         return null;
       }
       if (currentStatus === "in progress") {
@@ -2507,7 +2542,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
         if (issue?.state === "closed") {
           runLogger.logSkip(`${item.id} is already Closed at source — skipping`);
           saveProcessedIssue(item.id);
-          failedAttempts.delete(item.id);
+          agentRunDatabase.clearFailedAttempt(item.id, WORKSPACE);
           return null;
         }
         const rawLabels: string | string[] = issue?.labels || [];
@@ -2536,7 +2571,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
         if (issueResp.data?.state === "closed") {
           runLogger.logSkip(`${item.id} is already Closed at source — skipping`);
           saveProcessedIssue(item.id);
-          failedAttempts.delete(item.id);
+          agentRunDatabase.clearFailedAttempt(item.id, WORKSPACE);
           return null;
         }
         const currentLabels: string[] = (issueResp.data?.labels || []).map((l: any) => typeof l === "string" ? l : l.name);
@@ -2620,7 +2655,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     agentRanTests = false;
   } else {
     trackStep(run.id, "note", `Running ${AGENT} agent...`);
-    const agentResult = await runAgent(await enrichPrompt(generated.prompt, WORKSPACE));
+    const agentResult = await runAgent(await enrichPrompt(generated.prompt, WORKSPACE), undefined, run.id);
     finDetected = agentResult.finDetected;
     exitCode = agentResult.exitCode;
     agentRanTests = agentResult.ranTests ?? false;
@@ -2795,14 +2830,14 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   }
 
   const totalDuration = Date.now() - startTime;
-  completeRunTrack(run.id, { model: AGENT, toolLoopCount: currentRunStepOrder, totalTokens: 0 });
+  completeRunTrack(run.id, { model: MODEL, toolLoopCount: currentRunStepOrder, totalTokens: 0 });
   trackStep(run.id, "note", `Completed in ${(totalDuration / 1000).toFixed(1)}s${pr ? ` — PR #${pr.prNumber}` : ""}`);
   if (pr) lastPipelineExitCode = EXIT_SUCCESS;
   runLogger.endRun(pr ? EXIT_SUCCESS : exitCode);
   // Only mark as processed if PR/MR was successfully created
   if (pr) {
     saveProcessedIssue(issueKey);
-    failedAttempts.delete(issueKey); // Clear failure counter on success
+    agentRunDatabase.clearFailedAttempt(issueKey, WORKSPACE); // Clear failure counter on success
   } else {
     runLogger.logError("PR/MR creation failed — not marking issue as processed so it can be retried");
   }
@@ -4078,11 +4113,11 @@ loadProcessedIssues();
 // Mark any stale aicoder runs (from a previous crash) as failed
 try {
   if (agentRunsClient) {
-    agentRunsClient.markStaleRunsAsFailed(30).then((stale) => {
+    agentRunsClient.markStaleRunsAsFailed().then((stale) => {
       if (stale > 0) runLogger.logConfig(`Marked ${stale} stale agent run(s) as failed (via API)`);
     }).catch(() => {});
   } else {
-    const stale = agentRunDatabase.markStaleRunsAsFailed(30);
+    const stale = agentRunDatabase.markStaleRunsAsFailed();
     if (stale > 0) {
       runLogger.logConfig(`Marked ${stale} stale agent run(s) as failed`);
     }

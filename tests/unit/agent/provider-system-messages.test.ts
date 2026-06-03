@@ -252,6 +252,32 @@ describe("AIProvider.buildRequestBody — system message merging", () => {
     // 1 merged system + 3 conversation = 4
     expect(sent).toHaveLength(4);
   });
+
+  it("strips internal tool message names before provider submission", () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "System" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{
+          id: "call_1",
+          type: "function",
+          function: { name: "gitlab_get_file", arguments: "{}" },
+        }],
+      },
+      {
+        role: "tool",
+        content: "{\"success\":true}",
+        name: "gitlab.get_file",
+        tool_call_id: "call_1",
+      },
+      { role: "user", content: "continue" },
+    ];
+    const body = provider.buildRequest({ messages });
+    const sent = body.messages as ChatMessage[];
+
+    expect(sent.find((m) => m.role === "tool")).not.toHaveProperty("name");
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

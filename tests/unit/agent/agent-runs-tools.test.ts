@@ -142,8 +142,8 @@ describe("Agent Runs Tool Registry", () => {
     const tools = getToolsForRequest("productivity", "What Jira tickets are assigned to me?");
     const names = tools.map((t) => t.name);
 
-    expect(names).toContain("jira.list_assigned");
-    expect(names).toContain("personal_os.brief");
+    expect(names).toContain("jira.search_issues");
+    expect(names).toContain("system.get_time");
   });
 });
 

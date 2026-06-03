@@ -34,6 +34,8 @@ export interface AgentConfig {
   finToken?: string;
   finRegex?: RegExp;
   finLineRegex?: RegExp;
+  /** Called every 30s while the agent is running to keep the run alive (prevent stale-kill). */
+  onHeartbeat?: () => void;
 }
 
 function buildFinRegexes(token: string): { finRegex: RegExp; finLineRegex: RegExp } {
@@ -42,10 +44,6 @@ function buildFinRegexes(token: string): { finRegex: RegExp; finLineRegex: RegEx
     finRegex: new RegExp(`(?:^|\\s)${escaped}(?:$|\\s)`),
     finLineRegex: new RegExp(`^${escaped}$`, "m"),
   };
-}
-
-function isClaudeModel(model: string): boolean {
-  return model === "opus" || model === "sonnet" || model === "haiku" || model.startsWith("claude-");
 }
 
 function quoteWindowsShellArg(arg: string): string {
@@ -240,6 +238,15 @@ export async function runAgentDirect(
       onSessionId: (sid) => { capturedSessionId = sid; },
     });
 
+    // Heartbeat: touch the run every 30s so the DB doesn't mark it stale
+    const HEARTBEAT_MS = 30000;
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+    if (cfg.onHeartbeat) {
+      heartbeatTimer = setInterval(() => {
+        try { cfg.onHeartbeat?.(); } catch {}
+      }, HEARTBEAT_MS);
+    }
+
     child.stdin?.write(prompt);
     child.stdin?.end();
 
@@ -265,6 +272,7 @@ export async function runAgentDirect(
     });
 
     child.on("close", (code) => {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
       const remaining = formatter.flush();
       if (remaining) process.stdout.write(remaining);
       const stderr = stderrBuf.trim();
@@ -277,6 +285,7 @@ export async function runAgentDirect(
     });
 
     child.on("error", (err) => {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
       logger.logError(`Failed to start ${cfg.agent}: ${err.message}`);
       resolve({ finDetected: false, exitCode: -1 });
     });
@@ -325,6 +334,15 @@ export async function runAgentViaLauncher(
           onSessionId: (sid) => { capturedSessionId = sid; },
         });
 
+        // Heartbeat: touch the run every 30s so the DB doesn't mark it stale
+        const HEARTBEAT_MS = 30000;
+        let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+        if (cfg.onHeartbeat) {
+          heartbeatTimer = setInterval(() => {
+            try { cfg.onHeartbeat?.(); } catch {}
+          }, HEARTBEAT_MS);
+        }
+
         child.stdout?.on("data", (chunk: Buffer) => {
           const text = chunk.toString();
           const formatted = formatter.push(text);
@@ -343,12 +361,14 @@ export async function runAgentViaLauncher(
         });
 
         child.on("close", (code) => {
+          if (heartbeatTimer) clearInterval(heartbeatTimer);
           const remaining = formatter.flush();
           if (remaining) process.stdout.write(remaining);
           resolve({ finDetected, exitCode: code, ranTests: formatter.ranTests, sessionId: capturedSessionId });
         });
 
         child.on("error", (err) => {
+          if (heartbeatTimer) clearInterval(heartbeatTimer);
           logger.logError(`Launcher failed: ${err.message}`);
           resolve({ finDetected: false, exitCode: -1 });
         });

@@ -455,7 +455,6 @@ export async function sendMessage() {
         sessionId: currentSessionId,
         includeMemory: true,
         includeTools: true,
-        model: document.getElementById("modelSelect")?.value || undefined,
       }),
       signal: controller.signal,
     });
@@ -592,7 +591,6 @@ export async function resendMessage(message) {
         sessionId: currentSessionId,
         includeMemory: true,
         includeTools: true,
-        model: document.getElementById("modelSelect")?.value || undefined,
       }),
       signal: controller.signal,
     });

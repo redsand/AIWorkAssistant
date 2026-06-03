@@ -276,4 +276,31 @@ export async function agentRunsRoutes(fastify: FastifyInstance, options?: AgentR
     invalidateBoardCache();
     return { success: true, markedFailed: count };
   });
+
+  // GET /agent-runs/blacklist — list blacklisted issues
+  fastify.get("/agent-runs/blacklist", async (request, reply) => {
+    if (!request.userId) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
+    const query = request.query as { workspace?: string };
+    const items = db.getBlacklistedIssues(query.workspace);
+    return { items, count: items.length };
+  });
+
+  // DELETE /agent-runs/blacklist/:issueKey — remove an issue from the blacklist
+  fastify.delete<{ Params: { issueKey: string } }>("/agent-runs/blacklist/:issueKey", async (request, reply) => {
+    if (!authenticateWrite(request)) {
+      return reply.code(401).send({ error: "Invalid API key" });
+    }
+    const { issueKey } = request.params;
+    const query = request.query as { workspace?: string };
+    const workspace = query.workspace || process.env.AICODER_WORKSPACE || process.cwd();
+    // Unblacklist by deleting the row and clearing failed attempts
+    db.clearFailedAttempt(issueKey, workspace);
+    const wasBlacklisted = db.isIssueBlacklisted(issueKey, workspace);
+    if (wasBlacklisted) {
+      db.unblacklistIssue(issueKey, workspace);
+    }
+    return { success: true, wasBlacklisted };
+  });
 }

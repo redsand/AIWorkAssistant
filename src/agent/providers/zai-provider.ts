@@ -73,6 +73,7 @@ export class ZaiProvider extends AIProvider {
     parallelToolCalls: false,
     requiresAuth: true,
     synthesizesToolCallIds: true,
+    maxTools: 128,
   };
 
   constructor(config: ProviderConfig) {
@@ -105,6 +106,8 @@ export class ZaiProvider extends AIProvider {
     if (Array.isArray(body.messages)) {
       body.messages = repairToolMessagePairs(body.messages);
     }
+    // Z.ai (GLM) OpenAI-compatible API does not support tool_choice parameter
+    delete body.tool_choice;
     (body as any)[kToolNameMap] = toolNameMap;
     return body;
   }

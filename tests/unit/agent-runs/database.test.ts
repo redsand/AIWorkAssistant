@@ -382,12 +382,12 @@ describe("AgentRunDatabase", () => {
       expect(count).toBe(2);
     });
 
-    it("should use default 30-minute threshold", () => {
+    it("should use default 120-minute threshold", () => {
       const run = db.startRun({ userId: "user1", mode: "chat" });
 
-      // 31 minutes old — just over default threshold
+      // 121 minutes old — just over default threshold
       const dbAny = db as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } };
-      const oldDate = new Date(Date.now() - 31 * 60 * 1000).toISOString();
+      const oldDate = new Date(Date.now() - 121 * 60 * 1000).toISOString();
       dbAny.db.prepare("UPDATE agent_runs SET started_at = ?, last_activity_at = ? WHERE id = ?").run(oldDate, oldDate, run.id);
 
       const count = db.markStaleRunsAsFailed();

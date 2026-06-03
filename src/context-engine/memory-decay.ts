@@ -132,26 +132,77 @@ export function selectMessages(
   tokenBudget: number,
 ): ScoredMessage[] {
   const sorted = [...scored].sort((a, b) => b.effectiveWeight - a.effectiveWeight);
+  const byIndex = new Map(scored.map((item) => [item.index, item]));
+  const maxIndex = scored.reduce((max, item) => Math.max(max, item.index), -1);
 
   const systemMsgs = sorted.filter((s) => s.message.role === "system");
   const otherMsgs = sorted.filter((s) => s.message.role !== "system");
 
   let usedTokens = systemMsgs.reduce((sum, s) => sum + s.tokens, 0);
   const selected: ScoredMessage[] = [...systemMsgs];
+  const selectedIndices = new Set(selected.map((s) => s.index));
+
+  const toolGroupFor = (item: ScoredMessage): ScoredMessage[] => {
+    if (item.message.role === "assistant" && item.message.tool_calls?.length) {
+      const group = [item];
+      let next = item.index + 1;
+      while (next <= maxIndex) {
+        const candidate = byIndex.get(next);
+        if (!candidate || candidate.message.role !== "tool") break;
+        group.push(candidate);
+        next++;
+      }
+      return group;
+    }
+
+    if (item.message.role === "tool") {
+      let previous = item.index - 1;
+      while (previous >= 0) {
+        const candidate = byIndex.get(previous);
+        if (!candidate) break;
+        if (candidate.message.role === "tool") {
+          previous--;
+          continue;
+        }
+        if (candidate.message.role === "assistant" && candidate.message.tool_calls?.length) {
+          return toolGroupFor(candidate);
+        }
+        break;
+      }
+    }
+
+    return [item];
+  };
+
+  const addGroup = (group: ScoredMessage[]): boolean => {
+    const missing = group.filter((item) => !selectedIndices.has(item.index));
+    const groupTokens = missing.reduce((sum, item) => sum + item.tokens, 0);
+    if (usedTokens + groupTokens > tokenBudget) return false;
+    usedTokens += groupTokens;
+    for (const item of missing) {
+      selected.push(item);
+      selectedIndices.add(item.index);
+    }
+    return true;
+  };
+
+  const addRequired = (item: ScoredMessage): void => {
+    if (selectedIndices.has(item.index)) return;
+    usedTokens += item.tokens;
+    selected.push(item);
+    selectedIndices.add(item.index);
+  };
 
   const lastUserMsg = [...otherMsgs]
     .reverse()
     .find((s) => s.message.role === "user");
   if (lastUserMsg && !selected.includes(lastUserMsg)) {
-    usedTokens += lastUserMsg.tokens;
-    selected.push(lastUserMsg);
+    addRequired(lastUserMsg);
   }
 
   for (const msg of otherMsgs) {
-    if (selected.includes(msg)) continue;
-    if (usedTokens + msg.tokens > tokenBudget) continue;
-    usedTokens += msg.tokens;
-    selected.push(msg);
+    if (selectedIndices.has(msg.index)) continue;
+    addGroup(toolGroupFor(msg));
   }
 
   return selected.sort((a, b) => a.index - b.index);

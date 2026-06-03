@@ -596,6 +596,7 @@ const reviewedMRs = new Set<string>(); // "source:project/mrNumber"
 const reviewedMRShas = new Map<string, string>(); // mrKey → last_commit_sha
 const reviewedMRTimes = new Map<string, number>(); // mrKey → Date.now() of last review
 const mrSkipCounts = new Map<string, number>(); // mrKey → consecutive SHA-unchanged skips
+const mrConflictCounts = new Map<string, number>(); // mrKey → consecutive merge-conflict retries
 
 /** Stop polling an MR after this many consecutive SHA-unchanged skips. */
 const MAX_CONSECUTIVE_SKIPS = parseInt(process.env.MAX_CONSECUTIVE_SKIPS ?? "5", 10);
@@ -620,6 +621,8 @@ interface ReviewerState {
   reviewedMRs: string[];
   reviewedMRShas: Record<string, string>;
   reviewedMRTimes: Record<string, number>;
+  mrSkipCounts?: Record<string, number>;
+  mrConflictCounts?: Record<string, number>;
   updatedAt: string;
 }
 
@@ -638,6 +641,16 @@ function loadReviewerState(): void {
       if (data.reviewedMRTimes) {
         Object.entries(data.reviewedMRTimes).forEach(([key, time]: [string, number]) => {
           reviewedMRTimes.set(key, time);
+        });
+      }
+      if (data.mrSkipCounts) {
+        Object.entries(data.mrSkipCounts).forEach(([key, count]: [string, number]) => {
+          mrSkipCounts.set(key, count);
+        });
+      }
+      if (data.mrConflictCounts) {
+        Object.entries(data.mrConflictCounts).forEach(([key, count]: [string, number]) => {
+          mrConflictCounts.set(key, count);
         });
       }
       const total = reviewedMRs.size;
@@ -695,6 +708,9 @@ async function verifyReviewerState(config: ReviewerConfig): Promise<void> {
   for (const key of keysToReReview) {
     reviewedMRs.delete(key);
     reviewedMRShas.delete(key);
+    reviewedMRTimes.delete(key);
+    mrSkipCounts.delete(key);
+    mrConflictCounts.delete(key);
   }
 
   if (keysToReReview.length > 0) {
@@ -710,6 +726,8 @@ function saveReviewerState(): void {
       reviewedMRs: [...reviewedMRs],
       reviewedMRShas: Object.fromEntries(reviewedMRShas),
       reviewedMRTimes: Object.fromEntries(reviewedMRTimes),
+      mrSkipCounts: Object.fromEntries(mrSkipCounts),
+      mrConflictCounts: Object.fromEntries(mrConflictCounts),
       updatedAt: new Date().toISOString(),
     };
     fs.writeFileSync(getReviewerStateFile(), JSON.stringify(state, null, 2), "utf-8");
@@ -880,8 +898,27 @@ async function pollMergeRequests(
         log.clean(`MR !${mr.number}${tag} passed review — merging`);
         const mergeStatus = await mergeWithSummary(vcs, target.name, target.source, config.owner, config.githubToken, mr, result);
         if (mergeStatus === "conflict") {
-          // Remove from reviewed so the reviewer re-evaluates after aicoder rebases
-          reviewedMRs.delete(mrKey);
+          // Track conflict retries — after MAX_CONFLICT_RETRIES, post convergence and stop polling
+          const conflictCount = (mrConflictCounts.get(mrKey) ?? 0) + 1;
+          mrConflictCounts.set(mrKey, conflictCount);
+          const MAX_CONFLICT_RETRIES = 3;
+          if (conflictCount >= MAX_CONFLICT_RETRIES) {
+            log.warn(`MR !${mr.number}${tag} merge conflict ${conflictCount} times — posting convergence report and stopping poll`);
+            const convergenceState = recordRoundFindings(initConvergenceState(), [], false);
+            const convergence = checkConvergence(convergenceState, DEFAULT_CONVERGENCE_CONFIG);
+            const report = formatConvergenceReport(
+              { ...convergence, reason: "max_rework", message: `Reviewer could not merge MR !${mr.number} after ${conflictCount} conflict attempts. Aicoder must rebase and resolve conflicts manually.` },
+              convergenceState,
+              DEFAULT_CONVERGENCE_CONFIG,
+            );
+            const issueKey = vcs.extractLinkedIssueKey(mr.body) || vcs.extractIssueKeyFromBranch(mr.sourceBranch);
+            if (issueKey && /^[A-Z]+-\d+$/.test(issueKey) && jiraClient.isConfigured()) {
+              await addCommentToJiraIssue(issueKey, report).catch(() => {});
+            }
+            mrConflictCounts.delete(mrKey);
+          }
+          // Keep in reviewedMRs — the SHA-unchanged skip logic will prevent re-review
+          // until aicoder pushes new commits (SHA changes in verifyReviewerState).
           saveReviewerState();
         }
       } else if (isServiceUnavailable(result)) {
@@ -902,7 +939,24 @@ async function pollMergeRequests(
           summary: `${result.summary} (approved with suggestions — no blocking findings)`,
         });
         if (mergeResult === "conflict") {
-          reviewedMRs.delete(mrKey);
+          const conflictCount = (mrConflictCounts.get(mrKey) ?? 0) + 1;
+          mrConflictCounts.set(mrKey, conflictCount);
+          const MAX_CONFLICT_RETRIES = 3;
+          if (conflictCount >= MAX_CONFLICT_RETRIES) {
+            log.warn(`MR !${mr.number}${tag} merge conflict ${conflictCount} times — posting convergence report and stopping poll`);
+            const convergenceState = recordRoundFindings(initConvergenceState(), [], false);
+            const convergence = checkConvergence(convergenceState, DEFAULT_CONVERGENCE_CONFIG);
+            const report = formatConvergenceReport(
+              { ...convergence, reason: "max_rework", message: `Reviewer could not merge MR !${mr.number} after ${conflictCount} conflict attempts. Aicoder must rebase and resolve conflicts manually.` },
+              convergenceState,
+              DEFAULT_CONVERGENCE_CONFIG,
+            );
+            const issueKey = vcs.extractLinkedIssueKey(mr.body) || vcs.extractIssueKeyFromBranch(mr.sourceBranch);
+            if (issueKey && /^[A-Z]+-\d+$/.test(issueKey) && jiraClient.isConfigured()) {
+              await addCommentToJiraIssue(issueKey, report).catch(() => {});
+            }
+            mrConflictCounts.delete(mrKey);
+          }
           saveReviewerState();
         }
         // Post suggestions as a comment and create a tracking issue
@@ -1711,7 +1765,9 @@ async function forceReviewMr(mrNumber: number): Promise<void> {
   const mrKey = `${target.source}:${target.gitlabProject || target.name}/${mrNumber}`;
   reviewedMRs.delete(mrKey);
   reviewedMRShas.delete(mrKey);
+  reviewedMRTimes.delete(mrKey);
   mrSkipCounts.delete(mrKey);
+  mrConflictCounts.delete(mrKey);
   saveReviewerState();
   log.config(`Cleared cached state for MR !${mrNumber}`);
 

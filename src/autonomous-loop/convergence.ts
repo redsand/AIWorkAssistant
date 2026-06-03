@@ -70,7 +70,8 @@ export type StopReason =
   | "identical_findings"
   | "empty_prs"
   | "no_progress"
-  | "converged";
+  | "converged"
+  | "max_rework";
 
 export type Recommendation =
   | "escalate_human"

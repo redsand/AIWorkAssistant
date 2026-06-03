@@ -57,6 +57,10 @@ class OpenCodeClient {
   getMaxContextTokens(): number {
     return this.provider.getMaxContextTokens();
   }
+
+  getMaxTools(): number | undefined {
+    return this.provider.capabilities.maxTools;
+  }
 }
 
 export const aiClient = new OpenCodeClient();

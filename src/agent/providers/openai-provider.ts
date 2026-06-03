@@ -85,6 +85,7 @@ export class OpenAIProvider extends AIProvider {
     parallelToolCalls: true,
     requiresAuth: true,
     synthesizesToolCallIds: false,
+    maxTools: 128,
   };
 
   private isContextOverflowRetry = false;

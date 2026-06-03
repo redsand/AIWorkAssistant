@@ -35,6 +35,7 @@ vi.mock("../../src/agent", () => ({
     pruneMessages: vi.fn((messages) => messages),
     estimateTokens: vi.fn(() => 0),
     getMaxContextTokens: vi.fn(() => 64000),
+    getMaxTools: vi.fn(() => 128),
     refresh: vi.fn(),
   },
 }));

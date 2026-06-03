@@ -2520,13 +2520,22 @@ async function handleDiscoverTools(
   params: Record<string, unknown>,
   _userId: string,
 ): Promise<ToolCallResult> {
-  const category = params.category as string | undefined;
+  const singleCategory = params.category as string | undefined;
+  const categoriesArray = params.categories as string[] | undefined;
   const mode = (params._mode as string) || "productivity";
   const loadedNames = new Set(
     (params._loadedTools as string[] | undefined) || [],
   );
 
-  if (!category) {
+  const requestedCategories: string[] = categoriesArray
+    ? Array.isArray(categoriesArray)
+      ? categoriesArray
+      : [categoriesArray]
+    : singleCategory
+      ? [singleCategory]
+      : [];
+
+  if (requestedCategories.length === 0) {
     const categories = getToolCategories(mode);
     const summary: Record<string, string> = {};
     for (const [cat, tools] of Object.entries(categories)) {
@@ -2541,46 +2550,64 @@ async function handleDiscoverTools(
       success: true,
       data: {
         message:
-          "Specify a category to load those tools. Available categories:",
+          "Specify a category or categories to load those tools. Available categories:",
         categories: summary,
       },
     };
   }
 
-  const tools = getToolsByCategory(mode, category);
-  if (tools.length === 0) {
+  let totalNew = 0;
+  let totalAlready = 0;
+  const allNewTools: Array<{ name: string; description: string; params: string[] }> = [];
+  const unknownCategories: string[] = [];
+
+  for (const category of requestedCategories) {
+    const tools = getToolsByCategory(mode, category);
+    if (tools.length === 0) {
+      unknownCategories.push(category);
+      continue;
+    }
+
+    const newTools = tools.filter((t) => !loadedNames.has(t.name));
+    totalAlready += tools.length - newTools.length;
+    totalNew += newTools.length;
+
+    for (const t of newTools) {
+      allNewTools.push({
+        name: t.name,
+        description: t.description,
+        params: Object.keys(t.params),
+      });
+    }
+  }
+
+  if (unknownCategories.length > 0 && allNewTools.length === 0) {
     return {
       success: false,
-      error: `Unknown category '${category}'. Use discover_tools without a category to see available options.`,
+      error: `Unknown categories: ${unknownCategories.join(", ")}. Use discover_tools without arguments to see available options.`,
     };
   }
 
-  const newTools = tools.filter((t) => !loadedNames.has(t.name));
-  const alreadyLoaded = tools.length - newTools.length;
-
-  if (newTools.length === 0) {
+  if (allNewTools.length === 0) {
     return {
       success: true,
       data: {
-        message: `All ${tools.length} '${category}' tools are already loaded in your tool set. No need to call discover_tools again for this category.`,
+        message: `All requested tools are already loaded. No need to call discover_tools again.`,
         tools: [],
       },
     };
   }
 
-  const message = alreadyLoaded > 0
-    ? `Loaded ${newTools.length} new '${category}' tools (${alreadyLoaded} already loaded). You can now use them.`
-    : `Loaded ${tools.length} '${category}' tools. You can now use them.`;
+  const catLabel = requestedCategories.join(", ");
+  const message = totalAlready > 0
+    ? `Loaded ${totalNew} new tools from ${catLabel} (${totalAlready} already loaded). You can now use them.`
+    : `Loaded ${totalNew} tools from ${catLabel}. You can now use them.`;
 
   return {
     success: true,
     data: {
       message,
-      tools: newTools.map((t) => ({
-        name: t.name,
-        description: t.description,
-        params: Object.keys(t.params),
-      })),
+      tools: allNewTools,
     },
   };
 }

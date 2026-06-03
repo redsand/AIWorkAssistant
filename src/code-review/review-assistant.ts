@@ -929,7 +929,7 @@ class ReviewAssistant {
           try { args = JSON.parse(tc.function.arguments); } catch { /* leave empty */ }
           onProgress?.({ type: "progress", message: `Tool: ${tc.function.name}(${JSON.stringify(args).slice(0, 80)})` });
           const result = executeTool(tc.function.name, args);
-          messages.push({ role: "tool", content: result, tool_call_id: tc.id });
+          messages.push({ role: "tool", content: result, name: tc.function.name, tool_call_id: tc.id });
         }
         continue;
       }

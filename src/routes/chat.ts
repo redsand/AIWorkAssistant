@@ -29,6 +29,7 @@ import { sanitizeValue } from "../agent-runs/sanitizer";
 import { providerSettings } from "../agent/provider-settings";
 import { runProviderPreflight } from "../agent/provider-preflight";
 import type { AIProviderName } from "../agent/provider-settings";
+import { errorLog } from "../observability/error-log";
 
 const MAX_SYSTEM_PROMPT_LENGTH = 4000;
 
@@ -73,6 +74,38 @@ function getRunProviderMetadata(requestedModel?: string): {
     provider: current.provider,
     model: requestedModel ?? current.model,
   };
+}
+
+function resolveRequestModel(requestedModel?: string): string | undefined {
+  const current = providerSettings.getCurrent();
+  return requestedModel === current.model ? requestedModel : undefined;
+}
+
+function logChatError(input: {
+  category: string;
+  message: string;
+  error?: unknown;
+  userId?: string;
+  sessionId?: string | null;
+  runId?: string | null;
+  context?: Record<string, unknown>;
+}) {
+  const provider = providerSettings.getCurrent();
+  void errorLog.log({
+    source: "chat",
+    severity: "error",
+    category: input.category,
+    message: input.message,
+    error: input.error,
+    userId: input.userId,
+    sessionId: input.sessionId,
+    runId: input.runId,
+    context: {
+      provider: provider.provider,
+      model: provider.model,
+      ...input.context,
+    },
+  });
 }
 
 const createSessionSchema = z.object({
@@ -156,6 +189,27 @@ function preExpandFromSession(sessionId: string, mode: string, expandedTools: To
       }
     }
   }
+}
+
+function capExpandedTools(expandedTools: Tool[], coreTools: Tool[]): Tool[] {
+  const maxTools = aiClient.getMaxTools();
+  if (!maxTools || expandedTools.length <= maxTools) return expandedTools;
+
+  const coreCount = coreTools.length;
+  if (coreCount >= maxTools) {
+    return expandedTools.slice(0, maxTools);
+  }
+
+  const discoveredBudget = maxTools - coreCount;
+  const discovered = expandedTools.slice(coreCount);
+  const drop = discovered.length - discoveredBudget;
+  if (drop > 0) {
+    console.warn(
+      `[Chat] Expanded tools ${expandedTools.length} exceeds provider limit ${maxTools}. Evicting ${drop} oldest discovered tools.`,
+    );
+    return [...expandedTools.slice(0, coreCount), ...discovered.slice(drop)];
+  }
+  return expandedTools;
 }
 
 function recordDiscoveredCategory(sessionId: string, category: string) {
@@ -376,6 +430,7 @@ async function runChatJob(
     let allToolResults: Record<string, unknown> = {};
     let expandedTools = [...(tools || [])];
     preExpandFromSession(sessionId, mode, expandedTools);
+    expandedTools = capExpandedTools(expandedTools, tools || []);
     let loopCount = 0;
 
     const getLoadedToolNames = () =>
@@ -458,8 +513,12 @@ async function runChatJob(
         }
 
         if (tc.name === "discover_tools" && result.success) {
-          const category = tc.params.category as string | undefined;
-          if (category) {
+          const singleCategory = tc.params.category as string | undefined;
+          const categoriesArray = tc.params.categories as string[] | string | undefined;
+          const requested: string[] = categoriesArray
+            ? Array.isArray(categoriesArray) ? categoriesArray : [categoriesArray]
+            : singleCategory ? [singleCategory] : [];
+          for (const category of requested) {
             recordDiscoveredCategory(sessionId, category);
             const categoryToolDefs = buildCategoryToolDefs(mode, category);
             const existingNames = new Set(expandedTools.map((t) => t.function.name));
@@ -469,12 +528,14 @@ async function runChatJob(
                 existingNames.add(td.function.name);
               }
             }
+            expandedTools = capExpandedTools(expandedTools, tools || []);
           }
         }
 
         conversationManager.addMessage(sessionId, {
           role: "tool",
           content: stringifyToolResultForContext(result),
+          name: tc.name,
           tool_call_id: tc.id,
         });
       }
@@ -503,18 +564,19 @@ async function runChatJob(
           assertJobActive(job);
           const spawnDuration = Date.now() - spawnStart;
           try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: tc.name, success: result.success !== false, errorMessage: result.error, durationMs: spawnDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
-          return { id: tc.id, result };
+          return { id: tc.id, result, name: tc.name };
         });
 
         const spawnResults = await Promise.all(spawnPromises);
 
-        for (const { id, result } of spawnResults) {
+        for (const { id, result, name } of spawnResults) {
           allToolResults[id] = result;
           emitJobEvent(sessionId, "tool_result", { id, result });
 
           conversationManager.addMessage(sessionId, {
             role: "tool",
             content: stringifyToolResultForContext(result),
+            name,
             tool_call_id: id,
           });
         }
@@ -530,6 +592,7 @@ async function runChatJob(
         ...toolCalls.map((tc) => ({
           role: "tool" as const,
           content: stringifyToolResultForContext(allToolResults[tc.id]),
+          name: tc.name,
           tool_call_id: tc.id,
         })),
       ];
@@ -581,6 +644,17 @@ async function runChatJob(
   } catch (error) {
     console.error(`[Chat/Job] Failed for session ${sessionId}:`, error);
     const cancelled = error instanceof JobCancelledError;
+    if (!cancelled) {
+      logChatError({
+        category: "job_failed",
+        message: error instanceof Error ? error.message : "Chat job failed",
+        error,
+        userId,
+        sessionId,
+        runId,
+        context: { mode, requestedModel: model },
+      });
+    }
     if (!cancelled || job.events[job.events.length - 1]?.event !== "error") {
       emitJobEvent(sessionId, "error", {
       error: "Failed to process request",
@@ -609,11 +683,20 @@ export async function chatRoutes(fastify: FastifyInstance) {
     let runId: string | null = null;
     try {
       const body = chatRequestSchema.parse(request.body);
+      const requestModel = resolveRequestModel(body.model);
 
-      const runProvider = getRunProviderMetadata(body.model);
+      const runProvider = getRunProviderMetadata(requestModel);
       try { runId = agentRunDatabase.startRun({ sessionId: body.sessionId ?? null, userId: body.userId, mode: body.mode, ...runProvider }).id; } catch (e) { console.error("[AgentRuns]", e); }
 
       if (!aiClient.isConfigured()) {
+        logChatError({
+          category: "provider_not_configured",
+          message: "AI provider not configured",
+          userId: body.userId,
+          sessionId: body.sessionId ?? null,
+          runId,
+          context: { mode: body.mode },
+        });
         try { if (runId) agentRunDatabase.failRun(runId, "AI provider not configured"); } catch (e) { console.error("[AgentRuns]", e); }
         reply.code(503);
         const provider = providerSettings.getCurrent().provider;
@@ -640,6 +723,14 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       if (sessionId && !existingSession) {
         console.error(`[Chat] Session ${sessionId} not found. Client sent a sessionId that does not exist in memory or on disk.`);
+        logChatError({
+          category: "session_not_found",
+          message: `Session ${sessionId} no longer exists`,
+          userId: body.userId,
+          sessionId,
+          runId,
+          context: { mode: body.mode },
+        });
         reply.code(404);
         return {
           error: "Session not found",
@@ -743,7 +834,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         tools,
         temperature: 0.7,
         top_p: 0.95,
-        model: body.model,
+        model: requestModel,
       });
       try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
@@ -751,6 +842,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       let allToolResults: Record<string, unknown> = {};
       let expandedTools = [...(tools || [])];
       if (sessionId) preExpandFromSession(sessionId, body.mode, expandedTools);
+      expandedTools = capExpandedTools(expandedTools, tools || []);
 
       const getLoadedToolNames = () =>
         expandedTools.map((t: Tool) => t.function.name);
@@ -824,8 +916,12 @@ export async function chatRoutes(fastify: FastifyInstance) {
           try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: tc.name, success: result.success !== false, errorMessage: result.error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
           if (tc.name === "discover_tools" && result.success) {
-            const category = tc.params.category as string | undefined;
-            if (category) {
+            const singleCategory = tc.params.category as string | undefined;
+            const categoriesArray = tc.params.categories as string[] | string | undefined;
+            const requested: string[] = categoriesArray
+              ? Array.isArray(categoriesArray) ? categoriesArray : [categoriesArray]
+              : singleCategory ? [singleCategory] : [];
+            for (const category of requested) {
               if (sessionId) recordDiscoveredCategory(sessionId, category);
               const categoryToolDefs = buildCategoryToolDefs(body.mode, category);
               const existingNames = new Set(expandedTools.map((t) => t.function.name));
@@ -835,6 +931,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
                   existingNames.add(td.function.name);
                 }
               }
+              expandedTools = capExpandedTools(expandedTools, tools || []);
             }
           }
 
@@ -842,6 +939,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
             conversationManager.addMessage(sessionId, {
               role: "tool",
               content: stringifyToolResultForContext(result),
+              name: tc.name,
               tool_call_id: tc.id,
             });
           }
@@ -857,6 +955,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           ...toolCalls.map((tc) => ({
             role: "tool" as const,
             content: stringifyToolResultForContext(allToolResults[tc.id]),
+            name: tc.name,
             tool_call_id: tc.id,
           })),
         ];
@@ -872,7 +971,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           tools: expandedTools.length > 0 ? expandedTools : undefined,
           temperature: 0.7,
           top_p: 0.95,
-          model: body.model,
+          model: requestModel,
         });
         try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { model: response.model, usage: response.usage, responsePreview: typeof response.content === "string" ? response.content.slice(0, 500) : undefined }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
       }
@@ -906,6 +1005,12 @@ export async function chatRoutes(fastify: FastifyInstance) {
       };
     } catch (error) {
       fastify.log.error(error);
+      logChatError({
+        category: "request_failed",
+        message: error instanceof Error ? error.message : "Failed to process chat request",
+        error,
+        runId,
+      });
       try { if (runId) agentRunDatabase.failRun(runId, error instanceof Error ? error.message : "Unknown error"); } catch (e) { console.error("[AgentRuns]", e); }
       return {
         error: "Failed to process chat request",
@@ -919,8 +1024,16 @@ export async function chatRoutes(fastify: FastifyInstance) {
    */
   fastify.post("/chat/stream", async (request, reply): Promise<void> => {
     const body = chatRequestSchema.parse(request.body);
+    const requestModel = resolveRequestModel(body.model);
 
     if (!aiClient.isConfigured()) {
+      logChatError({
+        category: "provider_not_configured",
+        message: "AI provider not configured",
+        userId: body.userId,
+        sessionId: body.sessionId ?? null,
+        context: { mode: body.mode, stream: true },
+      });
       reply.code(503);
       const provider = providerSettings.getCurrent().provider;
       const keyHint =
@@ -1009,6 +1122,13 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       if (sessionId && !existingSession) {
         console.error(`[Chat/Stream] Session ${sessionId} not found. Client sent a sessionId that does not exist in memory or on disk.`);
+        logChatError({
+          category: "session_not_found",
+          message: `Session ${sessionId} no longer exists`,
+          userId: body.userId,
+          sessionId,
+          context: { mode: body.mode, stream: true },
+        });
         sendEvent("error", {
           error: "Session not found",
           message: `Session ${sessionId} no longer exists. It may have expired or been cleaned up.`,
@@ -1087,7 +1207,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       };
       job.subscribers.add(subscriber);
       let earlyRunId: string | null = null;
-      const runProvider = getRunProviderMetadata(body.model);
+      const runProvider = getRunProviderMetadata(requestModel);
       try { earlyRunId = agentRunDatabase.startRun({ sessionId, userId: body.userId, mode: body.mode, ...runProvider }).id; job.runId = earlyRunId; } catch (e) { console.error("[AgentRuns]", e); }
 
       let tools: Tool[] | undefined = undefined;
@@ -1117,9 +1237,18 @@ export async function chatRoutes(fastify: FastifyInstance) {
       }
 
       console.log("[Chat/Stream] Starting runChatJob for", sessionId);
-      runChatJob(sessionId!, messages, tools, body.mode, body.userId, body.model)
+      runChatJob(sessionId!, messages, tools, body.mode, body.userId, requestModel)
         .then(() => console.log("[Chat/Stream] runChatJob completed for", sessionId))
         .catch((err) => {
+          logChatError({
+            category: "background_job_failed",
+            message: err instanceof Error ? err.message : "Background chat job failed",
+            error: err,
+            userId: body.userId,
+            sessionId,
+            runId: earlyRunId,
+            context: { mode: body.mode, stream: true },
+          });
           console.error("[Chat/Stream] Background job error:", err);
         })
         .finally(() => {
@@ -1157,6 +1286,14 @@ export async function chatRoutes(fastify: FastifyInstance) {
       });
     } catch (error) {
       fastify.log.error(error);
+      logChatError({
+        category: "stream_request_failed",
+        message: error instanceof Error ? error.message : "Failed to process stream request",
+        error,
+        userId: body.userId,
+        sessionId: body.sessionId ?? null,
+        context: { mode: body.mode, stream: true },
+      });
       sendEvent("error", {
         error: "Failed to process stream request",
         message: error instanceof Error ? error.message : "Unknown error",

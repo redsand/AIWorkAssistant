@@ -50,6 +50,7 @@ describe("E2E: Agent Runs API endpoints", () => {
   beforeAll(async () => {
     process.env.AUTH_PASSWORD = "test-password";
     process.env.NODE_ENV = "test";
+    process.env.AIWORKASSISTANT_API_KEY = "test-api-key";
     server = await buildTestServer();
     await server.ready();
 
@@ -464,6 +465,48 @@ describe("E2E: Agent Runs API endpoints", () => {
       // Single-user system: full content returned without stripping
       expect(steps[0]).toHaveProperty("content");
       expect(steps[0]).toHaveProperty("sanitizedParams");
+    });
+  });
+
+  describe("GET /api/agent-runs/blacklist", () => {
+    it("returns 401 without auth", async () => {
+      const res = await server.inject({ method: "GET", url: "/api/agent-runs/blacklist" });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it("returns blacklisted issues for the workspace", async () => {
+      db.blacklistIssue("IR-99", "/tmp/ws", "Too many failures");
+      const res = await server.inject({
+        method: "GET",
+        url: "/api/agent-runs/blacklist?workspace=/tmp/ws",
+        headers: { authorization: `Bearer ${aliceToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const json = res.json();
+      expect(json.count).toBe(1);
+      expect(json.items[0].issueKey).toBe("IR-99");
+    });
+  });
+
+  describe("DELETE /api/agent-runs/blacklist/:issueKey", () => {
+    it("returns 401 without API key", async () => {
+      const res = await server.inject({ method: "DELETE", url: "/api/agent-runs/blacklist/IR-99" });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it("unblacklists an issue and clears failed attempts", async () => {
+      db.blacklistIssue("IR-88", "/tmp/ws2", "Failed 5 times");
+      db.incrementFailedAttempt("IR-88", "/tmp/ws2");
+      const res = await server.inject({
+        method: "DELETE",
+        url: "/api/agent-runs/blacklist/IR-88?workspace=/tmp/ws2",
+        headers: { authorization: "Bearer test-api-key" },
+      });
+      expect(res.statusCode).toBe(200);
+      const json = res.json();
+      expect(json.wasBlacklisted).toBe(true);
+      expect(db.isIssueBlacklisted("IR-88", "/tmp/ws2")).toBe(false);
+      expect(db.getFailedAttemptCount("IR-88", "/tmp/ws2")).toBe(0);
     });
   });
 });

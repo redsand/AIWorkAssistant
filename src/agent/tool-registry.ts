@@ -7924,181 +7924,45 @@ const MUSICIAN_TOOLS: Tool[] = [
 
 /**
  * Core productivity tools — the most commonly used subset sent to the model.
- * Extended tools (full GitLab/GitHub/Jira) are available via discover_tools.
+ * Extended tools (full GitLab/GitHub/Jira/HAWK IR/Jitbit/LSP/Git/Local) are
+ * available via discover_tools. Keep this under ~20 items so the initial tool
+ * set fits within provider limits (OpenAI max 128, but we target <30).
  */
 const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   // Calendar
   PRODUCTIVITY_TOOLS.find((t) => t.name === "calendar.list_events")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "calendar.create_focus_block")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "calendar.create_health_block")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "calendar.create_event")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "calendar.get_event")!,
 
-  // Jira core
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jira.list_projects")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jira.list_assigned")!,
+  // Jira — read-mostly essentials; write/transition via discover_tools
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jira.get_issue")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jira.search_issues")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jira.create_issue")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jira.update_issue")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jira.add_comment")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jira.transition_issue")!,
 
-  // GitLab core
+  // GitLab — read-mostly essentials
   PRODUCTIVITY_TOOLS.find((t) => t.name === "gitlab.list_projects")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "gitlab.get_project")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "gitlab.list_merge_requests")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "gitlab.get_merge_request")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "gitlab.get_file")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "gitlab.list_tree")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "gitlab.search_code")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "gitlab.list_commits")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "gitlab.list_branches")!,
 
-  // GitHub core
+  // GitHub — read-mostly essentials
   PRODUCTIVITY_TOOLS.find((t) => t.name === "github.list_repos")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "github.get_repo")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.get_file")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.search_code")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.list_tree")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "github.list_issues")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "github.get_issue")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.create_issue")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.update_issue")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.add_issue_comment")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.list_branches")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.create_branch")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.list_pull_requests")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.create_pull_request")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "github.add_pr_comment")!,
 
-  // Planning
-  PRODUCTIVITY_TOOLS.find(
-    (t) => t.name === "productivity.generate_daily_plan",
-  )!,
-  PRODUCTIVITY_TOOLS.find(
-    (t) => t.name === "productivity.generate_weekly_plan",
-  )!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "cto.daily_command_center")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "cto.create_suggested_work_items")!,
-
-  // Personal OS core
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "personal_os.brief")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "personal_os.open_loops")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "personal_os.detect_patterns")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "personal_os.suggest_focus")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "personal_os.create_work_items")!,
-
-  // Product Chief of Staff
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "product.workflow_brief")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "product.roadmap_proposal")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "product.roadmap_drift")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "product.customer_signals")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "product.weekly_update")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "product.create_work_items")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "product.shipped_vs_planned")!,
-
-  // Code Review
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "code_review.github_pr")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "code_review.gitlab_mr")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "code_review.release_readiness")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "code_review.generate_comment")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "code_review.create_work_item")!,
-
-  // HAWK IR core
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_cases")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_case")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_case_summary")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_risky_open_cases")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_escalated_cases")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.search_logs")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_available_indexes")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_fields")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_assets")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_asset_summary")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_identities")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_identity_summary")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.list_nodes")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_active_nodes")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.list_dashboards")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_case_count")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_recent_cases")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_log_histogram")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_saved_searches")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_artefacts")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_case_categories")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "hawk_ir.get_case_labels")!,
-
-  // Jitbit extended
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.update_ticket")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_users")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.search_users")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_companies")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.search_companies")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_categories")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_priorities")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_custom_fields")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.get_custom_field_values")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_tags")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_sections")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.get_time_entries")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.get_automation_rule")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.search_assets")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.summarize_ticket")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.get_attachment")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_attachments")!,
-
-  // Roadmap core
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "roadmap.list")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "roadmap.get")!,
-
-  // LSP core
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "lsp.diagnostics")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "lsp.hover")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "lsp.definition")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "lsp.references")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "lsp.symbols")!,
-
-  // System tools
+  // System
   PRODUCTIVITY_TOOLS.find((t) => t.name === "system.get_time")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "system.check_health")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "system.exec")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "system.read_env")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "system.disk_usage")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "system.process_info")!,
 
-  // Local file operations
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "local.write_file")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "local.edit_file")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "local.delete_file")!,
+  // Local — minimal file awareness
   PRODUCTIVITY_TOOLS.find((t) => t.name === "local.list_dir")!,
 
-  // Git operations
+  // Git — minimal repo awareness
   PRODUCTIVITY_TOOLS.find((t) => t.name === "git.status")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "git.diff")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "git.log")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "git.add")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "git.commit")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "git.push")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "git.branch")!,
-
-  // Jitbit support/customer intelligence core
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.search_tickets")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.get_ticket")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_recent_tickets")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.get_customer_snapshot")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.find_followups")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.create_ticket")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.close_ticket")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.assign_ticket")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "jitbit.list_assets")!,
 
   // Work items
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "work_items.create")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "work_items.list")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "work_items.update")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "work_items.add_note")!,
-  PRODUCTIVITY_TOOLS.find((t) => t.name === "work_items.complete")!,
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "work_items.create")!,
 ];
 
 const APPROVAL_TOOLS: Tool[] = [
@@ -8155,12 +8019,18 @@ const APPROVAL_TOOLS: Tool[] = [
 const DISCOVER_TOOL_META: Tool = {
   name: "discover_tools",
   description:
-    "List available tool categories or load additional tools. Use this when you need capabilities beyond your current tools (e.g., pipeline operations, file writes, issue management, PR reviews). Call with no category to see what's available, or with a category name to load those tools.",
+    "List available tool categories or load additional tools. Use this when you need capabilities beyond your current tools (e.g., pipeline operations, file writes, issue management, PR reviews). Call with no arguments to see what's available, with a single category to load those tools, or with categories array to load multiple at once.",
   params: {
     category: {
       type: "string",
       description:
-        "Category to load (e.g., 'gitlab', 'github', 'jira', 'calendar'). Omit to list available categories.",
+        "Single category to load (e.g., 'gitlab', 'github', 'jira', 'calendar'). Use this OR categories, not both.",
+      required: false,
+    },
+    categories: {
+      type: "array",
+      description:
+        "Array of categories to load in one call (e.g., ['gitlab','github']). Use this OR category, not both.",
       required: false,
     },
   },

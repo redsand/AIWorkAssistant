@@ -5,6 +5,7 @@ const DEBUG = process.env.AICODER_DEBUG === "true";
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
+  name?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
 }
@@ -70,6 +71,8 @@ export interface ProviderCapabilities {
   parallelToolCalls: boolean;
   requiresAuth: boolean;
   synthesizesToolCallIds: boolean;
+  /** Maximum number of tools this provider accepts in a single request. Undefined = no known limit. */
+  maxTools?: number;
 }
 
 export type StreamEvent =
@@ -132,7 +135,9 @@ export abstract class AIProvider {
 
     // Many APIs (Z.ai, Qwen, etc.) reject multiple system messages; merge
     // all system-role entries into one so every provider works consistently.
-    const messages = this.mergeSystemMessages(pruned);
+    const messages = this.normalizeMessagesForRequest(
+      this.mergeSystemMessages(pruned),
+    );
 
     const body: Record<string, unknown> = {
       model: request.model || this.config.model,
@@ -142,7 +147,16 @@ export abstract class AIProvider {
     };
 
     if (request.tools) {
-      body.tools = request.tools;
+      const maxTools = this.capabilities.maxTools;
+      const tools = maxTools && request.tools.length > maxTools
+        ? request.tools.slice(0, maxTools)
+        : request.tools;
+      if (maxTools && request.tools.length > maxTools) {
+        console.warn(
+          `[${this.name}] Tool count ${request.tools.length} exceeds provider limit of ${maxTools}. Capped to first ${maxTools} tools.`,
+        );
+      }
+      body.tools = tools;
       body.tool_choice = this.capabilities.toolChoice;
       if (this.capabilities.parallelToolCalls) {
         body.parallel_tool_calls = true;
@@ -188,6 +202,76 @@ export abstract class AIProvider {
     // No-op only when the array is already clean: exactly one non-empty system message.
     if (parts.length === 1 && originalSystemCount === 1) return messages;
     return [{ role: "system", content: parts.join("\n\n---\n\n") }, ...rest];
+  }
+
+  private normalizeMessagesForRequest(messages: ChatMessage[]): ChatMessage[] {
+    let changed = false;
+    const normalizedMessages = messages.map((message) => {
+      if (message.name === undefined) return message;
+      changed = true;
+      const normalized: ChatMessage = {
+        role: message.role,
+        content: message.content,
+      };
+      if (message.tool_calls) normalized.tool_calls = message.tool_calls;
+      if (message.tool_call_id) normalized.tool_call_id = message.tool_call_id;
+      return normalized;
+    });
+    return changed ? normalizedMessages : messages;
+  }
+
+  /**
+   * Extract the last `recentCount` non-system messages from the end of an array,
+   * keeping assistant+tool_calls and their consecutive tool responses as atomic
+   * groups. This prevents pruning from breaking tool-call pairs, which causes
+   * API rejections.
+   */
+  protected extractRecentMessages(
+    messages: ChatMessage[],
+    recentCount: number,
+  ): ChatMessage[] {
+    const recent: ChatMessage[] = [];
+    const addedIndices = new Set<number>();
+    let idx = messages.length - 2; // just before the last message
+
+    let collected = 0;
+    while (idx >= 1 && collected < recentCount) {
+      if (addedIndices.has(idx)) {
+        idx--;
+        continue;
+      }
+      const msg = messages[idx];
+      if (
+        msg.role === "assistant" &&
+        msg.tool_calls &&
+        msg.tool_calls.length > 0
+      ) {
+        // Include the assistant and all its tool responses
+        const group: ChatMessage[] = [msg];
+        addedIndices.add(idx);
+        let j = idx + 1;
+        while (
+          j < messages.length - 1 &&
+          messages[j].role === "tool"
+        ) {
+          group.push(messages[j]);
+          addedIndices.add(j);
+          j++;
+        }
+        recent.unshift(...group);
+        collected++;
+        idx--;
+      } else if (msg.role === "tool") {
+        // Skip orphaned tool messages — they will be collected with their head
+        idx--;
+      } else {
+        recent.unshift(msg);
+        addedIndices.add(idx);
+        collected++;
+        idx--;
+      }
+    }
+    return recent;
   }
 
   protected pruneToContextWindow(
@@ -246,10 +330,7 @@ export abstract class AIProvider {
     const system = pruned[0];
     const userMsg = pruned[pruned.length - 1];
     const recentCount = Math.min(pruned.length - 2, 6);
-    const recent = pruned.slice(
-      pruned.length - 1 - recentCount,
-      pruned.length - 1,
-    );
+    const recent = this.extractRecentMessages(pruned, recentCount);
 
     const kept: ChatMessage[] = [
       system,
@@ -319,7 +400,7 @@ export abstract class AIProvider {
       const system = truncated[0];
       const userMsg = truncated[truncated.length - 1];
       const recentCount = Math.min(truncated.length - 2, 6);
-      const recent = truncated.slice(truncated.length - 1 - recentCount, truncated.length - 1);
+      const recent = this.extractRecentMessages(truncated, recentCount);
       const kept: ChatMessage[] = [
         system,
         {

@@ -112,6 +112,29 @@ class AgentRunDatabase {
         value TEXT NOT NULL
       );
     `);
+
+    // Failed attempts tracker — persists retry counts across process restarts
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS failed_attempts (
+        issue_key TEXT NOT NULL,
+        workspace TEXT NOT NULL,
+        count INTEGER NOT NULL DEFAULT 0,
+        last_attempt_at TEXT NOT NULL,
+        PRIMARY KEY (issue_key, workspace)
+      );
+      CREATE INDEX IF NOT EXISTS idx_failed_attempts_workspace ON failed_attempts(workspace);
+    `);
+
+    // Blacklisted issues — permanently skipped after MAX_FAILED_ATTEMPTS
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS blacklisted_issues (
+        issue_key TEXT NOT NULL,
+        workspace TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        blacklisted_at TEXT NOT NULL,
+        PRIMARY KEY (issue_key, workspace)
+      );
+    `);
   }
 
   startRun(params: AgentRunCreateParams): AgentRun {
@@ -171,7 +194,7 @@ class AgentRunDatabase {
       .prepare(
         `UPDATE agent_runs
          SET status = 'completed', model = ?, prompt_tokens = ?, completion_tokens = ?,
-             total_tokens = ?, tool_loop_count = ?, last_activity_at = ?, completed_at = ?
+             total_tokens = ?, tool_loop_count = ?, last_activity_at = ?, completed_at = ?, error_message = NULL
          WHERE id = ?`,
       )
       .run(
@@ -214,9 +237,10 @@ class AgentRunDatabase {
       .run(new Date().toISOString(), id);
   }
 
-  markStaleRunsAsFailed(olderThanMinutes: number = 30): number {
+  markStaleRunsAsFailed(olderThanMinutes?: number): number {
+    const threshold = olderThanMinutes ?? parseInt(process.env.AICODER_STALE_TIMEOUT_MINUTES || "120", 10);
     const cutoff = new Date(
-      Date.now() - olderThanMinutes * 60 * 1000,
+      Date.now() - threshold * 60 * 1000,
     ).toISOString();
     const result = this.db
       .prepare(
@@ -496,6 +520,66 @@ class AgentRunDatabase {
       result[row.key] = row.value;
     }
     return result;
+  }
+
+  // ── Failed attempts ──────────────────────────────────────────────────────────
+
+  getFailedAttemptCount(issueKey: string, workspace: string): number {
+    const row = this.db
+      .prepare("SELECT count FROM failed_attempts WHERE issue_key = ? AND workspace = ?")
+      .get(issueKey, workspace) as { count: number } | undefined;
+    return row?.count ?? 0;
+  }
+
+  incrementFailedAttempt(issueKey: string, workspace: string): number {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(`
+        INSERT INTO failed_attempts (issue_key, workspace, count, last_attempt_at)
+        VALUES (?, ?, 1, ?)
+        ON CONFLICT(issue_key, workspace) DO UPDATE SET
+          count = count + 1,
+          last_attempt_at = excluded.last_attempt_at
+      `)
+      .run(issueKey, workspace, now);
+    return this.getFailedAttemptCount(issueKey, workspace);
+  }
+
+  clearFailedAttempt(issueKey: string, workspace: string): void {
+    this.db
+      .prepare("DELETE FROM failed_attempts WHERE issue_key = ? AND workspace = ?")
+      .run(issueKey, workspace);
+  }
+
+  isIssueBlacklisted(issueKey: string, workspace: string): boolean {
+    const row = this.db
+      .prepare("SELECT 1 FROM blacklisted_issues WHERE issue_key = ? AND workspace = ?")
+      .get(issueKey, workspace);
+    return row !== undefined;
+  }
+
+  blacklistIssue(issueKey: string, workspace: string, reason: string): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare("INSERT OR REPLACE INTO blacklisted_issues (issue_key, workspace, reason, blacklisted_at) VALUES (?, ?, ?, ?)")
+      .run(issueKey, workspace, reason, now);
+  }
+
+  getBlacklistedIssues(workspace?: string): Array<{ issueKey: string; reason: string; blacklistedAt: string }> {
+    const rows = workspace
+      ? this.db.prepare("SELECT issue_key, reason, blacklisted_at FROM blacklisted_issues WHERE workspace = ? ORDER BY blacklisted_at DESC").all(workspace)
+      : this.db.prepare("SELECT issue_key, reason, blacklisted_at FROM blacklisted_issues ORDER BY blacklisted_at DESC").all();
+    return (rows as Array<{ issue_key: string; reason: string; blacklisted_at: string }>).map((r) => ({
+      issueKey: r.issue_key,
+      reason: r.reason,
+      blacklistedAt: r.blacklisted_at,
+    }));
+  }
+
+  unblacklistIssue(issueKey: string, workspace: string): void {
+    this.db
+      .prepare("DELETE FROM blacklisted_issues WHERE issue_key = ? AND workspace = ?")
+      .run(issueKey, workspace);
   }
 
   close(): void {

@@ -238,14 +238,18 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
   });
 }
 
+const MAX_BRANCH_NAME_LENGTH = 60;
+
 export function makeBranchName(issueNumber: number, title: string): string {
+  const prefix = `${AI_BRANCH_PREFIX}${issueNumber}-`;
+  const maxSlug = Math.max(0, MAX_BRANCH_NAME_LENGTH - prefix.length);
   const slug = title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "")
-    .slice(0, 40);
+    .slice(0, Math.min(40, maxSlug));
   return slug
-    ? `${AI_BRANCH_PREFIX}${issueNumber}-${slug}`
+    ? `${prefix}${slug}`
     : `${AI_BRANCH_PREFIX}${issueNumber}`;
 }
 

@@ -14,6 +14,7 @@ export interface Message {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
   timestamp: Date;
+  name?: string;
   toolCalls?: Array<{
     id: string;
     name: string;
@@ -1047,13 +1048,19 @@ ${summary.keyTopics.map((topic) => `- ${topic}`).join("\n")}
       "active",
       `${sessionId}.json`,
     );
-    if (fs.existsSync(filepath)) {
-      fs.unlinkSync(filepath);
-    }
+    this.unlinkIfPresent(filepath);
 
     const summaryPath = this.sessionSummaryPath(sessionId);
-    if (fs.existsSync(summaryPath)) {
-      fs.unlinkSync(summaryPath);
+    this.unlinkIfPresent(summaryPath);
+  }
+
+  private unlinkIfPresent(filepath: string): void {
+    try {
+      fs.unlinkSync(filepath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
     }
   }
 

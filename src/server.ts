@@ -42,9 +42,11 @@ import { musicianRoutes } from "./routes/musician";
 import { recipeRoutes } from "./routes/recipes";
 import { repoDashboardRoutes } from "./routes/repo-dashboard";
 import { kanbanRoutes } from "./routes/kanban";
+import { errorsRoutes } from "./routes/errors";
 import { claimKitAdapter } from "./context-engine/adapters/claimkit-adapter";
 import { comparisonRoutes } from "./comparison-runs/api";
 import { ingestKnowledgeStore, ingestCodebaseStore, ingestGraphStore } from "./context-engine/claimkit-ingestion";
+import { errorLog } from "./observability/error-log";
 import {
   authMiddleware,
   isAuthConfigured,
@@ -129,6 +131,7 @@ export async function buildServer() {
   await server.register(comparisonRoutes, { prefix: "/api/comparison" });
   await server.register(repoDashboardRoutes, { prefix: "/api/repo-dashboard" });
   await server.register(kanbanRoutes, { prefix: "/api/kanban" });
+  await server.register(errorsRoutes, { prefix: "/api" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 
@@ -180,11 +183,28 @@ export async function buildServer() {
   try {
     initializeTemplates();
   } catch (error) {
+    void errorLog.log({
+      source: "server",
+      category: "template_initialization",
+      message: error instanceof Error ? error.message : "Failed to initialize roadmap templates",
+      error,
+    });
     console.error("Failed to initialize roadmap templates:", error);
   }
 
-  // Error handler
-  server.setErrorHandler((error, _request, reply) => {
+  server.setErrorHandler((error, request, reply) => {
+    void errorLog.log({
+      source: "server",
+      category: "request_error",
+      message: error.message,
+      error,
+      userId: request.userId,
+      context: {
+        method: request.method,
+        url: request.url,
+        statusCode: (error as any).statusCode || 500,
+      },
+    });
     server.log.error(error);
     const statusCode = (error as any).statusCode || 500;
     const message =
@@ -380,6 +400,12 @@ async function start() {
           return result;
         })
         .catch((err) => {
+          void errorLog.log({
+            source: "rag",
+            category: "indexing_failed",
+            message: err instanceof Error ? err.message : "RAG indexing failed",
+            error: err,
+          });
           console.error("[RAG] Indexing failed:", err);
           return null;
         })
@@ -414,6 +440,12 @@ async function start() {
           );
         })
         .catch((err) => {
+          void errorLog.log({
+            source: "claimkit",
+            category: "startup_failed",
+            message: err instanceof Error ? err.message : "ClaimKit startup error",
+            error: err,
+          });
           console.error("[ClaimKit] Startup error:", err);
         });
     }
@@ -437,6 +469,12 @@ async function start() {
       console.log("   Or visit: " + tunnelUrl + "/calendar/subscribe");
     }
   } catch (error) {
+    await errorLog.log({
+      source: "server",
+      category: "startup_failed",
+      message: error instanceof Error ? error.message : "Server startup failed",
+      error,
+    });
     server.log.error(error);
     process.exit(1);
   }

@@ -110,6 +110,7 @@ const envSchema = z.object({
   // Audit
   AUDIT_LOG_FILE: z.string().default("./logs/audit.log"),
   AUDIT_LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  ERROR_LOG_FILE: z.string().default("./logs/errors.jsonl"),
 
   // Feature flags
   ENABLE_CALENDAR_WRITE: z

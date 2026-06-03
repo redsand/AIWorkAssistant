@@ -93,6 +93,7 @@ export function buildProviderPreflightScenarios(): Array<{
           },
           {
             role: "tool",
+            name: "local.search",
             tool_call_id: "call_preflight",
             content: "{\"matches\":[]}",
           },

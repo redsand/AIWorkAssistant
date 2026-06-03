@@ -419,4 +419,34 @@ describe("selectMessages", () => {
     // System and last user are always included, the rest is by effectiveWeight
     expect(selected.length).toBeGreaterThanOrEqual(2);
   });
+
+  it("keeps assistant tool calls with their tool results as a group", () => {
+    const messages: ChatMessage[] = [
+      makeMessage({ role: "system", content: "sys" }),
+      makeMessage({ role: "assistant", content: "low value filler text" }),
+      makeMessage({
+        role: "assistant",
+        content: "",
+        tool_calls: [{
+          id: "call_1",
+          type: "function",
+          function: { name: "gitlab.search_code", arguments: "{}" },
+        }],
+      }),
+      makeMessage({
+        role: "tool",
+        content: "jira api bug security error exception stack trace debug log",
+        tool_call_id: "call_1",
+      }),
+      makeMessage({ role: "user", content: "what happened?" }),
+    ];
+    const scored = scoreMessages(messages, "jira api bug");
+    const selected = selectMessages(scored, 1000);
+    const selectedRoles = selected.map((s) => s.message.role);
+    const toolIndex = selectedRoles.indexOf("tool");
+
+    expect(toolIndex).toBeGreaterThan(0);
+    expect(selected[toolIndex - 1].message.role).toBe("assistant");
+    expect(selected[toolIndex - 1].message.tool_calls?.[0].id).toBe("call_1");
+  });
 });
