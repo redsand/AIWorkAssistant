@@ -99,8 +99,34 @@ export class ClaimKitAdapter {
           const client = createRedisClient({ url: redisUrl });
           await connectRedis(client);
           this.redisClient = client;
-          const prefix = env.CLAIMKIT_REDIS_PREFIX || "aiworkassistant";
+          const basePrefix = env.CLAIMKIT_REDIS_PREFIX || "aiworkassistant";
+          const modelSlug = settledProvider.model
+            .replace(/[^a-zA-Z0-9_.-]/g, "-")
+            .toLowerCase();
+          const prefix = `${basePrefix}:${modelSlug}`;
           const dim = embeddings.dimensions;
+
+          // Detect and auto-repair vector dimension mismatch from a previous
+          // embedding model. If stored dim differs, flush stale keys so the
+          // new model starts with a clean namespace.
+          const metaKey = `${prefix}:meta:vector-dim`;
+          const rc = client as unknown as {
+            get(k: string): Promise<string | null>;
+            set(k: string, v: string): Promise<unknown>;
+            keys(pattern: string): Promise<string[]>;
+            del(keys: string[]): Promise<number>;
+          };
+          const storedDim = await rc.get(metaKey);
+          if (storedDim !== null && parseInt(storedDim, 10) !== dim) {
+            console.warn(
+              `[ClaimKit] Dimension changed (${storedDim}d → ${dim}d) — flushing stale Redis keys for "${prefix}"...`,
+            );
+            const staleKeys = await rc.keys(`${prefix}:*`);
+            if (staleKeys.length > 0) await rc.del(staleKeys);
+            console.log(`[ClaimKit] Flushed ${staleKeys.length} stale key(s)`);
+          }
+          await rc.set(metaKey, String(dim));
+
           stores = createRedisStores({
             client,
             prefix,
