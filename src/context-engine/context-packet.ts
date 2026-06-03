@@ -27,6 +27,7 @@ import { rerank } from "./reranker";
 import { scoreMessages, deduplicateByJaccard, selectMessages } from "./memory-decay";
 import type { ClaimKitQueryResult } from "./adapters/claimkit-adapter";
 import { agentMemory } from "../memory/agent-memory";
+import { skillManager } from "../skills/skill-manager";
 
 export interface RoutingDecision {
   tier: RoutingTier;
@@ -91,11 +92,18 @@ export async function assembleContextPacket(
     : null;
   const memoryTokens = (memorySection?.tokens ?? 0) + (userProfileSection?.tokens ?? 0);
 
+  // Load skill summaries — after memory/user, before system prompt
+  const skillsText = skillManager.getSummariesText();
+  const skillsSection: ContextSection | null = skillsText
+    ? { name: "skills", content: skillsText, tokens: estimateTokens(skillsText) }
+    : null;
+  const skillsTokens = skillsSection?.tokens ?? 0;
+
   const claimKitAvailable = await claimKitAdapter.initialize();
 
   const baseSystemPrompt = getSystemPrompt(mode, query, "engine");
   const systemTokens = estimateTokens(baseSystemPrompt);
-  systemSlot.allocatedTokens = Math.max(systemSlot.allocatedTokens, systemTokens + memoryTokens);
+  systemSlot.allocatedTokens = Math.max(systemSlot.allocatedTokens, systemTokens + memoryTokens + skillsTokens);
 
   const scored = scoreMessages(sessionMessages, query);
   const deduped = deduplicateByJaccard(scored);
@@ -240,12 +248,15 @@ export async function assembleContextPacket(
 
   const sections: ContextSection[] = [];
 
-  // Slot #1: Agent memory + user profile (before system prompt)
+  // Slot #1: Agent memory + user profile + skills (before system prompt)
   if (memorySection) {
     sections.push(memorySection);
   }
   if (userProfileSection) {
     sections.push(userProfileSection);
+  }
+  if (skillsSection) {
+    sections.push(skillsSection);
   }
 
   sections.push(
@@ -277,6 +288,11 @@ export async function assembleContextPacket(
   }
   if (userProfileEnforced?.content.trim()) {
     messages.push({ role: "system", content: `=== USER PROFILE ===\n${userProfileEnforced.content}` });
+  }
+
+  const skillsEnforced = enforced.find((s) => s.name === "skills");
+  if (skillsEnforced?.content.trim()) {
+    messages.push({ role: "system", content: skillsEnforced.content });
   }
 
   if (systemEnforced) {
