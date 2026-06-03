@@ -85,7 +85,13 @@ export async function assembleContextPacket(
   const sanitizeForPrompt = (s: string) => s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
 
   // SOUL.md — absolute first section (slot #1), before everything else
-  const soulContent = sanitizeForPrompt(soulManager.load());
+  let soulContent: string;
+  try {
+    soulContent = sanitizeForPrompt(soulManager.load());
+  } catch (err) {
+    console.warn("[ContextPacket] Failed to load SOUL.md, falling back to empty:", err);
+    soulContent = "";
+  }
   const soulSection: ContextSection = { name: "soul", content: soulContent, tokens: estimateTokens(soulContent) };
   const soulTokens = soulSection.tokens;
 

@@ -59,7 +59,7 @@ export function createSoulManageHandler(store: SoulStore) {
           if (!result.success) {
             return { success: false, error: result.error };
           }
-          console.log(`[SoulManager] edited section '${section}'`);
+          errorLog.log({ source: "SoulManage", category: "edit", message: `Edited section '${section}'`, severity: "info" });
           return {
             success: true,
             data: { section, content: result.content },
@@ -71,7 +71,7 @@ export function createSoulManageHandler(store: SoulStore) {
           if (!result.success) {
             return { success: false, error: result.error };
           }
-          console.log("[SoulManager] reset to default");
+          errorLog.log({ source: "SoulManage", category: "reset", message: "Reset SOUL.md to default identity", severity: "info" });
           return {
             success: true,
             data: { content: result.content },
@@ -110,7 +110,7 @@ export function createSoulManageHandler(store: SoulStore) {
           }
 
           store.setPersonality(preset.name, preset.content);
-          console.log(`[SoulManager] personality set to '${preset.name}'`);
+          errorLog.log({ source: "SoulManage", category: "personality", message: `Personality set to '${preset.name}'`, severity: "info" });
           return {
             success: true,
             data: {

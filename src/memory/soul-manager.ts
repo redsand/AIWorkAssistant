@@ -28,6 +28,9 @@ When ambiguous, choose the simpler option.
 When in doubt, ask rather than assume.
 `;
 
+// NOTE: This denylist is a first-layer defense, not exhaustive. It catches common prompt-injection
+// phrases but can be bypassed via obfuscation, encoding, or novel phrasing. Do not rely on it as
+// the sole security boundary — SOUL.md content is also sanitized before injection into system messages.
 const INJECTION_PATTERNS = [
   /ignore\s+(all\s+)?previous\s+(instructions?|prompts?|rules?)/i,
   /you\s+are\s+now\s+/i,
@@ -108,7 +111,7 @@ export class SoulManager {
 
   load(): string {
     const content = this.activePersonality
-      ? this.personalityContent!
+      ? (this.personalityContent ?? this.readSoulFile())
       : this.readSoulFile();
 
     const injections = this.scanForInjection(content);
@@ -266,4 +269,18 @@ export class SoulManager {
   }
 }
 
-export const soulManager = new SoulManager();
+let _soulManager: SoulManager | null = null;
+
+export function getSoulManager(): SoulManager {
+  if (!_soulManager) {
+    _soulManager = new SoulManager();
+  }
+  return _soulManager;
+}
+
+/** @deprecated Use getSoulManager() for lazy initialization */
+export const soulManager = new Proxy({} as SoulManager, {
+  get(_target, prop) {
+    return (getSoulManager() as any)[prop];
+  },
+});
