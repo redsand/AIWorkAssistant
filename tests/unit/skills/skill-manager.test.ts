@@ -653,6 +653,42 @@ describe("SkillManager", () => {
       expect(result.error).toContain("Invalid category");
     });
 
+    it("should reject create with .. as category (dot-dot traversal)", () => {
+      const result = manager.create({
+        name: "evil",
+        description: "Escape attempt",
+        category: "..",
+        tags: [],
+        body: "body",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid category");
+    });
+
+    it("should reject create with .. as name (dot-dot traversal)", () => {
+      const result = manager.create({
+        name: "..",
+        description: "Escape attempt",
+        category: "test",
+        tags: [],
+        body: "body",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid name");
+    });
+
+    it("should reject create with . as category (dot traversal)", () => {
+      const result = manager.create({
+        name: "test",
+        description: "Escape attempt",
+        category: ".",
+        tags: [],
+        body: "body",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid category");
+    });
+
     it("should reject create with ../ in name", () => {
       const result = manager.create({
         name: "../../etc/passwd",
@@ -675,6 +711,18 @@ describe("SkillManager", () => {
       });
       expect(result.success).toBe(false);
       expect(result.error).toContain("Invalid category");
+    });
+
+    it("should reject create with name starting with dot", () => {
+      const result = manager.create({
+        name: ".hidden",
+        description: "Dot-prefixed",
+        category: "test",
+        tags: [],
+        body: "body",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid name");
     });
 
     it("should reject loadFull with absolute path", () => {

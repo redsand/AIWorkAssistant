@@ -81,7 +81,7 @@ export class SkillCurator {
     decisions.push(...mergeSuggestions);
 
     console.log(
-      `[SkillCurator] Evaluated ${skills.length} skills, made ${decisions.length} decisions`,
+      `[SkillCurator] curate complete | evaluated=${skills.length} decisions=${decisions.length} stale=${decisions.filter((d) => d.action === "stale").length} archived=${decisions.filter((d) => d.action === "archive").length} mergeSuggestions=${decisions.filter((d) => d.action === "merge_suggestion").length}`,
     );
 
     return {

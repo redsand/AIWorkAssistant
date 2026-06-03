@@ -10,12 +10,17 @@ import type {
   SkillManageResult,
 } from "./skill-types";
 
-const VALID_SEGMENT_RE = /^[a-zA-Z0-9._-]+$/;
+const VALID_SEGMENT_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
 function sanitizePathSegment(segment: string, label: string): string {
-  if (!segment || !VALID_SEGMENT_RE.test(segment)) {
+  if (
+    !segment ||
+    segment === "." ||
+    segment === ".." ||
+    !VALID_SEGMENT_RE.test(segment)
+  ) {
     throw new Error(
-      `Invalid ${label}: must contain only alphanumeric, dash, underscore, or dot characters`,
+      `Invalid ${label}: must start with alphanumeric and contain only alphanumeric, dash, underscore, or dot characters`,
     );
   }
   return segment;

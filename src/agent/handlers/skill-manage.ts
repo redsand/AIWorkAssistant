@@ -215,9 +215,11 @@ export function createSkillManageHandler(store: SkillStore) {
           };
       }
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[SkillManage] handler error: ${message}`);
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       };
     }
   };

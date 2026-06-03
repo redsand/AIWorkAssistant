@@ -3309,7 +3309,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "skill.manage",
     description:
-      "Create, patch, edit, archive, list, search, or load reusable skill procedures. Skills capture successful multi-step workflows as markdown documents with YAML frontmatter. Use 'create' to codify a workflow, 'list' to browse available skills, 'search' to find skills by name/description/tags, 'load' to read the full procedure, 'patch' to update a specific section, 'edit' to replace the entire body, or 'delete' to archive a skill.",
+      "Create, patch, edit, delete, list, search, or load reusable skill procedures. Skills capture successful multi-step workflows as markdown documents with YAML frontmatter. Use 'create' to codify a workflow, 'list' to browse available skills, 'search' to find skills by name/description/tags, 'load' to read the full procedure, 'patch' to update a specific section, 'edit' to replace the entire body, or 'delete' to archive a skill.",
     params: {
       action: {
         type: "string",
