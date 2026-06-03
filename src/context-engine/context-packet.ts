@@ -117,6 +117,10 @@ export async function assembleContextPacket(
       const truncated = rawSkillsText.substring(0, maxChars);
       const lastNewline = truncated.lastIndexOf("\n");
       skillsText = lastNewline > 0 ? truncated.substring(0, lastNewline) + "\n...(truncated)" : truncated + "\n...(truncated)";
+      console.warn(
+        `[ContextPacket] Skill summaries truncated: ${estimatedTokens} tokens exceeded ${MAX_SKILL_TOKENS} cap. ` +
+        `Some skills may be omitted from context.`,
+      );
     }
   }
   const skillsSection: ContextSection | null = skillsText
