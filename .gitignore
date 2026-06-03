@@ -57,7 +57,7 @@ packaging-test-*/
 *.egg-info/
 
 generated-audio/
-memory/
+/memory/
 musicgen-service/__pycache__/
 musicgen-service/venv/
 
