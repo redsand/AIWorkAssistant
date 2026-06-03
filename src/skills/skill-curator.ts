@@ -80,9 +80,13 @@ export class SkillCurator {
     const mergeSuggestions = this.findOverlappingSkills(skills);
     decisions.push(...mergeSuggestions);
 
-    console.log(
-      `[SkillCurator] curate complete | evaluated=${skills.length} decisions=${decisions.length} stale=${decisions.filter((d) => d.action === "stale").length} archived=${decisions.filter((d) => d.action === "archive").length} mergeSuggestions=${decisions.filter((d) => d.action === "merge_suggestion").length}`,
-    );
+    logSkillEvent("curate_complete", {
+      evaluated: skills.length,
+      decisions: decisions.length,
+      stale: decisions.filter((d) => d.action === "stale").length,
+      archived: decisions.filter((d) => d.action === "archive").length,
+      mergeSuggestions: decisions.filter((d) => d.action === "merge_suggestion").length,
+    });
 
     return {
       decisions,
@@ -116,6 +120,10 @@ export class SkillCurator {
 
     return decisions;
   }
+}
+
+function logSkillEvent(action: string, data: Record<string, unknown>): void {
+  console.log(JSON.stringify({ source: "SkillCurator", action, timestamp: new Date().toISOString(), ...data }));
 }
 
 function daysBetween(a: Date, b: Date): number {
