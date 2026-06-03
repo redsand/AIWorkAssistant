@@ -22,6 +22,7 @@ const SCROLL_NEAR_BOTTOM_PX = 150;
 let autoScrollEnabled = true;
 let currentStreamingMessageId = null;
 let msgCounter = 0;
+let currentProgressEl = null;
 
 export function setCurrentStreamingMessageId(id) {
   currentStreamingMessageId = id;
@@ -162,9 +163,16 @@ export function addMessage(content, type, thinking, { scroll = true, messageId =
           bubble.appendChild(contentEl);
         }
         if (streaming) {
-          // Raw text during streaming — no markdown parse overhead
-          contentEl.textContent = content;
           contentEl.dataset.streamRaw = content;
+          // RAF-throttled render: at most once per animation frame regardless of token rate
+          if (!contentEl._rafPending) {
+            contentEl._rafPending = true;
+            requestAnimationFrame(() => {
+              contentEl._rafPending = false;
+              const raw = contentEl.dataset.streamRaw;
+              if (raw !== undefined) contentEl.innerHTML = renderMarkdown(raw);
+            });
+          }
         } else {
           contentEl.innerHTML = renderMarkdown(content);
           delete contentEl.dataset.streamRaw;
@@ -202,6 +210,7 @@ export function addMessage(content, type, thinking, { scroll = true, messageId =
     const contentEl = document.createElement("div");
     contentEl.className = "message-content";
     contentEl.innerHTML = renderMarkdown(content);
+    if (streaming) contentEl.dataset.streamRaw = content;
     bubble.appendChild(contentEl);
   } else {
     bubble.textContent = content;
@@ -255,11 +264,22 @@ export function createToolProgress() {
   progressEl.appendChild(header);
   progressEl.appendChild(body);
 
+  currentProgressEl = progressEl;
   return { statusDiv: null, progressEl };
 }
 
+export function markProgressAsGenerating() {
+  if (!currentProgressEl) return;
+  const headerText = currentProgressEl.querySelector(".tool-progress-header-left");
+  if (!headerText) return;
+  if (headerText.textContent && headerText.textContent.includes("Generating")) return;
+  headerText.innerHTML = `<span class="tool-call-status running"></span> Generating response...`;
+  const statusEl = document.getElementById("processingStatusText");
+  if (statusEl) statusEl.textContent = "Generating response...";
+}
+
 export function addToolCall(id, name, params) {
-  const progressEl = document.querySelector(".tool-progress:last-of-type");
+  const progressEl = currentProgressEl;
   if (!progressEl) return;
 
   const body = progressEl.querySelector(".tool-progress-body");
@@ -295,7 +315,7 @@ export function addToolCall(id, name, params) {
 }
 
 export function completeToolCall(id, result) {
-  const progressEl = document.querySelector(".tool-progress:last-of-type");
+  const progressEl = currentProgressEl;
   if (!progressEl) return;
 
   const item = progressEl.querySelector(`[data-tool-id="${id}"]`);
@@ -345,6 +365,7 @@ export function completeToolCall(id, result) {
 }
 
 export function finalizeToolProgress() {
+  currentProgressEl = null;
   const progressEls = document.querySelectorAll(".tool-progress");
   progressEls.forEach((el) => {
     const toolCallItems = el.querySelectorAll(".tool-call-item");

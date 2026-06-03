@@ -65,7 +65,7 @@ vi.mock("../js/ui.js", () => ({
   showLoginOverlay: vi.fn(),
 }));
 
-vi.mock("../js/live.js?v=9", () => ({
+vi.mock("../js/live.js", () => ({
   subscribeLive: vi.fn(),
   disconnectLive: vi.fn(),
 }));

@@ -18,10 +18,28 @@ class EmbeddingService {
   private available: boolean | null = null;
   private lastCheck = 0;
   private checkIntervalMs = 5 * 60 * 1000;
+  private pullAttempted = false;
 
   constructor() {
-    this.provider = env.AI_PROVIDER;
-    this.model = env.RAG_EMBEDDING_MODEL;
+    // Resolve embedding provider: explicit EMBEDDING_PROVIDER overrides everything;
+    // "auto" falls back to RAG_EMBEDDING_MODEL hint, then AI_PROVIDER.
+    const embedProvider = env.EMBEDDING_PROVIDER;
+    const embedModel = env.EMBEDDING_MODEL;
+
+    if (embedProvider !== "auto") {
+      this.provider = embedProvider;
+    } else if (env.RAG_EMBEDDING_MODEL) {
+      // Legacy: infer provider from the model name
+      const m = env.RAG_EMBEDDING_MODEL;
+      if (m.startsWith("nomic") || m.startsWith("mxbai") || m.startsWith("bge") || m.startsWith("all-minilm")) {
+        this.provider = "ollama";
+      } else {
+        this.provider = env.AI_PROVIDER;
+      }
+    } else {
+      this.provider = env.AI_PROVIDER;
+    }
+    this.model = embedModel || env.RAG_EMBEDDING_MODEL || "";
 
     // Fallback: prefer OpenAI when a key is available; otherwise use OpenCode endpoint
     if (env.OPENAI_API_KEY) {
@@ -34,7 +52,7 @@ class EmbeddingService {
 
     // Local Ollama is the last-resort fallback — it's always reachable and any
     // loaded model can generate embeddings via /api/embed.
-    this.ollamaFallbackModel = env.EMBEDDING_OLLAMA_FALLBACK_MODEL || "phi4-mini:3.8b";
+    this.ollamaFallbackModel = env.EMBEDDING_OLLAMA_FALLBACK_MODEL || "nomic-embed-text";
 
     switch (this.provider) {
       case "ollama":
@@ -154,7 +172,7 @@ class EmbeddingService {
 
     // Last-resort: local Ollama. Always reachable and any loaded model can
     // produce embeddings via /api/embed. Keeps ClaimKit working even when all
-    // cloud providers are down.
+    // cloud providers are down. checkOllamaEmbed auto-pulls if the model is missing.
     if (!this.available && env.OLLAMA_API_URL && this.provider !== "ollama") {
       try {
         const ollamaAvailable = await this.checkOllamaEmbed(
@@ -289,25 +307,95 @@ class EmbeddingService {
           headers: this.apiKey
             ? { Authorization: `Bearer ${this.apiKey}` }
             : {},
-          timeout: 3000,
+          timeout: 5000,
         },
       );
       return !!(response.data && response.data.embedding);
-    } catch {
+    } catch (err: unknown) {
+      if (this.isModelNotFoundError(err) && !this.pullAttempted) {
+        console.log(`[Embedding] Model "${this.model}" not found locally — attempting ollama pull...`);
+        const pulled = await this.ollamaPull(this.model);
+        if (pulled) {
+          try {
+            const retry = await axios.post(
+              `${this.baseUrl}/api/embeddings`,
+              { model: this.model, prompt: "test" },
+              {
+                headers: this.apiKey
+                  ? { Authorization: `Bearer ${this.apiKey}` }
+                  : {},
+                timeout: 30000,
+              },
+            );
+            return !!(retry.data && retry.data.embedding);
+          } catch {
+            return false;
+          }
+        }
+      }
       return false;
     }
   }
 
   // Uses /api/embeddings (same endpoint as ollamaEmbed) so check and embed are consistent.
-  private async checkOllamaEmbed(baseUrl: string, model: string): Promise<boolean> {
+  private async checkOllamaEmbed(baseUrl: string, model: string, timeout = 8000): Promise<boolean> {
     try {
       const response = await axios.post(
         `${baseUrl}/api/embeddings`,
         { model, prompt: "test" },
-        { timeout: 3000 },
+        { timeout },
       );
       return !!(response.data && response.data.embedding);
-    } catch {
+    } catch (err: unknown) {
+      if (this.isModelNotFoundError(err) && !this.pullAttempted) {
+        console.log(`[Embedding] Model "${model}" not found locally — attempting ollama pull...`);
+        const pulled = await this.ollamaPullForUrl(baseUrl, model);
+        if (pulled) {
+          try {
+            const retry = await axios.post(
+              `${baseUrl}/api/embeddings`,
+              { model, prompt: "test" },
+              { timeout: 30000 },
+            );
+            return !!(retry.data && retry.data.embedding);
+          } catch {
+            return false;
+          }
+        }
+      }
+      return false;
+    }
+  }
+
+  private isModelNotFoundError(err: unknown): boolean {
+    if (!err || typeof err !== "object") return false;
+    const e = err as { response?: { status?: number; data?: { error?: string } }; message?: string };
+    if (e.response?.status === 404) return true;
+    const msg = (e.response?.data?.error ?? e.message ?? "").toLowerCase();
+    return msg.includes("not found") || msg.includes("no model") || msg.includes("does not exist");
+  }
+
+  private async ollamaPull(model: string): Promise<boolean> {
+    return this.ollamaPullForUrl(this.baseUrl, model);
+  }
+
+  private async ollamaPullForUrl(baseUrl: string, model: string): Promise<boolean> {
+    this.pullAttempted = true;
+    try {
+      const response = await axios.post(
+        `${baseUrl}/api/pull`,
+        { name: model, stream: false },
+        { timeout: 300000 },
+      );
+      const ok = response.data?.status === "success" || response.status === 200;
+      if (ok) {
+        console.log(`[Embedding] Successfully pulled model "${model}" from Ollama`);
+      } else {
+        console.warn(`[Embedding] Failed to pull model "${model}" from Ollama: unexpected response`);
+      }
+      return ok;
+    } catch (err) {
+      console.warn(`[Embedding] Failed to pull model "${model}" from Ollama:`, err instanceof Error ? err.message : "Unknown error");
       return false;
     }
   }
@@ -326,7 +414,7 @@ class EmbeddingService {
             "Content-Type": "application/json",
             Authorization: `Bearer ${key}`,
           },
-          timeout: 3000,
+          timeout: 5000,
         },
       );
       return !!(

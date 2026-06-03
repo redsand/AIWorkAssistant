@@ -32,6 +32,7 @@ import {
   setCurrentStreamingMessageId,
   markStreamingMessageInterrupted,
   finalizeStreamingMessage,
+  markProgressAsGenerating,
 } from "./messages.js";
 import { loadRoadmaps } from "./sidebar.js";
 import { loadConversations } from "./conversations.js";
@@ -115,6 +116,7 @@ async function handleStreamResponse(response, progressElRef, onError) {
           if (eventType === "token" && data.token !== undefined) {
             accumulatedContent += data.token;
             if (streamingMessageId === null) {
+              markProgressAsGenerating();
               streamingMessageId = addMessage(accumulatedContent, "assistant", currentThinking || undefined, { streaming: true });
               setCurrentStreamingMessageId(streamingMessageId);
               currentThinking = "";
@@ -327,7 +329,7 @@ export async function initializeChat() {
   await loadChatHistory();
   ensureScrollListener();
 
-  const { subscribeLive } = await import("./live.js?v=9");
+  const { subscribeLive } = await import("./live.js");
   if (currentSessionId) {
     subscribeLive(currentSessionId);
   }
@@ -433,15 +435,9 @@ export async function clearChat() {
   `;
 }
 
-export async function sendMessage() {
-  const input = document.getElementById("messageInput");
-  const message = input.value.trim();
-
-  if (!message) return;
-
+async function executeSend(message, { resend = false } = {}) {
   const myGeneration = nextSendGeneration();
 
-  // === SHOW PROCESSING IMMEDIATELY (before any async operations) ===
   enableAutoScroll();
   showTyping(true);
   const progressElRef = { progressEl: null };
@@ -449,24 +445,27 @@ export async function sendMessage() {
   progressElRef.progressEl = immediateProgress.progressEl;
   document.getElementById("chatMessages").appendChild(immediateProgress.progressEl);
   document.getElementById("processingIndicator").classList.add("active");
-  const _statusReset = document.getElementById("processingStatusText");
-  if (_statusReset) _statusReset.textContent = "Processing your request...";
+  const statusEl = document.getElementById("processingStatusText");
+  if (statusEl) statusEl.textContent = "Processing your request...";
   scrollChatToBottom();
-  // ================================================================
 
-  const { disconnectLive } = await import("./live.js?v=9");
+  const { disconnectLive } = await import("./live.js");
   disconnectLive();
 
-  input.value = "";
-  autoResizeTextarea(input);
-  setHistoryIndex(-1);
-  setDraftBeforeHistory("");
-  const hist = [...messageHistory];
-  if (hist[hist.length - 1] !== message) {
-    hist.push(message);
+  if (resend) {
+    const messagesDiv = document.getElementById("chatMessages");
+    const userMessages = messagesDiv.querySelectorAll(".message.user");
+    let clickedMsg = null;
+    for (const um of userMessages) {
+      if (um.dataset.originalText === message) { clickedMsg = um; break; }
+    }
+    if (clickedMsg) {
+      let next = clickedMsg.nextElementSibling;
+      while (next) { const cur = next; next = cur.nextElementSibling; cur.remove(); }
+    }
+  } else {
+    addMessage(message, "user");
   }
-  setMessageHistory(hist);
-  addMessage(message, "user");
 
   if (activeStreamController) {
     markStreamingMessageInterrupted();
@@ -482,12 +481,13 @@ export async function sendMessage() {
       method: "POST",
       headers: authHeaders(),
       body: JSON.stringify({
-        message: message,
+        message,
         mode: currentMode,
         userId: "web-user",
         sessionId: currentSessionId,
         includeMemory: true,
         includeTools: true,
+        ...(resend ? { resend: true } : {}),
       }),
       signal: controller.signal,
     });
@@ -507,9 +507,7 @@ export async function sendMessage() {
       let errorText = `Server returned ${response.status}`;
       try {
         const errBody = await response.json();
-        if (errBody.error || errBody.message) {
-          errorText = errBody.error || errBody.message;
-        }
+        if (errBody.error || errBody.message) errorText = errBody.error || errBody.message;
       } catch {}
       addMessage("Error: " + errorText, "assistant");
       return;
@@ -530,173 +528,52 @@ export async function sendMessage() {
       await loadChatHistory();
     }
 
-    if (result.roadmapTouched) {
-      loadRoadmaps();
-    }
+    if (result.roadmapTouched) loadRoadmaps();
 
     loadConversations();
 
-    const { subscribeLive } = await import("./live.js?v=9");
+    const { subscribeLive } = await import("./live.js");
     if (currentSessionId) subscribeLive(currentSessionId);
   } catch (error) {
     finalizeToolProgress();
     const processingIndicator = document.getElementById("processingIndicator");
     if (processingIndicator) processingIndicator.classList.remove("active");
-    if (myGeneration === sendGeneration) {
-      showTyping(false);
-    }
+    if (myGeneration === sendGeneration) showTyping(false);
     if (error instanceof DOMException && error.name === "AbortError") return;
     console.error("Failed to send message:", error);
     if (myGeneration === sendGeneration) {
       const errMsg = error instanceof Error ? error.message : String(error);
       addMessage(
-        "Failed to connect to the agent: " +
-          errMsg +
-          ". Please check that the server is running and try again.",
+        "Failed to connect to the agent: " + errMsg + ". Please check that the server is running and try again.",
         "assistant",
       );
     }
-    const { subscribeLive } = await import("./live.js?v=9");
+    const { subscribeLive } = await import("./live.js");
     if (currentSessionId) subscribeLive(currentSessionId);
   }
 }
 
-export async function resendMessage(message) {
-  const myGeneration = nextSendGeneration();
+export async function sendMessage() {
+  const input = document.getElementById("messageInput");
+  const message = input.value.trim();
+  if (!message) return;
 
-
-  // === SHOW PROCESSING IMMEDIATELY (before any async operations) ===
-  enableAutoScroll();
-  showTyping(true);
-  const progressElRef = { progressEl: null };
-  const immediateProgress = createToolProgress();
-  progressElRef.progressEl = immediateProgress.progressEl;
-  document.getElementById("chatMessages").appendChild(immediateProgress.progressEl);
-  document.getElementById("processingIndicator").classList.add("active");
-  const _statusReset = document.getElementById("processingStatusText");
-  if (_statusReset) _statusReset.textContent = "Processing your request...";
-  scrollChatToBottom();
-  // ================================================================
-
-  const { disconnectLive } = await import("./live.js?v=9");
-  disconnectLive();
-
-  setHistoryIndex(-1);
   const hist = [...messageHistory];
-  if (hist[hist.length - 1] !== message) {
-    hist.push(message);
-  }
+  if (hist[hist.length - 1] !== message) hist.push(message);
   setMessageHistory(hist);
-  const messagesDiv = document.getElementById("chatMessages");
+  setHistoryIndex(-1);
+  setDraftBeforeHistory("");
+  input.value = "";
+  autoResizeTextarea(input);
 
-  const userMessages = messagesDiv.querySelectorAll(".message.user");
-  let clickedMsg = null;
-  for (const um of userMessages) {
-    if (um.dataset.originalText === message) {
-      clickedMsg = um;
-      break;
-    }
-  }
+  await executeSend(message, { resend: false });
+}
 
-  if (clickedMsg) {
-    let next = clickedMsg.nextElementSibling;
-    while (next) {
-      const current = next;
-      next = current.nextElementSibling;
-      current.remove();
-    }
-  }
+export async function resendMessage(message) {
+  const hist = [...messageHistory];
+  if (hist[hist.length - 1] !== message) hist.push(message);
+  setMessageHistory(hist);
+  setHistoryIndex(-1);
 
-  if (activeStreamController) {
-    markStreamingMessageInterrupted();
-    activeStreamController.abort();
-    setActiveStreamController(null);
-  }
-
-  try {
-    const controller = new AbortController();
-    setActiveStreamController(controller);
-
-    const response = await fetch(`${API_BASE}/chat/stream`, {
-      method: "POST",
-      headers: authHeaders(),
-      body: JSON.stringify({
-        message: message,
-        mode: currentMode,
-        userId: "web-user",
-        sessionId: currentSessionId,
-        includeMemory: true,
-        includeTools: true,
-        resend: true,
-      }),
-      signal: controller.signal,
-    });
-
-    if (response.status === 401 || response.status === 403) {
-      showTyping(false);
-      finalizeToolProgress();
-      document.getElementById("processingIndicator")?.classList.remove("active");
-      showLoginOverlay();
-      return;
-    }
-
-    if (!response.ok) {
-      showTyping(false);
-      finalizeToolProgress();
-      document.getElementById("processingIndicator")?.classList.remove("active");
-      let errorText = `Server returned ${response.status}`;
-      try {
-        const errBody = await response.json();
-        if (errBody.error || errBody.message) {
-          errorText = errBody.error || errBody.message;
-        }
-      } catch {}
-      addMessage("Error: " + errorText, "assistant");
-      return;
-    }
-
-    const result = await handleStreamResponse(response, progressElRef);
-    setActiveStreamController(null);
-
-    finalizeToolProgress();
-    document.getElementById("processingIndicator")?.classList.remove("active");
-    showTyping(false);
-
-    if (result.error) return;
-
-    if (result.contentCount > 0) {
-      addCompletionMarker();
-    } else {
-      await loadChatHistory();
-    }
-
-    if (result.roadmapTouched) {
-      loadRoadmaps();
-    }
-
-    loadConversations();
-
-    const { subscribeLive } = await import("./live.js?v=9");
-    if (currentSessionId) subscribeLive(currentSessionId);
-  } catch (error) {
-    finalizeToolProgress();
-    const processingIndicator = document.getElementById("processingIndicator");
-    if (processingIndicator) processingIndicator.classList.remove("active");
-    if (myGeneration === sendGeneration) {
-      showTyping(false);
-    }
-    if (error instanceof DOMException && error.name === "AbortError") return;
-    console.error("Failed to send message:", error);
-    if (myGeneration === sendGeneration) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      addMessage(
-        "Failed to connect to the agent: " +
-          errMsg +
-          ". Please check that the server is running and try again.",
-        "assistant",
-      );
-    }
-    const { subscribeLive } = await import("./live.js?v=9");
-    if (currentSessionId) subscribeLive(currentSessionId);
-  }
+  await executeSend(message, { resend: true });
 }

@@ -41,6 +41,7 @@ vi.mock("../../../src/config/env", () => ({
 
 vi.mock("../../../src/agent/embedding-service", () => ({
   embeddingService: {
+    isAvailable: vi.fn().mockResolvedValue(true),
     getProviderInfo: () => ({ provider: "test", model: "text-embedding-3-small" }),
     embed: vi.fn().mockResolvedValue({ embedding: new Array(1536).fill(0) }),
     embedBatch: vi.fn(),

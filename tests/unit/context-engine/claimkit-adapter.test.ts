@@ -30,6 +30,22 @@ vi.doMock("../../../src/agent/providers/factory", () => ({
   resetProvider: vi.fn(),
 }));
 
+vi.doMock("../../../src/agent/embedding-service", () => ({
+  embeddingService: {
+    isAvailable: vi.fn().mockResolvedValue(true),
+    embed: vi.fn().mockResolvedValue({
+      embedding: new Array(768).fill(0.1),
+      model: "nomic-embed-text",
+      provider: "ollama",
+    }),
+    getProviderInfo: vi.fn().mockReturnValue({
+      provider: "ollama",
+      model: "nomic-embed-text",
+      available: true,
+    }),
+  },
+}));
+
 vi.doMock("../../../src/config/env", () => ({
   env: {
     CLAIMKIT_ENABLED: true,

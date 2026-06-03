@@ -10,6 +10,7 @@ import {
   scrollChatToBottom,
   ensureScrollListener,
   finalizeStreamingMessage,
+  markProgressAsGenerating,
 } from "./messages.js";
 import { loadRoadmaps } from "./sidebar.js";
 import { loadConversations } from "./conversations.js";
@@ -131,6 +132,8 @@ export function subscribeLive(sessionId) {
               if (eventType === "processing") {
                 const processingEl = document.getElementById("processingIndicator");
                 if (processingEl) processingEl.classList.add("active");
+                const statusEl = document.getElementById("processingStatusText");
+                if (statusEl) statusEl.textContent = data.message || "Processing your request...";
                 showTyping(true);
               }
 
@@ -183,6 +186,7 @@ export function subscribeLive(sessionId) {
                   document.getElementById("chatMessages").appendChild(progressEl);
                 }
                 if (streamingMessageId === null) {
+                  markProgressAsGenerating();
                   streamingMessageId = addMessage(accumulatedContent, "assistant", currentThinking || undefined, { streaming: true });
                   currentThinking = "";
                 } else {
