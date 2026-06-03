@@ -1058,7 +1058,8 @@ ${summary.keyTopics.map((topic) => `- ${topic}`).join("\n")}
     try {
       fs.unlinkSync(filepath);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "EPERM") {
         throw error;
       }
     }
