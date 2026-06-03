@@ -43,6 +43,31 @@ describe("tool-registry skill.manage schema", () => {
     expect(tool!.params.body.type).toBe("string");
   });
 
+  it("should have only action as required at schema level (other fields validated per-action in handler)", () => {
+    const tool = getToolByName("skill.manage", mode);
+    const requiredParams = Object.entries(tool!.params)
+      .filter(([, def]) => def.required)
+      .map(([name]) => name)
+      .sort();
+    expect(requiredParams).toEqual(["action"].sort());
+  });
+
+  it("should define name, description, category, and body as string types for create", () => {
+    const tool = getToolByName("skill.manage", mode);
+    expect(tool!.params.name.type).toBe("string");
+    expect(tool!.params.description.type).toBe("string");
+    expect(tool!.params.category.type).toBe("string");
+    expect(tool!.params.body.type).toBe("string");
+  });
+
+  it("should describe per-action requirements in field descriptions", () => {
+    const tool = getToolByName("skill.manage", mode);
+    expect(tool!.params.name.description).toContain("required for create");
+    expect(tool!.params.description.description).toContain("required for create");
+    expect(tool!.params.category.description).toContain("required for create");
+    expect(tool!.params.body.description).toContain("required for create");
+  });
+
   it("should be available in engineering mode", () => {
     const tool = getToolByName("skill.manage", "engineering");
     expect(tool).toBeDefined();
