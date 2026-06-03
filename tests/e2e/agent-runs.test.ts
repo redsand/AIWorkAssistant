@@ -479,7 +479,7 @@ describe("E2E: Agent Runs API endpoints", () => {
       const res = await server.inject({
         method: "GET",
         url: "/api/agent-runs/blacklist?workspace=/tmp/ws",
-        headers: { authorization: `Bearer ${aliceToken}` },
+        headers: { authorization: "Bearer test-api-key" },
       });
       expect(res.statusCode).toBe(200);
       const json = res.json();
