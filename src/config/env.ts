@@ -188,6 +188,7 @@ const envSchema = z.object({
     .transform((s) => s === "true")
     .default("true"),
   RAG_EMBEDDING_MODEL: z.string().default(""),
+  EMBEDDING_OLLAMA_FALLBACK_MODEL: z.string().default("phi4-mini:3.8b"),
   RAG_MAX_FILE_SIZE_KB: z.coerce.number().default(256),
   RAG_CHUNK_SIZE: z.coerce.number().default(500),
   RAG_CHUNK_OVERLAP: z.coerce.number().default(50),

@@ -20,6 +20,7 @@ import {
 import { env } from "../../config/env";
 import { ClaimKitEmbeddingAdapter } from "./claimkit-embedding";
 import { AIProviderLLMAdapter } from "./claimkit-llm-adapter";
+import { embeddingService } from "../../agent/embedding-service";
 
 export type { AnswerabilityStatus };
 
@@ -43,6 +44,8 @@ export class ClaimKitAdapter {
   private initialized = false;
   private initError: string | null = null;
   private redisClient: ReturnType<typeof createRedisClient> | null = null;
+  private lastInitAttempt = 0;
+  private static readonly INIT_RETRY_INTERVAL_MS = 60_000;
 
   async initialize(): Promise<boolean> {
     if (this.initialized) return true;
@@ -50,12 +53,34 @@ export class ClaimKitAdapter {
       this.initError = "ClaimKit is disabled (CLAIMKIT_ENABLED=false)";
       return false;
     }
+    // Don't retry a failed init more than once per minute — avoids hammering
+    // the embedding service on every chat request when providers are down.
+    if (this.initError && Date.now() - this.lastInitAttempt < ClaimKitAdapter.INIT_RETRY_INTERVAL_MS) {
+      return false;
+    }
+    this.lastInitAttempt = Date.now();
+    this.initError = null;
     try {
+      // Settle the embedding provider BEFORE creating stores so the
+      // vector dimension matches what will actually be used at query time.
+      const embeddingReady = await embeddingService.isAvailable();
+      if (!embeddingReady) {
+        this.initError = "Embedding service unavailable — no providers responded";
+        return false;
+      }
+      const probeResult = await embeddingService.embed("probe");
+      if (!probeResult) {
+        this.initError = "Embedding probe failed after provider settled";
+        return false;
+      }
+      const actualDimensions = probeResult.embedding.length;
+      const settledProvider = embeddingService.getProviderInfo();
+
       const llm: LLMAdapter =
         env.CLAIMKIT_LLM_PROVIDER === "memory"
           ? new MemoryLLMAdapter()
           : new AIProviderLLMAdapter(undefined, env.CLAIMKIT_LLM_MODEL || undefined);
-      const embeddings = new ClaimKitEmbeddingAdapter();
+      const embeddings = new ClaimKitEmbeddingAdapter(actualDimensions);
 
       let stores: Stores;
       const redisUrl = env.CLAIMKIT_REDIS_URL;
@@ -104,7 +129,7 @@ export class ClaimKitAdapter {
       });
       this.initialized = true;
       console.log(
-        `[ClaimKit] Initialized — embeddings: ${embeddings.model.provider}/${embeddings.model.model} (${embeddings.dimensions}d)`,
+        `[ClaimKit] Initialized — embeddings: ${settledProvider.provider}/${settledProvider.model} (${actualDimensions}d)`,
       );
       return true;
     } catch (err) {

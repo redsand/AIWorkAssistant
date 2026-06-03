@@ -25,8 +25,8 @@ export class ClaimKitEmbeddingAdapter implements EmbeddingAdapter {
   private _dimensions: number;
   private _detected = false;
 
-  constructor() {
-    this._dimensions = guessDimensions(env.RAG_EMBEDDING_MODEL);
+  constructor(dimensionsOverride?: number) {
+    this._dimensions = dimensionsOverride ?? guessDimensions(env.RAG_EMBEDDING_MODEL);
   }
 
   get dimensions(): number {

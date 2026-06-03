@@ -14,6 +14,7 @@ class EmbeddingService {
   private model: string;
   private fallbackBaseUrl: string;
   private fallbackApiKey: string;
+  private ollamaFallbackModel: string;
   private available: boolean | null = null;
   private lastCheck = 0;
   private checkIntervalMs = 5 * 60 * 1000;
@@ -30,6 +31,10 @@ class EmbeddingService {
       this.fallbackBaseUrl = env.OPENCODE_API_URL;
       this.fallbackApiKey = env.OPENCODE_API_KEY;
     }
+
+    // Local Ollama is the last-resort fallback — it's always reachable and any
+    // loaded model can generate embeddings via /api/embed.
+    this.ollamaFallbackModel = env.EMBEDDING_OLLAMA_FALLBACK_MODEL || "phi4-mini:3.8b";
 
     switch (this.provider) {
       case "ollama":
@@ -144,6 +149,30 @@ class EmbeddingService {
         }
       } catch {
         // fallback also failed
+      }
+    }
+
+    // Last-resort: local Ollama. Always reachable and any loaded model can
+    // produce embeddings via /api/embed. Keeps ClaimKit working even when all
+    // cloud providers are down.
+    if (!this.available && env.OLLAMA_API_URL && this.provider !== "ollama") {
+      try {
+        const ollamaAvailable = await this.checkOllamaEmbed(
+          env.OLLAMA_API_URL,
+          this.ollamaFallbackModel,
+        );
+        if (ollamaAvailable) {
+          console.log(
+            `[Embedding] Cloud providers unavailable — falling back to Ollama (${this.ollamaFallbackModel})`,
+          );
+          this.baseUrl = env.OLLAMA_API_URL;
+          this.apiKey = env.OLLAMA_API_KEY;
+          this.model = this.ollamaFallbackModel;
+          this.provider = "ollama";
+          this.available = true;
+        }
+      } catch {
+        // Ollama also unavailable
       }
     }
 
@@ -264,6 +293,23 @@ class EmbeddingService {
         },
       );
       return !!(response.data && response.data.embedding);
+    } catch {
+      return false;
+    }
+  }
+
+  private async checkOllamaEmbed(baseUrl: string, model: string): Promise<boolean> {
+    try {
+      const response = await axios.post(
+        `${baseUrl}/api/embed`,
+        { model, input: "test" },
+        { timeout: 10000 },
+      );
+      return !!(
+        response.data &&
+        response.data.embeddings &&
+        response.data.embeddings.length > 0
+      );
     } catch {
       return false;
     }

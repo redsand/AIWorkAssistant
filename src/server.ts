@@ -196,7 +196,7 @@ export async function buildServer() {
     void errorLog.log({
       source: "server",
       category: "request_error",
-      message: error.message,
+      message: error instanceof Error ? error.message : "Request error",
       error,
       userId: request.userId,
       context: {

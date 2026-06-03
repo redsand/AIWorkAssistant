@@ -208,7 +208,15 @@
 }
 
 .message.assistant .message-bubble p {
-  margin: 0.4em 0;
+  margin: 0.75em 0;
+}
+
+.message.assistant .message-bubble p:first-child {
+  margin-top: 0;
+}
+
+.message.assistant .message-bubble p:last-child {
+  margin-bottom: 0;
 }
 
 .message.assistant .message-bubble ul,

@@ -54,6 +54,7 @@ const chatRequestSchema = z.object({
   includeMemory: z.boolean().default(true),
   systemPrompt: z.string().max(MAX_SYSTEM_PROMPT_LENGTH).optional(),
   model: z.string().optional(),
+  resend: z.boolean().optional(),
 });
 
 const providerSelectionSchema = z.object({
@@ -390,7 +391,15 @@ async function runChatJob(
 ) {
   console.log("[Chat/Job] runChatJob entered for", sessionId);
   const job = getOrCreateJob(sessionId);
-  if (job.cancelled) return;
+  if (job.cancelled) {
+    // Stale cancel flag from a previous run that wasn't cleared before this
+    // call. Emit an error so waiting subscribers don't hang indefinitely.
+    emitJobEvent(sessionId, "error", {
+      error: "Run could not start",
+      message: "Previous run was cancelled. Please try again.",
+    });
+    return;
+  }
   job.status = "processing";
   job.events = [];
   job.cancelled = false;
@@ -1087,29 +1096,42 @@ export async function chatRoutes(fastify: FastifyInstance) {
       const activeJob = sessionId ? processingJobs.get(sessionId) : null;
 
       if (activeJob?.status === "processing") {
-        sendEvent("session", { sessionId });
-        for (const evt of activeJob.events) {
-          sendEvent(evt.event, evt.data);
-        }
-
-        const subscriber = (event: string, data: unknown) => {
-          sendEvent(event, data);
-          if (event === "done" || event === "error") {
-            setTimeout(() => {
-              cleanupConnection();
-            }, 100);
+        // If the job has been idle for more than 90 s it is almost certainly
+        // stuck (the AI call hung, the client disconnected mid-stream, etc.).
+        // Cancel it so this new submission starts fresh instead of attaching
+        // to a job that will never complete.
+        const idleMs = Date.now() - activeJob.lastActivityAt.getTime();
+        if (idleMs > 90_000) {
+          console.warn(
+            `[Chat/Stream] Job for ${sessionId} idle for ${Math.round(idleMs / 1000)}s — cancelling and starting fresh`,
+          );
+          cancelProcessingJob(sessionId!, "Stale job replaced by new submission");
+          // Fall through to the normal new-job path below.
+        } else {
+          sendEvent("session", { sessionId });
+          for (const evt of activeJob.events) {
+            sendEvent(evt.event, evt.data);
           }
-        };
-        activeJob.subscribers.add(subscriber);
 
-        const socket = reply.raw.socket || request.raw.socket;
-        if (socket) {
-          socket.on("close", () => {
-            activeJob.subscribers.delete(subscriber);
-            cleanupConnection();
-          });
+          const subscriber = (event: string, data: unknown) => {
+            sendEvent(event, data);
+            if (event === "done" || event === "error") {
+              setTimeout(() => {
+                cleanupConnection();
+              }, 100);
+            }
+          };
+          activeJob.subscribers.add(subscriber);
+
+          const socket = reply.raw.socket || request.raw.socket;
+          if (socket) {
+            socket.on("close", () => {
+              activeJob.subscribers.delete(subscriber);
+              cleanupConnection();
+            });
+          }
+          return;
         }
-        return;
       }
 
       const systemPrompt = (body.systemPrompt && canOverrideSystemPrompt(body.userId))
@@ -1162,7 +1184,11 @@ export async function chatRoutes(fastify: FastifyInstance) {
             userId: body.userId,
           });
           messages = packet.messages;
-          messages.push({ role: "user", content: body.message });
+          // On resend the user message is already the last entry in the session;
+          // only append it when this is a fresh submission.
+          if (!body.resend) {
+            messages.push({ role: "user", content: body.message });
+          }
           console.log(
             `[ContextEngine] Packet assembled: ${packet.diagnostics.finalMessageCount} messages, ${packet.totalTokens} tokens, compression=${packet.diagnostics.compressionRatio.toFixed(2)}, budget=${JSON.stringify(packet.diagnostics.budgetUtilization)}`,
           );
@@ -1174,8 +1200,11 @@ export async function chatRoutes(fastify: FastifyInstance) {
           messages = [
             { role: "system", content: systemPrompt },
             ...sessionMessages,
-            { role: "user", content: body.message },
           ];
+          // On resend the user message is already at the end of sessionMessages.
+          if (!body.resend) {
+            messages.push({ role: "user", content: body.message });
+          }
         }
       } else {
         sessionId = conversationManager.startSession(body.userId, body.mode);
@@ -1185,10 +1214,15 @@ export async function chatRoutes(fastify: FastifyInstance) {
         ];
       }
 
-      conversationManager.addMessage(sessionId!, {
-        role: "user",
-        content: body.message,
-      });
+      // On resend the user message is already stored in the session from the
+      // original send. Adding it again would create a duplicate user turn that
+      // confuses the model and produces an empty or garbled response.
+      if (!body.resend) {
+        conversationManager.addMessage(sessionId!, {
+          role: "user",
+          content: body.message,
+        });
+      }
 
       sendEvent("session", { sessionId });
 
@@ -1196,6 +1230,13 @@ export async function chatRoutes(fastify: FastifyInstance) {
       // agent-runs page shows the run immediately — before the slow context
       // assembly begins.
       const job = getOrCreateJob(sessionId!);
+      // Clear stale cancel/runId state from a previous run. If the last run
+      // was cancelled or failed and its processingJobs entry hasn't expired
+      // yet (5-second window), runChatJob would early-exit on job.cancelled,
+      // leaving the subscriber hanging and producing "nothing happens".
+      job.cancelled = false;
+      job.cancelReason = undefined;
+      job.runId = undefined;
       const subscriber = (event: string, data: unknown) => {
         sendEvent(event, data);
         if (event === "done" || event === "error") {

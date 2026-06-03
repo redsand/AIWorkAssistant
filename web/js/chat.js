@@ -531,6 +531,7 @@ export async function sendMessage() {
 export async function resendMessage(message) {
   const myGeneration = nextSendGeneration();
 
+
   // === SHOW PROCESSING IMMEDIATELY (before any async operations) ===
   enableAutoScroll();
   showTyping(true);
@@ -591,6 +592,7 @@ export async function resendMessage(message) {
         sessionId: currentSessionId,
         includeMemory: true,
         includeTools: true,
+        resend: true,
       }),
       signal: controller.signal,
     });
