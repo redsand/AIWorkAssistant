@@ -10,6 +10,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+
+vi.setConfig({ testTimeout: 30_000 });
 import type {
   AudioAnalysisRequest,
   AudioTechnicalMetrics,

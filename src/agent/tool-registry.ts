@@ -3268,6 +3268,44 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     actionType: "memory.add_entity_fact",
     riskLevel: "low",
   },
+  {
+    name: "memory.manage",
+    description:
+      "Manage the agent's persistent bounded memory (MEMORY.md) and user profile (USER.md). Use 'add' to store new knowledge, 'replace' to update existing entries, 'remove' to delete entries, 'consolidate' to merge related entries into denser versions, or 'status' to check usage. Memory is injected at session start so the agent remembers across sessions.",
+    params: {
+      action: {
+        type: "string",
+        description: "Action to perform: add, replace, remove, consolidate, status",
+        required: true,
+      },
+      key: {
+        type: "string",
+        description: "Entry key (required for add, replace, remove)",
+      },
+      value: {
+        type: "string",
+        description: "Entry value (required for add, replace)",
+      },
+      target: {
+        type: "string",
+        description: "Which file to operate on: memory (MEMORY.md) or user (USER.md). Default: memory",
+      },
+      source_keys: {
+        type: "string",
+        description: "Comma-separated keys to merge (for consolidate action)",
+      },
+      merged_key: {
+        type: "string",
+        description: "Key for the consolidated entry (for consolidate action)",
+      },
+      merged_value: {
+        type: "string",
+        description: "Value for the consolidated entry (for consolidate action)",
+      },
+    },
+    actionType: "memory.manage",
+    riskLevel: "medium",
+  },
 
   // ── Personal OS Tools ──────────────────────────────────────────
   {

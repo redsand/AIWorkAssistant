@@ -26,6 +26,7 @@ import { compressDocuments } from "./compressor";
 import { rerank } from "./reranker";
 import { scoreMessages, deduplicateByJaccard, selectMessages } from "./memory-decay";
 import type { ClaimKitQueryResult } from "./adapters/claimkit-adapter";
+import { agentMemory } from "../memory/agent-memory";
 
 export interface RoutingDecision {
   tier: RoutingTier;
@@ -77,11 +78,24 @@ export async function assembleContextPacket(
   const documentsSlot = budget.slots.find((s) => s.name === "documents")!;
   const graphSlot = budget.slots.find((s) => s.name === "graph")!;
 
+  // Load agent memory snapshots (MEMORY.md + USER.md) — slot #1, before system prompt
+  // Sanitize to reduce prompt injection risk from persisted markdown content
+  const sanitizeForPrompt = (s: string) => s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+  const memorySnapshot = sanitizeForPrompt(agentMemory.getMemorySnapshot());
+  const userSnapshot = sanitizeForPrompt(agentMemory.getUserSnapshot());
+  const memorySection: ContextSection | null = memorySnapshot
+    ? { name: "agent_memory", content: memorySnapshot, tokens: estimateTokens(memorySnapshot) }
+    : null;
+  const userProfileSection: ContextSection | null = userSnapshot
+    ? { name: "user_profile", content: userSnapshot, tokens: estimateTokens(userSnapshot) }
+    : null;
+  const memoryTokens = (memorySection?.tokens ?? 0) + (userProfileSection?.tokens ?? 0);
+
   const claimKitAvailable = await claimKitAdapter.initialize();
 
   const baseSystemPrompt = getSystemPrompt(mode, query, "engine");
   const systemTokens = estimateTokens(baseSystemPrompt);
-  systemSlot.allocatedTokens = Math.max(systemSlot.allocatedTokens, systemTokens);
+  systemSlot.allocatedTokens = Math.max(systemSlot.allocatedTokens, systemTokens + memoryTokens);
 
   const scored = scoreMessages(sessionMessages, query);
   const deduped = deduplicateByJaccard(scored);
@@ -224,12 +238,22 @@ export async function assembleContextPacket(
     ? { name: "health", content: healthText, tokens: estimateTokens(healthText) }
     : null;
 
-  const sections: ContextSection[] = [
+  const sections: ContextSection[] = [];
+
+  // Slot #1: Agent memory + user profile (before system prompt)
+  if (memorySection) {
+    sections.push(memorySection);
+  }
+  if (userProfileSection) {
+    sections.push(userProfileSection);
+  }
+
+  sections.push(
     { name: "system", content: baseSystemPrompt, tokens: systemTokens },
     { name: "history", content: "", tokens: historyTokens },
     { name: "documents", content: knowledgeSection, tokens: estimateTokens(knowledgeSection), sourceCount: compressedDocs.length },
     { name: "graph", content: graphSection, tokens: estimateTokens(graphSection) },
-  ];
+  );
 
   if (claimKitSection) {
     sections.push(claimKitSection);
@@ -241,12 +265,26 @@ export async function assembleContextPacket(
 
   const enforced = enforceBudget(sections, budget);
 
-  const messages: ChatMessage[] = [
-    { role: "system", content: enforced[0].content },
-  ];
+  // Inject agent memory + user profile as the first system messages (slot #1)
+  const memoryEnforced = enforced.find((s) => s.name === "agent_memory");
+  const userProfileEnforced = enforced.find((s) => s.name === "user_profile");
+  const systemEnforced = enforced.find((s) => s.name === "system");
+
+  const messages: ChatMessage[] = [];
+
+  if (memoryEnforced?.content.trim()) {
+    messages.push({ role: "system", content: `=== AGENT MEMORY ===\n${memoryEnforced.content}` });
+  }
+  if (userProfileEnforced?.content.trim()) {
+    messages.push({ role: "system", content: `=== USER PROFILE ===\n${userProfileEnforced.content}` });
+  }
+
+  if (systemEnforced) {
+    messages.push({ role: "system", content: systemEnforced.content });
+  }
 
   const claimKitEnforced = enforced.find((s) => s.name === "claimkit_evidence");
-  const docEnforced = enforced[2];
+  const docEnforced = enforced.find((s) => s.name === "documents");
 
   if (routing.tier === "ck_primary" && claimKitEnforced?.content.trim()) {
     // CK primary: show ClaimKit answer first with full detail
@@ -279,10 +317,11 @@ export async function assembleContextPacket(
     }
   }
 
-  if (enforced[3].content.trim()) {
+  const graphEnforced = enforced.find((s) => s.name === "graph");
+  if (graphEnforced?.content.trim()) {
     messages.push({
       role: "system",
-      content: `=== KNOWLEDGE GRAPH ===\n${enforced[3].content}`,
+      content: `=== KNOWLEDGE GRAPH ===\n${graphEnforced.content}`,
     });
   }
 

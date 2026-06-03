@@ -45,6 +45,10 @@ describe("providerSettings", () => {
     delete process.env.OLLAMA_MODEL;
     delete process.env.OPENAI_MODEL;
     delete process.env.PROVIDER_SETTINGS_PATH;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_URL;
+    delete process.env.OLLAMA_API_KEY;
+    delete process.env.OLLAMA_API_URL;
   });
 
   it("discovers OpenAI-compatible models and reuses the 24-hour cache", async () => {
