@@ -376,3 +376,64 @@ describe("memory sanitization for prompt injection prevention", () => {
     expect(sanitizeForPrompt(markdown)).toBe(markdown);
   });
 });
+
+// ── skill summary truncation ─────────────────────────────────────────────
+
+describe("skill summary truncation", () => {
+  const MAX_SKILL_TOKENS = 500;
+  const CHARS_PER_TOKEN = 4;
+
+  function truncateSkillSummaries(rawSkillsText: string): string {
+    let skillsText = rawSkillsText;
+    const estimatedTokens = estimateTokens(rawSkillsText);
+    if (estimatedTokens > MAX_SKILL_TOKENS) {
+      const maxChars = MAX_SKILL_TOKENS * CHARS_PER_TOKEN;
+      const truncated = rawSkillsText.substring(0, maxChars);
+      const lastNewline = truncated.lastIndexOf("\n");
+      skillsText = lastNewline > 0 ? truncated.substring(0, lastNewline) + "\n...(truncated)" : truncated + "\n...(truncated)";
+    }
+    return skillsText;
+  }
+
+  it("should not truncate when under the token cap", () => {
+    const short = "=== AVAILABLE SKILLS ===\n- [debug/fix] Fix things";
+    expect(truncateSkillSummaries(short)).toBe(short);
+  });
+
+  it("should truncate and append ...(truncated) when over the token cap", () => {
+    // Create text well over 2000 chars (500 tokens * 4 chars)
+    const lines: string[] = ["=== AVAILABLE SKILLS ==="];
+    for (let i = 0; i < 200; i++) {
+      lines.push(`- [cat/skill-${i}] Description for skill ${i} (tags: none)`);
+    }
+    const longText = lines.join("\n");
+    const result = truncateSkillSummaries(longText);
+
+    expect(result).toContain("...(truncated)");
+    expect(result.length).toBeLessThan(longText.length);
+    // Truncation caps at ~MAX_SKILL_TOKENS but ...(truncated) suffix adds some overhead
+    expect(estimateTokens(result)).toBeLessThan(estimateTokens(longText));
+  });
+
+  it("should truncate at newline boundary when possible", () => {
+    // Build text where the truncation point falls mid-line, with a newline earlier
+    const header = "=== AVAILABLE SKILLS ===\n";
+    const longLine = "x".repeat(2000) + "\n";
+    const text = header + longLine + longLine + longLine;
+    const result = truncateSkillSummaries(text);
+
+    expect(result).toContain("...(truncated)");
+    // Should end with ...(truncated) on its own line after a newline
+    expect(result).toMatch(/\n\.\.\.\(truncated\)$/);
+  });
+
+  it("should fall back to hard truncation when no newline is found", () => {
+    // Single very long line with no newlines (except header)
+    const header = "=== AVAILABLE SKILLS ===\n";
+    const longLine = "x".repeat(3000);
+    const text = header + longLine;
+    const result = truncateSkillSummaries(text);
+
+    expect(result).toContain("...(truncated)");
+  });
+});
