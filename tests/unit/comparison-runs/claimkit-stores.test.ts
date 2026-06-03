@@ -96,7 +96,13 @@ describe("ClaimKitAdapter stores", () => {
     (env as any).CLAIMKIT_REDIS_URL = "redis://localhost:6379";
     (env as any).CLAIMKIT_REDIS_PREFIX = "testprefix";
 
-    const fakeClient = { ping: vi.fn().mockResolvedValue("PONG") };
+    const fakeClient = {
+      ping: vi.fn().mockResolvedValue("PONG"),
+      get: vi.fn().mockResolvedValue(null),
+      set: vi.fn().mockResolvedValue("OK"),
+      keys: vi.fn().mockResolvedValue([]),
+      del: vi.fn().mockResolvedValue(0),
+    };
     mockCreateRedisClient.mockReturnValue(fakeClient);
     mockConnectRedis.mockResolvedValue(undefined);
     const redisStores = makeStores();
@@ -109,10 +115,11 @@ describe("ClaimKitAdapter stores", () => {
       url: "redis://localhost:6379",
     });
     expect(mockConnectRedis).toHaveBeenCalledWith(fakeClient);
+    // Prefix is now model-namespaced: basePrefix:modelSlug
     expect(mockCreateRedisStores).toHaveBeenCalledWith(
       expect.objectContaining({
         client: fakeClient,
-        prefix: "testprefix",
+        prefix: "testprefix:text-embedding-3-small",
         vectorMode: "bruteForce",
         vectorOptions: { vectorDim: 1536 },
       }),
@@ -142,7 +149,13 @@ describe("ClaimKitAdapter stores", () => {
   it("passes vectorDim from embedding adapter dimensions", async () => {
     (env as any).CLAIMKIT_REDIS_URL = "redis://localhost:6379";
 
-    const fakeClient = { ping: vi.fn().mockResolvedValue("PONG") };
+    const fakeClient = {
+      ping: vi.fn().mockResolvedValue("PONG"),
+      get: vi.fn().mockResolvedValue(null),
+      set: vi.fn().mockResolvedValue("OK"),
+      keys: vi.fn().mockResolvedValue([]),
+      del: vi.fn().mockResolvedValue(0),
+    };
     mockCreateRedisClient.mockReturnValue(fakeClient);
     mockConnectRedis.mockResolvedValue(undefined);
     mockCreateRedisStores.mockReturnValue(makeStores());
@@ -154,6 +167,34 @@ describe("ClaimKitAdapter stores", () => {
         vectorOptions: { vectorDim: 1536 },
       }),
     );
+
+    (env as any).CLAIMKIT_REDIS_URL = "";
+  });
+
+  it("flushes stale Redis keys when stored vector dimension differs from current", async () => {
+    (env as any).CLAIMKIT_REDIS_URL = "redis://localhost:6379";
+
+    const staleKeys = ["aiworkassistant:text-embedding-3-small:vec:1", "aiworkassistant:text-embedding-3-small:meta:vector-dim"];
+    const fakeClient = {
+      ping: vi.fn().mockResolvedValue("PONG"),
+      get: vi.fn().mockResolvedValue("768"), // stored dim differs from current 1536
+      set: vi.fn().mockResolvedValue("OK"),
+      keys: vi.fn().mockResolvedValue(staleKeys),
+      del: vi.fn().mockResolvedValue(staleKeys.length),
+    };
+    mockCreateRedisClient.mockReturnValue(fakeClient);
+    mockConnectRedis.mockResolvedValue(undefined);
+    mockCreateRedisStores.mockReturnValue(makeStores());
+
+    await adapter.initialize();
+
+    // get() was called to read stored dim
+    expect(fakeClient.get).toHaveBeenCalledWith(expect.stringContaining(":meta:vector-dim"));
+    // keys() and del() were called to flush stale data
+    expect(fakeClient.keys).toHaveBeenCalledWith(expect.stringContaining(":*"));
+    expect(fakeClient.del).toHaveBeenCalledWith(staleKeys);
+    // set() was called to write new dim
+    expect(fakeClient.set).toHaveBeenCalledWith(expect.stringContaining(":meta:vector-dim"), "1536");
 
     (env as any).CLAIMKIT_REDIS_URL = "";
   });
