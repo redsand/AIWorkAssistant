@@ -56,6 +56,7 @@ import { skillManager } from "../skills/skill-manager";
 import { createSkillManageHandler } from "./handlers/skill-manage";
 import { soulManager } from "../memory/soul-manager";
 import { createSoulManageHandler } from "./handlers/soul-manage";
+import { reflectionEngine } from "./reflection-engine";
 import type { EntityType, FindEntitiesQuery } from "../memory/entity-types";
 import { lspManager } from "../integrations/lsp/index.js";
 import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
@@ -9180,12 +9181,16 @@ const MAX_COUNTER_ENTRIES = 1000;
 const SKILL_SUGGEST_THRESHOLD = 5;
 const MAX_SKILLED_USERS = 1000;
 const skilledUsers = new Map<string, number>();
+const MAX_REFLECTED_USERS = 1000;
+const reflectedUsers = new Map<string, number>();
 
 export function resetToolCallCounter(userId?: string): void {
   if (userId) {
     userToolCounters.delete(userId);
+    reflectedUsers.delete(userId);
   } else {
     userToolCounters.clear();
+    reflectedUsers.clear();
   }
 }
 
@@ -9405,6 +9410,31 @@ export async function dispatchToolCall(
       const skillNudge = "\n[Skill suggestion] You just completed a multi-step task. Consider whether this workflow is worth saving as a reusable skill using the skill.manage tool.";
       const existing = typeof result.message === "string" ? result.message : "";
       result.message = existing ? `${existing}${skillNudge}` : skillNudge.trim();
+    }
+
+    // Reflection nudge: after 3 tool calls, suggest a reflection step (once per session)
+    if (
+      result &&
+      typeof result === "object" &&
+      reflectionEngine.shouldReflect(newCount) &&
+      !reflectedUsers.has(userId)
+    ) {
+      if (reflectedUsers.size >= MAX_REFLECTED_USERS) {
+        const oldest = reflectedUsers.keys().next().value;
+        if (oldest !== undefined) reflectedUsers.delete(oldest);
+      }
+      reflectedUsers.set(userId, Date.now());
+      const reflectionNudge = "\n[Reflection] You have made multiple tool calls. Consider reflecting on your approach — what went well and what could improve. Use the memory tool to save any lessons learned.";
+      const existing = typeof result.message === "string" ? result.message : "";
+      result.message = existing ? `${existing}${reflectionNudge}` : reflectionNudge.trim();
+    }
+
+    // Periodic self-nudge for overall performance evaluation at every 15 calls
+    if (result && typeof result === "object" && reflectionEngine.shouldSelfNudge(newCount)) {
+      const selfNudge = "\n[Self-evaluation] Evaluate your recent performance. Consider updating your memory with lessons learned from this session.";
+      const existing = typeof result.message === "string" ? result.message : "";
+      result.message = existing ? `${existing}${selfNudge}` : selfNudge.trim();
+      console.log(`[ReflectionEngine] self-nudge fired for user ${userId} at call count ${newCount}`);
     }
 
     await auditLogger.log({
