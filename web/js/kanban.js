@@ -896,11 +896,17 @@
       article.setAttribute("draggable", "true");
     }
 
+    var priBadge = (pri && pri !== "unknown")
+      ? '<span class="kbadge kbadge-priority kbadge-priority-' + pri + '">' + pri + '</span>'
+      : '';
+    var hasAgent = !!card.activeAgentRunId;
+
     article.innerHTML =
       '<header>' +
         '<span class="kbadge kbadge-platform">' + pl + '</span>' +
-        '<span class="kbadge kbadge-priority kbadge-priority-' + pri + '">' + pri + '</span>' +
+        priBadge +
         '<span class="kcard-external">' + externalId + '</span>' +
+        (!hasAgent && !readonly ? '<button class="kcard-start-btn" title="Start agent on this card" aria-label="Start agent">▶</button>' : '') +
       '</header>' +
       '<h3 class="kcard-title">' + title + '</h3>' +
       '<footer>' +
@@ -910,6 +916,16 @@
           (depCount > 0 ? depCount + ' deps' : 'no deps') +
         '</span>' +
       '</footer>';
+
+    // Start-agent quick button (on card face)
+    var startBtnEl = article.querySelector(".kcard-start-btn");
+    if (startBtnEl) {
+      startBtnEl.addEventListener("click", function (e) {
+        e.stopPropagation();
+        openDrawer(card);
+        setTimeout(function () { switchDrawerTab("agent"); }, 60);
+      });
+    }
 
     article.addEventListener("click", function (e) {
       if (article._isDragging) return;
@@ -1087,6 +1103,15 @@
     if (cards.length === 0) {
       boardEl.style.display = "none";
       swimlanesEl.style.display = "none";
+      var hasAgentFilter = filterState.agents && filterState.agents.length > 0;
+      emptyEl.innerHTML = hasAgentFilter
+        ? '<p>No cards currently have a <strong>' + filterState.agents.join(" / ") + '</strong> agent running. ' +
+          'Start an agent from a card to see it here, or <button class="k-empty-clear-btn">clear filters</button>.</p>'
+        : '<p>No cards found. Issues will appear here once they are created across your repositories.</p>';
+      if (hasAgentFilter) {
+        var clearEmptyBtn = emptyEl.querySelector(".k-empty-clear-btn");
+        if (clearEmptyBtn) clearEmptyBtn.addEventListener("click", clearAllFilters);
+      }
       emptyEl.style.display = "block";
       return;
     }
@@ -1287,7 +1312,7 @@
     var qs = params.toString();
     var url = "/api/kanban/board" + (qs ? "?" + qs : "");
 
-    fetch(url)
+    fetch(url, { headers: getAuthHeaders() })
       .then(function (res) {
         if (!res.ok) {
           throw new Error("HTTP " + res.status + " " + res.statusText);
@@ -1522,10 +1547,85 @@
     }
   }
 
+  function renderStartAgentForm(card) {
+    drawerAgentContent.innerHTML =
+      '<p class="kdrawer-empty-tab" style="margin-bottom:12px">No agent run yet. Launch one below.</p>' +
+      '<div class="kdrawer-start-agent">' +
+        '<div class="kdrawer-start-row">' +
+          '<label class="kdrawer-start-label">Agent</label>' +
+          '<div class="kdrawer-agent-type-group" id="drawer-agent-type-group">' +
+            '<button class="kdrawer-agent-type-btn active" data-agent="claude">Claude</button>' +
+            '<button class="kdrawer-agent-type-btn" data-agent="codex">Codex</button>' +
+            '<button class="kdrawer-agent-type-btn" data-agent="opencode">OpenCode</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="kdrawer-start-row">' +
+          '<label class="kdrawer-start-label" for="drawer-model-input">Model <span class="kdrawer-optional">(optional)</span></label>' +
+          '<input id="drawer-model-input" class="kdrawer-model-input" type="text" placeholder="e.g. glm-5.1:cloud" />' +
+        '</div>' +
+        '<div class="kdrawer-agent-actions">' +
+          '<button class="kdrawer-btn kdrawer-btn--primary" id="drawer-agent-start">▶ Start Agent</button>' +
+        '</div>' +
+      '</div>';
+
+    var typeBtns = drawerAgentContent.querySelectorAll(".kdrawer-agent-type-btn");
+    typeBtns.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        typeBtns.forEach(function (b) { b.classList.remove("active"); });
+        btn.classList.add("active");
+      });
+    });
+
+    var startBtn = document.getElementById("drawer-agent-start");
+    if (startBtn) {
+      startBtn.addEventListener("click", function () {
+        var activeType = drawerAgentContent.querySelector(".kdrawer-agent-type-btn.active");
+        var agentType = activeType ? activeType.getAttribute("data-agent") : "claude";
+        var modelInput = document.getElementById("drawer-model-input");
+        var model = modelInput ? modelInput.value.trim() : "";
+        startAgentForCard(card, agentType, model || null, startBtn);
+      });
+    }
+  }
+
+  function startAgentForCard(card, agentType, model, btnEl) {
+    btnEl.disabled = true;
+    btnEl.textContent = "Starting…";
+
+    var parts = card.key.split(":");
+    var platform = parts[0];
+    var id = parts.slice(2).join(":");
+    var repo = parts.slice(1, -1).join(":");
+
+    fetch("/api/kanban/cards/" + encodeURIComponent(platform) + "/" + encodeURIComponent(id) + "/start", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
+      body: JSON.stringify({ repo: repo, agent: agentType, model: model || undefined }),
+    })
+      .then(function (res) {
+        return res.ok ? res.json() : res.json().then(function (d) { throw new Error(d.error || "Failed"); });
+      })
+      .then(function (data) {
+        showToast("Agent started — run " + data.agentRunId.slice(0, 8));
+        closeDrawer();
+        invalidateBoardCacheAndRefresh();
+      })
+      .catch(function (err) {
+        btnEl.disabled = false;
+        btnEl.textContent = "▶ Start Agent";
+        showToast("Failed to start: " + err.message);
+      });
+  }
+
+  function invalidateBoardCacheAndRefresh() {
+    // Small delay so the DB write propagates before we refetch
+    setTimeout(fetchBoard, 500);
+  }
+
   function renderDrawerAgent(data) {
     var agentRun = data.agentRun;
     if (!agentRun) {
-      drawerAgentContent.innerHTML = '<p class="kdrawer-empty-tab">No agent run for this card.</p>';
+      renderStartAgentForm(drawerState.card);
       return;
     }
 
@@ -1564,6 +1664,8 @@
     html += '<div class="kdrawer-agent-actions">';
     if (agentRun.status === "running") {
       html += '<button class="kdrawer-btn kdrawer-btn--danger" id="drawer-agent-stop">Stop Agent</button>';
+    } else {
+      html += '<button class="kdrawer-btn kdrawer-btn--primary" id="drawer-agent-restart">▶ Run Again</button>';
     }
     html += '</div>';
 
@@ -1574,11 +1676,16 @@
     if (stopBtn && drawerState.card) {
       stopBtn.addEventListener("click", function () {
         var c = drawerState.card;
-        stopAgent({
-          agentRunId: agentRun.id,
-          cardKey: c.key,
-        });
+        stopAgent({ agentRunId: agentRun.id, cardKey: c.key });
         closeDrawer();
+      });
+    }
+
+    // Wire Restart button
+    var restartBtn = document.getElementById("drawer-agent-restart");
+    if (restartBtn && drawerState.card) {
+      restartBtn.addEventListener("click", function () {
+        renderStartAgentForm(drawerState.card);
       });
     }
   }
@@ -2139,7 +2246,8 @@
       if (s === currentSprint) opt.selected = true;
       sprintSelect.appendChild(opt);
     });
-    sprintSelect.disabled = sprints.length === 0;
+    sprintSelect.style.display = sprints.length === 0 ? "none" : "";
+    sprintSelect.disabled = false;
   }
 
   function applySprintFilter() {

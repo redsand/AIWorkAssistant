@@ -979,8 +979,22 @@
     }
   }
 
+  var openKanbanLink = document.getElementById("open-kanban-link");
+
   repoSelect.addEventListener("change", function () {
     var val = this.value;
+
+    // Keep "Open Kanban" link in sync with the selected repo
+    if (openKanbanLink) {
+      if (val) {
+        var colon0 = val.indexOf(":");
+        var repoOnly = val.slice(colon0 + 1);
+        openKanbanLink.href = "/kanban?repos=" + encodeURIComponent(repoOnly);
+      } else {
+        openKanbanLink.href = "/kanban";
+      }
+    }
+
     if (!val) {
       dashboardContent.style.display = "none";
       boardContent.style.display = "none";

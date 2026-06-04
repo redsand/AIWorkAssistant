@@ -318,7 +318,7 @@ async function expandWithDependencies(
       );
       const issue = resp.data;
       if (issue.pull_request || issue.state !== "open") return null;
-      const slug = issue.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+      const slug = issue.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40).replace(/-+$/g, "");
       return {
         id: String(issue.number),
         type: "github_issue",
@@ -341,7 +341,7 @@ async function expandWithDependencies(
       if (/done|closed|resolved|completed/i.test(status)) return null;
       const num = parseInt(key.split("-").pop() || "0", 10);
       const title = issue.fields?.summary || "";
-      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40).replace(/-+$/g, "");
       const jiraBase = process.env.JIRA_BASE_URL ?? "https://hawksolutionstech.atlassian.net";
       return {
         id: key,
@@ -363,7 +363,7 @@ async function expandWithDependencies(
       const issue = await gitlabClient.getIssue(gitlabProject, num);
       if (issue.state !== "opened") return null;
       const title = issue.title || "";
-      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40).replace(/-+$/g, "");
       return {
         id: String(issue.iid),
         type: "gitlab_issue",
@@ -3340,7 +3340,7 @@ async function fetchWorkItemDirectly(cfg: ServerConfig, workItemId: string): Pro
     if (!wi || !wi.title) return null;
 
     const slug = wi.title
-      .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+      .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40).replace(/-+$/g, "");
     const tags = parseWorkItemTagsJson(wi.tagsJson ?? null);
 
     return {
@@ -3369,7 +3369,7 @@ async function fetchJiraIssueDirectly(key: string): Promise<WorkItem | null> {
     const issue = await jiraClient.getIssue(key);
     const fields = issue.fields as typeof issue.fields & { labels?: any[] };
     const slug = (fields?.summary ?? issue.key ?? key)
-      .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+      .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40).replace(/-+$/g, "");
     return {
       id: key,
       number: parseInt(key.replace(/^[A-Z]+-/, ""), 10) || 0,
@@ -3400,7 +3400,7 @@ async function fetchIssueDirectly(cfg: ServerConfig, issueNumber: number): Promi
 
   if (!resp || !resp.data?.title) return null;
 
-  const slug = resp.data.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+  const slug = resp.data.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40).replace(/-+$/g, "");
   return {
     id: String(issueNumber),
     number: issueNumber,

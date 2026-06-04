@@ -566,8 +566,16 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
   // ─── GET /agents — running agents for rail ──────────────────────────────
 
   fastify.get("/agents", async () => {
+    // Sweep stale runs immediately so the response is always current
+    agentRunDatabase.markStaleRunsAsFailed();
+
     const { runs } = agentRunDatabase.listRuns({ status: "running", limit: 50 });
-    return runs.map((run) => {
+    // Only surface runs tied to a kanban card — autonomous-loop runs have no
+    // issue linkage and would show as "Unknown" in the agents rail.
+    const kanbanRuns = runs.filter(
+      (run) => run.issuePlatform && run.issueRepo && run.issueId,
+    );
+    return kanbanRuns.map((run) => {
       let lastTool: string | null = null;
       let toolLoopCount = run.toolLoopCount;
       try {
