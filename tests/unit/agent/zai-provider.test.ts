@@ -3,6 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { PassThrough } from "stream";
 import type { StreamEvent } from "../../../src/agent/providers/types";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────
@@ -23,7 +24,7 @@ vi.mock("axios", () => {
 });
 
 import { ZaiProvider } from "../../../src/agent/providers/zai-provider";
-import type { ProviderConfig, ChatResponse, ToolCall } from "../../../src/agent/providers/types";
+import type { ProviderConfig, ToolCall } from "../../../src/agent/providers/types";
 
 function makeProvider(): ZaiProvider {
   const config: ProviderConfig = {
@@ -53,27 +54,18 @@ async function collectStream(
   return { strings, events };
 }
 
-function makePostMock(response: Partial<ChatResponse> = {}) {
-  // Return the raw OpenAI-compatible API response that ZaiProvider.chat() parses
-  const apiData = {
-    choices: [{
-      message: {
-        content: response.content ?? "",
-        reasoning_content: response.thinking ?? null,
-        tool_calls: response.toolCalls?.length
-          ? response.toolCalls.map((tc) => ({
-              id: tc.id,
-              type: tc.type,
-              function: tc.function,
-            }))
-          : undefined,
-      },
-      finish_reason: response.toolCalls?.length ? "tool_calls" : "stop",
-    }],
-    usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-    model: response.model ?? "zai-test",
-  };
-  const fn = vi.fn().mockResolvedValue({ data: apiData });
+function createSSEStream(events: string[]): PassThrough {
+  const stream = new PassThrough();
+  for (const event of events) {
+    stream.write(event + "\n");
+  }
+  stream.end();
+  return stream;
+}
+
+function makeStreamPostMock(sseEvents: string[]) {
+  const stream = createSSEStream(sseEvents);
+  const fn = vi.fn().mockResolvedValue({ status: 200, data: stream });
   const mockClient = { post: fn, get: vi.fn() };
   mockAxiosCreate.mockReturnValue(mockClient);
   return fn;
@@ -88,19 +80,25 @@ describe("ZaiProvider chatStream", () => {
 
   describe("content streaming", () => {
     it("yields content in chunks", async () => {
-      makePostMock({ content: "Hello world!" });
+      makeStreamPostMock([
+        'data: {"choices":[{"delta":{"content":"Hel"}}]}',
+        'data: {"choices":[{"delta":{"content":"lo"}}]}',
+        "data: [DONE]",
+      ]);
 
       const provider = makeProvider();
       const { strings, events } = await collectStream(
         provider.chatStream({ messages: [{ role: "user", content: "hi" }] }),
       );
 
-      expect(strings.join("")).toBe("Hello world!");
+      expect(strings.join("")).toBe("Hello");
       expect(events).toHaveLength(0);
     });
 
     it("handles empty content gracefully", async () => {
-      makePostMock({ content: "" });
+      makeStreamPostMock([
+        "data: [DONE]",
+      ]);
 
       const provider = makeProvider();
       const { strings, events } = await collectStream(
@@ -114,14 +112,17 @@ describe("ZaiProvider chatStream", () => {
 
   describe("thinking tokens", () => {
     it("yields thinking as <<THINKING>>-wrapped string matching Ollama", async () => {
-      makePostMock({ content: "answer", thinking: "Let me reason" });
+      makeStreamPostMock([
+        'data: {"choices":[{"delta":{"reasoning_content":"Let me reason"}}]}',
+        'data: {"choices":[{"delta":{"content":"answer"}}]}',
+        "data: [DONE]",
+      ]);
 
       const provider = makeProvider();
       const { strings, events } = await collectStream(
         provider.chatStream({ messages: [{ role: "user", content: "q" }] }),
       );
 
-      // thinking is now a wrapped string, not StreamEvent
       const thinkingStrings = strings.filter((s) => s.startsWith("<<THINKING>>"));
       const contentStrings = strings.filter((s) => !s.startsWith("<<THINKING>>"));
       expect(contentStrings.join("")).toBe("answer");
@@ -131,7 +132,10 @@ describe("ZaiProvider chatStream", () => {
     });
 
     it("yields thinking as string even when content is empty", async () => {
-      makePostMock({ content: "", thinking: "reasoning only" });
+      makeStreamPostMock([
+        'data: {"choices":[{"delta":{"reasoning_content":"reasoning only"}}]}',
+        "data: [DONE]",
+      ]);
 
       const provider = makeProvider();
       const { strings, events } = await collectStream(
@@ -145,7 +149,10 @@ describe("ZaiProvider chatStream", () => {
     });
 
     it("does not yield thinking string when thinking is undefined", async () => {
-      makePostMock({ content: "answer" });
+      makeStreamPostMock([
+        'data: {"choices":[{"delta":{"content":"answer"}}]}',
+        "data: [DONE]",
+      ]);
 
       const provider = makeProvider();
       const { strings, events } = await collectStream(
@@ -160,7 +167,19 @@ describe("ZaiProvider chatStream", () => {
 
   describe("tool calls", () => {
     it("repairs invalid tool history before sending the request", async () => {
-      const post = makePostMock({ content: "ok" });
+      // This tests chat() not chatStream — use non-stream mock
+      const apiData = {
+        choices: [{
+          message: { content: "ok" },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        model: "zai-test",
+      };
+      const fn = vi.fn().mockResolvedValue({ data: apiData });
+      const mockClient = { post: fn, get: vi.fn() };
+      mockAxiosCreate.mockReturnValue(mockClient);
+
       const provider = makeProvider();
 
       await provider.chat({
@@ -198,7 +217,7 @@ describe("ZaiProvider chatStream", () => {
         ],
       });
 
-      const body = post.mock.calls[0][1];
+      const body = fn.mock.calls[0][1];
       expect(body.tools[0].function.name).toBe("repo_search");
       expect(body.messages.some((message: any) => message.tool_call_id === "orphan")).toBe(false);
       const assistant = body.messages.find((message: any) => message.role === "assistant");
@@ -208,14 +227,11 @@ describe("ZaiProvider chatStream", () => {
     });
 
     it("yields a tool_calls StreamEvent when response has toolCalls", async () => {
-      const toolCalls: ToolCall[] = [
-        {
-          id: "call_abc",
-          type: "function",
-          function: { name: "read_file", arguments: '{"path":"src/app.ts"}' },
-        },
-      ];
-      makePostMock({ content: "", toolCalls });
+      makeStreamPostMock([
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"read_file","arguments":"{\\"path\\":\\"src/app.ts\\"}"}}]}}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+        "data: [DONE]",
+      ]);
 
       const provider = makeProvider();
       const { strings, events } = await collectStream(
@@ -225,15 +241,17 @@ describe("ZaiProvider chatStream", () => {
       expect(strings).toHaveLength(0);
       const tcEvents = events.filter((e) => e.type === "tool_calls");
       expect(tcEvents).toHaveLength(1);
-      expect(tcEvents[0]).toEqual({ type: "tool_calls", toolCalls });
+      expect(tcEvents[0].toolCalls).toHaveLength(1);
+      expect(tcEvents[0].toolCalls[0].id).toBe("call_abc");
+      expect(tcEvents[0].toolCalls[0].function.name).toBe("read_file");
     });
 
     it("yields multiple tool calls in one event", async () => {
-      const toolCalls: ToolCall[] = [
-        { id: "call_1", type: "function", function: { name: "read_file", arguments: '{"path":"a.ts"}' } },
-        { id: "call_2", type: "function", function: { name: "grep", arguments: '{"pattern":"TODO"}' } },
-      ];
-      makePostMock({ content: "", toolCalls });
+      makeStreamPostMock([
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\\"path\\":\\"a.ts\\"}"}},{"index":1,"id":"call_2","type":"function","function":{"name":"grep","arguments":"{\\"pattern\\":\\"TODO\\"}"}}]}}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+        "data: [DONE]",
+      ]);
 
       const provider = makeProvider();
       const { events } = await collectStream(
@@ -249,7 +267,10 @@ describe("ZaiProvider chatStream", () => {
     });
 
     it("does not yield tool_calls event when toolCalls is undefined", async () => {
-      makePostMock({ content: "ok" });
+      makeStreamPostMock([
+        'data: {"choices":[{"delta":{"content":"ok"}}]}',
+        "data: [DONE]",
+      ]);
 
       const provider = makeProvider();
       const { events } = await collectStream(
@@ -260,7 +281,10 @@ describe("ZaiProvider chatStream", () => {
     });
 
     it("does not yield tool_calls event when toolCalls is empty array", async () => {
-      makePostMock({ content: "ok", toolCalls: [] });
+      makeStreamPostMock([
+        'data: {"choices":[{"delta":{"content":"ok"}}]}',
+        "data: [DONE]",
+      ]);
 
       const provider = makeProvider();
       const { events } = await collectStream(
@@ -273,10 +297,13 @@ describe("ZaiProvider chatStream", () => {
 
   describe("mixed thinking, content, and tool_calls", () => {
     it("yields thinking as string before content before tool_calls", async () => {
-      const toolCalls: ToolCall[] = [
-        { id: "call_mix", type: "function", function: { name: "search", arguments: '{"q":"test"}' } },
-      ];
-      makePostMock({ content: "Let me check", thinking: "Hmm", toolCalls });
+      makeStreamPostMock([
+        'data: {"choices":[{"delta":{"reasoning_content":"Hmm"}}]}',
+        'data: {"choices":[{"delta":{"content":"Let me check"}}]}',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_mix","type":"function","function":{"name":"search","arguments":"{\\"q\\":\\"test\\"}"}}]}}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+        "data: [DONE]",
+      ]);
 
       const provider = makeProvider();
       const collected: Array<string | StreamEvent> = [];

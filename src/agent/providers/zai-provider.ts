@@ -24,8 +24,6 @@ export class ZaiProvider extends AIProvider {
     maxTools: 128,
   };
 
-  private isContextOverflowRetry = false;
-
   constructor(config: ProviderConfig) {
     super(config);
   }
@@ -69,7 +67,13 @@ export class ZaiProvider extends AIProvider {
         "Z.ai API key not configured. Set ZAI_API_KEY environment variable.",
       );
     }
+    return this.chatInternal(request, false);
+  }
 
+  private async chatInternal(
+    request: ChatRequest,
+    isContextOverflowRetry: boolean,
+  ): Promise<ChatResponse> {
     let lastError: Error | null = null;
     const maxAttempts = this.config.maxRetries + 1;
 
@@ -149,7 +153,7 @@ export class ZaiProvider extends AIProvider {
                   `[Z.ai API] Context length exceeded (400):`,
                   errorBody || "no response body",
                 );
-                if (!this.isContextOverflowRetry) {
+                if (!isContextOverflowRetry) {
                   this.calibrateFromOverflowError(errorBody, request.messages, request.tools);
                   const modelMax = this.extractModelMaxContext(errorBody);
                   const targetMax = modelMax || this.getMaxContextTokens();
@@ -160,16 +164,10 @@ export class ZaiProvider extends AIProvider {
                   console.warn(
                     `[Z.ai API] Retrying with aggressive pruning: ${request.messages.length} → ${prunedMessages.length} messages (target: ${targetMax} tokens)`,
                   );
-                  this.isContextOverflowRetry = true;
-                  try {
-                    const retryResult = await this.chat({
-                      ...request,
-                      messages: prunedMessages,
-                    });
-                    return retryResult;
-                  } finally {
-                    this.isContextOverflowRetry = false;
-                  }
+                  return this.chatInternal(
+                    { ...request, messages: prunedMessages },
+                    true,
+                  );
                 }
                 throw new Error(
                   `Z.ai API context length exceeded for model '${this.config.model}'. ${errorBody || "Prompt exceeds model maximum context length."}`,
@@ -219,6 +217,13 @@ export class ZaiProvider extends AIProvider {
   async *chatStream(
     request: ChatRequest,
   ): AsyncGenerator<string | StreamEvent, void, unknown> {
+    yield* this.chatStreamInternal(request, false);
+  }
+
+  private async *chatStreamInternal(
+    request: ChatRequest,
+    isContextOverflowRetry: boolean,
+  ): AsyncGenerator<string | StreamEvent, void, unknown> {
     const maxAttempts = this.config.maxRetries + 1;
     let lastError: Error | null = null;
 
@@ -246,8 +251,7 @@ export class ZaiProvider extends AIProvider {
           if (response.status === 400) {
             if (this.isContextOverflowError(errorBody)) {
               console.error("[Z.ai API] Context length exceeded (400):", errorBody);
-              // Retry once with aggressive pruning (same pattern as Ollama chat())
-              if (!this.isContextOverflowRetry) {
+              if (!isContextOverflowRetry) {
                 this.calibrateFromOverflowError(errorBody, request.messages, request.tools);
                 const modelMax = this.extractModelMaxContext(errorBody);
                 const targetMax = modelMax || this.getMaxContextTokens();
@@ -258,13 +262,11 @@ export class ZaiProvider extends AIProvider {
                 console.warn(
                   `[Z.ai API] Retrying stream with aggressive pruning: ${request.messages.length} → ${prunedMessages.length} messages (target: ${targetMax} tokens)`,
                 );
-                this.isContextOverflowRetry = true;
-                try {
-                  yield* this.chatStream({ ...request, messages: prunedMessages });
-                  return;
-                } finally {
-                  this.isContextOverflowRetry = false;
-                }
+                yield* this.chatStreamInternal(
+                  { ...request, messages: prunedMessages },
+                  true,
+                );
+                return;
               }
               throw new Error(
                 `Z.ai API context length exceeded for model '${this.config.model}'. ${errorBody}`,
