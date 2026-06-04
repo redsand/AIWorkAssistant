@@ -238,7 +238,7 @@ class AgentRunDatabase {
   }
 
   markStaleRunsAsFailed(olderThanMinutes?: number): number {
-    const envValue = parseInt(process.env.AICODER_STALE_TIMEOUT_MINUTES || "120", 10);
+    const envValue = parseInt(process.env.AICODER_STALE_TIMEOUT_MINUTES || "30", 10);
     const threshold = olderThanMinutes ?? (Number.isNaN(envValue) ? 120 : envValue);
     const cutoff = new Date(
       Date.now() - threshold * 60 * 1000,
