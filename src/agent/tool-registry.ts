@@ -52,6 +52,7 @@ const PLATFORM_PREFIX_MAP: Record<string, Platform> = {
   session: "cross-platform",
   musician: "cross-platform",
   audio: "cross-platform",
+  tools: "cross-platform",
 };
 
 export function getPlatformForToolName(toolName: string): Platform {
@@ -6076,7 +6077,9 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     name: "tenable.list_vulnerabilities",
     description: "Return a comprehensive list of ALL vulnerabilities from Tenable (not capped at 5,000). Internally uses the export API to download every chunk automatically. May take 10–60 seconds for large datasets. Provide accessKey/secretKey for per-customer access.",
     params: {
-      date_range: { type: "number", description: "Days of data to return (default: all)", required: false },
+      date_range: { type: "number", description: "Days of data to return (default: all). Use this OR start_date/end_date, not both.", required: false },
+      start_date: { type: "string", description: "Start date in ISO 8601 format (e.g., 2026-05-01). Use this with end_date for precise date ranges instead of date_range.", required: false },
+      end_date: { type: "string", description: "End date in ISO 8601 format (e.g., 2026-06-04). Use this with start_date for precise date ranges instead of date_range.", required: false },
       severity: { type: "array", description: "Severity filter: critical, high, medium, low, info", required: false },
       state: { type: "array", description: "State filter: open, reopened, fixed", required: false },
       plugin_id: { type: "array", description: "Filter by specific plugin IDs", required: false },
@@ -8132,7 +8135,7 @@ const MUSICIAN_TOOLS: Tool[] = [
 /**
  * Core productivity tools — the most commonly used subset sent to the model.
  * Extended tools (full GitLab/GitHub/Jira/HAWK IR/Jitbit/LSP/Git/Local) are
- * available via discover_tools. Keep this under ~20 items so the initial tool
+ * available via tools.discover. Keep this under ~20 items so the initial tool
  * set fits within provider limits (OpenAI max 128, but we target <30).
  */
 const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
@@ -8140,7 +8143,7 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   PRODUCTIVITY_TOOLS.find((t) => t.name === "calendar.list_events")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "calendar.create_event")!,
 
-  // Jira — read-mostly essentials; write/transition via discover_tools
+  // Jira — read-mostly essentials; write/transition via tools.discover
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jira.get_issue")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jira.search_issues")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "jira.create_issue")!,
@@ -8224,7 +8227,7 @@ const APPROVAL_TOOLS: Tool[] = [
  * specific ones to be added to its tool set.
  */
 const DISCOVER_TOOL_META: Tool = {
-  name: "discover_tools",
+  name: "tools.discover",
   description:
     "List available tool categories or load additional tools. Use this when you need capabilities beyond your current tools (e.g., pipeline operations, file writes, issue management, PR reviews). Call with no arguments to see what's available, with a single category to load those tools, or with categories array to load multiple at once.",
   params: {
@@ -8241,7 +8244,22 @@ const DISCOVER_TOOL_META: Tool = {
       required: false,
     },
   },
-  actionType: "system.discover_tools",
+  actionType: "system.tools.discover",
+  riskLevel: "low",
+};
+
+const FETCH_CACHED_TOOL_META: Tool = {
+  name: "tools.fetch_cached",
+  description:
+    "Retrieve a full prior tool result by its cache reference. Use when a previous tool call returned a _cached_ref and you need the complete data.",
+  params: {
+    ref: {
+      type: "string",
+      description: "Cache reference string (e.g., 'tc-a1b2c3d4e5f6')",
+      required: true,
+    },
+  },
+  actionType: "system.fetch_cached",
   riskLevel: "low",
 };
 
@@ -8258,6 +8276,7 @@ export function getTools(mode: string): Tool[] {
         ...APPROVAL_TOOLS,
         ...CORE_PRODUCTIVITY_TOOLS,
         DISCOVER_TOOL_META,
+        FETCH_CACHED_TOOL_META,
       ];
     case AGENT_MODES.ENGINEERING:
       return [
@@ -8267,12 +8286,14 @@ export function getTools(mode: string): Tool[] {
         ...APPROVAL_TOOLS,
         ...CORE_PRODUCTIVITY_TOOLS,
         DISCOVER_TOOL_META,
+        FETCH_CACHED_TOOL_META,
       ];
     case AGENT_MODES.MUSICIAN:
       return [
         ...AGENT_RUN_TOOLS,
         ...MUSICIAN_TOOLS,
         DISCOVER_TOOL_META,
+        FETCH_CACHED_TOOL_META,
       ];
     default:
       return [];
@@ -8285,6 +8306,7 @@ const TENABLE_REPORT_REQUEST_PATTERN = /\b(?:report|vulnerab|asset|patch|remedia
 const TENABLE_REPORT_TOOL_NAMES = new Set([
   "system.get_time",
   "system.check_health",
+  // Tenable
   "tenable.list_vulnerabilities",
   "tenable.get_vulnerability_details",
   "tenable.list_assets",
@@ -8292,6 +8314,14 @@ const TENABLE_REPORT_TOOL_NAMES = new Set([
   "tenable.get_asset_vulnerabilities",
   "tenable.get_server_status",
   "tenable.get_server_properties",
+  // Hawk IR — report/summary read tools
+  "hawk_ir.monthly_summary",
+  "hawk_ir.weekly_report",
+  "hawk_ir.get_case_count",
+  "hawk_ir.get_recent_cases",
+  "hawk_ir.get_risky_open_cases",
+  "hawk_ir.get_escalated_cases",
+  "hawk_ir.get_asset_summary",
 ]);
 
 const TENABLE_SUPPORT_TOOL_NAMES = new Set([
@@ -8342,6 +8372,8 @@ export function getToolsForRequest(mode: string, message: string): Tool[] {
     ...approvalTools,
     ...(TENABLE_REPORT_REQUEST_PATTERN.test(message) ? [] : supportTools),
     ...tenableTools,
+    DISCOVER_TOOL_META,
+    FETCH_CACHED_TOOL_META,
   ]);
 }
 
@@ -8379,7 +8411,7 @@ export function getToolInventorySummary(mode: string, message?: string): string 
         platformRef.push(`- ${platform.name}: All tools loaded (${loaded}).`);
       } else {
         platformRef.push(
-          `- ${platform.name}: ${loaded}/${catTools.length} tools loaded. For ${platform.writeActions.join(", ")}, call discover_tools("${platform.prefix}").`,
+          `- ${platform.name}: ${loaded}/${catTools.length} tools loaded. For ${platform.writeActions.join(", ")}, call tools.discover("${platform.prefix}").`,
         );
       }
     }
@@ -8390,8 +8422,8 @@ export function getToolInventorySummary(mode: string, message?: string): string 
       ? `\nPLATFORM QUICK REFERENCE:\n${platformRef.join("\n")}\n`
       : "";
 
-  return `TOOLS: ${tools.length} loaded, expandable via discover_tools. Categories: ${catNames.join(", ")}.
-${platformSection}IMPORTANT: You MUST use these tools to take actions. Do NOT say "I don't have access" or "I cannot do that" — if a tool exists for the action, USE IT. If you need a tool not in your current set, call discover_tools to load it.`;
+  return `TOOLS: ${tools.length} loaded, expandable via tools.discover. Categories: ${catNames.join(", ")}.
+${platformSection}IMPORTANT: You MUST use these tools to take actions. Do NOT say "I don't have access" or "I cannot do that" — if a tool exists for the action, USE IT. If you need a tool not in your current set, call tools.discover to load it.`;
 }
 
 /**
@@ -8428,7 +8460,7 @@ export function getToolInventory(mode: string): string {
         platformRef.push(`- ${platform.name}: All tools loaded (${loaded}).`);
       } else {
         platformRef.push(
-          `- ${platform.name}: ${loaded}/${catTools.length} tools loaded. For ${platform.writeActions.join(", ")}, call discover_tools("${platform.prefix}").`,
+          `- ${platform.name}: ${loaded}/${catTools.length} tools loaded. For ${platform.writeActions.join(", ")}, call tools.discover("${platform.prefix}").`,
         );
       }
     }
@@ -8439,30 +8471,30 @@ export function getToolInventory(mode: string): string {
       ? `\n\nPLATFORM QUICK REFERENCE:\n${platformRef.join("\n")}`
       : "";
 
-  return `AVAILABLE TOOLS (${tools.length} loaded, expandable via discover_tools):
+  return `AVAILABLE TOOLS (${tools.length} loaded, expandable via tools.discover):
 ${lines.join("\n")}
 ${platformSection}
 
-EXPANDABLE CATEGORIES (use discover_tools to load): ${catNames}
+EXPANDABLE CATEGORIES (use tools.discover to load): ${catNames}
 
-IMPORTANT: You MUST use these tools to take actions. Do NOT say "I don't have access" or "I cannot do that" — if a tool exists for the action, USE IT. If you need a tool not listed above, call discover_tools to load it.`;
+IMPORTANT: You MUST use these tools to take actions. Do NOT say "I don't have access" or "I cannot do that" — if a tool exists for the action, USE IT. If you need a tool not listed above, call tools.discover to load it.`;
 }
 
 export function getAllToolsForMode(mode: string): Tool[] {
   switch (mode) {
     case AGENT_MODES.PRODUCTIVITY:
-      return [...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...PRODUCTIVITY_TOOLS];
+      return [...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
     case AGENT_MODES.ENGINEERING:
-      return [...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...ENGINEERING_TOOLS, ...PRODUCTIVITY_TOOLS];
+      return [...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...ENGINEERING_TOOLS, ...PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
     case AGENT_MODES.MUSICIAN:
-      return [...AGENT_RUN_TOOLS, ...MUSICIAN_TOOLS];
+      return [...AGENT_RUN_TOOLS, ...MUSICIAN_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
     default:
       return [];
   }
 }
 
 /**
- * Get tool categories for a mode, used by discover_tools.
+ * Get tool categories for a mode, used by tools.discover.
  */
 export function getToolCategories(mode: string): Record<string, string[]> {
   const tools = getAllToolsForMode(mode);

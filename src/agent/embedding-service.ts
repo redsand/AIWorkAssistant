@@ -241,14 +241,51 @@ class EmbeddingService {
   private async ollamaEmbedBatch(
     texts: string[],
   ): Promise<(EmbeddingResult | null)[]> {
-    const results: (EmbeddingResult | null)[] = [];
-    for (const text of texts) {
-      try {
-        results.push(await this.ollamaEmbed(text));
-      } catch {
-        results.push(null);
+    // Try the newer /api/embed endpoint first — it accepts batched input in a single request
+    try {
+      const response = await axios.post(
+        `${this.baseUrl}/api/embed`,
+        { model: this.model, input: texts },
+        {
+          headers: this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {},
+          timeout: 60000,
+        },
+      );
+      const embeddings = response.data.embeddings as number[][];
+      if (Array.isArray(embeddings) && embeddings.length === texts.length) {
+        return embeddings.map((embedding) => ({
+          embedding,
+          model: this.model,
+          provider: "ollama",
+        }));
       }
+    } catch {
+      // /api/embed not available — fall back to concurrent /api/embeddings calls
     }
+
+    // Fall back: parallel requests with a concurrency limit to avoid overwhelming Ollama
+    const CONCURRENCY = 5;
+    const results: (EmbeddingResult | null)[] = new Array(texts.length).fill(null);
+
+    const runBatch = async (batch: { text: string; index: number }[]) => {
+      await Promise.all(
+        batch.map(async ({ text, index }) => {
+          try {
+            results[index] = await this.ollamaEmbed(text);
+          } catch {
+            results[index] = null;
+          }
+        }),
+      );
+    };
+
+    for (let i = 0; i < texts.length; i += CONCURRENCY) {
+      const batch = texts
+        .slice(i, i + CONCURRENCY)
+        .map((text, j) => ({ text, index: i + j }));
+      await runBatch(batch);
+    }
+
     return results;
   }
 

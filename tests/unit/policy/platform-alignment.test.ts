@@ -54,7 +54,7 @@ describe("validatePlatformAlignment", () => {
   });
 
   it("allows system/discover tools (cross-platform)", () => {
-    const result = validatePlatformAlignment("discover_tools", explicitGithub);
+    const result = validatePlatformAlignment("tools.discover", explicitGithub);
     expect(result.result).toBe("allowed");
   });
 

@@ -242,6 +242,23 @@ describe("SubagentSpawner", () => {
       expect(toolNames).not.toContain("agent.spawn");
       expect(toolNames).not.toContain("cron.manage");
     });
+
+    it("should include tools.discover and tools.fetch_cached in subagent tool set", async () => {
+      const { getAllToolsForMode } = await import("../tool-registry.js");
+      (getAllToolsForMode as ReturnType<typeof vi.fn>).mockReturnValue([
+        { name: "tools.discover", type: "function", function: { name: "tools.discover", description: "Discover", parameters: {} } },
+        { name: "tools.fetch_cached", type: "function", function: { name: "tools.fetch_cached", description: "Fetch cached", parameters: {} } },
+        { name: "agent.spawn", type: "function", function: { name: "agent.spawn", description: "Spawn", parameters: {} } },
+      ]);
+
+      await spawner.spawn({ prompt: "use tools" });
+
+      const call = mockChat.mock.calls[0][0];
+      const toolNames = (call.tools || []).map((t: any) => t.function?.name || t.name);
+      expect(toolNames).toContain("tools.discover");
+      expect(toolNames).toContain("tools.fetch_cached");
+      expect(toolNames).not.toContain("agent.spawn");
+    });
   });
 
   // ── memory inheritance ───────────────────────────────────────────────

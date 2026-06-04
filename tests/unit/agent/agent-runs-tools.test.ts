@@ -97,6 +97,15 @@ describe("Agent Runs Tool Registry", () => {
     }
   });
 
+  it("always includes tools.discover and tools.fetch_cached in getAllToolsForMode for all modes", () => {
+    for (const mode of ["productivity", "engineering", "musician"]) {
+      const allTools = getAllToolsForMode(mode);
+      const names = allTools.map((t) => t.name);
+      expect(names).toContain("tools.discover");
+      expect(names).toContain("tools.fetch_cached");
+    }
+  });
+
   it("agent run tools are in the agent category", () => {
     const categories = getToolCategories("productivity");
     expect(categories.agent).toBeDefined();

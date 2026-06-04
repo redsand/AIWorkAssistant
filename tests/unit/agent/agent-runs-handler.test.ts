@@ -242,7 +242,7 @@ describe("Agent Runs Handler Tests", () => {
   });
 
   describe("agent.list_runs", () => {
-    it("returns runs scoped to the requesting user", async () => {
+    it("returns all runs (single-user mode)", async () => {
       mockListRuns.mockReturnValue({
         runs: [
           { id: "r1", userId: "alice", mode: "chat", status: "completed" },
@@ -253,7 +253,7 @@ describe("Agent Runs Handler Tests", () => {
       const result = await dispatchToolCall("agent.list_runs", {}, "alice");
       expect(result.success).toBe(true);
       expect(mockListRuns).toHaveBeenCalledWith(
-        expect.objectContaining({ userId: "alice" }),
+        expect.not.objectContaining({ userId: expect.any(String) }),
       );
     });
 
@@ -268,7 +268,7 @@ describe("Agent Runs Handler Tests", () => {
       );
       expect(result.success).toBe(true);
       expect(mockListRuns).toHaveBeenCalledWith(
-        expect.objectContaining({ userId: "alice" }),
+        expect.not.objectContaining({ userId: expect.any(String) }),
       );
     });
 
@@ -364,7 +364,7 @@ describe("Agent Runs Handler Tests", () => {
       expect(result.data).toBeDefined();
     });
 
-    it("returns generic not-found for another users run (IDOR protection)", async () => {
+    it("allows viewing any run in single-user mode", async () => {
       mockGetRunWithSteps.mockReturnValue({
         id: "r1",
         userId: "bob",
@@ -378,10 +378,8 @@ describe("Agent Runs Handler Tests", () => {
         { runId: "r1" },
         "alice",
       );
-      expect(result.success).toBe(false);
-      // Must not reveal that the run exists but belongs to someone else
-      expect(result.error).toContain("not found");
-      expect(result.error).not.toContain("authorized");
+      expect(result.success).toBe(true);
+      expect(result.data).toBeDefined();
     });
 
     it("returns not-found for nonexistent run", async () => {
@@ -463,8 +461,10 @@ describe("Agent Runs Handler Tests", () => {
       expect(result.data.completedRuns).toBe(2);
       expect(result.data.failedRuns).toBe(1);
       expect(result.data.avgToolLoopCount).toBe(3);
-      // Verify listRuns was called with the requesting user's ID (not global)
-      expect(mockListRuns).toHaveBeenCalledWith(expect.objectContaining({ userId: "alice" }));
+      // Verify listRuns was called WITHOUT userId (single-user mode, no IDOR)
+      expect(mockListRuns).toHaveBeenCalledWith(
+        expect.not.objectContaining({ userId: expect.any(String) }),
+      );
     });
 
     it("returns structured error on database failure", async () => {

@@ -31,6 +31,7 @@ import { providerSettings } from "../agent/provider-settings";
 import { runProviderPreflight } from "../agent/provider-preflight";
 import type { AIProviderName } from "../agent/provider-settings";
 import { errorLog } from "../observability/error-log";
+import { claimKitAdapter } from "../context-engine/adapters/claimkit-adapter";
 
 const MAX_SYSTEM_PROMPT_LENGTH = 4000;
 
@@ -152,7 +153,7 @@ interface ProcessingJob {
 const processingJobs = new Map<string, ProcessingJob>();
 
 // Persists which tool categories have been discovered per session so they are
-// pre-expanded on subsequent requests instead of requiring a repeat discover_tools call.
+// pre-expanded on subsequent requests instead of requiring a repeat tools.discover call.
 const sessionDiscoveredCategories = new Map<string, Set<string>>();
 
 function buildCategoryToolDefs(mode: string, category: string) {
@@ -312,6 +313,43 @@ function compactToolResultForContext(result: unknown): unknown {
     };
   }
   return result;
+}
+
+function shouldIndexToolResult(toolName: string, result: unknown): boolean {
+  if (!env.CLAIMKIT_ENABLED || !claimKitAdapter.isAvailable()) return false;
+  // Skip internal/meta tools and tools that change frequently
+  const skippedPrefixes = new Set([
+    "system.", "agent.", "tools.discover", "tools.fetch_cached",
+    "calendar.", "cron.", "todo.", "memory.", "local.", "lsp.",
+    "codebase.", "git.", "workflow.", "session.", "productivity.",
+    "personal_os.", "cto.", "product.", "skill.", "soul.",
+  ]);
+  const prefix = toolName.includes(".") ? toolName.split(".")[0] + "." : toolName;
+  if (skippedPrefixes.has(prefix) || skippedPrefixes.has(toolName)) return false;
+  // Only index successful results with actual data
+  if (!result || typeof result !== "object") return false;
+  const obj = result as Record<string, unknown>;
+  if (obj.success === false) return false;
+  if (!obj.data) return false;
+  return true;
+}
+
+function ingestToolResult(toolName: string, result: unknown, sessionId: string | undefined): void {
+  if (!shouldIndexToolResult(toolName, result)) return;
+  const obj = result as Record<string, unknown>;
+  const data = obj.data as Record<string, unknown> | undefined;
+  const text = `${toolName} result:\n${JSON.stringify(data ?? obj, null, 2)}`;
+  claimKitAdapter
+    .ingest(text, {
+      source: `tool:${toolName}`,
+      toolName,
+      sessionId: sessionId ?? "unknown",
+      timestamp: new Date().toISOString(),
+      trustTier: "observed",
+    })
+    .catch(() => {
+      // Non-blocking: indexing failures must not break the chat flow
+    });
 }
 
 function stringifyToolResultForContext(result: unknown): string {
@@ -521,9 +559,10 @@ async function runChatJob(
         allToolResults[tc.id] = compactToolResultForContext(result);
         try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: tc.name, success: result.success !== false, errorMessage: result.error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
         emitJobEvent(sessionId, "tool_result", { id: tc.id, result });
+        ingestToolResult(tc.name, result, sessionId);
         if (tc.name.startsWith("todo.")) emitJobEvent(sessionId, "todo_changed", { action: tc.name });
 
-        if (tc.name === "discover_tools" && result.success) {
+        if (tc.name === "tools.discover" && result.success) {
           const singleCategory = tc.params.category as string | undefined;
           const categoriesArray = tc.params.categories as string[] | string | undefined;
           const requested: string[] = categoriesArray
@@ -567,6 +606,7 @@ async function runChatJob(
         for (const { id, result, name } of spawnResults) {
           allToolResults[id] = result;
           emitJobEvent(sessionId, "tool_result", { id, result });
+          ingestToolResult(name, result, sessionId);
           conversationManager.addMessage(sessionId, { role: "tool", content: stringifyToolResultForContext(result), name, tool_call_id: id });
         }
       }
@@ -881,7 +921,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
           try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: tc.name, success: result.success !== false, errorMessage: result.error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
-          if (tc.name === "discover_tools" && result.success) {
+          ingestToolResult(tc.name, result, body.sessionId);
+
+          if (tc.name === "tools.discover" && result.success) {
             const singleCategory = tc.params.category as string | undefined;
             const categoriesArray = tc.params.categories as string[] | string | undefined;
             const requested: string[] = categoriesArray

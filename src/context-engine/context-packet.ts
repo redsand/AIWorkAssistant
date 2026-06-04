@@ -202,7 +202,7 @@ export async function assembleContextPacket(
     try {
       claimKitResult = await withTimeout(
         claimKitAdapter.query(query),
-        5000,
+        env.CLAIMKIT_QUERY_TIMEOUT_MS,
         null,
       );
       ckMs = Date.now() - ckStart;

@@ -113,7 +113,7 @@ vi.mock("../../autonomous-loop/review-gate-state", () => ({
   loadReviewGateState: vi.fn(),
 }));
 vi.mock("../tool-registry", () => ({
-  getToolCategories: vi.fn().mockReturnValue({ general: ["discover_tools"] }),
+  getToolCategories: vi.fn().mockReturnValue({ general: ["tools.discover"] }),
   getToolsByCategory: vi.fn().mockReturnValue([]),
   getToolByName: vi.fn().mockReturnValue(undefined),
   getTools: vi.fn().mockReturnValue([]),
@@ -264,7 +264,7 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
   describe("resetToolCallCounter", () => {
     it("should clear counter for a specific userId", async () => {
       // Seed a counter by dispatching a tool call
-      await dispatchToolCall("discover_tools", {}, TEST_USER, true);
+      await dispatchToolCall("tools.discover", {}, TEST_USER, true);
       expect(getToolCallCounter(TEST_USER)).toBe(1);
 
       resetToolCallCounter(TEST_USER);
@@ -272,8 +272,8 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
     });
 
     it("should clear all counters when no userId is provided", async () => {
-      await dispatchToolCall("discover_tools", {}, "user-a", true);
-      await dispatchToolCall("discover_tools", {}, "user-b", true);
+      await dispatchToolCall("tools.discover", {}, "user-a", true);
+      await dispatchToolCall("tools.discover", {}, "user-b", true);
 
       expect(getToolCallCounter("user-a")).toBe(1);
       expect(getToolCallCounter("user-b")).toBe(1);
@@ -285,8 +285,8 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
     });
 
     it("should not affect other users when clearing a specific userId", async () => {
-      await dispatchToolCall("discover_tools", {}, "user-a", true);
-      await dispatchToolCall("discover_tools", {}, "user-b", true);
+      await dispatchToolCall("tools.discover", {}, "user-a", true);
+      await dispatchToolCall("tools.discover", {}, "user-b", true);
 
       resetToolCallCounter("user-a");
 
@@ -307,9 +307,9 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
     });
 
     it("should reflect counter after dispatch calls", async () => {
-      await dispatchToolCall("discover_tools", {}, TEST_USER, true);
-      await dispatchToolCall("discover_tools", {}, TEST_USER, true);
-      await dispatchToolCall("discover_tools", {}, TEST_USER, true);
+      await dispatchToolCall("tools.discover", {}, TEST_USER, true);
+      await dispatchToolCall("tools.discover", {}, TEST_USER, true);
+      await dispatchToolCall("tools.discover", {}, TEST_USER, true);
 
       expect(getToolCallCounter(TEST_USER)).toBe(3);
     });
@@ -320,15 +320,15 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
   describe("counter increment", () => {
     it("should increment counter by 1 on each tool call", async () => {
       for (let i = 1; i <= 5; i++) {
-        await dispatchToolCall("discover_tools", {}, TEST_USER, true);
+        await dispatchToolCall("tools.discover", {}, TEST_USER, true);
         expect(getToolCallCounter(TEST_USER)).toBe(i);
       }
     });
 
     it("should track counters independently per userId", async () => {
-      await dispatchToolCall("discover_tools", {}, "user-a", true);
-      await dispatchToolCall("discover_tools", {}, "user-b", true);
-      await dispatchToolCall("discover_tools", {}, "user-a", true);
+      await dispatchToolCall("tools.discover", {}, "user-a", true);
+      await dispatchToolCall("tools.discover", {}, "user-b", true);
+      await dispatchToolCall("tools.discover", {}, "user-a", true);
 
       expect(getToolCallCounter("user-a")).toBe(2);
       expect(getToolCallCounter("user-b")).toBe(1);
@@ -340,13 +340,13 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
   describe("nudge message injection", () => {
     it("should inject nudge message at interval 15", async () => {
       for (let i = 1; i <= 15; i++) {
-        const result = await dispatchToolCall("discover_tools", {}, TEST_USER, true);
+        const result = await dispatchToolCall("tools.discover", {}, TEST_USER, true);
 
         if (i === 15) {
           expect(result.message).toContain("Memory nudge");
           expect(result.message).toContain("memory tool");
         } else {
-          // discover_tools without category returns success with data.message but no top-level message
+          // tools.discover without category returns success with data.message but no top-level message
           // nudge adds a top-level message only at the interval
           expect(result.message).toBeFalsy();
         }
@@ -355,7 +355,7 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
 
     it("should inject nudge at multiples of 15 (30, 45...)", async () => {
       for (let i = 1; i <= 30; i++) {
-        const result = await dispatchToolCall("discover_tools", {}, TEST_USER, true);
+        const result = await dispatchToolCall("tools.discover", {}, TEST_USER, true);
 
         if (i === 15 || i === 30) {
           expect(result.message).toContain("Memory nudge");
@@ -368,19 +368,19 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
     it("should not inject nudge between intervals", async () => {
       // Call 14 times
       for (let i = 1; i <= 14; i++) {
-        const result = await dispatchToolCall("discover_tools", {}, TEST_USER, true);
+        const result = await dispatchToolCall("tools.discover", {}, TEST_USER, true);
         expect(result.message).toBeFalsy();
       }
     });
 
     it("should append nudge to an existing handler message", async () => {
-      // discover_tools with category returns data with message;
+      // tools.discover with category returns data with message;
       // but we need a handler that returns a top-level message.
       // We'll use a trick: mock the tool-registry getToolsByCategory
-      // to return tools, and pass a category so discover_tools returns
+      // to return tools, and pass a category so tools.discover returns
       // a different path. However, the simplest way is to just call
       // 15 times and verify the existing data.message is preserved alongside
-      // the nudge. Since discover_tools returns data.message (not top-level),
+      // the nudge. Since tools.discover returns data.message (not top-level),
       // let's verify by checking that result.data is still present.
 
       const { getToolCategories } = await import("../tool-registry.js");
@@ -389,7 +389,7 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
       });
 
       for (let i = 1; i <= 15; i++) {
-        const result = await dispatchToolCall("discover_tools", {}, TEST_USER, true);
+        const result = await dispatchToolCall("tools.discover", {}, TEST_USER, true);
         if (i === 15) {
           // The handler's data should still be present (not clobbered)
           expect(result.success).toBe(true);
@@ -403,7 +403,7 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
     it("should reset nudge cycle after counter reset", async () => {
       // Call 14 times (just before the nudge)
       for (let i = 1; i <= 14; i++) {
-        await dispatchToolCall("discover_tools", {}, TEST_USER, true);
+        await dispatchToolCall("tools.discover", {}, TEST_USER, true);
       }
 
       // Reset counter
@@ -412,12 +412,12 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
 
       // Call 14 more times — should NOT nudge
       for (let i = 1; i <= 14; i++) {
-        const result = await dispatchToolCall("discover_tools", {}, TEST_USER, true);
+        const result = await dispatchToolCall("tools.discover", {}, TEST_USER, true);
         expect(result.message).toBeFalsy();
       }
 
       // 15th call should nudge
-      const result = await dispatchToolCall("discover_tools", {}, TEST_USER, true);
+      const result = await dispatchToolCall("tools.discover", {}, TEST_USER, true);
       expect(result.message).toContain("Memory nudge");
     });
   });
@@ -426,10 +426,10 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
 
   describe("nudge safety", () => {
     it("should not crash when handler returns a result without message property", async () => {
-      // The mock discover_tools handler returns { success: true, data: { ... } }
+      // The mock tools.discover handler returns { success: true, data: { ... } }
       // which has no top-level message. The nudge should still work.
       for (let i = 1; i <= 15; i++) {
-        const result = await dispatchToolCall("discover_tools", {}, TEST_USER, true);
+        const result = await dispatchToolCall("tools.discover", {}, TEST_USER, true);
         if (i === 15) {
           expect(result).toBeDefined();
           expect(result.success).toBe(true);
@@ -446,7 +446,7 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
       // Create more than MAX_COUNTER_ENTRIES unique users (1000)
       // We'll create 5 unique users and verify the counter still works correctly
       for (let i = 0; i < 5; i++) {
-        await dispatchToolCall("discover_tools", {}, `evict-user-${i}`, true);
+        await dispatchToolCall("tools.discover", {}, `evict-user-${i}`, true);
       }
 
       // All counters should work independently
@@ -462,7 +462,7 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
     it("should inject skill suggestion after 5 tool calls", async () => {
       const user = "skill-test-" + Date.now();
       for (let i = 1; i <= 5; i++) {
-        const result = await dispatchToolCall("discover_tools", {}, user, true);
+        const result = await dispatchToolCall("tools.discover", {}, user, true);
         if (i === 5) {
           expect(result.message).toBeTruthy();
           expect(result.message).toContain("Skill suggestion");
@@ -476,7 +476,7 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
     it("should only inject skill suggestion once per user", async () => {
       const user = "skill-once-" + Date.now();
       for (let i = 1; i <= 10; i++) {
-        const result = await dispatchToolCall("discover_tools", {}, user, true);
+        const result = await dispatchToolCall("tools.discover", {}, user, true);
         const msg = result.message ?? "";
         if (i === 5) {
           expect(msg).toContain("Skill suggestion");
@@ -491,19 +491,19 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
       const userB = "skill-ind-b-" + Date.now();
 
       for (let i = 1; i <= 5; i++) {
-        await dispatchToolCall("discover_tools", {}, userA, true);
+        await dispatchToolCall("tools.discover", {}, userA, true);
       }
       // userA got the skill suggestion at call 5; call 6 should not re-inject
-      const lastA = await dispatchToolCall("discover_tools", {}, userA, true);
+      const lastA = await dispatchToolCall("tools.discover", {}, userA, true);
       expect(lastA.message ?? "").not.toContain("Skill suggestion");
 
       // userB has not gotten it yet
       for (let i = 1; i <= 4; i++) {
-        const r = await dispatchToolCall("discover_tools", {}, userB, true);
+        const r = await dispatchToolCall("tools.discover", {}, userB, true);
         expect(r.message ?? "").not.toContain("Skill suggestion");
       }
 
-      const r5 = await dispatchToolCall("discover_tools", {}, userB, true);
+      const r5 = await dispatchToolCall("tools.discover", {}, userB, true);
       expect(r5.message).toBeTruthy();
       expect(r5.message).toContain("Skill suggestion");
     });
@@ -511,7 +511,7 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
     it("should not inject skill suggestion before threshold", async () => {
       const user = "skill-pre-" + Date.now();
       for (let i = 1; i <= 4; i++) {
-        const result = await dispatchToolCall("discover_tools", {}, user, true);
+        const result = await dispatchToolCall("tools.discover", {}, user, true);
         expect(result.message ?? "").not.toContain("Skill suggestion");
       }
     });

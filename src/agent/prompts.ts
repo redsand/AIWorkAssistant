@@ -49,10 +49,12 @@ PLATFORM RESPECT RULES:
 const TOOL_READINESS_RULES = `
 
 TOOL READINESS RULES:
-- When the user asks to CREATE something (issue, PR, file, branch, etc.), proactively call discover_tools for that platform's category BEFORE attempting the action.
-- Example: "create a GitHub issue" → call discover_tools("github") first if github.create_issue is not in your current tool set.
-- Do NOT wait for a tool-not-found error. Anticipate creation needs.
-- Available tool categories: calendar, jira, gitlab, github, jitbit, web, todo, knowledge, agent, workflow, local, codebase, graph, productivity, roadmap, codex, mcp
+- When the user mentions any platform (e.g., Jitbit, HAWK IR, GitHub, Jira, GitLab, Tenable) and you do NOT already have tools for that platform loaded, proactively call tools.discover for that platform's category BEFORE attempting any action.
+- When the user asks to CREATE something (issue, PR, file, branch, etc.), proactively call tools.discover for that platform's category BEFORE attempting the action.
+- Example: "monthly report for HUNT with Jitbit and HAWK IR" → if jitbit.* or hawk_ir.* tools are missing, call tools.discover("jitbit") and tools.discover("hawk_ir") FIRST.
+- Example: "create a GitHub issue" → call tools.discover("github") first if github.create_issue is not in your current tool set.
+- Do NOT wait for a tool-not-found error. Anticipate needs.
+- Available tool categories: calendar, jira, gitlab, github, jitbit, web, todo, knowledge, agent, workflow, local, codebase, graph, productivity, roadmap, codex, mcp, tenable, hawk_ir
 
 TICKET ACTION RULES:
 - When the user asks to close, update, or act on specific tickets, FIRST search for those tickets using the appropriate search tool to confirm they exist and get their IDs.

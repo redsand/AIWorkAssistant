@@ -89,8 +89,8 @@ describe("getPlatformForToolName", () => {
     expect(getPlatformForToolName("codebase.search")).toBe("cross-platform");
   });
 
-  it("maps discover_tools to cross-platform", () => {
-    expect(getPlatformForToolName("discover_tools")).toBe("cross-platform");
+  it("maps tools.discover to cross-platform", () => {
+    expect(getPlatformForToolName("tools.discover")).toBe("cross-platform");
   });
 
   it("maps musician.* to cross-platform", () => {
@@ -233,7 +233,7 @@ describe("getToolsByPlatform", () => {
     expect(tools.length).toBeGreaterThan(0);
     for (const tool of tools) {
       const prefix = tool.name.split(".")[0];
-      expect(["productivity", "todo", "knowledge", "system", "agent", "workflow", "roadmap", "engineering", "codebase", "graph", "git", "discover", "work_items", "cto", "personal_os", "product", "memory", "hawk_ir", "code_review", "skill", "soul", "session", "cron"]).toContain(prefix);
+      expect(["productivity", "todo", "knowledge", "system", "agent", "workflow", "roadmap", "engineering", "codebase", "graph", "git", "discover", "work_items", "cto", "personal_os", "product", "memory", "hawk_ir", "code_review", "skill", "soul", "session", "cron", "tools"]).toContain(prefix);
     }
   });
 });

@@ -161,11 +161,12 @@ export class ZaiProvider extends AIProvider {
                   const prunedMessages = this.pruneAggressively(
                     request.messages, request.tools, targetMax,
                   );
+                  const repairedMessages = repairToolMessagePairs(prunedMessages as any) as any;
                   console.warn(
-                    `[Z.ai API] Retrying with aggressive pruning: ${request.messages.length} → ${prunedMessages.length} messages (target: ${targetMax} tokens)`,
+                    `[Z.ai API] Retrying with aggressive pruning: ${request.messages.length} → ${repairedMessages.length} messages (target: ${targetMax} tokens)`,
                   );
                   return this.chatInternal(
-                    { ...request, messages: prunedMessages },
+                    { ...request, messages: repairedMessages },
                     true,
                   );
                 }
@@ -259,11 +260,12 @@ export class ZaiProvider extends AIProvider {
                 const prunedMessages = this.pruneAggressively(
                   request.messages, request.tools, targetMax,
                 );
+                const repairedMessages = repairToolMessagePairs(prunedMessages as any) as any;
                 console.warn(
-                  `[Z.ai API] Retrying stream with aggressive pruning: ${request.messages.length} → ${prunedMessages.length} messages (target: ${targetMax} tokens)`,
+                  `[Z.ai API] Retrying stream with aggressive pruning: ${request.messages.length} → ${repairedMessages.length} messages (target: ${targetMax} tokens)`,
                 );
                 yield* this.chatStreamInternal(
-                  { ...request, messages: prunedMessages },
+                  { ...request, messages: repairedMessages },
                   true,
                 );
                 return;

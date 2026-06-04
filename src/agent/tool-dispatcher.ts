@@ -2705,7 +2705,7 @@ async function handleDiscoverTools(
   if (unknownCategories.length > 0 && allNewTools.length === 0) {
     return {
       success: false,
-      error: `Unknown categories: ${unknownCategories.join(", ")}. Use discover_tools without arguments to see available options.`,
+      error: `Unknown categories: ${unknownCategories.join(", ")}. Use tools.discover without arguments to see available options.`,
     };
   }
 
@@ -2713,7 +2713,7 @@ async function handleDiscoverTools(
     return {
       success: true,
       data: {
-        message: `All requested tools are already loaded. No need to call discover_tools again.`,
+        message: `All requested tools are already loaded. No need to call tools.discover again.`,
         tools: [],
       },
     };
@@ -7069,10 +7069,18 @@ async function handleTenableListVulnerabilities(params: Record<string, unknown>)
   if (err) return { success: false, error: err };
   const opts = tenableOpts(params);
 
-  // Map date_range (days) to since (unix timestamp) for the export API
+  // Map date_range (days) OR start_date/end_date (ISO strings) to since (unix timestamp)
   let since: number | undefined;
   const dateRange = params.date_range as number | undefined;
-  if (dateRange) {
+  const startDate = params.start_date as string | undefined;
+  const endDate = params.end_date as string | undefined;
+
+  if (startDate) {
+    const parsed = new Date(startDate);
+    if (!isNaN(parsed.getTime())) {
+      since = Math.floor(parsed.getTime() / 1000);
+    }
+  } else if (dateRange) {
     since = Math.floor(Date.now() / 1000) - dateRange * 24 * 60 * 60;
   }
 
@@ -9165,7 +9173,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "work_items.add_note": handleWorkItemsAddNote,
   "work_items.complete": handleWorkItemsComplete,
 
-  discover_tools: handleDiscoverTools,
+  "tools.discover": handleDiscoverTools,
 
   "codex.run": handleCodexRun,
   "todo.create_list": handleTodoCreateList,
@@ -9243,7 +9251,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
 };
 
 const SYSTEM_TOOLS = new Set([
-  "discover_tools",
+  "tools.discover",
   "system.approve_action",
   "system.reject_action",
   "system.list_approvals",
@@ -9377,7 +9385,7 @@ export async function dispatchToolCall(
     }
     return {
       success: false,
-      error: `Unknown tool: Tool '${toolName}' does not exist.${hint} Use discover_tools to see all available tools.`,
+      error: `Unknown tool: Tool '${toolName}' does not exist.${hint} Use tools.discover to see all available tools.`,
     };
   }
 
@@ -9562,7 +9570,7 @@ export async function dispatchToolCall(
       result.message = existing ? `${existing}${skillNudge}` : skillNudge.trim();
     }
 
-    // Reflection nudge: after 3 tool calls, suggest a reflection step (once per session)
+    // Reflection tracking (metrics only — nudges removed to keep tool results clean)
     if (
       result &&
       typeof result === "object" &&
@@ -9574,17 +9582,6 @@ export async function dispatchToolCall(
         if (oldest !== undefined) reflectedUsers.delete(oldest);
       }
       reflectedUsers.set(userId, Date.now());
-      const reflectionNudge = "\n[Reflection] You have made multiple tool calls. Consider reflecting on your approach — what went well and what could improve. Use the memory tool to save any lessons learned.";
-      const existing = typeof result.message === "string" ? result.message : "";
-      result.message = existing ? `${existing}${reflectionNudge}` : reflectionNudge.trim();
-    }
-
-    // Periodic self-nudge for overall performance evaluation at every 15 calls
-    if (result && typeof result === "object" && reflectionEngine.shouldSelfNudge(newCount)) {
-      const selfNudge = "\n[Self-evaluation] Evaluate your recent performance. Consider updating your memory with lessons learned from this session.";
-      const existing = typeof result.message === "string" ? result.message : "";
-      result.message = existing ? `${existing}${selfNudge}` : selfNudge.trim();
-      console.log(`[ReflectionEngine] self-nudge fired for user ${userId} at call count ${newCount}`);
     }
 
     await auditLogger.log({

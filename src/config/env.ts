@@ -216,6 +216,7 @@ const envSchema = z.object({
   CLAIMKIT_MIN_SCORE: z.coerce.number().default(0.0),
   CLAIMKIT_MAX_EVIDENCE_ITEMS: z.coerce.number().default(20),
   CLAIMKIT_QUERY_SEED_LIMIT: z.coerce.number().default(5),
+  CLAIMKIT_QUERY_TIMEOUT_MS: z.coerce.number().default(30000),
   CLAIMKIT_LLM_MODEL: z.string().default(""),
 
   // Nightly calendar planning

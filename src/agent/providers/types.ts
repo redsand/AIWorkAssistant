@@ -443,8 +443,13 @@ export abstract class AIProvider {
 
   protected extractModelMaxContext(errorBody: string | undefined): number | null {
     if (!errorBody) return null;
-    const match = errorBody.match(/maximum context length:?\s*(\d+)/i) ||
-      errorBody.match(/max context length:?\s*(\d+)/i);
+    const match =
+      errorBody.match(/maximum context length:?\s*(\d+)/i) ||
+      errorBody.match(/max context length:?\s*(\d+)/i) ||
+      // Z.ai / GLM format: "Prompt 50517 tokens exceeds 24760 limit"
+      errorBody.match(/exceeds\s+(\d+)\s+limit/i) ||
+      errorBody.match(/max tokens.*?\s+(\d+)/i) ||
+      errorBody.match(/context length.*?\s+(\d+)/i);
     return match ? parseInt(match[1], 10) : null;
   }
 

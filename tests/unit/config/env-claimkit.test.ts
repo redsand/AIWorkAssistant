@@ -14,6 +14,7 @@ const CLAIMKIT_KEYS = [
   "CLAIMKIT_MIN_SCORE",
   "CLAIMKIT_MAX_EVIDENCE_ITEMS",
   "CLAIMKIT_QUERY_SEED_LIMIT",
+  "CLAIMKIT_QUERY_TIMEOUT_MS",
 ];
 
 describe("ClaimKit environment variables", () => {
@@ -84,6 +85,11 @@ describe("ClaimKit environment variables", () => {
       const env = loadEnv();
       expect(env.CLAIMKIT_QUERY_SEED_LIMIT).toBe(5);
     });
+
+    it("should default CLAIMKIT_QUERY_TIMEOUT_MS to 30000", () => {
+      const env = loadEnv();
+      expect(env.CLAIMKIT_QUERY_TIMEOUT_MS).toBe(30000);
+    });
   });
 
   describe("custom values", () => {
@@ -145,6 +151,12 @@ describe("ClaimKit environment variables", () => {
       process.env.CLAIMKIT_QUERY_SEED_LIMIT = "3";
       const env = loadEnv();
       expect(env.CLAIMKIT_QUERY_SEED_LIMIT).toBe(3);
+    });
+
+    it("should parse CLAIMKIT_QUERY_TIMEOUT_MS as number", () => {
+      process.env.CLAIMKIT_QUERY_TIMEOUT_MS = "90000";
+      const env = loadEnv();
+      expect(env.CLAIMKIT_QUERY_TIMEOUT_MS).toBe(90000);
     });
 
     it("should coerce non-'true' strings to false for CLAIMKIT_ENABLED", () => {
