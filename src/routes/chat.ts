@@ -31,7 +31,6 @@ import { providerSettings } from "../agent/provider-settings";
 import { runProviderPreflight } from "../agent/provider-preflight";
 import type { AIProviderName } from "../agent/provider-settings";
 import { errorLog } from "../observability/error-log";
-import { claimKitAdapter } from "../context-engine/adapters/claimkit-adapter";
 
 const MAX_SYSTEM_PROMPT_LENGTH = 4000;
 
@@ -621,17 +620,23 @@ async function runChatJob(
         context: { mode, requestedModel: model },
       });
     }
-    if (!cancelled || job.events[job.events.length - 1]?.event !== "error") {
-      emitJobEvent(sessionId, "error", {
-      error: "Failed to process request",
-      message: error instanceof Error ? error.message : "Unknown error",
-      cancelled,
-      });
-    }
 
-    job.status = "failed";
-    job.completedAt = new Date();
-    emitJobEvent(sessionId, "state", { processing: false, sessionId });
+    // When cancelled (superseded by a new request), don't emit cleanup events.
+    // The new request has already created a fresh job with its own subscribers;
+    // emitting error/state events here would leak into the new stream.
+    if (!cancelled) {
+      if (job.events[job.events.length - 1]?.event !== "error") {
+        emitJobEvent(sessionId, "error", {
+          error: "Failed to process request",
+          message: error instanceof Error ? error.message : "Unknown error",
+          cancelled,
+        });
+      }
+
+      job.status = "failed";
+      job.completedAt = new Date();
+      emitJobEvent(sessionId, "state", { processing: false, sessionId });
+    }
 
     try {
       if (runId && !cancelled) {
@@ -713,41 +718,6 @@ export async function chatRoutes(fastify: FastifyInstance) {
           role: "user",
           content: body.message,
         });
-
-        if (body.includeMemory && shouldUseContextEngine()) {
-          const sessionMessages = await conversationManager.getSessionMessages(
-            sessionId!,
-            body.includeMemory,
-            "engine",
-          );
-          const estimatedToolTokens = body.includeTools
-            ? Math.min(aiClient.estimateTokens([], getToolsForRequest(body.mode, body.message) as any) || 12000, 12000)
-            : 0;
-          const packet = await assembleContext({
-            mode: body.mode,
-            query: body.message,
-            sessionMessages,
-            sessionId: sessionId!,
-            includeMemory: body.includeMemory,
-            toolInventory: "",
-            providerMaxTokens: aiClient.getMaxContextTokens(),
-            toolTokens: estimatedToolTokens,
-            userId: body.userId,
-          });
-          messages = packet.messages;
-          console.log(
-            `[ContextEngine] Packet assembled: ${packet.diagnostics.finalMessageCount} messages, ${packet.totalTokens} tokens, compression=${packet.diagnostics.compressionRatio.toFixed(2)}, budget=${JSON.stringify(packet.diagnostics.budgetUtilization)}`,
-          );
-        } else {
-          const sessionMessages = await conversationManager.getSessionMessages(
-            sessionId!,
-            body.includeMemory,
-          );
-          messages = [
-            { role: "system", content: systemPrompt },
-            ...sessionMessages,
-          ]
-        }
       } else {
         sessionId = conversationManager.startSession(body.userId, body.mode, {
           title: `Chat on ${new Date().toLocaleDateString()}`,
@@ -758,10 +728,40 @@ export async function chatRoutes(fastify: FastifyInstance) {
           role: "user",
           content: body.message,
         });
+      }
 
+      if (body.includeMemory && shouldUseContextEngine()) {
+        const sessionMessages = await conversationManager.getSessionMessages(
+          sessionId!,
+          body.includeMemory,
+          "engine",
+        );
+        const estimatedToolTokens = body.includeTools
+          ? Math.min(aiClient.estimateTokens([], getToolsForRequest(body.mode, body.message) as any) || 12000, 12000)
+          : 0;
+        const packet = await assembleContext({
+          mode: body.mode,
+          query: body.message,
+          sessionMessages,
+          sessionId: sessionId!,
+          includeMemory: body.includeMemory,
+          toolInventory: "",
+          providerMaxTokens: aiClient.getMaxContextTokens(),
+          toolTokens: estimatedToolTokens,
+          userId: body.userId,
+        });
+        messages = packet.messages;
+        console.log(
+          `[ContextEngine] Packet assembled: ${packet.diagnostics.finalMessageCount} messages, ${packet.totalTokens} tokens, compression=${packet.diagnostics.compressionRatio.toFixed(2)}, budget=${JSON.stringify(packet.diagnostics.budgetUtilization)}`,
+        );
+      } else {
+        const sessionMessages = await conversationManager.getSessionMessages(
+          sessionId!,
+          body.includeMemory,
+        );
         messages = [
           { role: "system", content: systemPrompt },
-          { role: "user", content: body.message },
+          ...sessionMessages,
         ];
       }
 
@@ -1122,94 +1122,30 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       let messages: ChatMessage[];
 
-      // Persist the user message immediately — before any async context
-      // assembly — so it survives hangs, timeouts, or errors downstream.
       if (!body.resend) {
         if (existingSession) {
           conversationManager.addMessage(sessionId!, {
             role: "user",
             content: body.message,
           });
-        }
-        // New-session case: startSession + addMessage happens in the else
-        // branch below after we know the sessionId.
-      }
-
-      if (existingSession) {
-        if (body.includeMemory && shouldUseContextEngine()) {
-          // If ClaimKit is still initializing (e.g. first request after restart),
-          // wait for it here and tell the user — rather than hanging silently.
-          if (env.CLAIMKIT_ENABLED && !claimKitAdapter.isAvailable()) {
-            sendEvent("processing", { message: "Knowledge engine starting up, your message is queued..." });
-            await claimKitAdapter.initialize();
-          }
-          sendEvent("processing", { message: "Assembling context..." });
-          // getSessionMessages now includes the message we just persisted.
-          const sessionMessages = await conversationManager.getSessionMessages(
-            sessionId!,
-            body.includeMemory,
-            "engine",
-          );
-          const estimatedToolTokens = body.includeTools
-            ? Math.min(aiClient.estimateTokens([], getToolsForRequest(body.mode, body.message) as any) || 12000, 12000)
-            : 0;
-          const packet = await assembleContext({
-            mode: body.mode,
-            query: body.message,
-            sessionMessages,
-            sessionId: sessionId!,
-            includeMemory: body.includeMemory,
-            toolInventory: "",
-            providerMaxTokens: aiClient.getMaxContextTokens(),
-            toolTokens: estimatedToolTokens,
-            userId: body.userId,
-          });
-          // Message is already the last entry in sessionMessages / packet —
-          // do not push it again.
-          messages = packet.messages;
-          console.log(
-            `[ContextEngine] Packet assembled: ${packet.diagnostics.finalMessageCount} messages, ${packet.totalTokens} tokens, compression=${packet.diagnostics.compressionRatio.toFixed(2)}, budget=${JSON.stringify(packet.diagnostics.budgetUtilization)}`,
-          );
         } else {
-          // Message already persisted above; getSessionMessages includes it.
-          const sessionMessages = await conversationManager.getSessionMessages(
-            sessionId!,
-            body.includeMemory,
-          );
-          messages = [
-            { role: "system", content: systemPrompt },
-            ...sessionMessages,
-          ];
-          // Resend: message was persisted on the original send; it is already
-          // the last entry in sessionMessages, so don't push again.
-          if (body.resend) {
-            // nothing to append
-          }
-        }
-      } else {
-        sessionId = conversationManager.startSession(body.userId, body.mode);
-        if (!body.resend) {
+          sessionId = conversationManager.startSession(body.userId, body.mode);
           conversationManager.addMessage(sessionId, {
             role: "user",
             content: body.message,
           });
         }
-        messages = [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: body.message },
-        ];
+      } else if (!existingSession) {
+        sessionId = conversationManager.startSession(body.userId, body.mode);
+        conversationManager.addMessage(sessionId, {
+          role: "user",
+          content: body.message,
+        });
       }
 
       sendEvent("session", { sessionId });
 
-      // Create job and DB run early so the client sees activity and the
-      // agent-runs page shows the run immediately — before the slow context
-      // assembly begins.
       const job = getOrCreateJob(sessionId!);
-      // Clear stale cancel/runId state from a previous run. If the last run
-      // was cancelled or failed and its processingJobs entry hasn't expired
-      // yet (5-second window), runChatJob would early-exit on job.cancelled,
-      // leaving the subscriber hanging and producing "nothing happens".
       job.cancelled = false;
       job.cancelReason = undefined;
       job.runId = undefined;
@@ -1226,6 +1162,71 @@ export async function chatRoutes(fastify: FastifyInstance) {
       let earlyRunId: string | null = null;
       const runProvider = getRunProviderMetadata(requestModel);
       try { earlyRunId = agentRunDatabase.startRun({ sessionId, userId: body.userId, mode: body.mode, ...runProvider }).id; job.runId = earlyRunId; } catch (e) { console.error("[AgentRuns]", e); }
+
+      if (body.includeMemory && shouldUseContextEngine()) {
+        sendEvent("processing", { message: "Assembling context..." });
+        const contextStart = Date.now();
+        try {
+          try { if (earlyRunId) agentRunDatabase.addStep({ runId: earlyRunId, stepType: "note", content: { stage: "context_start", message: body.message }, stepOrder: -4 }); } catch (e) { console.error("[AgentRuns]", e); }
+          const sessionMessages = await conversationManager.getSessionMessages(
+            sessionId!,
+            body.includeMemory,
+            "engine",
+          );
+          try { if (earlyRunId) agentRunDatabase.addStep({ runId: earlyRunId, stepType: "note", content: { stage: "context_session_messages", count: sessionMessages.length }, stepOrder: -3 }); } catch (e) { console.error("[AgentRuns]", e); }
+          const estimatedToolTokens = body.includeTools
+            ? Math.min(aiClient.estimateTokens([], getToolsForRequest(body.mode, body.message) as any) || 12000, 12000)
+            : 0;
+          try { if (earlyRunId) agentRunDatabase.addStep({ runId: earlyRunId, stepType: "note", content: { stage: "context_tool_budget", estimatedToolTokens }, stepOrder: -2 }); } catch (e) { console.error("[AgentRuns]", e); }
+          const packet = await assembleContext({
+            mode: body.mode,
+            query: body.message,
+            sessionMessages,
+            sessionId: sessionId!,
+            includeMemory: body.includeMemory,
+            toolInventory: "",
+            providerMaxTokens: aiClient.getMaxContextTokens(),
+            toolTokens: estimatedToolTokens,
+            userId: body.userId,
+          });
+          messages = packet.messages;
+          console.log(
+            `[ContextEngine] Packet assembled: ${packet.diagnostics.finalMessageCount} messages, ${packet.totalTokens} tokens, compression=${packet.diagnostics.compressionRatio.toFixed(2)}, budget=${JSON.stringify(packet.diagnostics.budgetUtilization)}`,
+          );
+          try { if (earlyRunId) agentRunDatabase.addStep({ runId: earlyRunId, stepType: "note", content: { stage: "context_complete", finalMessageCount: packet.diagnostics.finalMessageCount, totalTokens: packet.totalTokens, compressionRatio: packet.diagnostics.compressionRatio }, durationMs: Date.now() - contextStart, stepOrder: -1 }); } catch (e) { console.error("[AgentRuns]", e); }
+          sendEvent("processing", { message: "Generating response..." });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Context assembly failed";
+          try { if (earlyRunId) agentRunDatabase.addStep({ runId: earlyRunId, stepType: "error", content: { stage: "context_failed" }, errorMessage: message, durationMs: Date.now() - contextStart, stepOrder: -1 }); } catch (e) { console.error("[AgentRuns]", e); }
+          try { if (earlyRunId) agentRunDatabase.failRun(earlyRunId, message); } catch (e) { console.error("[AgentRuns]", e); }
+          job.status = "failed";
+          job.completedAt = new Date();
+          logChatError({
+            category: "context_assembly_failed",
+            message,
+            error,
+            userId: body.userId,
+            sessionId,
+            runId: earlyRunId,
+            context: { mode: body.mode, stream: true },
+          });
+          sendEvent("error", {
+            error: "Context assembly failed",
+            message,
+          });
+          cleanupConnection();
+          return;
+        }
+      } else {
+        const sessionMessages = await conversationManager.getSessionMessages(
+          sessionId!,
+          body.includeMemory,
+        );
+        messages = [
+          { role: "system", content: systemPrompt },
+          ...sessionMessages,
+        ];
+      }
 
       let tools: Tool[] | undefined = undefined;
       if (body.includeTools) {

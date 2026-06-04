@@ -60,6 +60,24 @@ async function getAgentRunsPage() {
   return _agentRunsPage;
 }
 
+async function loadBuildVersion() {
+  const versionEl = document.getElementById("buildVersion");
+  if (!versionEl) return;
+  try {
+    const response = await fetch(`${API_BASE}/health`, {
+      headers: authHeaders(),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    const commit = data.git?.commit || "unknown";
+    const dirty = data.git?.dirty ? "+dirty" : "";
+    versionEl.textContent = `commit ${commit}${dirty}`;
+    versionEl.title = data.version ? `Version ${data.version}` : "";
+  } catch {
+    versionEl.textContent = "commit unavailable";
+  }
+}
+
 window.login = login;
 window.logout = logout;
 window.clearChat = clearChat;
@@ -134,6 +152,7 @@ document.addEventListener("click", function (e) {
 });
 
 document.addEventListener("DOMContentLoaded", async () => {
+  loadBuildVersion();
   await checkAuth();
 
   // Collapse noisy sections by default on mobile so conversations are visible

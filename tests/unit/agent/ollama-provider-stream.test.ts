@@ -528,5 +528,63 @@ describe("OllamaProvider chatStream", () => {
 
       expect(strings.join("")).toBe("ok");
     });
+
+    it("parses raw JSON-line stream chunks from Ollama-compatible endpoints", async () => {
+      const lines = [
+        `${JSON.stringify({ choices: [{ delta: { content: "raw" }, index: 0 }] })}\n`,
+        `${JSON.stringify({ choices: [{ delta: { content: " json" }, index: 0, finish_reason: "stop" }] })}\n`,
+      ];
+
+      postMock.mockResolvedValue({ data: sseGenerator(lines) });
+
+      const provider = makeProvider();
+      const { strings } = await collectStream(
+        provider.chatStream({ messages: [{ role: "user", content: "hi" }] }),
+      );
+
+      expect(strings.join("")).toBe("raw json");
+    });
+
+    it("emits final message-shaped tool calls when no tool finish reason is sent", async () => {
+      const lines = [
+        `${JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: "",
+                tool_calls: [
+                  {
+                    type: "function",
+                    function: {
+                      name: "search",
+                      arguments: { q: "status" },
+                    },
+                  },
+                ],
+              },
+              index: 0,
+              finish_reason: "stop",
+            },
+          ],
+        })}\n`,
+      ];
+
+      postMock.mockResolvedValue({ data: sseGenerator(lines) });
+
+      const provider = makeProvider();
+      const { events } = await collectStream(
+        provider.chatStream({
+          messages: [{ role: "user", content: "search" }],
+          tools: [],
+        }),
+      );
+
+      const tcEvents = events.filter((e) => e.type === "tool_calls");
+      expect(tcEvents).toHaveLength(1);
+      const tc = tcEvents[0] as Extract<StreamEvent, { type: "tool_calls" }>;
+      expect(tc.toolCalls[0].id).toMatch(/^call_/);
+      expect(tc.toolCalls[0].function.name).toBe("search");
+      expect(tc.toolCalls[0].function.arguments).toBe('{"q":"status"}');
+    });
   });
 });

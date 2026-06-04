@@ -22,6 +22,21 @@ body {
   flex-direction: column;
 }
 
+.app-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-height: 24px;
+  padding: 6px 4px 0;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.app-footer span {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
 .status-indicator {
   width: 8px;
   height: 8px;

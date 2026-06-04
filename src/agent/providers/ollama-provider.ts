@@ -284,32 +284,71 @@ export class OllamaProvider extends AIProvider {
       // Parsing the raw chunk directly drops all but the first event in the batch.
       let lineBuffer = "";
       const toolCallAccumulator: ToolCall[] = [];
+      let hasCompleteMessageToolCalls = false;
+      const emitToolCalls = function* (): Generator<StreamEvent> {
+        if (toolCallAccumulator.length === 0) return;
+        const mappedCalls = toolCallAccumulator.map((tc, index) => ({
+          ...tc,
+          id: tc.id || `call_${randomUUID().replace(/-/g, "").substring(0, 24)}_${index}`,
+          function: {
+            ...tc.function,
+            name: toolNameMap?.get(tc.function.name) ?? tc.function.name,
+          },
+        }));
+        yield { type: "tool_calls", toolCalls: mappedCalls };
+        toolCallAccumulator.length = 0;
+        hasCompleteMessageToolCalls = false;
+      };
+
       for await (const chunk of response.data) {
         lineBuffer += chunk.toString();
         const lines = lineBuffer.split("\n");
         lineBuffer = lines.pop() ?? ""; // keep any incomplete trailing line
 
         for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-
-          const data = line.slice(6).trim();
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          const data = trimmed.startsWith("data: ")
+            ? trimmed.slice(6).trim()
+            : trimmed.startsWith("{")
+              ? trimmed
+              : "";
+          if (!data) continue;
           if (data === "[DONE]" || !data) continue;
 
           try {
             const parsed = JSON.parse(data);
-            const delta = parsed.choices[0]?.delta;
-            const finishReason = parsed.choices[0]?.finish_reason;
+            const choice = parsed.choices?.[0];
+            const delta = choice?.delta ?? {};
+            const message = choice?.message ?? parsed.message ?? {};
+            const finishReason = choice?.finish_reason ?? parsed.done_reason;
+            const done = parsed.done === true || data === "[DONE]";
+            const thinking =
+              delta?.reasoning_content ||
+              delta?.thinking ||
+              message?.reasoning_content ||
+              message?.thinking ||
+              parsed?.reasoning_content ||
+              parsed?.thinking;
+            const content =
+              delta?.content ??
+              message?.content ??
+              parsed?.content;
 
-            if (delta?.reasoning_content || delta?.thinking) {
-              yield `<<THINKING>>${delta.reasoning_content || delta.thinking}<<//THINKING>>`;
+            if (thinking) {
+              yield `<<THINKING>>${thinking}<<//THINKING>>`;
             }
 
-            if (delta?.content) {
-              yield delta.content;
+            if (content) {
+              yield content;
             }
 
-            if (delta?.tool_calls) {
-              for (const tcd of delta.tool_calls) {
+            const streamedToolCalls = delta?.tool_calls ?? message?.tool_calls ?? parsed?.tool_calls;
+            if (message?.tool_calls || parsed?.tool_calls) {
+              hasCompleteMessageToolCalls = true;
+            }
+            if (streamedToolCalls) {
+              for (const tcd of streamedToolCalls) {
                 const idx: number = tcd.index ?? 0;
                 while (toolCallAccumulator.length <= idx) {
                   toolCallAccumulator.push({
@@ -325,27 +364,68 @@ export class OllamaProvider extends AIProvider {
                   existing.function.name = tcd.function.name;
                 }
                 if (tcd.function?.arguments) {
-                  existing.function.arguments += tcd.function.arguments;
+                  existing.function.arguments += typeof tcd.function.arguments === "string"
+                    ? tcd.function.arguments
+                    : JSON.stringify(tcd.function.arguments);
                 }
               }
             }
 
-            if (finishReason === "tool_calls" && toolCallAccumulator.length > 0) {
-              const mappedCalls = toolCallAccumulator.map((tc) => ({
-                ...tc,
-                function: {
-                  ...tc.function,
-                  name: toolNameMap?.get(tc.function.name) ?? tc.function.name,
-                },
-              }));
-              yield { type: "tool_calls", toolCalls: mappedCalls };
-              toolCallAccumulator.length = 0;
+            if (
+              (finishReason === "tool_calls" ||
+                done ||
+                (finishReason === "stop" && hasCompleteMessageToolCalls)) &&
+              toolCallAccumulator.length > 0
+            ) {
+              yield* emitToolCalls();
             }
           } catch {
             continue;
           }
         }
       }
+
+      if (lineBuffer.trim()) {
+        const data = lineBuffer.trim().startsWith("data: ")
+          ? lineBuffer.trim().slice(6).trim()
+          : lineBuffer.trim().startsWith("{")
+            ? lineBuffer.trim()
+            : "";
+        if (data && data !== "[DONE]") {
+          try {
+            const parsed = JSON.parse(data);
+            const choice = parsed.choices?.[0];
+            const content = choice?.delta?.content ?? choice?.message?.content ?? parsed?.message?.content ?? parsed?.content;
+            if (content) yield content;
+            const finalToolCalls = choice?.delta?.tool_calls ?? choice?.message?.tool_calls ?? parsed?.message?.tool_calls ?? parsed?.tool_calls;
+            if (choice?.message?.tool_calls || parsed?.message?.tool_calls || parsed?.tool_calls) {
+              hasCompleteMessageToolCalls = true;
+            }
+            if (finalToolCalls) {
+              for (const tcd of finalToolCalls) {
+                const idx: number = tcd.index ?? 0;
+                while (toolCallAccumulator.length <= idx) {
+                  toolCallAccumulator.push({
+                    id: "",
+                    type: "function" as const,
+                    function: { name: "", arguments: "" },
+                  });
+                }
+                const existing = toolCallAccumulator[idx];
+                if (tcd.id) existing.id = tcd.id;
+                if (tcd.type) existing.type = tcd.type;
+                if (tcd.function?.name) existing.function.name = tcd.function.name;
+                if (tcd.function?.arguments) {
+                  existing.function.arguments += typeof tcd.function.arguments === "string"
+                    ? tcd.function.arguments
+                    : JSON.stringify(tcd.function.arguments);
+                }
+              }
+            }
+          } catch {}
+        }
+      }
+      if (hasCompleteMessageToolCalls) yield* emitToolCalls();
 
       if (DEBUG) console.log("[Ollama API] Stream completed");
     } catch (error) {

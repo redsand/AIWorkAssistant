@@ -81,6 +81,8 @@ async function handleStreamResponse(response, progressElRef, onError) {
             updateSessionHash(data.sessionId);
           }
           if (eventType === "response_start") {
+            const statusEl = document.getElementById("processingStatusText");
+            if (statusEl) statusEl.textContent = "Generating response...";
             // Server is starting a new response turn (after tool calls). Reset the
             // streaming message ID so the next token creates a fresh message bubble.
             if (streamingMessageId !== null) {

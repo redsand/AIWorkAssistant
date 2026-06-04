@@ -3,13 +3,33 @@
  */
 
 import { FastifyInstance } from "fastify";
+import { execFileSync } from "child_process";
 import { githubClient } from "../integrations/github/github-client";
 import { gitlabClient } from "../integrations/gitlab/gitlab-client";
 import { jiraClient } from "../integrations/jira/jira-client";
 import { jitbitClient } from "../integrations/jitbit/jitbit-client";
 
+function getGitMetadata(): { commit: string | null; dirty: boolean } {
+  try {
+    const commit = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: process.cwd(),
+      encoding: "utf-8",
+      timeout: 2000,
+    }).trim();
+    const status = execFileSync("git", ["status", "--porcelain"], {
+      cwd: process.cwd(),
+      encoding: "utf-8",
+      timeout: 2000,
+    }).trim();
+    return { commit, dirty: status.length > 0 };
+  } catch {
+    return { commit: process.env.GIT_COMMIT?.slice(0, 12) || null, dirty: false };
+  }
+}
+
 export async function healthRoutes(fastify: FastifyInstance) {
   fastify.get("/health", async (_request, _reply) => {
+    const git = getGitMetadata();
     const [githubValid, gitlabValid, jiraValid, jitbitValid] = await Promise.all([
       githubClient.isConfigured()
         ? githubClient.validateConfig().catch(() => false)
@@ -29,6 +49,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
       status: "ok",
       timestamp: new Date().toISOString(),
       version: process.env.npm_package_version || "0.1.0",
+      git,
       integrations: {
         github: {
           configured: githubClient.isConfigured(),

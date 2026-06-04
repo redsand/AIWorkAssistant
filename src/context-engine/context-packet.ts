@@ -64,6 +64,24 @@ export function determineRoutingTier(ckResult: ClaimKitQueryResult | null): Rout
   return { tier: "blended", preferredSource: "blended", overallWinner: "tie", routingReason: "uncertain" };
 }
 
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  timeoutValue: T,
+): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timeout = setTimeout(() => resolve(timeoutValue), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 export async function assembleContextPacket(
   params: AssembleContextParams,
 ): Promise<ContextPacket> {
@@ -139,7 +157,14 @@ export async function assembleContextPacket(
     : null;
   const skillsTokens = skillsSection?.tokens ?? 0;
 
-  const claimKitAvailable = await claimKitAdapter.initialize();
+  const claimKitAvailable = await withTimeout(
+    claimKitAdapter.initialize(),
+    5000,
+    false,
+  );
+  if (!claimKitAvailable && env.CLAIMKIT_ENABLED && claimKitAdapter.getInitError()) {
+    console.warn(`[ClaimKit] Skipped — ${claimKitAdapter.getInitError()}`);
+  }
 
   const baseSystemPrompt = getSystemPrompt(mode, query, "engine");
   const systemTokens = estimateTokens(baseSystemPrompt);
