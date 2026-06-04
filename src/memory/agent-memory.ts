@@ -332,6 +332,39 @@ export class AgentMemory {
     return usage.percent >= CONSOLIDATION_THRESHOLD * 100;
   }
 
+  /**
+   * Add a reflection entry (win/avoid/lesson) to memory.
+   * Automatically timestamps the key with today's date if not already prefixed.
+   * Consolidates if memory exceeds 80% capacity.
+   */
+  addReflection(
+    type: "win" | "avoid" | "lesson",
+    content: string,
+    target: "memory" | "user" = "memory",
+  ): MemoryResult {
+    const date = new Date().toISOString().split("T")[0];
+    const key = `${date}_${type}`;
+    const value = type === "avoid" ? `AVOID: ${content}` : content;
+
+    if (this.shouldConsolidate(target)) {
+      const entries = this.getEntries(target);
+      const reflectionEntries = entries.filter(
+        (e) => e.key.includes("_win") || e.key.includes("_avoid") || e.key.includes("_lesson"),
+      );
+
+      if (reflectionEntries.length >= 4) {
+        const toMerge = reflectionEntries.slice(0, Math.ceil(reflectionEntries.length / 2));
+        const sourceKeys = toMerge.map((e) => e.key);
+        const mergedValue = toMerge.map((e) => `- ${e.value}`).join("\n");
+        const mergedKey = `consolidated_${date}`;
+
+        this.consolidate(target, sourceKeys, mergedKey, mergedValue);
+      }
+    }
+
+    return this.add(target, key, value);
+  }
+
   close(): void {
     this.saveFile(this.memoryPath, this.memoryEntries);
     this.saveFile(this.userPath, this.userEntries);
