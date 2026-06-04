@@ -41,6 +41,7 @@ const PLATFORM_PREFIX_MAP: Record<string, Platform> = {
   git: "cross-platform",
   system: "cross-platform",
   agent: "cross-platform",
+  soul: "cross-platform",
   workflow: "cross-platform",
   product: "cross-platform",
   hawk_ir: "hawk-ir",
@@ -3354,6 +3355,36 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       },
     },
     actionType: "skill.manage",
+    riskLevel: "medium",
+  },
+  {
+    name: "soul.manage",
+    description:
+      "View, edit, or reset the agent's identity (SOUL.md). Use 'view' to read the current identity, 'edit' to update a specific section (Identity, Style, Avoid, Defaults), 'reset' to restore defaults, or 'personality' to apply a temporary persona overlay for the session. The identity is loaded first in every context packet.",
+    params: {
+      action: {
+        type: "string",
+        description: "Action to perform: view, edit, reset, personality",
+        required: true,
+      },
+      section: {
+        type: "string",
+        description: "Section name to edit (e.g. Identity, Style, Avoid, Defaults)",
+      },
+      patch: {
+        type: "string",
+        description: "New content for the section (for edit action)",
+      },
+      preset: {
+        type: "string",
+        description: "Personality preset name: concise, teacher, creative, pirate (for personality action)",
+      },
+      clear: {
+        type: "boolean",
+        description: "Clear the active personality overlay (for personality action)",
+      },
+    },
+    actionType: "soul.manage",
     riskLevel: "medium",
   },
 

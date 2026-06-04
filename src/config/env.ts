@@ -110,6 +110,10 @@ const envSchema = z.object({
   // Agent Memory (MEMORY.md / USER.md)
   AGENT_MEMORY_PATH: z.string().default("data/memories"),
 
+  // Agent Soul (SOUL.md)
+  SOUL_PATH: z.string().default(""),
+  DEFAULT_SOUL: z.string().default(""),
+
   // Agent Skills (SKILL.md)
   SKILLS_PATH: z.string().default(""),
 
