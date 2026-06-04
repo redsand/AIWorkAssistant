@@ -437,3 +437,129 @@ describe("skill summary truncation", () => {
     expect(result).toContain("...(truncated)");
   });
 });
+
+// ── session search integration in context-packet assembly ────────────────
+
+describe("session search integration in context-packet assembly", () => {
+  const MAX_SESSION_SEARCH_TOKENS = 400;
+
+  // Replicates the session search section construction from context-packet.ts
+  function buildSessionSearchSection(sessionResults: Array<{
+    title: string;
+    summary: string;
+    keyTopics: string[];
+  }>): ContextSection | null {
+    if (sessionResults.length === 0) return null;
+
+    const lines = sessionResults.map((r) => {
+      const topics = r.keyTopics.length > 0 ? ` | topics: ${r.keyTopics.join(", ")}` : "";
+      return `- [${r.title}]${topics}\n  ${r.summary.substring(0, 200)}`;
+    });
+    const content = `=== PAST SESSIONS ===\n${lines.join("\n")}`;
+    const tokens = estimateTokens(content);
+    return {
+      name: "recent_sessions",
+      content: tokens > MAX_SESSION_SEARCH_TOKENS
+        ? content.substring(0, MAX_SESSION_SEARCH_TOKENS * 4)
+        : content,
+      tokens: Math.min(tokens, MAX_SESSION_SEARCH_TOKENS),
+    };
+  }
+
+  it("produces a recent_sessions section when session results exist", () => {
+    const results = [
+      {
+        title: "Security audit review",
+        summary: "Discussed the security audit findings for the authentication module",
+        keyTopics: ["security", "authentication"],
+      },
+    ];
+
+    const section = buildSessionSearchSection(results);
+    expect(section).not.toBeNull();
+    expect(section!.name).toBe("recent_sessions");
+    expect(section!.content).toContain("=== PAST SESSIONS ===");
+    expect(section!.content).toContain("Security audit review");
+    expect(section!.content).toContain("security, authentication");
+    expect(section!.content).toContain("Discussed the security audit findings");
+    expect(section!.tokens).toBeLessThanOrEqual(MAX_SESSION_SEARCH_TOKENS);
+  });
+
+  it("returns null when no session results exist", () => {
+    const section = buildSessionSearchSection([]);
+    expect(section).toBeNull();
+  });
+
+  it("includes multiple sessions in the output", () => {
+    const results = [
+      {
+        title: "Database migration",
+        summary: "Planned the PostgreSQL migration strategy",
+        keyTopics: ["database"],
+      },
+      {
+        title: "API redesign",
+        summary: "Redesigned the REST API for better performance",
+        keyTopics: ["api", "performance"],
+      },
+      {
+        title: "Frontend refactor",
+        summary: "Refactored the component architecture",
+        keyTopics: [],
+      },
+    ];
+
+    const section = buildSessionSearchSection(results);
+    expect(section).not.toBeNull();
+    expect(section!.content).toContain("Database migration");
+    expect(section!.content).toContain("API redesign");
+    expect(section!.content).toContain("Frontend refactor");
+  });
+
+  it("truncates long summaries to 200 characters", () => {
+    const longSummary = "A".repeat(500);
+    const results = [
+      {
+        title: "Long summary test",
+        summary: longSummary,
+        keyTopics: [],
+      },
+    ];
+
+    const section = buildSessionSearchSection(results);
+    expect(section).not.toBeNull();
+    // The summary line should be truncated to 200 chars
+    const summaryLine = section!.content.split("\n").find((l) => l.startsWith("  "));
+    expect(summaryLine!.length).toBeLessThanOrEqual(202); // 200 + "  " prefix
+  });
+
+  it("omits topics suffix when keyTopics is empty", () => {
+    const results = [
+      {
+        title: "No topics session",
+        summary: "A session without any topics",
+        keyTopics: [],
+      },
+    ];
+
+    const section = buildSessionSearchSection(results);
+    expect(section).not.toBeNull();
+    expect(section!.content).not.toContain("topics:");
+    expect(section!.content).toContain("No topics session");
+  });
+
+  it("caps tokens at MAX_SESSION_SEARCH_TOKENS", () => {
+    // Create many results to exceed the token limit
+    const results = Array.from({ length: 100 }, (_, i) => ({
+      title: `Session ${i} with a long title that adds many tokens to the output`,
+      summary: "X".repeat(200),
+      keyTopics: [`topic-${i}`, `tag-${i}`],
+    }));
+
+    const section = buildSessionSearchSection(results);
+    expect(section).not.toBeNull();
+    expect(section!.tokens).toBeLessThanOrEqual(MAX_SESSION_SEARCH_TOKENS);
+    // Content should be truncated when it exceeds the limit
+    expect(section!.content.length).toBeLessThanOrEqual(MAX_SESSION_SEARCH_TOKENS * 4 + 100);
+  });
+});

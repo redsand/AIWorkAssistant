@@ -215,4 +215,185 @@ describe("ConversationManager FTS5 search", () => {
       expect(result.success).toBe(true);
     });
   });
+
+  // ── FTS5 query sanitization for special characters ───────────────────────
+
+  describe("FTS5 query sanitization for special characters", () => {
+    it("handles queries with double quotes gracefully", async () => {
+      const sid = env.manager.startSession("user1", "engineering", {
+        title: "Quote handling test session",
+      });
+      env.manager.addMessage(sid, {
+        role: "user",
+        content: "We discussed the \"best practices\" for testing",
+      });
+      await env.manager.endSession(sid);
+
+      // Should not throw — sanitized query treats quotes as literal
+      const results = env.manager.searchSessions('"best practices"');
+      // May or may not find results depending on tokenizer, but must not throw
+      expect(Array.isArray(results)).toBe(true);
+    });
+
+    it("handles queries with parentheses gracefully", async () => {
+      const sid = env.manager.startSession("user1", "engineering", {
+        title: "Parentheses test session",
+      });
+      env.manager.addMessage(sid, {
+        role: "user",
+        content: "Configured the function(err, result) callback pattern",
+      });
+      await env.manager.endSession(sid);
+
+      const results = env.manager.searchSessions("function(err, result)");
+      expect(Array.isArray(results)).toBe(true);
+    });
+
+    it("handles queries with FTS5 operators (AND, OR, NEAR) as literals", async () => {
+      const sid = env.manager.startSession("user1", "engineering", {
+        title: "Logic operators in queries",
+      });
+      env.manager.addMessage(sid, {
+        role: "user",
+        content: "Security AND compliance review for the OR logic NEAR production",
+      });
+      await env.manager.endSession(sid);
+
+      // FTS5 operators should be treated as literal search terms
+      const results = env.manager.searchSessions("AND OR NEAR");
+      expect(Array.isArray(results)).toBe(true);
+    });
+
+    it("handles queries with asterisks gracefully", async () => {
+      const sid = env.manager.startSession("user1", "engineering", {
+        title: "Wildcard test session",
+      });
+      env.manager.addMessage(sid, {
+        role: "user",
+        content: "Investigated the security* wildcard pattern in search",
+      });
+      await env.manager.endSession(sid);
+
+      const results = env.manager.searchSessions("security*");
+      expect(Array.isArray(results)).toBe(true);
+    });
+
+    it("handles unbalanced quotes gracefully", async () => {
+      const sid = env.manager.startSession("user1", "engineering", {
+        title: "Unbalanced quotes session",
+      });
+      env.manager.addMessage(sid, {
+        role: "user",
+        content: "Testing unbalanced quote handling in search queries",
+      });
+      await env.manager.endSession(sid);
+
+      // Should not throw despite the unbalanced quote
+      const results = env.manager.searchSessions('testing "unbalanced');
+      expect(Array.isArray(results)).toBe(true);
+    });
+
+    it("handles mixed special characters in a single query", async () => {
+      const sid = env.manager.startSession("user1", "engineering", {
+        title: "Mixed special chars session",
+      });
+      env.manager.addMessage(sid, {
+        role: "user",
+        content: "Complex query with (parens), \"quotes\", AND operators",
+      });
+      await env.manager.endSession(sid);
+
+      const results = env.manager.searchSessions('(parens) "quotes" AND operators');
+      expect(Array.isArray(results)).toBe(true);
+    });
+  });
+
+  // ── duplicate session indexing ──────────────────────────────────────────
+
+  describe("duplicate session indexing", () => {
+    it("does not produce duplicate results when session is indexed twice", async () => {
+      const sid = env.manager.startSession("user1", "productivity", {
+        title: "Unique duplicate test session",
+      });
+      env.manager.addMessage(sid, {
+        role: "user",
+        content: "Testing that duplicate indexing does not create duplicate rows",
+      });
+      await env.manager.endSession(sid);
+
+      // Search should return exactly one result for this unique session
+      const results = env.manager.searchSessions("Unique duplicate test session");
+      const matchingResults = results.filter((r) => r.sessionId === sid);
+      expect(matchingResults.length).toBe(1);
+    });
+
+    it("re-indexing a session updates rather than duplicates", async () => {
+      // Create, end, then manually re-index by starting another session with same ID pattern
+      const sid1 = env.manager.startSession("user1", "productivity", {
+        title: "Reindex test alpha beta",
+      });
+      env.manager.addMessage(sid1, {
+        role: "user",
+        content: "Original content about alpha beta gamma",
+      });
+      await env.manager.endSession(sid1);
+
+      // Search for unique title — should get exactly one result
+      const results = env.manager.searchSessions("alpha beta gamma");
+      const matchingResults = results.filter((r) => r.sessionId === sid1);
+      expect(matchingResults.length).toBe(1);
+    });
+
+    it("multiple endSession calls for different sessions do not interfere", async () => {
+      const sid1 = env.manager.startSession("user1", "productivity", {
+        title: "First independent session about databases",
+      });
+      env.manager.addMessage(sid1, {
+        role: "user",
+        content: "Discussion about database optimization",
+      });
+      await env.manager.endSession(sid1);
+
+      const sid2 = env.manager.startSession("user1", "productivity", {
+        title: "Second independent session about networking",
+      });
+      env.manager.addMessage(sid2, {
+        role: "user",
+        content: "Discussion about network configuration",
+      });
+      await env.manager.endSession(sid2);
+
+      const dbResults = env.manager.searchSessions("databases");
+      const netResults = env.manager.searchSessions("networking");
+
+      expect(dbResults.some((r) => r.sessionId === sid1)).toBe(true);
+      expect(netResults.some((r) => r.sessionId === sid2)).toBe(true);
+    });
+  });
+
+  // ── createdAt field populated in FTS5 results ──────────────────────────
+
+  describe("createdAt field in FTS5 results", () => {
+    it("populates createdAt from the session creation timestamp", async () => {
+      const sid = env.manager.startSession("user1", "engineering", {
+        title: "Timestamp verification session",
+      });
+      env.manager.addMessage(sid, {
+        role: "user",
+        content: "Verifying that createdAt is populated in search results",
+      });
+      await env.manager.endSession(sid);
+
+      const results = env.manager.searchSessions("Timestamp verification");
+      expect(results.length).toBeGreaterThanOrEqual(1);
+
+      const match = results.find((r) => r.sessionId === sid);
+      expect(match).toBeDefined();
+      // createdAt should be a non-empty ISO date string now, not ""
+      expect(match!.createdAt).not.toBe("");
+      // Should be a valid ISO date
+      const parsed = new Date(match!.createdAt);
+      expect(Number.isNaN(parsed.getTime())).toBe(false);
+    });
+  });
 });

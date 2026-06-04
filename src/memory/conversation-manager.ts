@@ -115,11 +115,27 @@ export class ConversationManager {
     console.log("[MemoryManager] Storage initialized");
   }
 
+  private static readonly FTS5_SCHEMA_VERSION = 2;
+
   private initFTS5() {
     try {
       const dbPath = path.join(this.memoryBasePath, "sessions.db");
       this.db = new Database(dbPath);
       this.db.pragma("journal_mode = WAL");
+      this.runFTS5Migrations();
+    } catch (err) {
+      console.warn("[MemoryManager] FTS5 unavailable, search will use text fallback:", err);
+      this.db = null;
+    }
+  }
+
+  private runFTS5Migrations() {
+    if (!this.db) return;
+
+    const currentVersion = this.db.pragma("user_version", { simple: true }) as number;
+
+    if (currentVersion === 0) {
+      // Fresh install — create v2 schema directly
       this.db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
           sessionId,
@@ -127,13 +143,34 @@ export class ConversationManager {
           title,
           summary,
           keyTopics,
-          content
+          content,
+          createdAt
         );
       `);
-    } catch (err) {
-      console.warn("[MemoryManager] FTS5 unavailable, search will use text fallback:", err);
-      this.db = null;
+      this.db.pragma(`user_version = ${ConversationManager.FTS5_SCHEMA_VERSION}`);
+      return;
     }
+
+    if (currentVersion === 1) {
+      // v1 → v2: Add createdAt column. FTS5 doesn't support ALTER on virtual tables,
+      // so we recreate. Data loss is acceptable since sessions get re-indexed on endSession.
+      console.log("[MemoryManager] Migrating FTS5 schema from v1 to v2 (adding createdAt)...");
+      this.db.exec("DROP TABLE IF EXISTS sessions_fts");
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
+          sessionId,
+          userId,
+          title,
+          summary,
+          keyTopics,
+          content,
+          createdAt
+        );
+      `);
+      this.db.pragma(`user_version = ${ConversationManager.FTS5_SCHEMA_VERSION}`);
+      console.log("[MemoryManager] FTS5 schema migration to v2 complete");
+    }
+    // Future migrations: add `else if (currentVersion === 2) { ... }` blocks
   }
 
   private rehydrateSessions() {
@@ -432,9 +469,12 @@ export class ConversationManager {
         .join(" ")
         .substring(0, 5000);
 
+      // Delete any existing row for this session to prevent duplicates
+      this.db.prepare("DELETE FROM sessions_fts WHERE sessionId = ?").run(session.id);
+
       this.db.prepare(`
-        INSERT INTO sessions_fts (sessionId, userId, title, summary, keyTopics, content)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO sessions_fts (sessionId, userId, title, summary, keyTopics, content, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `).run(
         session.id,
         session.userId,
@@ -442,6 +482,7 @@ export class ConversationManager {
         summary.summary,
         summary.keyTopics.join(", "),
         content,
+        session.createdAt.toISOString(),
       );
     } catch (err) {
       console.warn("[MemoryManager] Failed to index session in FTS5:", err);
@@ -452,27 +493,43 @@ export class ConversationManager {
    * Search across all sessions using FTS5 with BM25 ranking.
    * Falls back to text search if FTS5 is unavailable.
    */
+  /**
+   * Sanitize a query string for FTS5 MATCH.
+   * Wraps each token in quotes so special FTS5 syntax (AND, OR, NEAR, *, parens)
+   * is treated as literal text rather than query operators.
+   */
+  private sanitizeFTS5Query(query: string): string {
+    return query
+      .split(/\s+/)
+      .filter((w) => w.length > 0)
+      .map((w) => `"${w.replace(/"/g, '""')}"`)
+      .join(" ");
+  }
+
   searchSessions(query: string, limit = 5): SessionSearchResult[] {
     if (!query.trim()) return [];
 
     if (this.db) {
       try {
+        const safeQuery = this.sanitizeFTS5Query(query);
         const rows = this.db.prepare(`
           SELECT
             sessionId,
             title,
             summary,
             keyTopics,
+            createdAt,
             bm25(sessions_fts) as score
           FROM sessions_fts
           WHERE sessions_fts MATCH ?
           ORDER BY score
           LIMIT ?
-        `).all(query, limit) as Array<{
+        `).all(safeQuery, limit) as Array<{
           sessionId: string;
           title: string;
           summary: string;
           keyTopics: string;
+          createdAt: string;
           score: number;
         }>;
 
@@ -485,7 +542,7 @@ export class ConversationManager {
               ? row.keyTopics.split(", ").filter(Boolean)
               : [],
             relevanceScore: -row.score,
-            createdAt: "",
+            createdAt: row.createdAt || "",
           }));
         }
       } catch (err) {
@@ -537,7 +594,9 @@ export class ConversationManager {
             relevanceScore: score,
             createdAt: parsed.createdAt?.toISOString() ?? "",
           });
-        } catch {}
+        } catch {
+          // skip unreadable summary files
+        }
       }
     };
 

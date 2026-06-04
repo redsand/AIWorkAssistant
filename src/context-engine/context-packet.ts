@@ -301,7 +301,9 @@ export async function assembleContextPacket(
         tokens: Math.min(tokens, MAX_SESSION_SEARCH_TOKENS),
       };
     }
-  } catch {}
+  } catch (err) {
+    console.warn("[ContextPacket] Session search failed:", err);
+  }
 
   const healthText = await buildHealthStatus();
   const healthSection: ContextSection | null = healthText
