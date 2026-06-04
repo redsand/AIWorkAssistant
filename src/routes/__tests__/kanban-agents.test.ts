@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
 
-const { mockListRuns, mockGetRunSteps } = vi.hoisted(() => ({
+const { mockListRuns, mockGetRunSteps, mockMarkStale } = vi.hoisted(() => ({
   mockListRuns: vi.fn().mockReturnValue({ runs: [], total: 0 }),
   mockGetRunSteps: vi.fn().mockReturnValue([]),
+  mockMarkStale: vi.fn(),
 }));
 
 vi.mock('../../integrations/github/github-client', () => ({
@@ -35,6 +36,7 @@ vi.mock('../../work-items/database', () => ({
 
 vi.mock('../../agent-runs/database', () => ({
   agentRunDatabase: {
+    markStaleRunsAsFailed: mockMarkStale,
     listRuns: mockListRuns,
     getRunSteps: mockGetRunSteps,
     startRun: vi.fn(),
@@ -56,6 +58,7 @@ describe('Kanban GET /agents', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockMarkStale.mockReturnValue(undefined);
     mockListRuns.mockReturnValue({ runs: [], total: 0 });
     mockGetRunSteps.mockReturnValue([]);
   });
@@ -129,12 +132,12 @@ describe('Kanban GET /agents', () => {
     expect(agent.toolLoopCount).toBe(2);
   });
 
-  it('should return null cardKey when run has no issue linkage', async () => {
+  it('should filter out runs with no issue linkage (autonomous-loop runs)', async () => {
     const now = new Date().toISOString();
     mockListRuns.mockReturnValue({
       runs: [
         {
-          id: 'run-2',
+          id: 'run-unlinked',
           sessionId: null,
           userId: 'kanban',
           mode: 'interactive',
@@ -161,9 +164,43 @@ describe('Kanban GET /agents', () => {
 
     const res = await app.inject({ method: 'GET', url: '/api/kanban/agents' });
     expect(res.statusCode).toBe(200);
-    const agent = res.json()[0];
-    expect(agent.cardKey).toBeNull();
-    expect(agent.lastTool).toBeNull();
+    // Run has no card linkage — must be excluded from the agents rail
+    expect(res.json()).toHaveLength(0);
+  });
+
+  it('should filter out runs missing only some linkage fields', async () => {
+    const now = new Date().toISOString();
+    mockListRuns.mockReturnValue({
+      runs: [
+        {
+          id: 'run-partial',
+          sessionId: null,
+          userId: 'kanban',
+          mode: 'interactive',
+          model: null,
+          status: 'running',
+          errorMessage: null,
+          promptTokens: null,
+          completionTokens: null,
+          totalTokens: null,
+          toolLoopCount: 0,
+          startedAt: now,
+          lastActivityAt: now,
+          completedAt: null,
+          cancelledAt: null,
+          issueId: '42',
+          issuePlatform: 'github',
+          issueRepo: null,   // missing repo — should be excluded
+          worktreePath: null,
+          branch: null,
+        },
+      ],
+      total: 1,
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/kanban/agents' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toHaveLength(0);
   });
 
   it('should handle getRunSteps throwing gracefully', async () => {
@@ -209,11 +246,16 @@ describe('Kanban GET /agents', () => {
   });
 
   it('should cap at 50 runs', async () => {
-    mockListRuns.mockReturnValue({ runs: [], total: 0 });
+    await app.inject({ method: 'GET', url: '/api/kanban/agents' });
+    expect(mockListRuns).toHaveBeenCalledWith({ status: 'running', limit: 50 });
+  });
+
+  it('should call markStaleRunsAsFailed on every request', async () => {
+    await app.inject({ method: 'GET', url: '/api/kanban/agents' });
+    expect(mockMarkStale).toHaveBeenCalledTimes(1);
 
     await app.inject({ method: 'GET', url: '/api/kanban/agents' });
-
-    expect(mockListRuns).toHaveBeenCalledWith({ status: 'running', limit: 50 });
+    expect(mockMarkStale).toHaveBeenCalledTimes(2);
   });
 
   it('should return null lastTool when steps array is empty', async () => {
