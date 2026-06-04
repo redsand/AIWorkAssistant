@@ -26,8 +26,6 @@ export class OllamaProvider extends AIProvider {
     maxTools: 128,
   };
 
-  private isContextOverflowRetry = false;
-
   constructor(config: ProviderConfig) {
     super(config);
   }
@@ -63,6 +61,13 @@ export class OllamaProvider extends AIProvider {
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
+    return this.chatInternal(request, false);
+  }
+
+  private async chatInternal(
+    request: ChatRequest,
+    isContextOverflowRetry: boolean,
+  ): Promise<ChatResponse> {
     let lastError: Error | null = null;
     const maxAttempts = this.config.maxRetries + 1;
 
@@ -149,7 +154,7 @@ export class OllamaProvider extends AIProvider {
               );
 
               // Retry once with aggressive pruning if this isn't already a retry
-              if (!this.isContextOverflowRetry) {
+              if (!isContextOverflowRetry) {
                 const modelMax = this.extractModelMaxContext(errorBody);
                 const targetMax = modelMax || this.getMaxContextTokens();
                 this.resetCalibration();
@@ -159,16 +164,10 @@ export class OllamaProvider extends AIProvider {
                   targetMax,
                 );
                 if (DEBUG) console.warn(`[Ollama API] Retrying with aggressive pruning: ${request.messages.length} → ${prunedMessages.length} messages (target: ${targetMax} tokens)`);
-                this.isContextOverflowRetry = true;
-                try {
-                  const retryResult = await this.chat({
-                    ...request,
-                    messages: prunedMessages,
-                  });
-                  return retryResult;
-                } finally {
-                  this.isContextOverflowRetry = false;
-                }
+                return this.chatInternal(
+                  { ...request, messages: prunedMessages },
+                  true,
+                );
               }
 
               throw new Error(
@@ -348,27 +347,7 @@ export class OllamaProvider extends AIProvider {
               hasCompleteMessageToolCalls = true;
             }
             if (streamedToolCalls) {
-              for (const tcd of streamedToolCalls) {
-                const idx: number = tcd.index ?? 0;
-                while (toolCallAccumulator.length <= idx) {
-                  toolCallAccumulator.push({
-                    id: "",
-                    type: "function" as const,
-                    function: { name: "", arguments: "" },
-                  });
-                }
-                const existing = toolCallAccumulator[idx];
-                if (tcd.id) existing.id = tcd.id;
-                if (tcd.type) existing.type = tcd.type;
-                if (tcd.function?.name) {
-                  existing.function.name = tcd.function.name;
-                }
-                if (tcd.function?.arguments) {
-                  existing.function.arguments += typeof tcd.function.arguments === "string"
-                    ? tcd.function.arguments
-                    : JSON.stringify(tcd.function.arguments);
-                }
-              }
+              this.accumulateToolCallDeltas(streamedToolCalls, toolCallAccumulator);
             }
 
             if (
@@ -402,25 +381,7 @@ export class OllamaProvider extends AIProvider {
               hasCompleteMessageToolCalls = true;
             }
             if (finalToolCalls) {
-              for (const tcd of finalToolCalls) {
-                const idx: number = tcd.index ?? 0;
-                while (toolCallAccumulator.length <= idx) {
-                  toolCallAccumulator.push({
-                    id: "",
-                    type: "function" as const,
-                    function: { name: "", arguments: "" },
-                  });
-                }
-                const existing = toolCallAccumulator[idx];
-                if (tcd.id) existing.id = tcd.id;
-                if (tcd.type) existing.type = tcd.type;
-                if (tcd.function?.name) existing.function.name = tcd.function.name;
-                if (tcd.function?.arguments) {
-                  existing.function.arguments += typeof tcd.function.arguments === "string"
-                    ? tcd.function.arguments
-                    : JSON.stringify(tcd.function.arguments);
-                }
-              }
+              this.accumulateToolCallDeltas(finalToolCalls, toolCallAccumulator);
             }
           } catch {}
         }
@@ -512,5 +473,30 @@ export class OllamaProvider extends AIProvider {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private accumulateToolCallDeltas(
+    deltas: any[],
+    accumulator: ToolCall[],
+  ): void {
+    for (const tcd of deltas) {
+      const idx: number = tcd.index ?? 0;
+      while (accumulator.length <= idx) {
+        accumulator.push({
+          id: "",
+          type: "function" as const,
+          function: { name: "", arguments: "" },
+        });
+      }
+      const existing = accumulator[idx];
+      if (tcd.id) existing.id = tcd.id;
+      if (tcd.type) existing.type = tcd.type;
+      if (tcd.function?.name) existing.function.name = tcd.function.name;
+      if (tcd.function?.arguments) {
+        existing.function.arguments += typeof tcd.function.arguments === "string"
+          ? tcd.function.arguments
+          : JSON.stringify(tcd.function.arguments);
+      }
+    }
   }
 }
