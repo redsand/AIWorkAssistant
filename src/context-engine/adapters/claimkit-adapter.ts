@@ -21,6 +21,8 @@ import { env } from "../../config/env";
 import { ClaimKitEmbeddingAdapter } from "./claimkit-embedding";
 import { AIProviderLLMAdapter } from "./claimkit-llm-adapter";
 import { embeddingService } from "../../agent/embedding-service";
+import { OllamaProvider } from "../../agent/providers/ollama-provider";
+import { getEffectiveContextLimit } from "../../agent/providers/factory";
 
 export type { AnswerabilityStatus };
 
@@ -85,10 +87,33 @@ export class ClaimKitAdapter {
       const actualDimensions = probeResult.embedding.length;
       const settledProvider = embeddingService.getProviderInfo();
 
-      const llm: LLMAdapter =
-        env.CLAIMKIT_LLM_PROVIDER === "memory"
-          ? new MemoryLLMAdapter()
-          : new AIProviderLLMAdapter(undefined, env.CLAIMKIT_LLM_MODEL || undefined);
+      let llm: LLMAdapter;
+      if (env.CLAIMKIT_LLM_PROVIDER === "memory") {
+        llm = new MemoryLLMAdapter();
+      } else if (env.CLAIMKIT_LLM_PROVIDER === "ollama") {
+        const dedicatedProvider = new OllamaProvider({
+          apiKey: env.CLAIMKIT_OLLAMA_API_KEY,
+          baseUrl: env.CLAIMKIT_OLLAMA_API_URL,
+          model: env.CLAIMKIT_OLLAMA_MODEL,
+          temperature: env.OLLAMA_TEMPERATURE,
+          topP: 0.9,
+          maxRetries: 2,
+          timeout: 300000,
+          maxContextTokens: getEffectiveContextLimit(
+            env.CLAIMKIT_OLLAMA_MODEL,
+            env.OLLAMA_MAX_CONTEXT_TOKENS,
+          ),
+        });
+        llm = new AIProviderLLMAdapter(
+          dedicatedProvider,
+          env.CLAIMKIT_OLLAMA_MODEL,
+        );
+      } else {
+        llm = new AIProviderLLMAdapter(
+          undefined,
+          env.CLAIMKIT_LLM_MODEL || undefined,
+        );
+      }
       const embeddings = new ClaimKitEmbeddingAdapter(actualDimensions);
 
       let stores: Stores;

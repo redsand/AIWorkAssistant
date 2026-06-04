@@ -15,6 +15,11 @@ const CLAIMKIT_KEYS = [
   "CLAIMKIT_MAX_EVIDENCE_ITEMS",
   "CLAIMKIT_QUERY_SEED_LIMIT",
   "CLAIMKIT_QUERY_TIMEOUT_MS",
+  "CLAIMKIT_INIT_TIMEOUT_MS",
+  "CLAIMKIT_LLM_MODEL",
+  "CLAIMKIT_OLLAMA_API_URL",
+  "CLAIMKIT_OLLAMA_API_KEY",
+  "CLAIMKIT_OLLAMA_MODEL",
   "CLAIMKIT_REQUIRE_INIT",
   "CLAIMKIT_BLOCK_ON_INGESTION",
 ];
@@ -93,6 +98,31 @@ describe("ClaimKit environment variables", () => {
       expect(env.CLAIMKIT_QUERY_TIMEOUT_MS).toBe(120000);
     });
 
+    it("should default CLAIMKIT_INIT_TIMEOUT_MS to 5000", () => {
+      const env = loadEnv();
+      expect(env.CLAIMKIT_INIT_TIMEOUT_MS).toBe(5000);
+    });
+
+    it("should default CLAIMKIT_LLM_MODEL to empty string", () => {
+      const env = loadEnv();
+      expect(env.CLAIMKIT_LLM_MODEL).toBe("");
+    });
+
+    it("should default CLAIMKIT_OLLAMA_API_URL to http://localhost:11434", () => {
+      const env = loadEnv();
+      expect(env.CLAIMKIT_OLLAMA_API_URL).toBe("http://localhost:11434");
+    });
+
+    it("should default CLAIMKIT_OLLAMA_API_KEY to empty string", () => {
+      const env = loadEnv();
+      expect(env.CLAIMKIT_OLLAMA_API_KEY).toBe("");
+    });
+
+    it("should default CLAIMKIT_OLLAMA_MODEL to llama3", () => {
+      const env = loadEnv();
+      expect(env.CLAIMKIT_OLLAMA_MODEL).toBe("llama3");
+    });
+
     it("should default CLAIMKIT_REQUIRE_INIT to true (strict mode)", () => {
       const env = loadEnv();
       expect(env.CLAIMKIT_REQUIRE_INIT).toBe(true);
@@ -169,6 +199,36 @@ describe("ClaimKit environment variables", () => {
       process.env.CLAIMKIT_QUERY_TIMEOUT_MS = "90000";
       const env = loadEnv();
       expect(env.CLAIMKIT_QUERY_TIMEOUT_MS).toBe(90000);
+    });
+
+    it("should parse CLAIMKIT_INIT_TIMEOUT_MS as number", () => {
+      process.env.CLAIMKIT_INIT_TIMEOUT_MS = "10000";
+      const env = loadEnv();
+      expect(env.CLAIMKIT_INIT_TIMEOUT_MS).toBe(10000);
+    });
+
+    it("should parse CLAIMKIT_LLM_MODEL", () => {
+      process.env.CLAIMKIT_LLM_MODEL = "glm-5";
+      const env = loadEnv();
+      expect(env.CLAIMKIT_LLM_MODEL).toBe("glm-5");
+    });
+
+    it("should parse CLAIMKIT_OLLAMA_API_URL", () => {
+      process.env.CLAIMKIT_OLLAMA_API_URL = "http://ollama.local:11434";
+      const env = loadEnv();
+      expect(env.CLAIMKIT_OLLAMA_API_URL).toBe("http://ollama.local:11434");
+    });
+
+    it("should parse CLAIMKIT_OLLAMA_API_KEY", () => {
+      process.env.CLAIMKIT_OLLAMA_API_KEY = "secret";
+      const env = loadEnv();
+      expect(env.CLAIMKIT_OLLAMA_API_KEY).toBe("secret");
+    });
+
+    it("should parse CLAIMKIT_OLLAMA_MODEL", () => {
+      process.env.CLAIMKIT_OLLAMA_MODEL = "mistral";
+      const env = loadEnv();
+      expect(env.CLAIMKIT_OLLAMA_MODEL).toBe("mistral");
     });
 
     it("should coerce non-'true' strings to false for CLAIMKIT_ENABLED", () => {

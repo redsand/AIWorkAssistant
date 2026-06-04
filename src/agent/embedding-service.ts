@@ -100,7 +100,6 @@ class EmbeddingService {
         `[Embedding] ${this.provider} embed failed:`,
         error instanceof Error ? error.message : "Unknown error",
       );
-      this.available = false;
       return null;
     }
   }
@@ -122,7 +121,6 @@ class EmbeddingService {
         `[Embedding] ${this.provider} batch embed failed:`,
         error instanceof Error ? error.message : "Unknown error",
       );
-      this.available = false;
       return texts.map(() => null);
     }
   }
@@ -350,7 +348,7 @@ class EmbeddingService {
           headers: this.apiKey
             ? { Authorization: `Bearer ${this.apiKey}` }
             : {},
-          timeout: 5000,
+          timeout: 10000,
         },
       );
       return !!(response.data && response.data.embedding);
@@ -381,7 +379,7 @@ class EmbeddingService {
   }
 
   // Uses /api/embeddings (same endpoint as ollamaEmbed) so check and embed are consistent.
-  private async checkOllamaEmbed(baseUrl: string, model: string, timeout = 8000): Promise<boolean> {
+  private async checkOllamaEmbed(baseUrl: string, model: string, timeout = 10000): Promise<boolean> {
     try {
       const response = await axios.post(
         `${baseUrl}/api/embeddings`,

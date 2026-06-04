@@ -28,6 +28,7 @@ vi.doMock("@redsand/claimkit", () => ({
 vi.doMock("../../../src/agent/providers/factory", () => ({
   getProvider: () => ({ chat: vi.fn(), name: "mock-provider" }),
   resetProvider: vi.fn(),
+  getEffectiveContextLimit: (_model: string, defaultLimit: number) => defaultLimit,
 }));
 
 vi.doMock("../../../src/agent/embedding-service", () => ({
