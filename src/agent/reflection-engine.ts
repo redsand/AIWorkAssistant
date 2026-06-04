@@ -31,7 +31,7 @@ export class ReflectionEngine {
 
     const conversationText = this.serializeConversation(messages);
     const toolCallSummary = toolCalls
-      .map((tc) => `${tc.function.name}(${tc.function.arguments.substring(0, 100)})`)
+      .map((tc) => `${tc.function.name}(...)`)
       .join(", ");
 
     const reflectionPrompt = `You are an AI agent reviewing your own performance on a completed task.
@@ -106,7 +106,7 @@ ${conversationText.substring(0, 3000)}
 
   /**
    * Save reflection results to agent memory.
-   * Writes win/avoid/lesson entries and consolidates if memory is at 80%+ capacity.
+   * Writes win/avoid/lesson entries via agentMemory.add (consolidation handled by addReflection).
    */
   async saveReflection(result: ReflectionResult): Promise<void> {
     console.log(
@@ -116,36 +116,6 @@ ${conversationText.substring(0, 3000)}
     if (result.memoryEntries.length === 0) {
       console.log("[ReflectionEngine] No memory entries to save");
       return;
-    }
-
-    // Check if consolidation is needed before adding new entries
-    if (agentMemory.shouldConsolidate("memory")) {
-      console.log("[ReflectionEngine] Memory at 80%+ capacity, consolidation recommended");
-      const entries = agentMemory.getEntries("memory");
-      const winAndLossEntries = entries.filter(
-        (e: { key: string }) => e.key.includes("_win") || e.key.includes("_avoid") || e.key.includes("_lesson"),
-      );
-
-      if (winAndLossEntries.length >= 4) {
-        // Consolidate oldest half of reflection entries
-        const toMerge = winAndLossEntries.slice(0, Math.ceil(winAndLossEntries.length / 2));
-        const sourceKeys = toMerge.map((e: { key: string }) => e.key);
-        const mergedValue = toMerge
-          .map((e: { key: string; value: string }) => `- ${e.value}`)
-          .join("\n");
-        const mergedKey = `consolidated_${new Date().toISOString().split("T")[0]}`;
-
-        const consolidationResult = agentMemory.consolidate(
-          "memory",
-          sourceKeys,
-          mergedKey,
-          mergedValue,
-        );
-
-        if (consolidationResult.success) {
-          console.log(`[ReflectionEngine] Consolidated ${sourceKeys.length} entries`);
-        }
-      }
     }
 
     // Save each memory entry
@@ -193,7 +163,7 @@ ${conversationText.substring(0, 3000)}
     const entries = agentMemory.getEntries("memory");
     const reflectionEntries = entries.filter(
       (e: { key: string }) =>
-        e.key.includes("_win") || e.key.includes("_avoid") || e.key.includes("_lesson"),
+        e.key.includes("_win") || e.key.includes("_avoid") || e.key.includes("_lesson") || e.key.startsWith("consolidated_"),
     );
 
     if (reflectionEntries.length === 0) return "";

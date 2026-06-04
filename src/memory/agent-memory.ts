@@ -343,13 +343,19 @@ export class AgentMemory {
     target: "memory" | "user" = "memory",
   ): MemoryResult {
     const date = new Date().toISOString().split("T")[0];
-    const key = `${date}_${type}`;
+    const basePrefix = `${date}_${type}`;
+    const entriesMap = this.getEntriesMap(target);
+    const collisionCount = Array.from(entriesMap.keys()).filter(
+      (k) => k === basePrefix || k.startsWith(`${basePrefix}_`),
+    ).length;
+    const suffix = collisionCount > 0 ? `_${collisionCount + 1}` : "";
+    const key = `${basePrefix}${suffix}`;
     const value = type === "avoid" ? `AVOID: ${content}` : content;
 
     if (this.shouldConsolidate(target)) {
       const entries = this.getEntries(target);
       const reflectionEntries = entries.filter(
-        (e) => e.key.includes("_win") || e.key.includes("_avoid") || e.key.includes("_lesson"),
+        (e) => e.key.includes("_win") || e.key.includes("_avoid") || e.key.includes("_lesson") || e.key.startsWith("consolidated_"),
       );
 
       if (reflectionEntries.length >= 4) {

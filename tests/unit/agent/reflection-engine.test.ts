@@ -315,14 +315,7 @@ describe("ReflectionEngine", () => {
       expect(mockAdd).toHaveBeenCalledWith("memory", "2026-06-03_lesson", "Check pipeline first");
     });
 
-    it("should consolidate memory when at 80% capacity", async () => {
-      mockGetUsage.mockReturnValue({ used: 1800, total: 2200, percent: 82 });
-      mockShouldConsolidate.mockReturnValue(true);
-      mockGetEntries.mockReturnValue([
-        { key: "old_win_1", value: "Old win 1", timestamp: "2026-01-01", accessCount: 1 },
-        { key: "old_win_2", value: "Old win 2", timestamp: "2026-01-01", accessCount: 1 },
-      ]);
-      mockConsolidate.mockReturnValue({ success: true });
+    it("should save entries via add even when memory is near capacity", async () => {
       mockAdd.mockReturnValue({ success: true });
 
       const result = {
@@ -339,7 +332,7 @@ describe("ReflectionEngine", () => {
 
       await engine.saveReflection(result);
 
-      expect(mockShouldConsolidate).toHaveBeenCalledWith("memory");
+      expect(mockAdd).toHaveBeenCalledWith("memory", "2026-06-03_win", "New win");
     });
 
     it("should not add entries when memory add fails", async () => {
