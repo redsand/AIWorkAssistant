@@ -193,7 +193,7 @@ const envSchema = z.object({
   RAG_INDEX_ON_STARTUP: z
     .string()
     .transform((s) => s === "true")
-    .default("true"),
+    .default("false"),
   RAG_EMBEDDING_MODEL: z.string().default(""),
   EMBEDDING_PROVIDER: z.enum(["auto","opencode","zai","ollama","openai"]).default("auto"),
   EMBEDDING_MODEL: z.string().default("nomic-embed-text"),

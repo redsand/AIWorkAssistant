@@ -53,11 +53,44 @@ export class ZaiProvider extends AIProvider {
     const body = super.buildRequestBody({ ...request, tools: sanitizedTools, messages: sanitizedMessages });
     if (Array.isArray(body.messages)) {
       body.messages = repairToolMessagePairs(body.messages);
+      body.messages = this.normalizeMessagesForZai(body.messages as any[]);
     }
     // Z.ai (GLM) OpenAI-compatible API does not support tool_choice parameter
     delete body.tool_choice;
     (body as any)[kToolNameMap] = toolNameMap;
     return body;
+  }
+
+  /**
+   * Z.ai/GLM-specific message normalization. GLM is stricter than OpenAI
+   * about message format:
+   * 1. Assistant messages with tool_calls must have non-empty content.
+   * 2. No consecutive messages of the same role (user/user, assistant/assistant).
+   */
+  private normalizeMessagesForZai(messages: any[]): any[] {
+    const normalized: any[] = [];
+    for (let msg of messages) {
+      // Ensure assistant messages with tool_calls have non-empty content
+      if (msg.role === "assistant" && msg.tool_calls?.length > 0 && (!msg.content || msg.content.trim() === "")) {
+        msg = { ...msg, content: " " };
+      }
+
+      // Skip consecutive messages of the same role (keep the latest)
+      if (normalized.length > 0 && normalized[normalized.length - 1].role === msg.role) {
+        // Merge content for user/system messages; replace for assistant/tool
+        const prev = normalized[normalized.length - 1];
+        if (msg.role === "user" || msg.role === "system") {
+          prev.content = `${prev.content}\n\n${msg.content}`;
+          continue;
+        }
+        // For assistant/tool, replace the previous with the current
+        normalized[normalized.length - 1] = msg;
+        continue;
+      }
+
+      normalized.push(msg);
+    }
+    return normalized;
   }
 
 

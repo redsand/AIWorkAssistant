@@ -45,7 +45,7 @@ import { kanbanRoutes } from "./routes/kanban";
 import { errorsRoutes } from "./routes/errors";
 import { claimKitAdapter } from "./context-engine/adapters/claimkit-adapter";
 import { comparisonRoutes } from "./comparison-runs/api";
-import { ingestKnowledgeStore, ingestCodebaseStore, ingestGraphStore } from "./context-engine/claimkit-ingestion";
+import { ingestKnowledgeStore, ingestGraphStore } from "./context-engine/claimkit-ingestion";
 import { errorLog } from "./observability/error-log";
 import {
   authMiddleware,
@@ -233,11 +233,10 @@ async function start() {
       }
     });
 
-    // Start codebase indexing async — needed by ClaimKit codebase ingestion.
-    // RAG search degrades gracefully (returns empty) until indexing completes,
-    // so this is safe to leave fire-and-forget regardless of ClaimKit settings.
-    const codebaseIndexPromise = env.RAG_INDEX_ON_STARTUP
-      ? codebaseIndexer
+    // Start codebase indexing async if explicitly enabled.
+    // Not awaited — ingestion no longer depends on it.
+    if (env.RAG_INDEX_ON_STARTUP) {
+      codebaseIndexer
         .indexCodebase()
         .then((result) => {
           console.log(
@@ -249,7 +248,6 @@ async function start() {
               result.errors.slice(0, 5),
             );
           }
-          return result;
         })
         .catch((err) => {
           void errorLog.log({
@@ -259,9 +257,8 @@ async function start() {
             error: err,
           });
           console.error("[RAG] Indexing failed:", err);
-          return null;
-        })
-      : Promise.resolve(null);
+        });
+    }
 
     // ─── ClaimKit init: block server.listen() until init resolves ───
     // CLAIMKIT_REQUIRE_INIT=true (default) → process.exit(1) on failure
@@ -309,22 +306,18 @@ async function start() {
     // CLAIMKIT_BLOCK_ON_INGESTION=true (default) → await full ingestion before listen
     // CLAIMKIT_BLOCK_ON_INGESTION=false → fire-and-forget after listen (set below)
     if (ckInitialized && env.CLAIMKIT_BLOCK_ON_INGESTION) {
-      console.log("[ClaimKit] Waiting for codebase index before ingesting…");
-      await codebaseIndexPromise;
       console.log("[ClaimKit] Ingesting stores (blocking)…");
       try {
-        const [knowledge, codebase, graph] = await Promise.all([
+        const [knowledge, graph] = await Promise.all([
           ingestKnowledgeStore(),
-          ingestCodebaseStore(),
           ingestGraphStore(),
         ]);
         console.log(
           `[ClaimKit] Ingestion complete — ` +
           `knowledge: ${knowledge.ingested}/${knowledge.total} | ` +
-          `codebase: ${codebase.ingested}/${codebase.total} | ` +
           `graph: ${graph.ingested}/${graph.total}` +
-          (knowledge.errors + codebase.errors + graph.errors > 0
-            ? ` | errors: ${knowledge.errors + codebase.errors + graph.errors}`
+          (knowledge.errors + graph.errors > 0
+            ? ` | errors: ${knowledge.errors + graph.errors}`
             : ""),
         );
       } catch (err) {
@@ -362,21 +355,18 @@ async function start() {
     // Fire-and-forget so the server is responsive while the store fills up.
     if (ckInitialized && !env.CLAIMKIT_BLOCK_ON_INGESTION) {
       void (async () => {
-        await codebaseIndexPromise;
         console.log("[ClaimKit] Ingesting stores (background)…");
         try {
-          const [knowledge, codebase, graph] = await Promise.all([
+          const [knowledge, graph] = await Promise.all([
             ingestKnowledgeStore(),
-            ingestCodebaseStore(),
             ingestGraphStore(),
           ]);
           console.log(
             `[ClaimKit] Ingestion complete — ` +
             `knowledge: ${knowledge.ingested}/${knowledge.total} | ` +
-            `codebase: ${codebase.ingested}/${codebase.total} | ` +
             `graph: ${graph.ingested}/${graph.total}` +
-            (knowledge.errors + codebase.errors + graph.errors > 0
-              ? ` | errors: ${knowledge.errors + codebase.errors + graph.errors}`
+            (knowledge.errors + graph.errors > 0
+              ? ` | errors: ${knowledge.errors + graph.errors}`
               : ""),
           );
         } catch (err) {

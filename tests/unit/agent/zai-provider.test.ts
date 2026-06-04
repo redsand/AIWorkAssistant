@@ -295,6 +295,72 @@ describe("ZaiProvider chatStream", () => {
     });
   });
 
+  describe("Z.ai message normalization", () => {
+    it("injects a space into assistant messages with tool_calls but empty content", async () => {
+      const fn = vi.fn().mockResolvedValue({
+        data: {
+          choices: [{ message: { content: "ok" } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+          model: "zai-test",
+        },
+      });
+      const mockClient = { post: fn, get: vi.fn() };
+      mockAxiosCreate.mockReturnValue(mockClient);
+
+      const provider = makeProvider();
+      await provider.chat({
+        messages: [
+          { role: "user", content: "start" },
+          {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              {
+                id: "call_1",
+                type: "function",
+                function: { name: "read_file", arguments: "{}" },
+              },
+            ],
+          },
+          { role: "tool", tool_call_id: "call_1", content: "{}" },
+          { role: "user", content: "finish" },
+        ],
+      });
+
+      const body = fn.mock.calls[0][1];
+      const assistant = body.messages.find((m: any) => m.role === "assistant" && m.tool_calls);
+      expect(assistant.content).toBe(" ");
+    });
+
+    it("merges consecutive user messages to avoid GLM rejection", async () => {
+      const fn = vi.fn().mockResolvedValue({
+        data: {
+          choices: [{ message: { content: "ok" } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+          model: "zai-test",
+        },
+      });
+      const mockClient = { post: fn, get: vi.fn() };
+      mockAxiosCreate.mockReturnValue(mockClient);
+
+      const provider = makeProvider();
+      await provider.chat({
+        messages: [
+          { role: "system", content: "sys" },
+          { role: "user", content: "hello" },
+          { role: "user", content: "world" },
+          { role: "assistant", content: "hi" },
+        ],
+      });
+
+      const body = fn.mock.calls[0][1];
+      const userMessages = body.messages.filter((m: any) => m.role === "user");
+      expect(userMessages).toHaveLength(1);
+      expect(userMessages[0].content).toContain("hello");
+      expect(userMessages[0].content).toContain("world");
+    });
+  });
+
   describe("mixed thinking, content, and tool_calls", () => {
     it("yields thinking as string before content before tool_calls", async () => {
       makeStreamPostMock([

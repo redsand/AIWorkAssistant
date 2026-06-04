@@ -74,7 +74,7 @@ describe("repairToolMessagePairs", () => {
     expect((result[0] as { content: string }).content).toBe("I tried to call a tool");
   });
 
-  it("should drop orphaned assistant with no content and no tool responses", () => {
+  it("should keep orphaned assistant even with no content to preserve role alternation", () => {
     const messages: ChatMessage[] = [
       {
         role: "assistant",
@@ -85,9 +85,11 @@ describe("repairToolMessagePairs", () => {
     ];
 
     const result = repairToolMessagePairs(messages);
-    // First assistant should be dropped (no content, no responses)
-    expect(result).toHaveLength(1);
-    expect((result[0] as { content: string }).content).toBe("Next message");
+    // Assistant kept to avoid breaking role alternation (required by Z.ai/GLM)
+    expect(result).toHaveLength(2);
+    expect(result[0]).not.toHaveProperty("tool_calls");
+    expect((result[0] as { content: string }).content).toBe("");
+    expect((result[1] as { content: string }).content).toBe("Next message");
   });
 
   // ── Orphaned tool responses (no matching tool call) ─────────────────

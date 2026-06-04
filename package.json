@@ -9,7 +9,8 @@
     "ai-assistant": "src/cli/cli.ts"
   },
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev:kill": "node scripts/kill-dev.js",
+    "dev": "npm run dev:kill && tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
     "test": "vitest run",

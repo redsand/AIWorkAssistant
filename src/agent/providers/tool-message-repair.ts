@@ -68,7 +68,10 @@ export function repairToolMessagePairs(messages: ChatMessage[]): ChatMessage[] {
         }
       } else {
         const { tool_calls, ...rest } = msg as AssistantMessage;
-        if (rest.content) result.push(rest);
+        // Keep assistant message even with empty/null content to preserve
+        // role alternation. Some APIs (Z.ai/GLM) reject consecutive
+        // messages of the same role.
+        result.push({ ...rest, content: rest.content ?? "" });
       }
       i = j;
     } else if (msg.role === "tool") {
