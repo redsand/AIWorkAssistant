@@ -49,6 +49,7 @@ const PLATFORM_PREFIX_MAP: Record<string, Platform> = {
   discover: "cross-platform",
   code_review: "cross-platform",
   ticket_bridge: "cross-platform",
+  session: "cross-platform",
   musician: "cross-platform",
   audio: "cross-platform",
 };
@@ -2431,6 +2432,27 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       "Get knowledge base statistics: total entries, breakdown by source, date range.",
     params: {},
     actionType: "knowledge.read",
+    riskLevel: "low",
+  },
+
+  // ==================== Session Search Tool ====================
+  {
+    name: "session.search",
+    description:
+      "Search past conversation sessions to recall previous work, decisions, or discussions. Returns matching sessions with relevance scores. Use to find context like 'last time we dealt with this ticket' or 'how did we solve that issue'.",
+    params: {
+      query: {
+        type: "string",
+        description: "Search terms to find in past sessions",
+        required: true,
+      },
+      limit: {
+        type: "number",
+        description: "Max results to return (default 5)",
+        required: false,
+      },
+    },
+    actionType: "session.search",
     riskLevel: "low",
   },
 

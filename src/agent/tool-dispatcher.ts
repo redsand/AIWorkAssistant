@@ -56,6 +56,8 @@ import { skillManager } from "../skills/skill-manager";
 import { createSkillManageHandler } from "./handlers/skill-manage";
 import { soulManager } from "../memory/soul-manager";
 import { createSoulManageHandler } from "./handlers/soul-manage";
+import { createSessionSearchHandler } from "./handlers/session-search";
+import { conversationManager } from "../memory/conversation-manager";
 import { reflectionEngine } from "./reflection-engine";
 import type { EntityType, FindEntitiesQuery } from "../memory/entity-types";
 import { lspManager } from "../integrations/lsp/index.js";
@@ -4692,6 +4694,8 @@ async function handleKnowledgeSearch(
   };
 }
 
+const handleSessionSearch = createSessionSearchHandler(conversationManager);
+
 async function handleKnowledgeRecent(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -9041,6 +9045,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "todo.clear_completed": handleTodoClearCompleted,
   "knowledge.store": handleKnowledgeStore,
   "knowledge.search": handleKnowledgeSearch,
+  "session.search": handleSessionSearch,
   "knowledge.recent": handleKnowledgeRecent,
   "knowledge.get": handleKnowledgeGet,
   "knowledge.delete": handleKnowledgeDelete,

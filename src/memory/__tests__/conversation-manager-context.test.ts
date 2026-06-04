@@ -12,22 +12,32 @@ vi.mock("../../agent/opencode-client", () => ({
 describe("ConversationManager context messages", () => {
   let originalCwd: string;
   let tempDir: string;
+  let manager: InstanceType<typeof import("../conversation-manager").ConversationManager> | null = null;
 
   beforeEach(() => {
     vi.resetModules();
     originalCwd = process.cwd();
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conversation-manager-context-"));
     process.chdir(tempDir);
+    manager = null;
   });
 
   afterEach(() => {
+    if (manager) {
+      manager.close();
+      manager = null;
+    }
     process.chdir(originalCwd);
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      // SQLite WAL files may be briefly locked on Windows; best-effort cleanup
+    }
   });
 
   it("compacts long engine-mode sessions before returning context", async () => {
     const { ConversationManager } = await import("../conversation-manager.js");
-    const manager = new ConversationManager();
+    manager = new ConversationManager();
     const sessionId = manager.startSession("user-1", "productivity");
 
     for (let i = 0; i < 45; i++) {
@@ -51,7 +61,7 @@ describe("ConversationManager context messages", () => {
 
   it("refreshes active summaries when the compacted message window advances", async () => {
     const { ConversationManager } = await import("../conversation-manager.js");
-    const manager = new ConversationManager();
+    manager = new ConversationManager();
     const sessionId = manager.startSession("user-1", "productivity");
 
     for (let i = 0; i < 45; i++) {
@@ -74,7 +84,7 @@ describe("ConversationManager context messages", () => {
 
   it("truncates large tool results in context without mutating stored session history", async () => {
     const { ConversationManager } = await import("../conversation-manager.js");
-    const manager = new ConversationManager();
+    manager = new ConversationManager();
     const sessionId = manager.startSession("user-1", "productivity");
     const largeToolResult = JSON.stringify({
       success: true,
