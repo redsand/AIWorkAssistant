@@ -88,9 +88,9 @@ describe("ClaimKit environment variables", () => {
       expect(env.CLAIMKIT_QUERY_SEED_LIMIT).toBe(5);
     });
 
-    it("should default CLAIMKIT_QUERY_TIMEOUT_MS to 30000", () => {
+    it("should default CLAIMKIT_QUERY_TIMEOUT_MS to 120000", () => {
       const env = loadEnv();
-      expect(env.CLAIMKIT_QUERY_TIMEOUT_MS).toBe(30000);
+      expect(env.CLAIMKIT_QUERY_TIMEOUT_MS).toBe(120000);
     });
 
     it("should default CLAIMKIT_REQUIRE_INIT to true (strict mode)", () => {

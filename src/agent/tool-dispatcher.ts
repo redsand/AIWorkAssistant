@@ -4925,7 +4925,7 @@ async function handleAgentSpawn(
 
 async function handleAgentListRuns(
   params: Record<string, unknown>,
-  userId: string,
+  _userId: string,
 ): Promise<ToolCallResult> {
   try {
     const limitRaw = params.limit ? Number(params.limit) : undefined;
@@ -4956,7 +4956,7 @@ async function handleAgentListRuns(
 
 async function handleAgentGetRun(
   params: Record<string, unknown>,
-  userId: string,
+  _userId: string,
 ): Promise<ToolCallResult> {
   try {
     const runId = params.runId;
@@ -4982,7 +4982,7 @@ async function handleAgentGetRun(
 
 async function handleAgentGetRunStats(
   _params: Record<string, unknown>,
-  userId: string,
+  _userId: string,
 ): Promise<ToolCallResult> {
   try {
     // Single-user assistant: return all-run stats, not user-scoped
@@ -7104,7 +7104,6 @@ async function handleTenableListVulnerabilities(params: Record<string, unknown>)
   let since: number | undefined;
   const dateRange = params.date_range as number | undefined;
   const startDate = params.start_date as string | undefined;
-  const endDate = params.end_date as string | undefined;
 
   if (startDate) {
     const parsed = new Date(startDate);

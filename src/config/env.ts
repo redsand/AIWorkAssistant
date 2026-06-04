@@ -216,7 +216,8 @@ const envSchema = z.object({
   CLAIMKIT_MIN_SCORE: z.coerce.number().default(0.0),
   CLAIMKIT_MAX_EVIDENCE_ITEMS: z.coerce.number().default(20),
   CLAIMKIT_QUERY_SEED_LIMIT: z.coerce.number().default(5),
-  CLAIMKIT_QUERY_TIMEOUT_MS: z.coerce.number().default(30000),
+  CLAIMKIT_QUERY_TIMEOUT_MS: z.coerce.number().default(120000),
+  CLAIMKIT_INIT_TIMEOUT_MS: z.coerce.number().default(5000),
   CLAIMKIT_LLM_MODEL: z.string().default(""),
   // If true, server.listen() is preceded by `await claimKitAdapter.initialize()`
   // and a hard process.exit(1) on failure. If false, init runs in the background
@@ -232,6 +233,11 @@ const envSchema = z.object({
     .string()
     .transform((s) => s === "true")
     .default("true"),
+
+  // Dedicated Ollama provider for ClaimKit (isolates LLM calls from main chat)
+  CLAIMKIT_OLLAMA_API_URL: z.string().url().default("http://localhost:11434"),
+  CLAIMKIT_OLLAMA_API_KEY: z.string().default(""),
+  CLAIMKIT_OLLAMA_MODEL: z.string().default("llama3"),
 
   // Nightly calendar planning
   NIGHTLY_PLAN_ENABLED: z

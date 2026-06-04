@@ -192,7 +192,9 @@ export class OllamaProvider extends AIProvider {
 
           if (status === 500 && request.tools && attempt === 1) {
             if (DEBUG) console.warn("[Ollama API] Server error with tools, will retry with tools on next attempt");
-            if (attempt >= maxAttempts) break;
+            if (attempt >= maxAttempts) {
+              throw new Error(`Ollama API server error (500) with tools on final attempt`);
+            }
             const delay = this.getRetryDelay(attempt);
             await this.sleep(delay);
             continue;
@@ -211,7 +213,9 @@ export class OllamaProvider extends AIProvider {
           }
 
           if (status === 429) {
-            if (attempt >= maxAttempts) break;
+            if (attempt >= maxAttempts) {
+              throw new Error(`Ollama API rate limited (429) on final attempt`);
+            }
             const delay = this.getRateLimitDelay(error, attempt);
             if (DEBUG) console.warn(`[Ollama API] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
             await this.sleep(delay);
@@ -226,7 +230,9 @@ export class OllamaProvider extends AIProvider {
               `[Ollama API] Server error (${status}):`,
               errorBody || "no response body",
             );
-            if (attempt >= maxAttempts) break;
+            if (attempt >= maxAttempts) {
+              throw new Error(`Ollama API server error (${status}) on final attempt`);
+            }
             const delay = this.getRetryDelay(attempt);
             if (DEBUG) console.warn(`[Ollama API] Server error (${status}), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
             await this.sleep(delay);

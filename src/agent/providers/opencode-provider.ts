@@ -180,7 +180,9 @@ export class OpenCodeProvider extends AIProvider {
               `OpenCode API error (${status}): ${data?.error?.message || "Unknown error"}`,
             );
           } else if (status === 429) {
-            if (attempt >= maxAttempts) break;
+            if (attempt >= maxAttempts) {
+              throw new Error(`OpenCode API rate limited (429) on final attempt`);
+            }
             const delay = this.getRateLimitDelay(error, attempt);
             console.warn(
               `[OpenCode API] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`,
@@ -188,7 +190,9 @@ export class OpenCodeProvider extends AIProvider {
             await this.sleep(delay);
             continue;
           } else if (status && status >= 500) {
-            if (attempt >= maxAttempts) break;
+            if (attempt >= maxAttempts) {
+              throw new Error(`OpenCode API server error (${status}) on final attempt`);
+            }
             const delay = this.getRetryDelay(attempt);
             console.warn(
               `[OpenCode API] Server error (${status}), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`,

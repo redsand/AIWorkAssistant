@@ -171,7 +171,7 @@ export async function assembleContextPacket(
   // or when CLAIMKIT_ENABLED but init was never attempted (e.g. tests).
   const claimKitAvailable = claimKitAdapter.isAvailable()
     || (env.CLAIMKIT_ENABLED
-      ? await timeStage("claimkitInitializeMs", () => withTimeout(claimKitAdapter.initialize(), 5000, false))
+      ? await timeStage("claimkitInitializeMs", () => withTimeout(claimKitAdapter.initialize(), env.CLAIMKIT_INIT_TIMEOUT_MS, false))
       : false);
   if (!claimKitAvailable && env.CLAIMKIT_ENABLED && claimKitAdapter.getInitError()) {
     console.warn(`[ClaimKit] Skipped — ${claimKitAdapter.getInitError()}`);

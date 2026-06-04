@@ -196,7 +196,9 @@ export class OpenAIProvider extends AIProvider {
           }
 
           if (status === 429) {
-            if (attempt >= maxAttempts) break;
+            if (attempt >= maxAttempts) {
+              throw new Error(`OpenAI API rate limited (429) on final attempt`);
+            }
             const delay = this.getRateLimitDelay(error, attempt);
             if (DEBUG) console.warn(`[OpenAI] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
             await this.sleep(delay);
@@ -204,7 +206,9 @@ export class OpenAIProvider extends AIProvider {
           }
 
           if (status && status >= 500) {
-            if (attempt >= maxAttempts) break;
+            if (attempt >= maxAttempts) {
+              throw new Error(`OpenAI API server error (${status}) on final attempt`);
+            }
             const delay = this.getRetryDelay(attempt);
             await this.sleep(delay);
             continue;

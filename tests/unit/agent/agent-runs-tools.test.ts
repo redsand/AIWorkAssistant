@@ -121,17 +121,26 @@ describe("Agent Runs Tool Registry", () => {
     expect(getPlatformForToolName("agent.spawn")).toBe("cross-platform");
   });
 
-  it("narrows Tenable report requests to report-safe Tenable tools", () => {
+  it("narrows Tenable report requests to report-safe Tenable + Hawk IR tools with meta-tools", () => {
     const tools = getToolsForRequest(
       "productivity",
       "Give me a monthly Tenable vulnerability report",
     );
     const names = tools.map((t) => t.name);
 
+    // Tenable report tools present
     expect(names).toContain("tenable.list_vulnerabilities");
     expect(names).toContain("tenable.list_assets");
     expect(names).toContain("tenable.get_vulnerability_details");
     expect(names).toContain("system.get_time");
+    // Meta-tools must always be present for cross-platform discovery
+    expect(names).toContain("tools.discover");
+    expect(names).toContain("tools.fetch_cached");
+    // Hawk IR report tools included for multi-platform reports
+    expect(names).toContain("hawk_ir.monthly_summary");
+    expect(names).toContain("hawk_ir.weekly_report");
+    expect(names).toContain("hawk_ir.get_recent_cases");
+    // Non-report tools excluded
     expect(names).not.toContain("tenable.delete_asset");
     expect(names).not.toContain("hawk_ir.get_assets");
     expect(names).not.toContain("personal_os.brief");
@@ -158,6 +167,9 @@ describe("Agent Runs Tool Registry", () => {
     expect(names).toContain("tools.fetch_cached");
     expect(names).toContain("tenable.create_policy");
     expect(names).toContain("tenable.list_scans");
+    // Meta-tools must always be present even in non-report branches
+    expect(names).toContain("tools.discover");
+    expect(names).toContain("tools.fetch_cached");
   });
 
   it("keeps the normal tool set for non-Tenable requests", () => {

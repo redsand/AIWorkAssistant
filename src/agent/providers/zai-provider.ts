@@ -179,7 +179,9 @@ export class ZaiProvider extends AIProvider {
           }
 
           if (status === 429) {
-            if (attempt >= maxAttempts) break;
+            if (attempt >= maxAttempts) {
+              throw new Error(`Z.ai API rate limited (429) on final attempt`);
+            }
             const delay = this.getRateLimitDelay(error, attempt);
             console.warn(
               `[Z.ai API] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`,
@@ -189,7 +191,9 @@ export class ZaiProvider extends AIProvider {
           }
 
           if (status && status >= 500) {
-            if (attempt >= maxAttempts) break;
+            if (attempt >= maxAttempts) {
+              throw new Error(`Z.ai API server error (${status}) on final attempt`);
+            }
             const delay = this.getRetryDelay(attempt);
             console.warn(
               `[Z.ai API] Server error (${status}), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`,
@@ -282,7 +286,9 @@ export class ZaiProvider extends AIProvider {
           }
 
           if (response.status === 429) {
-            if (attempt >= maxAttempts) break;
+            if (attempt >= maxAttempts) {
+              throw new Error(`Z.ai API rate limited (429) on final attempt: ${errorBody}`);
+            }
             const delay = this.getRetryDelay(attempt);
             console.warn(`[Z.ai API] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
             await this.sleep(delay);
@@ -290,7 +296,9 @@ export class ZaiProvider extends AIProvider {
           }
 
           if (response.status >= 500) {
-            if (attempt >= maxAttempts) break;
+            if (attempt >= maxAttempts) {
+              throw new Error(`Z.ai API server error (${response.status}) on final attempt: ${errorBody}`);
+            }
             const delay = this.getRetryDelay(attempt);
             console.warn(`[Z.ai API] Server error (${response.status}), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
             await this.sleep(delay);
