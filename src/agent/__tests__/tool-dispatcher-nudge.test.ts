@@ -235,6 +235,13 @@ vi.mock("../handlers/skill-manage", () => ({
     async () => ({ success: true, data: { message: "ok" } }),
   ),
 }));
+vi.mock("../reflection-engine", () => ({
+  reflectionEngine: {
+    shouldReflect: vi.fn().mockReturnValue(false),
+    shouldSuggestSkill: vi.fn().mockReturnValue(false),
+    shouldSelfNudge: vi.fn().mockReturnValue(false),
+  },
+}));
 
 // ── Import after mocks ────────────────────────────────────────────────────
 

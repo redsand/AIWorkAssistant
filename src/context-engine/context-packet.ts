@@ -29,6 +29,7 @@ import type { ClaimKitQueryResult } from "./adapters/claimkit-adapter";
 import { agentMemory } from "../memory/agent-memory";
 import { soulManager } from "../memory/soul-manager";
 import { skillManager } from "../skills/skill-manager";
+import { reflectionEngine } from "../agent/reflection-engine";
 
 export interface RoutingDecision {
   tier: RoutingTier;
@@ -105,6 +106,15 @@ export async function assembleContextPacket(
     : null;
   const memoryTokens = (memorySection?.tokens ?? 0) + (userProfileSection?.tokens ?? 0);
 
+  // Recent reflections — after memory/user, before skills
+  // Budget ~300 tokens for the last 3 reflection entries
+  const MAX_REFLECTION_TOKENS = 300;
+  const rawReflections = sanitizeForPrompt(reflectionEngine.getRecentReflections(3, MAX_REFLECTION_TOKENS));
+  const reflectionsSection: ContextSection | null = rawReflections
+    ? { name: "recent_reflections", content: rawReflections, tokens: estimateTokens(rawReflections) }
+    : null;
+  const reflectionsTokens = reflectionsSection?.tokens ?? 0;
+
   // Load skill summaries — after memory/user, before system prompt
   // Cap at ~500 tokens to prevent context bloat from large skill lists
   const MAX_SKILL_TOKENS = 500;
@@ -132,7 +142,7 @@ export async function assembleContextPacket(
 
   const baseSystemPrompt = getSystemPrompt(mode, query, "engine");
   const systemTokens = estimateTokens(baseSystemPrompt);
-  systemSlot.allocatedTokens = Math.max(systemSlot.allocatedTokens, systemTokens + memoryTokens + skillsTokens + soulTokens);
+  systemSlot.allocatedTokens = Math.max(systemSlot.allocatedTokens, systemTokens + memoryTokens + skillsTokens + soulTokens + reflectionsTokens);
 
   const scored = scoreMessages(sessionMessages, query);
   const deduped = deduplicateByJaccard(scored);
@@ -287,6 +297,9 @@ export async function assembleContextPacket(
   if (userProfileSection) {
     sections.push(userProfileSection);
   }
+  if (reflectionsSection) {
+    sections.push(reflectionsSection);
+  }
   if (skillsSection) {
     sections.push(skillsSection);
   }
@@ -328,6 +341,11 @@ export async function assembleContextPacket(
   }
   if (userProfileEnforced?.content.trim()) {
     messages.push({ role: "system", content: `=== USER PROFILE ===\n${userProfileEnforced.content}` });
+  }
+
+  const reflectionsEnforced = enforced.find((s) => s.name === "recent_reflections");
+  if (reflectionsEnforced?.content.trim()) {
+    messages.push({ role: "system", content: `=== RECENT REFLECTIONS ===\n${reflectionsEnforced.content}` });
   }
 
   const skillsEnforced = enforced.find((s) => s.name === "skills");
