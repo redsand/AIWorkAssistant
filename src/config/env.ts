@@ -226,6 +226,13 @@ const envSchema = z.object({
   NIGHTLY_PLAN_WEEKS: z.coerce.number().default(2),
   NIGHTLY_PLAN_USER: z.string().default("user"),
 
+  // Cron engine (scheduled automation)
+  CRON_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
+  CRON_PATH: z.string().default("data/cron"),
+
   // HAWK Incident Response (ir.hawk.io)
   HAWK_IR_BASE_URL: z.string().default(""),
   HAWK_IR_ACCESS_TOKEN: z.string().default(""),
