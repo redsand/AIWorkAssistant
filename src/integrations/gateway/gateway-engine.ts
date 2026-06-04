@@ -9,6 +9,13 @@ import type { PlatformAdapter, DeliveryOptions, DeliveryResult } from "./platfor
 
 const SILENT_MARKER = "[SILENT]";
 
+const PLATFORM_MESSAGE_LIMITS: Record<string, number> = {
+  telegram: 4096,
+  discord: 2000,
+  slack: 40000,
+  whatsapp: 65536,
+};
+
 interface SessionMapping {
   userId: string;
   platform: string;
@@ -25,12 +32,27 @@ interface DeliveryLogEntry {
   error?: string;
 }
 
+interface DeliveryMetrics {
+  totalSent: number;
+  totalFailed: number;
+  totalSuppressed: number;
+  byPlatform: Record<string, { sent: number; failed: number; suppressed: number }>;
+}
+
 export class GatewayEngine {
   private adapters: Map<string, PlatformAdapter> = new Map();
   private sessions: Map<string, SessionMapping> = new Map();
   private dataDir: string;
   private running = false;
   private logStream: fs.FileHandle | null = null;
+  private saveInProgress = false;
+  private savePending = false;
+  private metrics: DeliveryMetrics = {
+    totalSent: 0,
+    totalFailed: 0,
+    totalSuppressed: 0,
+    byPlatform: {},
+  };
 
   constructor(dataDir?: string) {
     this.dataDir = dataDir || path.join(process.cwd(), "data", "gateway");
@@ -46,6 +68,10 @@ export class GatewayEngine {
 
   getRegisteredPlatforms(): string[] {
     return [...this.adapters.keys()];
+  }
+
+  getMetrics(): Readonly<DeliveryMetrics> {
+    return this.metrics;
   }
 
   async start(): Promise<void> {
@@ -101,6 +127,7 @@ export class GatewayEngine {
 
     // [SILENT] suppression
     if (message.includes(SILENT_MARKER) || options?.silent) {
+      this.recordMetric(platform, "suppressed");
       const result: DeliveryResult = {
         success: true,
         platform,
@@ -111,8 +138,29 @@ export class GatewayEngine {
       return result;
     }
 
+    // Message length validation per platform
+    const limit = PLATFORM_MESSAGE_LIMITS[platform];
+    if (limit && message.length > limit) {
+      this.recordMetric(platform, "failed");
+      const result: DeliveryResult = {
+        success: false,
+        platform,
+        timestamp: now,
+        suppressed: false,
+      };
+      await this.logDelivery({
+        platform,
+        userId,
+        suppressed: false,
+        timestamp: now,
+        error: `Message too long: ${message.length} chars (limit: ${limit} for ${platform})`,
+      });
+      return result;
+    }
+
     const adapter = this.adapters.get(platform);
     if (!adapter) {
+      this.recordMetric(platform, "failed");
       const result: DeliveryResult = {
         success: false,
         platform,
@@ -131,6 +179,11 @@ export class GatewayEngine {
 
     try {
       const result = await adapter.send(userId, message, options);
+      if (result.success) {
+        this.recordMetric(platform, "sent");
+      } else {
+        this.recordMetric(platform, "failed");
+      }
       await this.logDelivery({
         platform,
         userId,
@@ -142,6 +195,7 @@ export class GatewayEngine {
       return result;
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
+      this.recordMetric(platform, "failed");
       const result: DeliveryResult = {
         success: false,
         platform,
@@ -173,9 +227,7 @@ export class GatewayEngine {
       sessionId,
       updatedAt: new Date().toISOString(),
     });
-    this.saveSessions().catch((error) => {
-      console.error("[Gateway] Failed to save sessions:", error);
-    });
+    this.debouncedSaveSessions();
   }
 
   getSession(userId: string, platform: string): string | undefined {
@@ -187,6 +239,32 @@ export class GatewayEngine {
       if (mapping.userId === userId) return mapping;
     }
     return undefined;
+  }
+
+  private recordMetric(platform: string, type: "sent" | "failed" | "suppressed"): void {
+    if (type === "sent") this.metrics.totalSent++;
+    else if (type === "failed") this.metrics.totalFailed++;
+    else this.metrics.totalSuppressed++;
+
+    if (!this.metrics.byPlatform[platform]) {
+      this.metrics.byPlatform[platform] = { sent: 0, failed: 0, suppressed: 0 };
+    }
+    this.metrics.byPlatform[platform][type]++;
+  }
+
+  private debouncedSaveSessions(): void {
+    if (this.saveInProgress) {
+      this.savePending = true;
+      return;
+    }
+    this.saveInProgress = true;
+    this.saveSessions().finally(() => {
+      this.saveInProgress = false;
+      if (this.savePending) {
+        this.savePending = false;
+        this.debouncedSaveSessions();
+      }
+    });
   }
 
   private async loadSessions(): Promise<void> {
@@ -224,6 +302,29 @@ export class GatewayEngine {
     } catch (error) {
       console.error("[Gateway] Failed to log delivery:", error);
     }
+  }
+}
+
+/** Initialize the gateway engine with adapters from environment configuration. */
+export async function initializeGateway(
+  engine: GatewayEngine,
+  config: {
+    telegramToken?: string;
+    slackBotToken?: string;
+    slackAppToken?: string;
+  },
+): Promise<void> {
+  if (config.telegramToken) {
+    const { TelegramAdapter } = await import("./telegram-adapter");
+    engine.registerAdapter(new TelegramAdapter({ token: config.telegramToken }));
+  }
+
+  if (config.slackBotToken && config.slackAppToken) {
+    const { SlackAdapter } = await import("./slack-adapter");
+    engine.registerAdapter(new SlackAdapter({
+      botToken: config.slackBotToken,
+      appToken: config.slackAppToken,
+    }));
   }
 }
 

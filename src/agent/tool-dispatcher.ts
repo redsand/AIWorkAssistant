@@ -5481,23 +5481,23 @@ const gatewayRateLimits = new Map<string, number[]>();
 const GATEWAY_RATE_LIMIT_WINDOW_MS = 60_000;
 const GATEWAY_RATE_LIMIT_MAX = 20;
 
-function checkGatewayRateLimit(platform: string): boolean {
+function checkGatewayRateLimit(rateLimitKey: string): boolean {
   const now = Date.now();
   const windowStart = now - GATEWAY_RATE_LIMIT_WINDOW_MS;
-  let timestamps = gatewayRateLimits.get(platform) || [];
+  let timestamps = gatewayRateLimits.get(rateLimitKey) || [];
   timestamps = timestamps.filter((t) => t > windowStart);
   if (timestamps.length >= GATEWAY_RATE_LIMIT_MAX) {
-    gatewayRateLimits.set(platform, timestamps);
+    gatewayRateLimits.set(rateLimitKey, timestamps);
     return false;
   }
   timestamps.push(now);
-  gatewayRateLimits.set(platform, timestamps);
+  gatewayRateLimits.set(rateLimitKey, timestamps);
   return true;
 }
 
 async function handleGatewayDeliver(
   params: Record<string, unknown>,
-  _userId: string,
+  callerUserId: string,
 ): Promise<ToolCallResult> {
   const platform = params.platform as string;
   const targetUserId = params.user_id as string;
@@ -5513,8 +5513,14 @@ async function handleGatewayDeliver(
     return { success: false, error: `Invalid platform '${platform}'. Valid: ${validPlatforms.join(", ")}` };
   }
 
-  if (!checkGatewayRateLimit(platform)) {
-    return { success: false, error: `Rate limit exceeded for platform '${platform}'. Max ${GATEWAY_RATE_LIMIT_MAX} messages per minute.` };
+  const rateLimitKey = `${platform}:${targetUserId}`;
+  if (!checkGatewayRateLimit(rateLimitKey)) {
+    return { success: false, error: `Rate limit exceeded for ${platform}:${targetUserId}. Max ${GATEWAY_RATE_LIMIT_MAX} messages per minute.` };
+  }
+
+  // Authorization: caller must be the target user
+  if (callerUserId !== targetUserId) {
+    return { success: false, error: `Unauthorized: cannot send messages to user '${targetUserId}'` };
   }
 
   try {

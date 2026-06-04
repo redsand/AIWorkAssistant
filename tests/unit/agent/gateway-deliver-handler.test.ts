@@ -40,7 +40,7 @@ describe("gateway.deliver tool handler", () => {
       platform: "telegram",
       user_id: "user123",
       message: "Hello from the gateway!",
-    });
+    }, "user123");
 
     expect(result.success).toBe(true);
     expect(result.message).toContain("Message delivered");
@@ -55,7 +55,7 @@ describe("gateway.deliver tool handler", () => {
       platform: "telegram",
       user_id: "user123",
       message: "Status [SILENT]",
-    });
+    }, "user123");
 
     expect(result.success).toBe(true);
     expect(result.message).toContain("suppressed");
@@ -66,7 +66,7 @@ describe("gateway.deliver tool handler", () => {
     const result = await dispatchToolCall("gateway.deliver", {
       user_id: "user123",
       message: "Hello",
-    });
+    }, "user123");
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("platform is required");
@@ -77,7 +77,7 @@ describe("gateway.deliver tool handler", () => {
     const result = await dispatchToolCall("gateway.deliver", {
       platform: "telegram",
       message: "Hello",
-    });
+    }, "user123");
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("user_id is required");
@@ -88,7 +88,7 @@ describe("gateway.deliver tool handler", () => {
     const result = await dispatchToolCall("gateway.deliver", {
       platform: "telegram",
       user_id: "user123",
-    });
+    }, "user123");
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("message is required");
@@ -100,7 +100,7 @@ describe("gateway.deliver tool handler", () => {
       platform: "invalid_platform",
       user_id: "user123",
       message: "Hello",
-    });
+    }, "user123");
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("Invalid platform");
@@ -118,7 +118,7 @@ describe("gateway.deliver tool handler", () => {
         platform,
         user_id: "user123",
         message: "Test",
-      });
+      }, "user123");
 
       expect(result.success).toBe(true);
     }
@@ -133,7 +133,7 @@ describe("gateway.deliver tool handler", () => {
       platform: "telegram",
       user_id: "user123",
       message: "Hello",
-    });
+    }, "user123");
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("Failed to deliver");
@@ -146,7 +146,7 @@ describe("gateway.deliver tool handler", () => {
       platform: "telegram",
       user_id: "user123",
       message: "Hello",
-    });
+    }, "user123");
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("Gateway delivery failed");
@@ -161,7 +161,7 @@ describe("gateway.deliver tool handler", () => {
       user_id: "user123",
       message: "Quiet message",
       silent: true,
-    });
+    }, "user123");
 
     expect(mockSend).toHaveBeenCalledWith("telegram", "user123", "Quiet message", { silent: true });
   });
@@ -173,7 +173,7 @@ describe("gateway.deliver tool handler", () => {
       platform: "discord",
       user_id: "user456",
       message: "Normal message",
-    });
+    }, "user456");
 
     expect(mockSend).toHaveBeenCalledWith("discord", "user456", "Normal message", { silent: undefined });
   });
@@ -183,9 +183,21 @@ describe("gateway.deliver tool handler", () => {
       platform: "",
       user_id: "",
       message: "",
-    });
+    }, "user123");
 
     expect(result.success).toBe(false);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("rejects when caller user_id does not match target user_id", async () => {
+    const result = await dispatchToolCall("gateway.deliver", {
+      platform: "telegram",
+      user_id: "target-user",
+      message: "Hello",
+    }, "different-caller");
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Unauthorized");
     expect(mockSend).not.toHaveBeenCalled();
   });
 });
@@ -203,59 +215,67 @@ describe("gateway.deliver rate limiting", () => {
   it("allows messages within rate limit", async () => {
     const result = await dispatchToolCall("gateway.deliver", {
       platform: "telegram",
-      user_id: "user1",
+      user_id: "rl-user1",
       message: "Hello",
-    });
+    }, "rl-user1");
 
     expect(result.success).toBe(true);
   });
 
-  it("rejects messages when rate limit exceeded", async () => {
+  it("rejects messages when rate limit exceeded for a specific user", async () => {
     // Send 20 messages to hit the limit
     for (let i = 0; i < 20; i++) {
       await dispatchToolCall("gateway.deliver", {
         platform: "slack",
-        user_id: "user1",
+        user_id: "rl-user2",
         message: `Message ${i}`,
-      });
+      }, "rl-user2");
     }
 
     // 21st should be rate limited
     const result = await dispatchToolCall("gateway.deliver", {
       platform: "slack",
-      user_id: "user1",
+      user_id: "rl-user2",
       message: "One too many",
-    });
+    }, "rl-user2");
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("Rate limit");
   });
 
-  it("rate limits per platform independently", async () => {
-    // Fill up telegram limit
+  it("rate limits per platform:userId independently", async () => {
+    // Fill up telegram:rl-user3 limit
     for (let i = 0; i < 20; i++) {
       await dispatchToolCall("gateway.deliver", {
         platform: "telegram",
-        user_id: "user1",
+        user_id: "rl-user3",
         message: `Msg ${i}`,
-      });
+      }, "rl-user3");
     }
 
-    // Telegram should be rate limited
+    // telegram:rl-user3 should be rate limited
     const telegramResult = await dispatchToolCall("gateway.deliver", {
       platform: "telegram",
-      user_id: "user1",
+      user_id: "rl-user3",
       message: "Over limit",
-    });
+    }, "rl-user3");
     expect(telegramResult.success).toBe(false);
     expect(telegramResult.error).toContain("Rate limit");
 
-    // Discord should still work
+    // discord:rl-user3 should still work (different platform:userId key)
     const discordResult = await dispatchToolCall("gateway.deliver", {
       platform: "discord",
-      user_id: "user1",
+      user_id: "rl-user3",
       message: "Still works",
-    });
+    }, "rl-user3");
     expect(discordResult.success).toBe(true);
+
+    // telegram:rl-user4 should still work (different platform:userId key)
+    const otherUserResult = await dispatchToolCall("gateway.deliver", {
+      platform: "telegram",
+      user_id: "rl-user4",
+      message: "Different user works",
+    }, "rl-user4");
+    expect(otherUserResult.success).toBe(true);
   });
 });
