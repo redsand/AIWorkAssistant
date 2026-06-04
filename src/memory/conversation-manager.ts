@@ -456,37 +456,40 @@ export class ConversationManager {
     if (!query.trim()) return [];
 
     if (this.db) {
+      const ftsQuery = this.buildFtsQuery(query);
       try {
-        const rows = this.db.prepare(`
-          SELECT
-            sessionId,
-            title,
-            summary,
-            keyTopics,
-            bm25(sessions_fts) as score
-          FROM sessions_fts
-          WHERE sessions_fts MATCH ?
-          ORDER BY score
-          LIMIT ?
-        `).all(query, limit) as Array<{
-          sessionId: string;
-          title: string;
-          summary: string;
-          keyTopics: string;
-          score: number;
-        }>;
+        if (ftsQuery) {
+          const rows = this.db.prepare(`
+            SELECT
+              sessionId,
+              title,
+              summary,
+              keyTopics,
+              bm25(sessions_fts) as score
+            FROM sessions_fts
+            WHERE sessions_fts MATCH ?
+            ORDER BY score
+            LIMIT ?
+          `).all(ftsQuery, limit) as Array<{
+            sessionId: string;
+            title: string;
+            summary: string;
+            keyTopics: string;
+            score: number;
+          }>;
 
-        if (rows.length > 0) {
-          return rows.map((row) => ({
-            sessionId: row.sessionId,
-            title: row.title,
-            summary: row.summary.substring(0, 500),
-            keyTopics: row.keyTopics
-              ? row.keyTopics.split(", ").filter(Boolean)
-              : [],
-            relevanceScore: -row.score,
-            createdAt: "",
-          }));
+          if (rows.length > 0) {
+            return rows.map((row) => ({
+              sessionId: row.sessionId,
+              title: row.title,
+              summary: row.summary.substring(0, 500),
+              keyTopics: row.keyTopics
+                ? row.keyTopics.split(", ").filter(Boolean)
+                : [],
+              relevanceScore: -row.score,
+              createdAt: "",
+            }));
+          }
         }
       } catch (err) {
         console.warn("[MemoryManager] FTS5 search failed, using fallback:", err);
@@ -494,6 +497,18 @@ export class ConversationManager {
     }
 
     return this.searchSessionsFallback(query, limit);
+  }
+
+  private buildFtsQuery(query: string): string {
+    const terms = query
+      .match(/[\p{L}\p{N}_-]+/gu)
+      ?.map((term) => term.trim())
+      .filter((term) => term.length >= 2)
+      .slice(0, 12) ?? [];
+
+    return terms
+      .map((term) => `"${term.replace(/"/g, "\"\"")}"`)
+      .join(" OR ");
   }
 
   private searchSessionsFallback(

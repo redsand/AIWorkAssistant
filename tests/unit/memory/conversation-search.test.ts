@@ -99,6 +99,23 @@ describe("ConversationManager FTS5 search", () => {
       expect(result.sessionId).toBe(sessionId);
     });
 
+    it("handles punctuation-heavy queries without FTS5 syntax errors", async () => {
+      const sessionId = env.manager.startSession("user1", "engineering", {
+        title: "Comparison API review",
+      });
+
+      env.manager.addMessage(sessionId, {
+        role: "user",
+        content: "Reviewed http://localhost:3050/api/comparison-runs and the context diagnostics output",
+      });
+
+      await env.manager.endSession(sessionId);
+
+      const results = env.manager.searchSessions("http://localhost:3050/api/comparison-runs context/diagnostics");
+      expect(results.length).toBeGreaterThanOrEqual(1);
+      expect(results.some((result) => result.sessionId === sessionId)).toBe(true);
+    });
+
     it("respects the limit parameter", async () => {
       for (let i = 0; i < 6; i++) {
         const sid = env.manager.startSession("user1", "productivity", {
