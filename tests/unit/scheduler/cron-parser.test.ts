@@ -77,6 +77,24 @@ describe("parseSchedule", () => {
       expect(result.kind).toBe("cron");
       expect(result.cronExpression).toBe("0 21 * * *");
     });
+
+    it("handles 12am (midnight) correctly", () => {
+      const result = parseSchedule("every day at 12am");
+      expect(result.kind).toBe("cron");
+      expect(result.cronExpression).toBe("0 0 * * *");
+    });
+
+    it("handles 12pm (noon) correctly", () => {
+      const result = parseSchedule("every day at 12pm");
+      expect(result.kind).toBe("cron");
+      expect(result.cronExpression).toBe("0 12 * * *");
+    });
+
+    it("handles hour without am/pm as 24h", () => {
+      const result = parseSchedule("every evening at 15");
+      expect(result.kind).toBe("cron");
+      expect(result.cronExpression).toBe("0 15 * * *");
+    });
   });
 
   describe("natural language weekly", () => {
@@ -96,6 +114,32 @@ describe("parseSchedule", () => {
       const result = parseSchedule("every sunday at 10:30am");
       expect(result.kind).toBe("cron");
       expect(result.cronExpression).toBe("30 10 * * 0");
+    });
+
+    it("maps all day-of-week values correctly", () => {
+      const dayMap: Record<string, number> = {
+        sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
+        thursday: 4, friday: 5, saturday: 6,
+      };
+      for (const [day, dow] of Object.entries(dayMap)) {
+        const result = parseSchedule(`every ${day} at 9am`);
+        expect(result.cronExpression).toBe(`0 9 * * ${dow}`);
+      }
+    });
+
+    it("handles 12am (midnight) on a weekday", () => {
+      const result = parseSchedule("every friday at 12am");
+      expect(result.cronExpression).toBe("0 0 * * 5");
+    });
+
+    it("handles 12pm (noon) on a weekday", () => {
+      const result = parseSchedule("every tuesday at 12pm");
+      expect(result.cronExpression).toBe("0 12 * * 2");
+    });
+
+    it("handles pm conversion for all weekdays", () => {
+      const result = parseSchedule("every thursday at 3:30pm");
+      expect(result.cronExpression).toBe("30 15 * * 4");
     });
   });
 
@@ -138,8 +182,20 @@ describe("parseSchedule", () => {
       expect(() => parseSchedule("")).toThrow("cannot be empty");
     });
 
+    it("throws on whitespace-only input", () => {
+      expect(() => parseSchedule("   ")).toThrow("cannot be empty");
+    });
+
     it("throws on unrecognizable input", () => {
       expect(() => parseSchedule("whenever I feel like it")).toThrow("Cannot parse schedule");
+    });
+
+    it("throws on partial cron (4 fields)", () => {
+      expect(() => parseSchedule("0 9 * *")).toThrow("Cannot parse schedule");
+    });
+
+    it("throws on invalid ISO timestamp values", () => {
+      expect(() => parseSchedule("2026-99-99T99:99")).toThrow("Invalid timestamp");
     });
   });
 
@@ -239,6 +295,17 @@ describe("nextFireTime", () => {
       original: "invalid",
     };
     const result = nextFireTime(schedule);
+    expect(result).toBeNull();
+  });
+
+  it("returns null for cron with impossible date (Feb 31)", () => {
+    const schedule: ParsedSchedule = {
+      kind: "cron",
+      cronExpression: "0 0 31 2 *",
+      original: "0 0 31 2 *",
+    };
+    const after = new Date("2026-06-15T00:00:00Z");
+    const result = nextFireTime(schedule, after);
     expect(result).toBeNull();
   });
 });

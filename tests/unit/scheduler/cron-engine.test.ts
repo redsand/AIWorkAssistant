@@ -182,7 +182,7 @@ describe("CronEngine", () => {
       await engine.tick();
 
       expect(mockRunJob).toHaveBeenCalledTimes(1);
-      expect(mockRunJob).toHaveBeenCalledWith(job, undefined);
+      expect(mockRunJob).toHaveBeenCalledWith(expect.objectContaining({ id: job.id }), undefined);
     });
 
     it("does not fire jobs that are not due", async () => {
@@ -306,8 +306,89 @@ describe("CronEngine", () => {
       await engine.tick();
 
       expect(mockRunJob).toHaveBeenCalledTimes(2);
-      expect(mockRunJob).toHaveBeenCalledWith(sourceJob, undefined);
-      expect(mockRunJob).toHaveBeenCalledWith(chainedJob, "test output");
+      expect(mockRunJob).toHaveBeenCalledWith(expect.objectContaining({ id: sourceJob.id }), undefined);
+      expect(mockRunJob).toHaveBeenCalledWith(expect.objectContaining({ id: chainedJob.id }), "test output");
+    });
+  });
+
+  describe("isDue edge cases", () => {
+    it("fires interval job with no lastRunAt (never run)", async () => {
+      const { engine, mockRunJob, setNow } = createEngine(tempDir);
+      engine.createJob("every 1h", "Fresh job");
+
+      setNow(new Date("2026-06-03T09:00:00Z"));
+      await engine.tick();
+
+      expect(mockRunJob).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not re-fire cron job within the same minute when lock is held", async () => {
+      const { engine, mockRunJob, setNow } = createEngine(tempDir);
+      engine.createJob("0 9 * * *", "Daily task");
+
+      setNow(new Date("2026-06-03T09:00:00Z"));
+      await engine.tick();
+
+      // Simulate a concurrent tick attempt by placing a fresh lock
+      fs.writeFileSync(path.join(tempDir, ".tick.lock"), new Date("2026-06-03T09:00:30Z").toISOString());
+      setNow(new Date("2026-06-03T09:00:30Z"));
+      await engine.tick();
+
+      // Only one invocation because the lock prevented the second tick
+      expect(mockRunJob).toHaveBeenCalledTimes(1);
+    });
+
+    it("fires one-shot job at exact timestamp", async () => {
+      const { engine, mockRunJob, setNow } = createEngine(tempDir);
+      engine.createJob("2026-06-03T09:00:00Z", "One-shot");
+
+      setNow(new Date("2026-06-03T09:00:00Z"));
+      await engine.tick();
+
+      expect(mockRunJob).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not fire one-shot job before its timestamp", async () => {
+      const { engine, mockRunJob, setNow } = createEngine(tempDir);
+      engine.createJob("2026-12-25T09:00:00Z", "Future one-shot");
+
+      setNow(new Date("2026-06-03T09:00:00Z"));
+      await engine.tick();
+
+      expect(mockRunJob).not.toHaveBeenCalled();
+    });
+
+    it("does not fire already-run one-shot job", async () => {
+      const { engine, mockRunJob, setNow } = createEngine(tempDir);
+      engine.createJob("2026-06-03T09:00:00Z", "One-shot");
+
+      setNow(new Date("2026-06-03T09:00:00Z"));
+      await engine.tick();
+
+      // Move forward — the job should now be disabled
+      setNow(new Date("2026-06-04T09:00:00Z"));
+      await engine.tick();
+
+      expect(mockRunJob).toHaveBeenCalledTimes(1);
+    });
+
+    it("records failure result when runJobFn fails", async () => {
+      const { engine, setNow } = createEngine(tempDir);
+      (engine as any).deps.runJobFn = vi.fn().mockResolvedValue({
+        success: false,
+        output: "Something went wrong",
+        silent: false,
+      });
+
+      engine.createJob("every 30m", "Failing job");
+
+      setNow(new Date("2026-06-03T09:00:00Z"));
+      await engine.tick();
+
+      const jobs = engine.listJobs();
+      expect(jobs[0].lastResult).toBe("failed");
+      expect(jobs[0].lastOutput).toBe("Something went wrong");
+      expect(jobs[0].runCount).toBe(1);
     });
   });
 });

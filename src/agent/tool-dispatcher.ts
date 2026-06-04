@@ -2309,6 +2309,18 @@ const handleMemoryManage = createMemoryManageHandler(agentMemory);
 const handleSkillManage = createSkillManageHandler(skillManager);
 const handleSoulManage = createSoulManageHandler(soulManager);
 
+const cronCreateTimestamps: number[] = [];
+const CRON_CREATE_MAX_PER_HOUR = 10;
+
+function checkCronRateLimit(): boolean {
+  const now = Date.now();
+  const windowStart = now - 60 * 60 * 1000;
+  while (cronCreateTimestamps.length > 0 && cronCreateTimestamps[0] < windowStart) {
+    cronCreateTimestamps.shift();
+  }
+  return cronCreateTimestamps.length < CRON_CREATE_MAX_PER_HOUR;
+}
+
 async function handleCronManage(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -2319,6 +2331,12 @@ async function handleCronManage(
 
   switch (action) {
     case "create": {
+      if (!checkCronRateLimit()) {
+        return {
+          success: false,
+          error: `Rate limit exceeded: max ${CRON_CREATE_MAX_PER_HOUR} cron job creates per hour`,
+        };
+      }
       const schedule = params.schedule as string;
       const prompt = params.prompt as string;
       if (!schedule) return { success: false, error: "schedule is required for create" };
@@ -2329,6 +2347,7 @@ async function handleCronManage(
           name: params.name as string | undefined,
           deliver: params.deliver as string | undefined,
         });
+        cronCreateTimestamps.push(Date.now());
         return {
           success: true,
           data: {

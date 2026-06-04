@@ -16,6 +16,23 @@ export interface JobRunnerDependencies {
   runJobFn: (job: CronJob, chainedContext?: string) => Promise<JobResult>;
 }
 
+const INJECTION_PATTERNS = [
+  /\bignore\s+(all\s+)?previous\s+(instructions|context|directions)/gi,
+  /\bforget\s+(all\s+)?previous\b/gi,
+  /\byou\s+are\s+now\b/gi,
+  /\bsystem\s*:\s*/gi,
+  /\[INST\]/gi,
+  /\<\|im_start\|\>/gi,
+];
+
+export function sanitizePrompt(prompt: string): string {
+  let sanitized = prompt;
+  for (const pattern of INJECTION_PATTERNS) {
+    sanitized = sanitized.replace(pattern, "[filtered]");
+  }
+  return sanitized;
+}
+
 function buildSystemMessage(job: CronJob, chainedContext?: string): string {
   const parts: string[] = [
     "You are a scheduled automation agent executing a recurring task.",
@@ -56,12 +73,13 @@ export async function runJob(job: CronJob, chainedContext?: string): Promise<Job
   const startTime = Date.now();
   let lastActivity = startTime;
   let timedOut = false;
+  let inactivityTimer: ReturnType<typeof setInterval> | null = null;
 
   const timeoutPromise = new Promise<null>((resolve) => {
-    const check = setInterval(() => {
+    inactivityTimer = setInterval(() => {
       if (Date.now() - lastActivity > INACTIVITY_TIMEOUT_MS) {
         timedOut = true;
-        clearInterval(check);
+        if (inactivityTimer) clearInterval(inactivityTimer);
         resolve(null);
       }
     }, POLL_INTERVAL_MS);
@@ -71,12 +89,14 @@ export async function runJob(job: CronJob, chainedContext?: string): Promise<Job
     const responsePromise = aiClient.chat({
       messages: [
         { role: "system", content: systemMessage },
-        { role: "user", content: job.prompt },
+        { role: "user", content: sanitizePrompt(job.prompt) },
       ],
       temperature: 0.7,
     });
 
     const response = await Promise.race([responsePromise, timeoutPromise]);
+
+    if (inactivityTimer) clearInterval(inactivityTimer);
 
     if (timedOut || !response) {
       const msg = `Job ${job.id} timed out after ${INACTIVITY_TIMEOUT_MS / 1000}s of inactivity`;
@@ -92,6 +112,7 @@ export async function runJob(job: CronJob, chainedContext?: string): Promise<Job
 
     return { success: true, output: content, silent };
   } catch (error) {
+    if (inactivityTimer) clearInterval(inactivityTimer);
     const msg = error instanceof Error ? error.message : "Unknown error";
     console.error(`[CronEngine] Job ${job.id} error:`, msg);
     void errorLog.log({

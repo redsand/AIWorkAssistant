@@ -107,15 +107,29 @@ export class CronEngine {
 
   private acquireLock(): boolean {
     try {
-      if (fs.existsSync(this.lockPath)) {
-        const lockContent = fs.readFileSync(this.lockPath, "utf-8").trim();
-        const lockTime = new Date(lockContent).getTime();
-        const lockAge = this.deps.now().getTime() - lockTime;
-        if (lockAge < this.tickIntervalMs * 2) return false;
-        fs.unlinkSync(this.lockPath);
+      try {
+        const fd = fs.openSync(this.lockPath, "wx");
+        fs.writeSync(fd, this.deps.now().toISOString());
+        fs.closeSync(fd);
+        return true;
+      } catch (err: unknown) {
+        if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "EEXIST") {
+          const lockContent = fs.readFileSync(this.lockPath, "utf-8").trim();
+          const lockTime = new Date(lockContent).getTime();
+          const lockAge = this.deps.now().getTime() - lockTime;
+          if (lockAge < this.tickIntervalMs * 2) return false;
+          fs.unlinkSync(this.lockPath);
+          try {
+            const fd = fs.openSync(this.lockPath, "wx");
+            fs.writeSync(fd, this.deps.now().toISOString());
+            fs.closeSync(fd);
+            return true;
+          } catch {
+            return false;
+          }
+        }
+        return false;
       }
-      fs.writeFileSync(this.lockPath, this.deps.now().toISOString(), "utf-8");
-      return true;
     } catch {
       return false;
     }
@@ -138,7 +152,7 @@ export class CronEngine {
         if (this.runningJobs.has(job.id)) continue;
         if (!this.isDue(job, now)) continue;
         try {
-          await this.executeJob(job, now);
+          await this.executeJob(job, now, jobs);
         } catch (err) {
           console.error(`[CronEngine] Job ${job.id} failed:`, err);
         }
@@ -167,16 +181,15 @@ export class CronEngine {
     return false;
   }
 
-  private async executeJob(job: CronJob, firedAt: Date): Promise<void> {
+  private async executeJob(job: CronJob, firedAt: Date, jobs: CronJob[]): Promise<void> {
     this.runningJobs.add(job.id);
     try {
       const chainedContext = job.context_from
-        ? this.getChainedContext(job.context_from)
+        ? this.getChainedContext(job.context_from, jobs)
         : undefined;
 
       const result = await this.deps.runJobFn(job, chainedContext);
 
-      const jobs = this.readJobs();
       const idx = jobs.findIndex((j) => j.id === job.id);
       if (idx !== -1) {
         jobs[idx].lastRunAt = firedAt.toISOString();
@@ -195,8 +208,7 @@ export class CronEngine {
     }
   }
 
-  private getChainedContext(jobId: string): string | undefined {
-    const jobs = this.readJobs();
+  private getChainedContext(jobId: string, jobs: CronJob[]): string | undefined {
     const source = jobs.find((j) => j.id === jobId);
     return source?.lastOutput;
   }
