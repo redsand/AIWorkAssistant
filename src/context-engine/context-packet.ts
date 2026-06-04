@@ -94,6 +94,15 @@ export async function assembleContextPacket(
   } = params;
 
   const budget = createBudget(undefined, providerMaxTokens, toolTokens);
+  const stageTimings: Record<string, number> = {};
+  const timeStage = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+    const start = Date.now();
+    try {
+      return await fn();
+    } finally {
+      stageTimings[name] = Date.now() - start;
+    }
+  };
 
   const systemSlot = budget.slots.find((s) => s.name === "system")!;
   const historySlot = budget.slots.find((s) => s.name === "history")!;
@@ -157,10 +166,13 @@ export async function assembleContextPacket(
     : null;
   const skillsTokens = skillsSection?.tokens ?? 0;
 
-  const claimKitAvailable = await withTimeout(
-    claimKitAdapter.initialize(),
-    5000,
-    false,
+  const claimKitAvailable = await timeStage(
+    "claimkitInitializeMs",
+    () => withTimeout(
+      claimKitAdapter.initialize(),
+      5000,
+      false,
+    ),
   );
   if (!claimKitAvailable && env.CLAIMKIT_ENABLED && claimKitAdapter.getInitError()) {
     console.warn(`[ClaimKit] Skipped — ${claimKitAdapter.getInitError()}`);
@@ -176,31 +188,46 @@ export async function assembleContextPacket(
   const historyTokens = selectedMessages.reduce((sum, s) => sum + s.tokens, 0);
 
   const ragStart = Date.now();
-  const docs = await retrieveAllStores(query);
+  const docs = await timeStage("retrieveStoresMs", () => retrieveAllStores(query));
 
   let claimKitResult: Awaited<ReturnType<typeof claimKitAdapter.query>> | null = null;
   let ckMs = 0;
   if (claimKitAvailable) {
-    await ingestScoredDocumentsForQuery(docs, query, env.CLAIMKIT_QUERY_SEED_LIMIT);
+    const seedStart = Date.now();
+    void ingestScoredDocumentsForQuery(docs, query, env.CLAIMKIT_QUERY_SEED_LIMIT).catch((err) => {
+      console.warn("[ClaimKit] Query seed failed:", err);
+    });
+    stageTimings.claimkitSeedQueuedMs = Date.now() - seedStart;
     const ckStart = Date.now();
     try {
-      claimKitResult = await claimKitAdapter.query(query);
-      ckMs = Date.now() - ckStart;
-      const symbol = claimKitResult.answerability === "answerable" ? "✅" : claimKitResult.answerability === "partially-answerable" ? "⚠️" : "❌";
-      console.log(
-        `[ClaimKit] ${symbol} ${claimKitResult.answerability} | confidence=${(claimKitResult.confidence * 100).toFixed(0)}% | claims=${claimKitResult.metadata.claimCount} | sources=${claimKitResult.metadata.sourceIds.length} | score=${claimKitResult.metadata.retrievalScore.toFixed(2)} | ${ckMs}ms`,
+      claimKitResult = await withTimeout(
+        claimKitAdapter.query(query),
+        5000,
+        null,
       );
-      if (claimKitResult.confidence < 0.1) {
+      ckMs = Date.now() - ckStart;
+      stageTimings.claimkitQueryMs = ckMs;
+      if (!claimKitResult) {
+        console.warn(`[ClaimKit] Query skipped after ${ckMs}ms timeout`);
+      }
+      if (claimKitResult) {
+        const symbol = claimKitResult.answerability === "answerable" ? "✅" : claimKitResult.answerability === "partially-answerable" ? "⚠️" : "❌";
         console.log(
-          `[ClaimKit:DEBUG] query="${query.substring(0, 120)}" | ` +
-          `sources=${claimKitResult.metadata.sourceIds.length} | ` +
-          `retrievalScore=${claimKitResult.metadata.retrievalScore.toFixed(3)} | ` +
-          `answer=${claimKitResult.answer.substring(0, 200)} | ` +
-          `missingEvidence=[${claimKitResult.missingEvidence.slice(0, 5).join(", ")}] | ` +
-          `citations=[${claimKitResult.citations.slice(0, 3).map(c => c.sourceId).join(", ")}]`,
+          `[ClaimKit] ${symbol} ${claimKitResult.answerability} | confidence=${(claimKitResult.confidence * 100).toFixed(0)}% | claims=${claimKitResult.metadata.claimCount} | sources=${claimKitResult.metadata.sourceIds.length} | score=${claimKitResult.metadata.retrievalScore.toFixed(2)} | ${ckMs}ms`,
         );
+        if (claimKitResult.confidence < 0.1) {
+          console.log(
+            `[ClaimKit:DEBUG] query="${query.substring(0, 120)}" | ` +
+            `sources=${claimKitResult.metadata.sourceIds.length} | ` +
+            `retrievalScore=${claimKitResult.metadata.retrievalScore.toFixed(3)} | ` +
+            `answer=${claimKitResult.answer.substring(0, 200)} | ` +
+            `missingEvidence=[${claimKitResult.missingEvidence.slice(0, 5).join(", ")}] | ` +
+            `citations=[${claimKitResult.citations.slice(0, 3).map(c => c.sourceId).join(", ")}]`,
+          );
+        }
       }
     } catch (err) {
+      stageTimings.claimkitQueryMs = Date.now() - ckStart;
       console.warn("[ClaimKit] Query failed:", err);
     }
   } else if (env.CLAIMKIT_ENABLED) {
@@ -328,7 +355,12 @@ export async function assembleContextPacket(
     }
   } catch {}
 
-  const healthText = await buildHealthStatus();
+  const healthStart = Date.now();
+  const healthText = await withTimeout(buildHealthStatus(), 2000, null);
+  stageTimings.healthStatusMs = Date.now() - healthStart;
+  if (!healthText) {
+    console.warn(`[ContextPacket] Health status skipped after ${stageTimings.healthStatusMs}ms`);
+  }
   const healthSection: ContextSection | null = healthText
     ? { name: "health", content: healthText, tokens: estimateTokens(healthText) }
     : null;
@@ -510,6 +542,7 @@ export async function assembleContextPacket(
           ? totalOriginalDocTokens / Math.max(totalCompressedDocTokens, 1)
           : 1,
       budgetUtilization,
+      stageTimings,
       createdAt: new Date(),
     },
   };

@@ -143,7 +143,8 @@ export function subscribeLive(sessionId) {
               }
 
               if (eventType === "response_start") {
-                // New response turn — finalize any in-progress streaming message and reset
+                const statusEl = document.getElementById("processingStatusText");
+                if (statusEl) statusEl.textContent = "Generating response...";
                 if (streamingMessageId !== null) {
                   finalizeStreamingMessage(streamingMessageId);
                   streamingMessageId = null;

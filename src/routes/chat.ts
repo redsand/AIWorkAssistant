@@ -752,7 +752,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         });
         messages = packet.messages;
         console.log(
-          `[ContextEngine] Packet assembled: ${packet.diagnostics.finalMessageCount} messages, ${packet.totalTokens} tokens, compression=${packet.diagnostics.compressionRatio.toFixed(2)}, budget=${JSON.stringify(packet.diagnostics.budgetUtilization)}`,
+          `[ContextEngine] Packet assembled: ${packet.diagnostics.finalMessageCount} messages, ${packet.totalTokens} tokens, compression=${packet.diagnostics.compressionRatio.toFixed(2)}, budget=${JSON.stringify(packet.diagnostics.budgetUtilization)}, timings=${JSON.stringify(packet.diagnostics.stageTimings)}`,
         );
       } else {
         const sessionMessages = await conversationManager.getSessionMessages(
@@ -1191,9 +1191,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
           });
           messages = packet.messages;
           console.log(
-            `[ContextEngine] Packet assembled: ${packet.diagnostics.finalMessageCount} messages, ${packet.totalTokens} tokens, compression=${packet.diagnostics.compressionRatio.toFixed(2)}, budget=${JSON.stringify(packet.diagnostics.budgetUtilization)}`,
+            `[ContextEngine] Packet assembled: ${packet.diagnostics.finalMessageCount} messages, ${packet.totalTokens} tokens, compression=${packet.diagnostics.compressionRatio.toFixed(2)}, budget=${JSON.stringify(packet.diagnostics.budgetUtilization)}, timings=${JSON.stringify(packet.diagnostics.stageTimings)}`,
           );
-          try { if (earlyRunId) agentRunDatabase.addStep({ runId: earlyRunId, stepType: "note", content: { stage: "context_complete", finalMessageCount: packet.diagnostics.finalMessageCount, totalTokens: packet.totalTokens, compressionRatio: packet.diagnostics.compressionRatio }, durationMs: Date.now() - contextStart, stepOrder: -1 }); } catch (e) { console.error("[AgentRuns]", e); }
+          try { if (earlyRunId) agentRunDatabase.addStep({ runId: earlyRunId, stepType: "note", content: { stage: "context_complete", finalMessageCount: packet.diagnostics.finalMessageCount, totalTokens: packet.totalTokens, compressionRatio: packet.diagnostics.compressionRatio, documentsRetrieved: packet.diagnostics.documentsRetrieved, documentsCompressed: packet.diagnostics.documentsCompressed, stageTimings: packet.diagnostics.stageTimings }, durationMs: Date.now() - contextStart, stepOrder: -1 }); } catch (e) { console.error("[AgentRuns]", e); }
           sendEvent("processing", { message: "Generating response..." });
         } catch (error) {
           const message = error instanceof Error ? error.message : "Context assembly failed";

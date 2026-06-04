@@ -85,6 +85,7 @@ export interface ContextPacket {
     documentsCompressed: number;
     compressionRatio: number;
     budgetUtilization: Record<string, number>;
+    stageTimings: Record<string, number>;
     createdAt: Date;
   };
 }
