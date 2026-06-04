@@ -58,6 +58,7 @@ import { soulManager } from "../memory/soul-manager";
 import { createSoulManageHandler } from "./handlers/soul-manage";
 import { createSessionSearchHandler } from "./handlers/session-search";
 import { conversationManager } from "../memory/conversation-manager";
+import { toolCallCache } from "../memory/tool-cache";
 import { reflectionEngine } from "./reflection-engine";
 import { subagentSpawner } from "./subagent-spawner";
 import type { SubagentResult } from "./subagent-spawner";
@@ -2635,6 +2636,36 @@ async function handleCtoCreateSuggestedWorkItems(
   }
   const created = ctoDailyCommandCenter.createSuggestedWorkItems(items as any[]);
   return { success: true, data: { created } };
+}
+
+async function handleToolsFetchCached(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  const ref = params.ref as string | undefined;
+  if (!ref || typeof ref !== "string") {
+    return {
+      success: false,
+      error: "Missing required 'ref' parameter (e.g., \"tc-a1b2c3d4e5f6\").",
+    };
+  }
+  const entry = toolCallCache.getByRef(ref);
+  if (!entry) {
+    return {
+      success: false,
+      error: `No cached result for ref '${ref}'. Cached refs are visible in the session manifest. They expire when the session ends.`,
+    };
+  }
+  return {
+    success: true,
+    data: {
+      ref: entry.ref,
+      tool: entry.toolName,
+      params: entry.params,
+      called_at: new Date(entry.calledAt).toISOString(),
+      result: entry.result,
+    },
+  };
 }
 
 async function handleDiscoverTools(
@@ -9174,6 +9205,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "work_items.complete": handleWorkItemsComplete,
 
   "tools.discover": handleDiscoverTools,
+  "tools.fetch_cached": handleToolsFetchCached,
 
   "codex.run": handleCodexRun,
   "todo.create_list": handleTodoCreateList,
@@ -9252,6 +9284,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
 
 const SYSTEM_TOOLS = new Set([
   "tools.discover",
+  "tools.fetch_cached",
   "system.approve_action",
   "system.reject_action",
   "system.list_approvals",
@@ -9310,7 +9343,7 @@ const SANITIZED_TOOL_NAME_MAP = new Map(
   ]),
 );
 
-function resolveToolName(toolName: string): string {
+export function resolveToolName(toolName: string): string {
   if (TOOL_HANDLERS[toolName]) return toolName;
   return SANITIZED_TOOL_NAME_MAP.get(toolName) ?? toolName;
 }

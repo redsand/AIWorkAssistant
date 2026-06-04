@@ -10,6 +10,7 @@ import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import type { ChatMessage } from "../agent/opencode-client";
 import { aiClient } from "../agent/opencode-client";
+import { toolCallCache } from "./tool-cache";
 
 export interface Message {
   role: "system" | "user" | "assistant" | "tool";
@@ -405,6 +406,7 @@ export class ConversationManager {
     // Remove from active sessions
     this.sessions.delete(sessionId);
     this.removeActiveSession(sessionId);
+    toolCallCache.clear(sessionId);
 
     console.log(
       `[MemoryManager] Ended session ${sessionId}, saved to long-term memory`,
@@ -414,6 +416,7 @@ export class ConversationManager {
   deleteSession(sessionId: string): void {
     this.sessions.delete(sessionId);
     this.removeActiveSession(sessionId);
+    toolCallCache.clear(sessionId);
     console.log(`[MemoryManager] Deleted session ${sessionId}`);
   }
 

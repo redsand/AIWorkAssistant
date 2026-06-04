@@ -139,10 +139,23 @@ describe("Agent Runs Tool Registry", () => {
     expect(names).not.toContain("jira.list_assigned");
   });
 
-  it("keeps the full Tenable set for non-report Tenable administration requests", () => {
+  it("always includes tools.discover and tools.fetch_cached in Tenable report requests", () => {
+    const tools = getToolsForRequest(
+      "productivity",
+      "Give me a monthly Tenable vulnerability report",
+    );
+    const names = tools.map((t) => t.name);
+
+    expect(names).toContain("tools.discover");
+    expect(names).toContain("tools.fetch_cached");
+  });
+
+  it("always includes tools.discover and tools.fetch_cached in non-report Tenable requests", () => {
     const tools = getToolsForRequest("productivity", "Create a Tenable scan policy");
     const names = tools.map((t) => t.name);
 
+    expect(names).toContain("tools.discover");
+    expect(names).toContain("tools.fetch_cached");
     expect(names).toContain("tenable.create_policy");
     expect(names).toContain("tenable.list_scans");
   });

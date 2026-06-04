@@ -16,7 +16,8 @@ import { todoManager } from "../agent/todo-manager";
 import { knowledgeStore } from "../agent/knowledge-store";
 import { knowledgeGraph } from "../agent/knowledge-graph";
 import { codebaseIndexer } from "../agent/codebase-indexer";
-import { dispatchToolCall } from "../agent/tool-dispatcher";
+import { dispatchToolCall, resolveToolName } from "../agent/tool-dispatcher";
+import { toolCallCache } from "../memory/tool-cache";
 import { AGENT_MODES } from "../config/constants";
 import type { Tool, ChatMessage } from "../agent/opencode-client";
 import { githubClient } from "../integrations/github/github-client";
@@ -334,7 +335,7 @@ function shouldIndexToolResult(toolName: string, result: unknown): boolean {
   return true;
 }
 
-function ingestToolResult(toolName: string, result: unknown, sessionId: string | undefined): void {
+function ingestToolResult(toolName: string, result: unknown, sessionId: string | null | undefined): void {
   if (!shouldIndexToolResult(toolName, result)) return;
   const obj = result as Record<string, unknown>;
   const data = obj.data as Record<string, unknown> | undefined;
@@ -357,6 +358,88 @@ function stringifyToolResultForContext(result: unknown): string {
   const maxChars = 25_000;
   if (content.length <= maxChars) return content;
   return `${content.substring(0, maxChars)}\n...[tool result truncated for chat context: ${content.length - maxChars} chars omitted]`;
+}
+
+/**
+ * Dispatch a tool call through the in-session cache (Layers 1 + 4).
+ * - If the (canonical_tool_name, params) hash is already in cache, return the
+ *   prior result without executing.
+ * - Otherwise execute, store the result in the cache (large results stay full
+ *   in the cache; only a summary+ref goes into chat context).
+ * - The returned `contextValue` is what should be put into the assistant
+ *   conversation messages; it may be a compacted ref-pointer for large results.
+ */
+async function dispatchToolCallCached(
+  sessionId: string | null | undefined,
+  toolName: string,
+  params: Record<string, unknown>,
+  userId: string,
+  skipPolicyCheck: boolean,
+  ctx: { messages: ChatMessage[]; mode: string },
+  toolCallId: string,
+): Promise<{ result: any; contextValue: any; cached: boolean }> {
+  const canonical = resolveToolName(toolName);
+
+  if (sessionId) {
+    const hit = toolCallCache.get(sessionId, canonical, params);
+    if (hit) {
+      const wrapped = toolCallCache.wrapCachedAsResult(hit);
+      return { result: wrapped, contextValue: wrapped, cached: true };
+    }
+  }
+
+  const result = await dispatchToolCall(
+    toolName,
+    params,
+    userId,
+    skipPolicyCheck,
+    ctx,
+  );
+
+  let contextValue: unknown = result;
+  if (sessionId && toolCallCache.isCacheable(canonical) && result && (result as any).success !== false) {
+    const entry = toolCallCache.set(sessionId, canonical, params, result, toolCallId);
+    contextValue = toolCallCache.compactForContext(entry);
+    if (contextValue !== result) {
+      contextValue = {
+        success: true,
+        _cached_ref: entry.ref,
+        _cached_size: entry.resultSize,
+        _cached_summary: entry.resultSummary,
+        _instructions:
+          `Result too large (${entry.resultSize} bytes) to inline. ` +
+          `Call tools.fetch_cached({ref:"${entry.ref}"}) to retrieve full data.`,
+      };
+    }
+  }
+
+  return { result, contextValue, cached: false };
+}
+
+/**
+ * Inject (or refresh) the tool-call manifest as a system message in the
+ * outgoing message list (Layer 2). The manifest describes every cached tool
+ * call this session — surviving conversation pruning because we re-inject it
+ * on every model call.
+ *
+ * Marker: the first 60 chars of the manifest text are recognized so we can
+ * strip any prior manifest before adding the fresh one.
+ */
+const MANIFEST_MARKER = "=== TOOL CALLS ALREADY EXECUTED THIS SESSION ===";
+function injectManifest(messages: ChatMessage[], sessionId: string | null | undefined): ChatMessage[] {
+  if (!sessionId) return messages;
+  const manifest = toolCallCache.buildManifest(sessionId);
+  const stripped = messages.filter(
+    (m) => !(m.role === "system" && typeof m.content === "string" && m.content.startsWith(MANIFEST_MARKER)),
+  );
+  if (!manifest) return stripped;
+  const firstNonSystemIdx = stripped.findIndex((m) => m.role !== "system");
+  const insertAt = firstNonSystemIdx === -1 ? stripped.length : firstNonSystemIdx;
+  return [
+    ...stripped.slice(0, insertAt),
+    { role: "system", content: manifest },
+    ...stripped.slice(insertAt),
+  ];
 }
 
 function buildSessionRecovery(sessionId: string) {
@@ -508,6 +591,7 @@ async function runChatJob(
     assertJobActive(job);
     try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
+    messages = injectManifest(messages, sessionId);
     let { content, toolCalls } = await streamChatIteration(
       sessionId, job, messages, expandedTools.length > 0 ? expandedTools : tools, model,
     );
@@ -533,7 +617,7 @@ async function runChatJob(
         toolCalls: toolCalls.map((tc) => {
           let parsedArgs: any = {};
           try { parsedArgs = JSON.parse(tc.function.arguments); } catch { parsedArgs = { raw: tc.function.arguments }; }
-          return { id: tc.id, name: tc.function.name, params: parsedArgs };
+          return { id: tc.id, name: resolveToolName(tc.function.name), params: parsedArgs };
         }),
       });
 
@@ -549,20 +633,23 @@ async function runChatJob(
 
       for (const tc of regularCalls) {
         assertJobActive(job);
-        emitJobEvent(sessionId, "tool_start", { id: tc.id, name: tc.name, params: tc.params });
-        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_call", toolName: tc.name, sanitizedParams: sanitizeValue(tc.params), stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+        const canonicalName = resolveToolName(tc.name);
+        emitJobEvent(sessionId, "tool_start", { id: tc.id, name: canonicalName, params: tc.params });
+        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_call", toolName: canonicalName, sanitizedParams: sanitizeValue(tc.params), stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
         const toolStart = Date.now();
         const dispatchParams = { ...tc.params, _mode: mode, _loadedTools: getLoadedToolNames() };
-        const result = await dispatchToolCall(tc.name, dispatchParams, userId, false, { messages, mode });
+        const { result, contextValue, cached } = await dispatchToolCallCached(
+          sessionId, tc.name, dispatchParams, userId, false, { messages, mode }, tc.id,
+        );
         assertJobActive(job);
         const toolDuration = Date.now() - toolStart;
-        allToolResults[tc.id] = compactToolResultForContext(result);
-        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: tc.name, success: result.success !== false, errorMessage: result.error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
-        emitJobEvent(sessionId, "tool_result", { id: tc.id, result });
-        ingestToolResult(tc.name, result, sessionId);
-        if (tc.name.startsWith("todo.")) emitJobEvent(sessionId, "todo_changed", { action: tc.name });
+        allToolResults[tc.id] = cached ? contextValue : compactToolResultForContext(contextValue);
+        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: canonicalName, success: (result as any).success !== false, errorMessage: (result as any).error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+        emitJobEvent(sessionId, "tool_result", { id: tc.id, result: cached ? contextValue : result });
+        ingestToolResult(canonicalName, result, sessionId);
+        if (canonicalName.startsWith("todo.")) emitJobEvent(sessionId, "todo_changed", { action: canonicalName });
 
-        if (tc.name === "tools.discover" && result.success) {
+        if (canonicalName === "tools.discover" && (result as any).success) {
           const singleCategory = tc.params.category as string | undefined;
           const categoriesArray = tc.params.categories as string[] | string | undefined;
           const requested: string[] = categoriesArray
@@ -584,8 +671,8 @@ async function runChatJob(
 
         conversationManager.addMessage(sessionId, {
           role: "tool",
-          content: stringifyToolResultForContext(result),
-          name: tc.name,
+          content: stringifyToolResultForContext(contextValue),
+          name: canonicalName,
           tool_call_id: tc.id,
         });
       }
@@ -617,11 +704,12 @@ async function runChatJob(
         ...parsedToolCalls.map((tc) => ({
           role: "tool" as const,
           content: stringifyToolResultForContext(allToolResults[tc.id]),
-          name: tc.name,
+          name: resolveToolName(tc.name),
           tool_call_id: tc.id,
         })),
       ];
       messages = aiClient.pruneMessages(messages, expandedTools.length > 0 ? expandedTools : tools || undefined) as ChatMessage[];
+      messages = injectManifest(messages, sessionId);
 
       assertJobActive(job);
       try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
@@ -835,6 +923,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       const originalUserQuery = body.message;
       let stepOrder = 0;
       try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+      messages = injectManifest(messages, sessionId);
       let response = await aiClient.chat({
         messages: messages,
         tools,
@@ -885,7 +974,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
               }
               return {
                 id: tc.id,
-                name: tc.function.name,
+                name: resolveToolName(tc.function.name),
                 params: parsedArgs,
               };
             }),
@@ -905,25 +994,28 @@ export async function chatRoutes(fastify: FastifyInstance) {
         allToolCalls = allToolCalls.concat(toolCalls);
 
         for (const tc of toolCalls) {
-          try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_call", toolName: tc.name, sanitizedParams: sanitizeValue(tc.params), stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+          const canonicalName = resolveToolName(tc.name);
+          try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_call", toolName: canonicalName, sanitizedParams: sanitizeValue(tc.params), stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
           const toolStart = Date.now();
           const dispatchParams = { ...tc.params, _mode: body.mode, _loadedTools: getLoadedToolNames() };
-          const result = await dispatchToolCall(
+          const { result, contextValue, cached } = await dispatchToolCallCached(
+            sessionId,
             tc.name,
             dispatchParams,
             body.userId,
             false,
             { messages: messages || [], mode: body.mode },
+            tc.id,
           );
           const toolDuration = Date.now() - toolStart;
-          const contextResult = compactToolResultForContext(result);
+          const contextResult = cached ? contextValue : compactToolResultForContext(contextValue);
           allToolResults[tc.id] = contextResult;
 
-          try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: tc.name, success: result.success !== false, errorMessage: result.error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+          try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: canonicalName, success: (result as any).success !== false, errorMessage: (result as any).error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
-          ingestToolResult(tc.name, result, body.sessionId);
+          ingestToolResult(canonicalName, result, body.sessionId);
 
-          if (tc.name === "tools.discover" && result.success) {
+          if (canonicalName === "tools.discover" && (result as any).success) {
             const singleCategory = tc.params.category as string | undefined;
             const categoriesArray = tc.params.categories as string[] | string | undefined;
             const requested: string[] = categoriesArray
@@ -946,8 +1038,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
           if (sessionId) {
             conversationManager.addMessage(sessionId, {
               role: "tool",
-              content: stringifyToolResultForContext(result),
-              name: tc.name,
+              content: stringifyToolResultForContext(contextValue),
+              name: canonicalName,
               tool_call_id: tc.id,
             });
           }
@@ -963,7 +1055,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           ...toolCalls.map((tc) => ({
             role: "tool" as const,
             content: stringifyToolResultForContext(allToolResults[tc.id]),
-            name: tc.name,
+            name: resolveToolName(tc.name),
             tool_call_id: tc.id,
           })),
         ];
@@ -971,6 +1063,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         const currentTools =
           expandedTools.length > 0 ? expandedTools : tools || undefined;
         messages = aiClient.pruneMessages(messages, currentTools) as ChatMessage[];
+        messages = injectManifest(messages, sessionId);
 
         // Use preserved original query (pruning may remove user messages)
         try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }

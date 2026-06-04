@@ -218,6 +218,20 @@ const envSchema = z.object({
   CLAIMKIT_QUERY_SEED_LIMIT: z.coerce.number().default(5),
   CLAIMKIT_QUERY_TIMEOUT_MS: z.coerce.number().default(30000),
   CLAIMKIT_LLM_MODEL: z.string().default(""),
+  // If true, server.listen() is preceded by `await claimKitAdapter.initialize()`
+  // and a hard process.exit(1) on failure. If false, init runs in the background
+  // and failures are logged but non-fatal (existing 60s retry backoff applies).
+  CLAIMKIT_REQUIRE_INIT: z
+    .string()
+    .transform((s) => s === "true")
+    .default("true"),
+  // If true, knowledge/codebase/graph ingestion runs synchronously before
+  // server.listen(), so the store is fully populated on first request.
+  // If false, ingestion is fire-and-forget after listen.
+  CLAIMKIT_BLOCK_ON_INGESTION: z
+    .string()
+    .transform((s) => s === "true")
+    .default("true"),
 
   // Nightly calendar planning
   NIGHTLY_PLAN_ENABLED: z

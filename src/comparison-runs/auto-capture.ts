@@ -2,6 +2,15 @@ import { comparisonRunDatabase, ComparisonRunDatabase } from "./database";
 import type { SaveComparisonInput, ComparisonEvalCategory } from "./types";
 import type { ComparisonRunResult } from "../eval/comparison/reportTypes";
 
+export function classifyQuery(query: string): ComparisonEvalCategory {
+  const lower = query.toLowerCase();
+  if (lower.includes("code") || lower.includes("file") || lower.includes("function") || lower.includes("class")) return "code_retrieval";
+  if (lower.includes("who") || lower.includes("person") || lower.includes("owner") || lower.includes("author")) return "entity_linking";
+  if (lower.includes("when") || lower.includes("date") || lower.includes("last") || lower.includes("recent") || lower.includes("latest")) return "staleness";
+  if (lower.includes("cite") || lower.includes("source") || lower.includes("reference") || lower.includes("citation")) return "citation_laundering";
+  return "direct_fact";
+}
+
 /**
  * Convert a batch ComparisonRunResult to the DB save format.
  */

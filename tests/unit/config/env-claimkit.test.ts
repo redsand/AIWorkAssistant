@@ -15,6 +15,8 @@ const CLAIMKIT_KEYS = [
   "CLAIMKIT_MAX_EVIDENCE_ITEMS",
   "CLAIMKIT_QUERY_SEED_LIMIT",
   "CLAIMKIT_QUERY_TIMEOUT_MS",
+  "CLAIMKIT_REQUIRE_INIT",
+  "CLAIMKIT_BLOCK_ON_INGESTION",
 ];
 
 describe("ClaimKit environment variables", () => {
@@ -89,6 +91,16 @@ describe("ClaimKit environment variables", () => {
     it("should default CLAIMKIT_QUERY_TIMEOUT_MS to 30000", () => {
       const env = loadEnv();
       expect(env.CLAIMKIT_QUERY_TIMEOUT_MS).toBe(30000);
+    });
+
+    it("should default CLAIMKIT_REQUIRE_INIT to true (strict mode)", () => {
+      const env = loadEnv();
+      expect(env.CLAIMKIT_REQUIRE_INIT).toBe(true);
+    });
+
+    it("should default CLAIMKIT_BLOCK_ON_INGESTION to true (strict mode)", () => {
+      const env = loadEnv();
+      expect(env.CLAIMKIT_BLOCK_ON_INGESTION).toBe(true);
     });
   });
 
@@ -169,6 +181,30 @@ describe("ClaimKit environment variables", () => {
       process.env.CLAIMKIT_ENABLED = "0";
       const env = loadEnv();
       expect(env.CLAIMKIT_ENABLED).toBe(false);
+    });
+
+    it("should parse CLAIMKIT_REQUIRE_INIT=false (lenient mode)", () => {
+      process.env.CLAIMKIT_REQUIRE_INIT = "false";
+      const env = loadEnv();
+      expect(env.CLAIMKIT_REQUIRE_INIT).toBe(false);
+    });
+
+    it("should parse CLAIMKIT_REQUIRE_INIT=true (explicit)", () => {
+      process.env.CLAIMKIT_REQUIRE_INIT = "true";
+      const env = loadEnv();
+      expect(env.CLAIMKIT_REQUIRE_INIT).toBe(true);
+    });
+
+    it("should parse CLAIMKIT_BLOCK_ON_INGESTION=false (lenient mode)", () => {
+      process.env.CLAIMKIT_BLOCK_ON_INGESTION = "false";
+      const env = loadEnv();
+      expect(env.CLAIMKIT_BLOCK_ON_INGESTION).toBe(false);
+    });
+
+    it("should parse CLAIMKIT_BLOCK_ON_INGESTION=true (explicit)", () => {
+      process.env.CLAIMKIT_BLOCK_ON_INGESTION = "true";
+      const env = loadEnv();
+      expect(env.CLAIMKIT_BLOCK_ON_INGESTION).toBe(true);
     });
   });
 });

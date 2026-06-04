@@ -233,6 +233,114 @@ async function start() {
       }
     });
 
+    // Start codebase indexing async — needed by ClaimKit codebase ingestion.
+    // RAG search degrades gracefully (returns empty) until indexing completes,
+    // so this is safe to leave fire-and-forget regardless of ClaimKit settings.
+    const codebaseIndexPromise = env.RAG_INDEX_ON_STARTUP
+      ? codebaseIndexer
+        .indexCodebase()
+        .then((result) => {
+          console.log(
+            `[RAG] Codebase indexed: ${result.totalFiles} files, ${result.totalChunks} chunks (${result.embedded ? "embeddings" : "TF-IDF"}) in ${result.duration}ms`,
+          );
+          if (result.errors.length > 0) {
+            console.warn(
+              `[RAG] ${result.errors.length} indexing errors:`,
+              result.errors.slice(0, 5),
+            );
+          }
+          return result;
+        })
+        .catch((err) => {
+          void errorLog.log({
+            source: "rag",
+            category: "indexing_failed",
+            message: err instanceof Error ? err.message : "RAG indexing failed",
+            error: err,
+          });
+          console.error("[RAG] Indexing failed:", err);
+          return null;
+        })
+      : Promise.resolve(null);
+
+    // ─── ClaimKit init: block server.listen() until init resolves ───
+    // CLAIMKIT_REQUIRE_INIT=true (default) → process.exit(1) on failure
+    // CLAIMKIT_REQUIRE_INIT=false → log warning, continue with CK disabled (60s retry backoff)
+    let ckInitialized = false;
+    if (env.CLAIMKIT_ENABLED) {
+      console.log("[ClaimKit] Initializing (blocking startup)…");
+      try {
+        ckInitialized = await claimKitAdapter.initialize();
+        if (ckInitialized) {
+          console.log(
+            `[ClaimKit] Initialized — provider: ${env.CLAIMKIT_LLM_PROVIDER}, topK: ${env.CLAIMKIT_TOP_K}, minScore: ${env.CLAIMKIT_MIN_SCORE}`,
+          );
+        } else {
+          const errMsg = claimKitAdapter.getInitError() || "unknown error";
+          console.error(`[ClaimKit] Init failed: ${errMsg}`);
+          if (env.CLAIMKIT_REQUIRE_INIT) {
+            console.error(
+              "[ClaimKit] FATAL — CLAIMKIT_REQUIRE_INIT=true. Refusing to start the server.\n" +
+              "          Set CLAIMKIT_REQUIRE_INIT=false in .env to start in degraded (RAG-only) mode.",
+            );
+            process.exit(1);
+          }
+          console.warn(
+            "[ClaimKit] Continuing without ClaimKit (CLAIMKIT_REQUIRE_INIT=false). " +
+            "Auto-retry every 60s on next request.",
+          );
+        }
+      } catch (err) {
+        void errorLog.log({
+          source: "claimkit",
+          category: "startup_failed",
+          message: err instanceof Error ? err.message : "ClaimKit startup error",
+          error: err,
+        });
+        console.error("[ClaimKit] Startup error:", err);
+        if (env.CLAIMKIT_REQUIRE_INIT) {
+          console.error("[ClaimKit] FATAL — CLAIMKIT_REQUIRE_INIT=true. Refusing to start the server.");
+          process.exit(1);
+        }
+      }
+    }
+
+    // ─── ClaimKit ingestion: optionally block server.listen() ───
+    // CLAIMKIT_BLOCK_ON_INGESTION=true (default) → await full ingestion before listen
+    // CLAIMKIT_BLOCK_ON_INGESTION=false → fire-and-forget after listen (set below)
+    if (ckInitialized && env.CLAIMKIT_BLOCK_ON_INGESTION) {
+      console.log("[ClaimKit] Waiting for codebase index before ingesting…");
+      await codebaseIndexPromise;
+      console.log("[ClaimKit] Ingesting stores (blocking)…");
+      try {
+        const [knowledge, codebase, graph] = await Promise.all([
+          ingestKnowledgeStore(),
+          ingestCodebaseStore(),
+          ingestGraphStore(),
+        ]);
+        console.log(
+          `[ClaimKit] Ingestion complete — ` +
+          `knowledge: ${knowledge.ingested}/${knowledge.total} | ` +
+          `codebase: ${codebase.ingested}/${codebase.total} | ` +
+          `graph: ${graph.ingested}/${graph.total}` +
+          (knowledge.errors + codebase.errors + graph.errors > 0
+            ? ` | errors: ${knowledge.errors + codebase.errors + graph.errors}`
+            : ""),
+        );
+      } catch (err) {
+        void errorLog.log({
+          source: "claimkit",
+          category: "ingestion_failed",
+          message: err instanceof Error ? err.message : "ClaimKit ingestion error",
+          error: err,
+        });
+        console.error(
+          "[ClaimKit] Ingestion failed (continuing — seed-on-query will recover):",
+          err,
+        );
+      }
+    }
+
     // On Windows, tsx watch restarts can hit EADDRINUSE for a brief window
     // while the OS releases the previous child's TCP socket. Retry a few
     // times before giving up so tsx watch restarts succeed reliably.
@@ -248,6 +356,39 @@ async function start() {
           throw err;
         }
       }
+    }
+
+    // Background ingestion path: only used when CLAIMKIT_BLOCK_ON_INGESTION=false.
+    // Fire-and-forget so the server is responsive while the store fills up.
+    if (ckInitialized && !env.CLAIMKIT_BLOCK_ON_INGESTION) {
+      void (async () => {
+        await codebaseIndexPromise;
+        console.log("[ClaimKit] Ingesting stores (background)…");
+        try {
+          const [knowledge, codebase, graph] = await Promise.all([
+            ingestKnowledgeStore(),
+            ingestCodebaseStore(),
+            ingestGraphStore(),
+          ]);
+          console.log(
+            `[ClaimKit] Ingestion complete — ` +
+            `knowledge: ${knowledge.ingested}/${knowledge.total} | ` +
+            `codebase: ${codebase.ingested}/${codebase.total} | ` +
+            `graph: ${graph.ingested}/${graph.total}` +
+            (knowledge.errors + codebase.errors + graph.errors > 0
+              ? ` | errors: ${knowledge.errors + codebase.errors + graph.errors}`
+              : ""),
+          );
+        } catch (err) {
+          void errorLog.log({
+            source: "claimkit",
+            category: "ingestion_failed",
+            message: err instanceof Error ? err.message : "ClaimKit ingestion error",
+            error: err,
+          });
+          console.error("[ClaimKit] Background ingestion failed:", err);
+        }
+      })();
     }
 
     // Mark stale agent runs as failed on startup (crashed/restarted mid-run)
@@ -402,71 +543,7 @@ async function start() {
       process.exit(0);
     });
 
-    const codebaseIndexPromise = env.RAG_INDEX_ON_STARTUP
-      ? codebaseIndexer
-        .indexCodebase()
-        .then((result) => {
-          console.log(
-            `[RAG] Codebase indexed: ${result.totalFiles} files, ${result.totalChunks} chunks (${result.embedded ? "embeddings" : "TF-IDF"}) in ${result.duration}ms`,
-          );
-          if (result.errors.length > 0) {
-            console.warn(
-              `[RAG] ${result.errors.length} indexing errors:`,
-              result.errors.slice(0, 5),
-            );
-          }
-          return result;
-        })
-        .catch((err) => {
-          void errorLog.log({
-            source: "rag",
-            category: "indexing_failed",
-            message: err instanceof Error ? err.message : "RAG indexing failed",
-            error: err,
-          });
-          console.error("[RAG] Indexing failed:", err);
-          return null;
-        })
-      : Promise.resolve(null);
-
-    if (env.CLAIMKIT_ENABLED) {
-      claimKitAdapter
-        .initialize()
-        .then(async (available) => {
-          if (!available) {
-            console.warn(`[ClaimKit] Failed to initialize: ${claimKitAdapter.getInitError()}`);
-            return;
-          }
-          console.log(
-            `[ClaimKit] Initialized (provider: ${env.CLAIMKIT_LLM_PROVIDER}, topK: ${env.CLAIMKIT_TOP_K}, minScore: ${env.CLAIMKIT_MIN_SCORE})`,
-          );
-          await codebaseIndexPromise;
-          console.log("[ClaimKit] Ingesting stores...");
-          const [knowledge, codebase, graph] = await Promise.all([
-            ingestKnowledgeStore(),
-            ingestCodebaseStore(),
-            ingestGraphStore(),
-          ]);
-          console.log(
-            `[ClaimKit] Ingestion complete — ` +
-            `knowledge: ${knowledge.ingested}/${knowledge.total} | ` +
-            `codebase: ${codebase.ingested}/${codebase.total} | ` +
-            `graph: ${graph.ingested}/${graph.total}` +
-            (knowledge.errors + codebase.errors + graph.errors > 0
-              ? ` | errors: ${knowledge.errors + codebase.errors + graph.errors}`
-              : ""),
-          );
-        })
-        .catch((err) => {
-          void errorLog.log({
-            source: "claimkit",
-            category: "startup_failed",
-            message: err instanceof Error ? err.message : "ClaimKit startup error",
-            error: err,
-          });
-          console.error("[ClaimKit] Startup error:", err);
-        });
-    }
+    // (RAG indexing + ClaimKit init/ingestion moved above server.listen())
 
     const tunnelUrl = await startTunnel();
     startCalendarScheduler();

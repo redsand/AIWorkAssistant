@@ -119,9 +119,22 @@ describe("assembleContextPacket - ClaimKit integration", () => {
     assembleContextPacket = mod.assembleContextPacket;
   });
 
-  it("should call claimKitAdapter.initialize() during assembly", async () => {
+  it("should call claimKitAdapter.initialize() during assembly when not yet available", async () => {
+    mockClaimKitAdapter.isAvailable.mockReturnValue(false);
     await assembleContextPacket(baseParams);
     expect(mockClaimKitAdapter.initialize).toHaveBeenCalledOnce();
+  });
+
+  it("should skip claimKitAdapter.initialize() when isAvailable() returns true (fast path)", async () => {
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    await assembleContextPacket(baseParams);
+    expect(mockClaimKitAdapter.initialize).not.toHaveBeenCalled();
+  });
+
+  it("should still call query() when taking the isAvailable fast path", async () => {
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    await assembleContextPacket(baseParams);
+    expect(mockClaimKitAdapter.query).toHaveBeenCalledWith(baseParams.query);
   });
 
   it("should call claimKitAdapter.query() when ClaimKit is available", async () => {

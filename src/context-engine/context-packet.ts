@@ -166,14 +166,13 @@ export async function assembleContextPacket(
     : null;
   const skillsTokens = skillsSection?.tokens ?? 0;
 
-  const claimKitAvailable = await timeStage(
-    "claimkitInitializeMs",
-    () => withTimeout(
-      claimKitAdapter.initialize(),
-      5000,
-      false,
-    ),
-  );
+  // Fast path: server startup already initialized ClaimKit — skip the async probe.
+  // Only run the async init when the startup init hasn't landed yet (first request race)
+  // or when CLAIMKIT_ENABLED but init was never attempted (e.g. tests).
+  const claimKitAvailable = claimKitAdapter.isAvailable()
+    || (env.CLAIMKIT_ENABLED
+      ? await timeStage("claimkitInitializeMs", () => withTimeout(claimKitAdapter.initialize(), 5000, false))
+      : false);
   if (!claimKitAvailable && env.CLAIMKIT_ENABLED && claimKitAdapter.getInitError()) {
     console.warn(`[ClaimKit] Skipped — ${claimKitAdapter.getInitError()}`);
   }
