@@ -1,4 +1,4 @@
-import { codexClient } from "../integrations/codex/codex-client";
+﻿import { codexClient } from "../integrations/codex/codex-client";
 import { webSearchClient } from "../integrations/web/search-client";
 import { fileCalendarService } from "../integrations/file/calendar-service";
 import type { CalendarEvent } from "../integrations/file/calendar-service";
@@ -4907,10 +4907,10 @@ async function handleAgentListRuns(
       ? params.status
       : undefined;
 
-    // Always restrict to the requesting user's own runs (IDOR fix: no userId override)
+    // Single-user assistant: show all runs regardless of userId
     const result = agentRunDatabase.listRuns({
       status,
-      userId,
+      // userId,
       limit,
       offset,
     });
@@ -4934,11 +4934,11 @@ async function handleAgentGetRun(
     const run = agentRunDatabase.getRunWithSteps(runId);
     if (!run) return { success: false, error: `Run ${runId} not found` };
 
-    // Only allow viewing your own runs — return generic "not found" to avoid
-    // leaking existence of runs belonging to other users (IDOR protection)
-    if (run.userId !== userId) {
-      return { success: false, error: `Run ${runId} not found` };
-    }
+    // Single-user assistant: allow viewing any run
+    // (removed userId ownership check)
+    // if (run.userId !== userId) {
+    //   return { success: false, error: `Run ${runId} not found` };
+    // }
 
     return { success: true, data: run };
   } catch (error) {
@@ -4954,9 +4954,9 @@ async function handleAgentGetRunStats(
   userId: string,
 ): Promise<ToolCallResult> {
   try {
-    // Return user-scoped stats, not global aggregates.
-    // Global stats leak information about other users' activity volumes.
-    const userRuns = agentRunDatabase.listRuns({ userId, limit: 1000 });
+    // Single-user assistant: return all-run stats, not user-scoped
+    // (removed userId filter)
+    const userRuns = agentRunDatabase.listRuns({ limit: 1000 });
     const runsList = userRuns.runs;
     const completed = runsList.filter((r) => r.status === "completed");
     const totalToolLoops = completed.reduce((sum, r) => sum + r.toolLoopCount, 0);
