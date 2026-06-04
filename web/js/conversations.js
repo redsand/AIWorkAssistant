@@ -63,7 +63,7 @@ export async function loadConversations() {
         })
         .join("");
 
-      if (!currentSessionId && data.sessions.length > 0) {
+      if (!currentSessionId && !activeStreamController && data.sessions.length > 0) {
         // Prefer URL hash session ID, then localStorage
         const hashId = readSessionHash();
         const storedId = hashId || localStorage.getItem("currentSessionId");

@@ -50,7 +50,8 @@ async function handleStreamResponse(response, progressElRef, onError) {
   let accumulatedContent = "";
 
   function ensureProgressEl() {
-    if (!progressElRef.progressEl) {
+    // Re-create if null or detached from DOM (cleanup from a prior subscribeLive can remove it)
+    if (!progressElRef.progressEl || !document.body.contains(progressElRef.progressEl)) {
       const result = createToolProgress();
       progressElRef.progressEl = result.progressEl;
       document.getElementById("chatMessages").appendChild(result.progressEl);
@@ -140,7 +141,7 @@ async function handleStreamResponse(response, progressElRef, onError) {
           if (eventType === "done") {
             // Finalize streaming: do a full markdown render of accumulated content
             finalizeStreamingMessage(streamingMessageId);
-            return { error: false, roadmapTouched, contentCount };
+            return { error: false, roadmapTouched, contentCount, done: true };
           }
           if (eventType === "error" && data.message) {
             finalizeStreamingMessage(streamingMessageId);
@@ -173,6 +174,7 @@ async function handleStreamResponse(response, progressElRef, onError) {
           setCurrentStreamingMessageId(null);
           return { error: true, roadmapTouched };
         }
+        if (result.done) break;
       }
       break;
     }
@@ -182,6 +184,8 @@ async function handleStreamResponse(response, progressElRef, onError) {
       setCurrentStreamingMessageId(null);
       return { error: true, roadmapTouched };
     }
+    // Exit as soon as the server signals done — don't wait for HTTP close
+    if (result.done) break;
   }
 
   setCurrentStreamingMessageId(null);
