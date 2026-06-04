@@ -30,6 +30,7 @@ import { agentMemory } from "../memory/agent-memory";
 import { soulManager } from "../memory/soul-manager";
 import { skillManager } from "../skills/skill-manager";
 import { reflectionEngine } from "../agent/reflection-engine";
+import { conversationManager } from "../memory/conversation-manager";
 
 export interface RoutingDecision {
   tier: RoutingTier;
@@ -280,6 +281,28 @@ export async function assembleContextPacket(
     };
   }
 
+  // Session search — find past conversations relevant to current query
+  const MAX_SESSION_SEARCH_TOKENS = 400;
+  let sessionSearchSection: ContextSection | null = null;
+  try {
+    const sessionResults = conversationManager.searchSessions(query, 3);
+    if (sessionResults.length > 0) {
+      const lines = sessionResults.map((r) => {
+        const topics = r.keyTopics.length > 0 ? ` | topics: ${r.keyTopics.join(", ")}` : "";
+        return `- [${r.title}]${topics}\n  ${r.summary.substring(0, 200)}`;
+      });
+      const content = `=== PAST SESSIONS ===\n${lines.join("\n")}`;
+      const tokens = estimateTokens(content);
+      sessionSearchSection = {
+        name: "recent_sessions",
+        content: tokens > MAX_SESSION_SEARCH_TOKENS
+          ? content.substring(0, MAX_SESSION_SEARCH_TOKENS * 4)
+          : content,
+        tokens: Math.min(tokens, MAX_SESSION_SEARCH_TOKENS),
+      };
+    }
+  } catch {}
+
   const healthText = await buildHealthStatus();
   const healthSection: ContextSection | null = healthText
     ? { name: "health", content: healthText, tokens: estimateTokens(healthText) }
@@ -313,6 +336,10 @@ export async function assembleContextPacket(
 
   if (claimKitSection) {
     sections.push(claimKitSection);
+  }
+
+  if (sessionSearchSection) {
+    sections.push(sessionSearchSection);
   }
 
   if (healthSection) {
@@ -397,6 +424,11 @@ export async function assembleContextPacket(
       role: "system",
       content: `=== KNOWLEDGE GRAPH ===\n${graphEnforced.content}`,
     });
+  }
+
+  const sessionsEnforced = enforced.find((s) => s.name === "recent_sessions");
+  if (sessionsEnforced?.content.trim()) {
+    messages.push({ role: "system", content: sessionsEnforced.content });
   }
 
   const healthEnforced = enforced.find((s) => s.name === "health");
