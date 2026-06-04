@@ -64,3 +64,5 @@ generated-audio/
 musicgen-service/__pycache__/
 musicgen-service/venv/
 
+
+*.rdb
