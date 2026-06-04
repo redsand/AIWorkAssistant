@@ -59,6 +59,8 @@ import { createSoulManageHandler } from "./handlers/soul-manage";
 import { createSessionSearchHandler } from "./handlers/session-search";
 import { conversationManager } from "../memory/conversation-manager";
 import { reflectionEngine } from "./reflection-engine";
+import { subagentSpawner } from "./subagent-spawner";
+import type { SubagentResult } from "./subagent-spawner";
 import { cronEngine } from "../scheduler/cron-engine";
 import type { EntityType, FindEntitiesQuery } from "../memory/entity-types";
 import { lspManager } from "../integrations/lsp/index.js";
@@ -4830,40 +4832,64 @@ async function handleKnowledgeRecent(
 async function handleAgentSpawn(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
-  const task = params.task as string;
-  if (!task) return { success: false, error: "task is required" };
+  const prompt = (params.prompt as string) || (params.task as string);
+  if (!prompt) return { success: false, error: "prompt is required" };
 
   if (!aiClient.isConfigured()) {
     return { success: false, error: "AI provider not configured" };
   }
 
-  const systemPrompt =
-    (params.systemPrompt as string) ||
-    "You are a focused sub-agent. Complete the assigned task and return the result. Be concise and thorough.";
+  // Parse optional params
+  const skills = params.skills
+    ? String(params.skills).split(",").map((s) => s.trim()).filter(Boolean)
+    : undefined;
 
-  try {
-    const response = await aiClient.chat({
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: task },
-      ],
-      temperature: 0.7,
-    });
+  const timeoutSeconds = typeof params.timeout === "number" ? params.timeout : undefined;
+  const timeout = timeoutSeconds ? timeoutSeconds * 1000 : undefined;
 
-    return {
-      success: true,
-      data: {
-        content: response.content,
-        usage: response.usage,
-        model: response.model,
-      },
-    };
-  } catch (error) {
-    return {
-      success: false,
-      error: `Sub-agent failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-    };
+  const inheritMemory = params.inherit_memory !== false;
+
+  const result: SubagentResult = await subagentSpawner.spawn({
+    prompt,
+    skills,
+    timeout,
+    inheritMemory,
+  });
+
+  // If the subagent succeeded, trigger reflection on the result
+  if (result.success && result.toolCallsUsed >= 3) {
+    try {
+      const reflection = await reflectionEngine.reflectOnTask(
+        [{ role: "user", content: prompt }, { role: "assistant", content: result.output }],
+        [],
+        result.output,
+      );
+      await reflectionEngine.saveReflection(reflection);
+    } catch {
+      // Reflection failure is non-fatal — the spawn result is still valid
+    }
+
+    // Write any memory updates from the result
+    if (result.memoryUpdates && result.memoryUpdates.length > 0) {
+      for (const update of result.memoryUpdates) {
+        try {
+          agentMemory.add("memory", `subagent_${Date.now()}`, update);
+        } catch {
+          // Memory write failure is non-fatal
+        }
+      }
+    }
   }
+
+  return {
+    success: result.success,
+    data: {
+      output: result.output,
+      toolCallsUsed: result.toolCallsUsed,
+      duration: result.duration,
+    },
+    error: result.error,
+  };
 }
 
 async function handleAgentListRuns(
@@ -9286,6 +9312,8 @@ export interface DispatchContext {
   messages?: import("../agent/providers/types").ChatMessage[];
   /** Agent mode (productivity, engineering) */
   mode?: string;
+  /** When true, the dispatch is happening inside a subagent session */
+  isSubagent?: boolean;
 }
 
 const userToolCounters = new Map<string, number>();
@@ -9323,6 +9351,15 @@ export async function dispatchToolCall(
 ): Promise<ToolCallResult> {
   const resolvedToolName = resolveToolName(toolName);
   const handler = TOOL_HANDLERS[resolvedToolName];
+
+  // Block spawn and cron from subagent sessions (no recursion)
+  if (context?.isSubagent && (resolvedToolName === "agent.spawn" || resolvedToolName === "cron.manage")) {
+    return {
+      success: false,
+      error: `Tool '${resolvedToolName}' is blocked in subagent sessions. Subagents cannot spawn further subagents or schedule cron jobs.`,
+    };
+  }
+
   if (!handler) {
     const mode = (params._mode as string) || "productivity";
     const prefix = toolName.includes(".") ? toolName.split(".")[0] : null;

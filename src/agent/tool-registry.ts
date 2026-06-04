@@ -2460,18 +2460,30 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "agent.spawn",
     description:
-      "Spawn a sub-agent to execute a focused task in parallel. The sub-agent runs independently and returns its result. Use for parallel execution of independent subtasks (e.g., research one topic while creating a ticket for another). The main agent can spawn multiple sub-agents and collect results.",
+      "Spawn a sub-agent to execute a focused task in parallel. The sub-agent runs in an isolated session with its own context window, inherits MEMORY.md and SOUL.md from the parent, and can use all tools except spawn and cron (no recursion). Use for parallel execution of independent subtasks (e.g., research one topic while creating a ticket for another). Multiple sub-agents can run in parallel.",
     params: {
-      task: {
+      prompt: {
         type: "string",
         description:
           "Clear, self-contained task description for the sub-agent. Include all context needed since the sub-agent starts fresh.",
         required: true,
       },
-      systemPrompt: {
+      skills: {
         type: "string",
         description:
-          'Optional custom system prompt for the sub-agent. Use to specialize: "You are a researcher...", "You are a Jira expert..."',
+          "Comma-separated skill names to load for the sub-agent (e.g., 'research,jira-expert')",
+        required: false,
+      },
+      timeout: {
+        type: "number",
+        description:
+          "Maximum runtime in seconds. Default 600 (10 minutes).",
+        required: false,
+      },
+      inherit_memory: {
+        type: "boolean",
+        description:
+          "Whether the subagent inherits the parent's MEMORY.md, USER.md, and SOUL.md. Default true.",
         required: false,
       },
     },
