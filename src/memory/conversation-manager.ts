@@ -3,6 +3,7 @@
  * Handles conversation history, auto-compaction, and long-term memory storage
  */
 
+import Database from "better-sqlite3";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -37,6 +38,15 @@ export interface ConversationSession {
   };
 }
 
+export interface SessionSearchResult {
+  sessionId: string;
+  title: string;
+  summary: string;
+  keyTopics: string[];
+  relevanceScore: number;
+  createdAt: string;
+}
+
 export interface MemorySummary {
   id: string;
   userId: string;
@@ -54,6 +64,7 @@ export interface MemorySummary {
 export class ConversationManager {
   private sessions: Map<string, ConversationSession> = new Map();
   private memoryBasePath: string;
+  private db: Database.Database | null = null;
 
   // Configuration thresholds — compact early to keep context lean
   private readonly MAX_MESSAGES_BEFORE_COMPACT = 40;
@@ -98,9 +109,31 @@ export class ConversationManager {
       }
     });
 
+    this.initFTS5();
     this.rehydrateSessions();
 
     console.log("[MemoryManager] Storage initialized");
+  }
+
+  private initFTS5() {
+    try {
+      const dbPath = path.join(this.memoryBasePath, "sessions.db");
+      this.db = new Database(dbPath);
+      this.db.pragma("journal_mode = WAL");
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
+          sessionId,
+          userId,
+          title,
+          summary,
+          keyTopics,
+          content
+        );
+      `);
+    } catch (err) {
+      console.warn("[MemoryManager] FTS5 unavailable, search will use text fallback:", err);
+      this.db = null;
+    }
   }
 
   private rehydrateSessions() {
@@ -366,6 +399,9 @@ export class ConversationManager {
     // Save summary to long-term storage
     await this.saveLongTermSummary(session, summary);
 
+    // Index into FTS5 for cross-session search
+    this.indexSessionFTS(session, summary);
+
     // Remove from active sessions
     this.sessions.delete(sessionId);
     this.removeActiveSession(sessionId);
@@ -379,6 +415,135 @@ export class ConversationManager {
     this.sessions.delete(sessionId);
     this.removeActiveSession(sessionId);
     console.log(`[MemoryManager] Deleted session ${sessionId}`);
+  }
+
+  /**
+   * Index a completed session into FTS5 for cross-session search
+   */
+  private indexSessionFTS(
+    session: ConversationSession,
+    summary: MemorySummary,
+  ): void {
+    if (!this.db) return;
+
+    try {
+      const content = session.messages
+        .map((m) => m.content)
+        .join(" ")
+        .substring(0, 5000);
+
+      this.db.prepare(`
+        INSERT INTO sessions_fts (sessionId, userId, title, summary, keyTopics, content)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        session.id,
+        session.userId,
+        session.metadata.title || "",
+        summary.summary,
+        summary.keyTopics.join(", "),
+        content,
+      );
+    } catch (err) {
+      console.warn("[MemoryManager] Failed to index session in FTS5:", err);
+    }
+  }
+
+  /**
+   * Search across all sessions using FTS5 with BM25 ranking.
+   * Falls back to text search if FTS5 is unavailable.
+   */
+  searchSessions(query: string, limit = 5): SessionSearchResult[] {
+    if (!query.trim()) return [];
+
+    if (this.db) {
+      try {
+        const rows = this.db.prepare(`
+          SELECT
+            sessionId,
+            title,
+            summary,
+            keyTopics,
+            bm25(sessions_fts) as score
+          FROM sessions_fts
+          WHERE sessions_fts MATCH ?
+          ORDER BY score
+          LIMIT ?
+        `).all(query, limit) as Array<{
+          sessionId: string;
+          title: string;
+          summary: string;
+          keyTopics: string;
+          score: number;
+        }>;
+
+        if (rows.length > 0) {
+          return rows.map((row) => ({
+            sessionId: row.sessionId,
+            title: row.title,
+            summary: row.summary.substring(0, 500),
+            keyTopics: row.keyTopics
+              ? row.keyTopics.split(", ").filter(Boolean)
+              : [],
+            relevanceScore: -row.score,
+            createdAt: "",
+          }));
+        }
+      } catch (err) {
+        console.warn("[MemoryManager] FTS5 search failed, using fallback:", err);
+      }
+    }
+
+    return this.searchSessionsFallback(query, limit);
+  }
+
+  private searchSessionsFallback(
+    query: string,
+    limit: number,
+  ): SessionSearchResult[] {
+    const results: SessionSearchResult[] = [];
+    const summariesDir = path.join(this.memoryBasePath, "summaries");
+
+    if (!fs.existsSync(summariesDir)) return results;
+
+    const queryLower = query.toLowerCase();
+
+    const scanDir = (dir: string) => {
+      if (results.length >= limit) return;
+      const entries = fs.readdirSync(dir);
+      for (const entry of entries) {
+        if (results.length >= limit) break;
+        const full = path.join(dir, entry);
+        const stat = fs.statSync(full);
+        if (stat.isDirectory()) {
+          scanDir(full);
+          continue;
+        }
+        if (!entry.endsWith(".md")) continue;
+        try {
+          const content = fs.readFileSync(full, "utf-8");
+          const textLower = content.toLowerCase();
+          if (!textLower.includes(queryLower)) continue;
+          const parsed = this.parseMarkdownSummary(content);
+          let score = 0;
+          const words = queryLower.split(/\s+/);
+          for (const w of words) {
+            if (w.length > 2 && textLower.includes(w)) score += 1;
+          }
+          results.push({
+            sessionId: parsed.sessionId,
+            title: parsed.title,
+            summary: parsed.summary.substring(0, 500),
+            keyTopics: parsed.keyTopics,
+            relevanceScore: score,
+            createdAt: parsed.createdAt?.toISOString() ?? "",
+          });
+        } catch {}
+      }
+    };
+
+    scanDir(summariesDir);
+    results.sort((a, b) => b.relevanceScore - a.relevanceScore);
+    return results;
   }
 
   /**
@@ -1268,6 +1433,17 @@ ${summary.keyTopics.map((topic) => `- ${topic}`).join("\n")}
         content: m.content,
         timestamp: m.timestamp.toISOString(),
       }));
+  }
+
+  /** Close the SQLite database connection. Call during test cleanup. */
+  close(): void {
+    if (this.db) {
+      try {
+        this.db.pragma("wal_checkpoint(TRUNCATE)");
+        this.db.close();
+      } catch {}
+      this.db = null;
+    }
   }
 }
 
