@@ -66,6 +66,7 @@ import { reflectionEngine } from "./reflection-engine";
 import { subagentSpawner } from "./subagent-spawner";
 import type { SubagentResult } from "./subagent-spawner";
 import { cronEngine } from "../scheduler/cron-engine";
+import { gatewayEngine } from "../integrations/gateway/gateway-engine";
 import type { EntityType, FindEntitiesQuery } from "../memory/entity-types";
 import { lspManager } from "../integrations/lsp/index.js";
 import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
@@ -5474,6 +5475,53 @@ async function handleGraphSummary(): Promise<ToolCallResult> {
   return { success: true, data: knowledgeGraph.getGraphSummary() };
 }
 
+// ── Gateway Handlers ──────────────────────────────────────────────
+
+async function handleGatewayDeliver(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  const platform = params.platform as string;
+  const targetUserId = params.user_id as string;
+  const message = params.message as string;
+  const silent = params.silent as boolean | undefined;
+
+  if (!platform) return { success: false, error: "platform is required (telegram, discord, slack, whatsapp)" };
+  if (!targetUserId) return { success: false, error: "user_id is required" };
+  if (!message) return { success: false, error: "message is required" };
+
+  const validPlatforms = ["telegram", "discord", "slack", "whatsapp"];
+  if (!validPlatforms.includes(platform)) {
+    return { success: false, error: `Invalid platform '${platform}'. Valid: ${validPlatforms.join(", ")}` };
+  }
+
+  try {
+    const result = await gatewayEngine.send(platform, targetUserId, message, { silent });
+    if (result.suppressed) {
+      return {
+        success: true,
+        data: result,
+        message: `Message suppressed (contained [SILENT]) for ${platform}:${targetUserId}`,
+      };
+    }
+    if (!result.success) {
+      return {
+        success: false,
+        error: `Failed to deliver message to ${platform}:${targetUserId}`,
+        data: result,
+      };
+    }
+    return {
+      success: true,
+      data: result,
+      message: `Message delivered to ${platform}:${targetUserId} (id: ${result.messageId})`,
+    };
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    return { success: false, error: `Gateway delivery failed: ${errMsg}` };
+  }
+}
+
 async function handleWorkflowCreate(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -9387,6 +9435,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "skill.manage": handleSkillManage,
   "soul.manage": handleSoulManage,
   "cron.manage": handleCronManage,
+  "gateway.deliver": handleGatewayDeliver,
 
   "workflow.create": handleWorkflowCreate,
   "workflow.advance": handleWorkflowAdvance,

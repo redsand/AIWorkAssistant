@@ -156,6 +156,16 @@ const envSchema = z.object({
   SIGNAL_DATA_PATH: z.string().default("~/.config/Signal"),
   SIGNAL_WEBHOOK_PORT: z.string().transform(Number).default("3001"),
 
+  // Messaging Gateway
+  GATEWAY_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
+  GATEWAY_DATA_PATH: z.string().default("data/gateway"),
+  TELEGRAM_BOT_TOKEN: z.string().default(""),
+  SLACK_BOT_TOKEN: z.string().default(""),
+  SLACK_APP_TOKEN: z.string().default(""),
+
   // Calendar tunnel
   TUNNEL_ENABLED: z
     .string()
