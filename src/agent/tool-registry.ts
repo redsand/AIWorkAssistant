@@ -8354,6 +8354,7 @@ export function getTools(mode: string): Tool[] {
       return [
         ...AGENT_RUN_TOOLS,
         ...CRON_TOOLS,
+        ...GATEWAY_TOOLS,
         ...APPROVAL_TOOLS,
         ...CORE_PRODUCTIVITY_TOOLS,
         DISCOVER_TOOL_META,
@@ -8364,6 +8365,7 @@ export function getTools(mode: string): Tool[] {
         ...AGENT_RUN_TOOLS,
         ...ENGINEERING_TOOLS,
         ...CRON_TOOLS,
+        ...GATEWAY_TOOLS,
         ...APPROVAL_TOOLS,
         ...CORE_PRODUCTIVITY_TOOLS,
         DISCOVER_TOOL_META,
@@ -8372,6 +8374,7 @@ export function getTools(mode: string): Tool[] {
     case AGENT_MODES.MUSICIAN:
       return [
         ...AGENT_RUN_TOOLS,
+        ...GATEWAY_TOOLS,
         ...MUSICIAN_TOOLS,
         DISCOVER_TOOL_META,
         FETCH_CACHED_TOOL_META,
