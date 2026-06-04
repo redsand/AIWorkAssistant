@@ -14,6 +14,7 @@ class EmbeddingService {
   private model: string;
   private fallbackBaseUrl: string;
   private fallbackApiKey: string;
+  private fallbackModel: string;
   private ollamaFallbackModel: string;
   private available: boolean | null = null;
   private lastCheck = 0;
@@ -37,7 +38,9 @@ class EmbeddingService {
         this.provider = env.AI_PROVIDER;
       }
     } else {
-      this.provider = env.AI_PROVIDER;
+      // Default to local Ollama for embeddings — avoids cloud API dependency
+      // and keeps ClaimKit working offline. Cloud providers are fallback only.
+      this.provider = "ollama";
     }
     this.model = embedModel || env.RAG_EMBEDDING_MODEL || "";
 
@@ -45,9 +48,11 @@ class EmbeddingService {
     if (env.OPENAI_API_KEY) {
       this.fallbackBaseUrl = env.OPENAI_API_URL;
       this.fallbackApiKey = env.OPENAI_API_KEY;
+      this.fallbackModel = "text-embedding-3-small";
     } else {
       this.fallbackBaseUrl = env.OPENCODE_API_URL;
       this.fallbackApiKey = env.OPENCODE_API_KEY;
+      this.fallbackModel = "text-embedding-3-small";
     }
 
     // Local Ollama is the last-resort fallback — it's always reachable and any
@@ -155,14 +160,15 @@ class EmbeddingService {
         this.available = await this.checkOpenAICompatible(
           this.fallbackBaseUrl,
           this.fallbackApiKey,
+          this.fallbackModel,
         );
         if (this.available) {
           console.log(
-            `[Embedding] Primary provider ${this.provider} unavailable — using OpenAI-compatible fallback`,
+            `[Embedding] Primary provider ${this.provider} unavailable — using OpenAI-compatible fallback (${this.fallbackModel})`,
           );
-          // Override for the actual embed calls
           this.baseUrl = this.fallbackBaseUrl;
           this.apiKey = this.fallbackApiKey;
+          this.model = this.fallbackModel;
           this.provider = "opencode";
         }
       } catch {
@@ -400,15 +406,16 @@ class EmbeddingService {
     }
   }
 
-  private async checkOpenAICompatible(baseUrl?: string, apiKey?: string): Promise<boolean> {
+  private async checkOpenAICompatible(baseUrl?: string, apiKey?: string, model?: string): Promise<boolean> {
     const url = baseUrl || this.baseUrl;
     const key = apiKey || this.apiKey;
+    const embedModel = model || this.model;
     if (!key) return false;
 
     try {
       const response = await axios.post(
         `${url}/embeddings`,
-        { model: this.model, input: "test" },
+        { model: embedModel, input: "test" },
         {
           headers: {
             "Content-Type": "application/json",

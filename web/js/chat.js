@@ -373,7 +373,10 @@ async function loadChatHistory() {
     const data = await response.json();
     if (!data.messages || data.messages.length === 0) return;
 
-    if (activeStreamController) return;
+    if (activeStreamController) {
+      activeStreamController.abort();
+      setActiveStreamController(null);
+    }
 
     const chatMessages = document.getElementById("chatMessages");
     chatMessages.innerHTML = "";
@@ -497,6 +500,7 @@ async function executeSend(message, { resend = false } = {}) {
     });
 
     if (response.status === 401 || response.status === 403) {
+      setActiveStreamController(null);
       showTyping(false);
       finalizeToolProgress();
       document.getElementById("processingIndicator")?.classList.remove("active");
@@ -505,6 +509,7 @@ async function executeSend(message, { resend = false } = {}) {
     }
 
     if (!response.ok) {
+      setActiveStreamController(null);
       showTyping(false);
       finalizeToolProgress();
       document.getElementById("processingIndicator")?.classList.remove("active");
@@ -539,6 +544,7 @@ async function executeSend(message, { resend = false } = {}) {
     const { subscribeLive } = await import("./live.js");
     if (currentSessionId) subscribeLive(currentSessionId);
   } catch (error) {
+    setActiveStreamController(null);
     finalizeToolProgress();
     const processingIndicator = document.getElementById("processingIndicator");
     if (processingIndicator) processingIndicator.classList.remove("active");
