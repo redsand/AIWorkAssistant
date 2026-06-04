@@ -59,6 +59,7 @@ import { createSoulManageHandler } from "./handlers/soul-manage";
 import { createSessionSearchHandler } from "./handlers/session-search";
 import { conversationManager } from "../memory/conversation-manager";
 import { reflectionEngine } from "./reflection-engine";
+import { cronEngine } from "../scheduler/cron-engine";
 import type { EntityType, FindEntitiesQuery } from "../memory/entity-types";
 import { lspManager } from "../integrations/lsp/index.js";
 import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
@@ -2307,6 +2308,111 @@ async function handleMemoryAddEntityFact(
 const handleMemoryManage = createMemoryManageHandler(agentMemory);
 const handleSkillManage = createSkillManageHandler(skillManager);
 const handleSoulManage = createSoulManageHandler(soulManager);
+
+async function handleCronManage(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const action = params.action as string;
+  if (!action || typeof action !== "string") {
+    return { success: false, error: "action is required (create, list, edit, delete, status)" };
+  }
+
+  switch (action) {
+    case "create": {
+      const schedule = params.schedule as string;
+      const prompt = params.prompt as string;
+      if (!schedule) return { success: false, error: "schedule is required for create" };
+      if (!prompt) return { success: false, error: "prompt is required for create" };
+
+      try {
+        const job = cronEngine.createJob(schedule, prompt, {
+          name: params.name as string | undefined,
+          deliver: params.deliver as string | undefined,
+        });
+        return {
+          success: true,
+          data: {
+            id: job.id,
+            name: job.name,
+            schedule: job.schedule,
+            enabled: job.enabled,
+            createdAt: job.createdAt,
+          },
+          message: `Created cron job "${job.name}" (${job.id}) with schedule: ${schedule}`,
+        };
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : "Failed to create cron job",
+        };
+      }
+    }
+
+    case "list": {
+      const jobs = cronEngine.listJobs();
+      return {
+        success: true,
+        data: jobs.map((j) => ({
+          id: j.id,
+          name: j.name,
+          schedule: j.schedule.original,
+          enabled: j.enabled,
+          lastRunAt: j.lastRunAt,
+          lastResult: j.lastResult,
+          runCount: j.runCount,
+        })),
+      };
+    }
+
+    case "edit": {
+      const jobId = params.job_id as string;
+      if (!jobId) return { success: false, error: "job_id is required for edit" };
+
+      const updates: Record<string, unknown> = {};
+      if (params.schedule !== undefined) updates.schedule = params.schedule;
+      if (params.prompt !== undefined) updates.prompt = params.prompt;
+      if (params.name !== undefined) updates.name = params.name;
+      if (params.deliver !== undefined) updates.deliver = params.deliver;
+      if (params.enabled !== undefined) updates.enabled = params.enabled;
+
+      try {
+        const updated = cronEngine.editJob(jobId, updates);
+        if (!updated) return { success: false, error: `Job ${jobId} not found` };
+        return {
+          success: true,
+          data: {
+            id: updated.id,
+            name: updated.name,
+            schedule: updated.schedule,
+            enabled: updated.enabled,
+          },
+          message: `Updated cron job ${jobId}`,
+        };
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : "Failed to edit cron job",
+        };
+      }
+    }
+
+    case "delete": {
+      const jobId = params.job_id as string;
+      if (!jobId) return { success: false, error: "job_id is required for delete" };
+      const deleted = cronEngine.deleteJob(jobId);
+      if (!deleted) return { success: false, error: `Job ${jobId} not found` };
+      return { success: true, message: `Deleted cron job ${jobId}` };
+    }
+
+    case "status": {
+      const status = cronEngine.getStatus();
+      return { success: true, data: status };
+    }
+
+    default:
+      return { success: false, error: `Unknown action: ${action}. Use create, list, edit, delete, or status.` };
+  }
+}
 
 async function handleCtoDailyCommandCenter(
   params: Record<string, unknown>,
@@ -9062,6 +9168,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "memory.manage": handleMemoryManage,
   "skill.manage": handleSkillManage,
   "soul.manage": handleSoulManage,
+  "cron.manage": handleCronManage,
 
   "workflow.create": handleWorkflowCreate,
   "workflow.advance": handleWorkflowAdvance,
@@ -9121,6 +9228,7 @@ const SYSTEM_TOOLS = new Set([
   "agent.get_aicoder_status",
   "memory.manage",
   "skill.manage",
+  "cron.manage",
   "engineering.workflow_brief",
   "engineering.architecture_proposal",
   "engineering.scaffolding_plan",
