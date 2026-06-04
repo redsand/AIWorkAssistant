@@ -45,6 +45,16 @@ export class WhatsAppAdapter implements PlatformAdapter {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    // Resolve any waiting consumers to unblock hanging promises
+    while (this.waitingConsumers.length > 0) {
+      this.waitingConsumers.shift()!({
+        platform: this.platform,
+        userId: "",
+        channelId: "",
+        content: "",
+        timestamp: new Date().toISOString(),
+      });
+    }
     this.connected = false;
   }
 

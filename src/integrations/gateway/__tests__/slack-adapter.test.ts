@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { SlackAdapter } from "../slack-adapter";
+import type { IncomingMessage } from "../platform-adapter";
 
 describe("SlackAdapter", () => {
   let adapter: SlackAdapter;
@@ -34,6 +35,21 @@ describe("SlackAdapter", () => {
       await adapter.stop();
       expect(adapter.isConnected()).toBe(false);
     });
+
+    it("resolves waiting consumers on stop", async () => {
+      const messages: IncomingMessage[] = [];
+      const consumer = (async () => {
+        for await (const msg of adapter.receive()) {
+          messages.push(msg);
+          break;
+        }
+      })();
+
+      await adapter.stop();
+      await consumer;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].content).toBe("");
+    });
   });
 
   describe("start", () => {
@@ -47,6 +63,31 @@ describe("SlackAdapter", () => {
       const noToken = new SlackAdapter({ botToken: "xoxb-test", appToken: "" });
       await noToken.start();
       expect(noToken.isConnected()).toBe(false);
+    });
+
+    it("skips when both tokens are missing", async () => {
+      const noToken = new SlackAdapter({ botToken: "", appToken: "" });
+      await noToken.start();
+      expect(noToken.isConnected()).toBe(false);
+    });
+  });
+
+  describe("receive", () => {
+    it("yields queued messages", async () => {
+      // Use a started adapter with injectMessage pattern
+      // Since Slack doesn't have injectMessage, we test the queue behavior
+      // by verifying the receive generator works with stop
+      const messages: IncomingMessage[] = [];
+      const consumer = (async () => {
+        for await (const msg of adapter.receive()) {
+          messages.push(msg);
+        }
+      })();
+
+      // Stop immediately to unblock
+      await adapter.stop();
+      await consumer;
+      expect(messages).toHaveLength(1); // sentinel from stop
     });
   });
 });

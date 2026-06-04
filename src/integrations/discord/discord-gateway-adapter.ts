@@ -12,10 +12,45 @@ export interface DiscordGatewayConfig {
   allowedUserId?: string;
 }
 
+interface DiscordUser {
+  id: string;
+  bot?: boolean;
+  username?: string;
+  createDM(): Promise<DiscordDMChannel>;
+}
+
+interface DiscordDMChannel {
+  send(text: string): Promise<{ id: string }>;
+}
+
+interface DiscordChannel {
+  isDMBased?(): boolean;
+  isTextBased?(): boolean;
+  send(text: string): Promise<{ id: string }>;
+}
+
+interface DiscordMessage {
+  author?: DiscordUser;
+  channel?: DiscordChannel;
+  channelId: string;
+  content?: string;
+  createdTimestamp: number;
+  mentions?: { has?(user: { id: string }): boolean };
+}
+
+interface DiscordClient {
+  user?: { id: string };
+  users: { fetch(id: string): Promise<DiscordUser | null> };
+  channels: { fetch(id: string): Promise<DiscordChannel | null> };
+  on(event: "messageCreate", handler: (msg: DiscordMessage) => void): void;
+  login(token: string): Promise<string>;
+  destroy(): void;
+}
+
 export class DiscordGatewayAdapter implements PlatformAdapter {
   readonly platform = "discord";
   private config: DiscordGatewayConfig;
-  private client: any = null;
+  private client: DiscordClient | null = null;
   private connected = false;
   private messageQueue: IncomingMessage[] = [];
   private waitingConsumers: Array<(msg: IncomingMessage) => void> = [];
@@ -32,32 +67,33 @@ export class DiscordGatewayAdapter implements PlatformAdapter {
     }
 
     try {
-      const { Client, GatewayIntentBits, Partials } = await import("discord.js");
+      const discord = await import("discord.js");
 
-      this.client = new Client({
+      const client = new discord.Client({
         intents: [
-          GatewayIntentBits.Guilds,
-          GatewayIntentBits.GuildMessages,
-          GatewayIntentBits.MessageContent,
-          GatewayIntentBits.DirectMessages,
-          GatewayIntentBits.DirectMessageReactions,
+          discord.GatewayIntentBits.Guilds,
+          discord.GatewayIntentBits.GuildMessages,
+          discord.GatewayIntentBits.MessageContent,
+          discord.GatewayIntentBits.DirectMessages,
+          discord.GatewayIntentBits.DirectMessageReactions,
         ],
-        partials: [Partials.Channel, Partials.Message],
-      });
+        partials: [discord.Partials.Channel, discord.Partials.Message],
+      }) as DiscordClient;
+      this.client = client;
 
-      this.client.on("messageCreate", (message: any) => {
+      client.on("messageCreate", (message: DiscordMessage) => {
         if (message.author?.bot) return;
         if (this.config.allowedUserId && message.author?.id !== this.config.allowedUserId) return;
 
         const isDM = message.channel?.isDMBased?.();
-        const isMentioned = this.client.user && message.mentions?.has?.(this.client.user);
+        const isMentioned = client.user && message.mentions?.has?.(client.user);
         if (!isDM && !isMentioned) return;
 
         const incoming = this.toIncomingMessage(message);
         if (incoming) this.enqueue(incoming);
       });
 
-      await this.client.login(this.config.token);
+      await client.login(this.config.token);
       this.connected = true;
       console.log("[DiscordGateway] Adapter started");
     } catch (error) {
@@ -68,6 +104,16 @@ export class DiscordGatewayAdapter implements PlatformAdapter {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    // Resolve any waiting consumers to unblock hanging promises
+    while (this.waitingConsumers.length > 0) {
+      this.waitingConsumers.shift()!({
+        platform: this.platform,
+        userId: "",
+        channelId: "",
+        content: "",
+        timestamp: new Date().toISOString(),
+      });
+    }
     if (this.client) {
       this.client.destroy();
       this.client = null;
@@ -118,7 +164,7 @@ export class DiscordGatewayAdapter implements PlatformAdapter {
 
     try {
       const channel = await this.client.channels.fetch(channelId);
-      if (!channel || !channel.isTextBased()) {
+      if (!channel?.isTextBased?.()) {
         return { success: false, platform: this.platform, timestamp: now, suppressed: false };
       }
 
@@ -160,7 +206,7 @@ export class DiscordGatewayAdapter implements PlatformAdapter {
     }
   }
 
-  private toIncomingMessage(message: any): IncomingMessage | null {
+  private toIncomingMessage(message: DiscordMessage): IncomingMessage | null {
     if (!message.author) return null;
 
     const content = message.content

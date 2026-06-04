@@ -5481,18 +5481,51 @@ const gatewayRateLimits = new Map<string, number[]>();
 const GATEWAY_RATE_LIMIT_WINDOW_MS = 60_000;
 const GATEWAY_RATE_LIMIT_MAX = 20;
 
-function checkGatewayRateLimit(rateLimitKey: string): boolean {
+function pruneStaleRateLimitEntries(): void {
+  const now = Date.now();
+  const windowStart = now - GATEWAY_RATE_LIMIT_WINDOW_MS;
+  for (const [key, timestamps] of gatewayRateLimits) {
+    const filtered = timestamps.filter((t) => t > windowStart);
+    if (filtered.length === 0) {
+      gatewayRateLimits.delete(key);
+    } else {
+      gatewayRateLimits.set(key, filtered);
+    }
+  }
+}
+
+const RATE_LIMIT_PRUNE_INTERVAL = setInterval(pruneStaleRateLimitEntries, GATEWAY_RATE_LIMIT_WINDOW_MS);
+if (typeof RATE_LIMIT_PRUNE_INTERVAL !== "undefined" && RATE_LIMIT_PRUNE_INTERVAL.unref) {
+  RATE_LIMIT_PRUNE_INTERVAL.unref();
+}
+
+// Exported for testing only
+export function _resetGatewayRateLimits(): void {
+  gatewayRateLimits.clear();
+}
+
+export function _getGatewayRateLimits(): ReadonlyMap<string, number[]> {
+  return gatewayRateLimits;
+}
+
+function checkGatewayRateLimit(rateLimitKey: string): { allowed: boolean; currentCount: number } {
   const now = Date.now();
   const windowStart = now - GATEWAY_RATE_LIMIT_WINDOW_MS;
   let timestamps = gatewayRateLimits.get(rateLimitKey) || [];
   timestamps = timestamps.filter((t) => t > windowStart);
-  if (timestamps.length >= GATEWAY_RATE_LIMIT_MAX) {
+
+  if (timestamps.length === 0) {
+    gatewayRateLimits.delete(rateLimitKey);
+  } else {
     gatewayRateLimits.set(rateLimitKey, timestamps);
-    return false;
+  }
+
+  if (timestamps.length >= GATEWAY_RATE_LIMIT_MAX) {
+    return { allowed: false, currentCount: timestamps.length };
   }
   timestamps.push(now);
   gatewayRateLimits.set(rateLimitKey, timestamps);
-  return true;
+  return { allowed: true, currentCount: timestamps.length };
 }
 
 async function handleGatewayDeliver(
@@ -5514,7 +5547,9 @@ async function handleGatewayDeliver(
   }
 
   const rateLimitKey = `${platform}:${targetUserId}`;
-  if (!checkGatewayRateLimit(rateLimitKey)) {
+  const rateCheck = checkGatewayRateLimit(rateLimitKey);
+  if (!rateCheck.allowed) {
+    console.warn(`[Gateway] Rate limit exceeded for ${rateLimitKey} (${rateCheck.currentCount}/${GATEWAY_RATE_LIMIT_MAX})`);
     return { success: false, error: `Rate limit exceeded for ${platform}:${targetUserId}. Max ${GATEWAY_RATE_LIMIT_MAX} messages per minute.` };
   }
 
@@ -5526,6 +5561,7 @@ async function handleGatewayDeliver(
   try {
     const result = await gatewayEngine.send(platform, targetUserId, message, { silent });
     if (result.suppressed) {
+      console.log(`[Gateway] Message suppressed for ${platform}:${targetUserId}`);
       return {
         success: true,
         data: result,
@@ -5533,12 +5569,14 @@ async function handleGatewayDeliver(
       };
     }
     if (!result.success) {
+      console.error(`[Gateway] Delivery failed for ${platform}:${targetUserId}`);
       return {
         success: false,
         error: `Failed to deliver message to ${platform}:${targetUserId}`,
         data: result,
       };
     }
+    console.log(`[Gateway] Delivered to ${platform}:${targetUserId} (id: ${result.messageId})`);
     return {
       success: true,
       data: result,
@@ -5546,6 +5584,7 @@ async function handleGatewayDeliver(
     };
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
+    console.error(`[Gateway] Delivery exception for ${platform}:${targetUserId}:`, errMsg);
     return { success: false, error: `Gateway delivery failed: ${errMsg}` };
   }
 }

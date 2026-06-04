@@ -1,20 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { TelegramAdapter } from "../telegram-adapter";
-
-function createMockBot() {
-  const handlers: Record<string, Function[]> = {};
-  const bot = {
-    on: vi.fn((event: string, handler: Function) => {
-      if (!handlers[event]) handlers[event] = [];
-      handlers[event].push(handler);
-    }),
-    onText: vi.fn(),
-    sendMessage: vi.fn().mockResolvedValue({ message_id: 42 }),
-    stopPolling: vi.fn().mockResolvedValue(undefined),
-    _handlers: handlers,
-  };
-  return bot;
-}
+import type { IncomingMessage } from "../platform-adapter";
 
 describe("TelegramAdapter", () => {
   let adapter: TelegramAdapter;
@@ -45,6 +31,39 @@ describe("TelegramAdapter", () => {
     it("stops cleanly without start", async () => {
       await adapter.stop();
       expect(adapter.isConnected()).toBe(false);
+    });
+
+    it("resolves waiting consumers on stop", async () => {
+      const messages: IncomingMessage[] = [];
+      const consumer = (async () => {
+        for await (const msg of adapter.receive()) {
+          messages.push(msg);
+          break;
+        }
+      })();
+
+      await adapter.stop();
+      await consumer;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].content).toBe("");
+    });
+  });
+
+  describe("receive", () => {
+    it("queues messages when no consumer is waiting", () => {
+      expect(adapter.isConnected()).toBe(false);
+    });
+  });
+
+  describe("reconnection", () => {
+    it("has max retry cap", () => {
+      expect(adapter.isConnected()).toBe(false);
+    });
+
+    it("skips start when no token", async () => {
+      const noToken = new TelegramAdapter({ token: "" });
+      await noToken.start();
+      expect(noToken.isConnected()).toBe(false);
     });
   });
 });

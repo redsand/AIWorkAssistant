@@ -9,6 +9,27 @@ import type { PlatformAdapter, DeliveryOptions, DeliveryResult } from "./platfor
 
 const SILENT_MARKER = "[SILENT]";
 
+export function sanitizeMessage(message: string, platform: string): string {
+  let sanitized = message;
+
+  // Strip Discord-specific mention patterns
+  sanitized = sanitized.replace(/@everyone/gi, "@​everyone");
+  sanitized = sanitized.replace(/@here/gi, "@​here");
+  sanitized = sanitized.replace(/<@&\d+>/g, "[removed-role-mention]");
+  sanitized = sanitized.replace(/<#!?\d+>/g, "[removed-channel-mention]");
+
+  // Strip Telegram HTML injection for platforms using HTML parse mode
+  if (platform === "telegram") {
+    sanitized = sanitized.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "");
+    sanitized = sanitized.replace(/<iframe[^>]*>[\s\S]*?<\/iframe>/gi, "");
+    sanitized = sanitized.replace(/on\w+="[^"]*"/gi, "");
+    sanitized = sanitized.replace(/on\w+='[^']*'/gi, "");
+    sanitized = sanitized.replace(/javascript:/gi, "");
+  }
+
+  return sanitized;
+}
+
 const PLATFORM_MESSAGE_LIMITS: Record<string, number> = {
   telegram: 4096,
   discord: 2000,
@@ -178,7 +199,8 @@ export class GatewayEngine {
     }
 
     try {
-      const result = await adapter.send(userId, message, options);
+      const safeMessage = sanitizeMessage(message, platform);
+      const result = await adapter.send(userId, safeMessage, options);
       if (result.success) {
         this.recordMetric(platform, "sent");
       } else {
@@ -315,12 +337,12 @@ export async function initializeGateway(
   },
 ): Promise<void> {
   if (config.telegramToken) {
-    const { TelegramAdapter } = await import("./telegram-adapter");
+    const { TelegramAdapter } = await import("./telegram-adapter.js");
     engine.registerAdapter(new TelegramAdapter({ token: config.telegramToken }));
   }
 
   if (config.slackBotToken && config.slackAppToken) {
-    const { SlackAdapter } = await import("./slack-adapter");
+    const { SlackAdapter } = await import("./slack-adapter.js");
     engine.registerAdapter(new SlackAdapter({
       botToken: config.slackBotToken,
       appToken: config.slackAppToken,

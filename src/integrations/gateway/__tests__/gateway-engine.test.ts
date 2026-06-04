@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import path from "path";
 import os from "os";
 import fs from "fs/promises";
-import { GatewayEngine } from "../gateway-engine";
+import { GatewayEngine, sanitizeMessage } from "../gateway-engine";
 import type { PlatformAdapter, DeliveryResult } from "../platform-adapter";
 
 function makeAdapter(platform: string, overrides?: Partial<PlatformAdapter>): PlatformAdapter {
@@ -265,6 +265,76 @@ describe("GatewayEngine", () => {
       expect(entry.platform).toBe("telegram");
       expect(entry.userId).toBe("user-1");
       expect(entry.suppressed).toBe(false);
+    });
+  });
+
+  describe("message sanitization", () => {
+    it("strips @everyone mentions", () => {
+      const result = sanitizeMessage("Hello @everyone look at this", "discord");
+      expect(result).not.toContain("@everyone");
+    });
+
+    it("strips @here mentions", () => {
+      const result = sanitizeMessage("Alert @here!", "discord");
+      expect(result).not.toContain("@here");
+    });
+
+    it("strips Discord role mentions", () => {
+      const result = sanitizeMessage("Ping <@&123456789>", "discord");
+      expect(result).toContain("[removed-role-mention]");
+      expect(result).not.toContain("<@&");
+    });
+
+    it("strips Discord channel mentions", () => {
+      const result = sanitizeMessage("See <#123456789>", "discord");
+      expect(result).toContain("[removed-channel-mention]");
+    });
+
+    it("strips Telegram script tags", () => {
+      const result = sanitizeMessage('Hello <script>alert("xss")</script> world', "telegram");
+      expect(result).not.toContain("<script>");
+    });
+
+    it("strips Telegram iframe tags", () => {
+      const result = sanitizeMessage('<iframe src="evil.com"></iframe> hi', "telegram");
+      expect(result).not.toContain("<iframe");
+    });
+
+    it("strips on-event handlers", () => {
+      const result = sanitizeMessage('<img onerror="alert(1)" src=x>', "telegram");
+      expect(result).not.toContain("onerror=");
+    });
+
+    it("strips javascript: URLs", () => {
+      const result = sanitizeMessage('<a href="javascript:alert(1)">click</a>', "telegram");
+      expect(result).not.toContain("javascript:");
+    });
+
+    it("leaves normal markdown intact", () => {
+      const msg = "**bold** _italic_ [link](https://example.com)";
+      expect(sanitizeMessage(msg, "slack")).toBe(msg);
+    });
+
+    it("sanitizes are applied before adapter.send", async () => {
+      const sendFn = vi.fn<() => Promise<DeliveryResult>>().mockResolvedValue({
+        success: true,
+        messageId: "msg-1",
+        platform: "discord",
+        timestamp: new Date().toISOString(),
+        suppressed: false,
+      });
+      const adapter: PlatformAdapter = {
+        platform: "discord",
+        start: vi.fn().mockResolvedValue(undefined),
+        stop: vi.fn().mockResolvedValue(undefined),
+        isConnected: vi.fn().mockReturnValue(true),
+        send: sendFn,
+        receive: vi.fn(),
+      };
+      engine.registerAdapter(adapter);
+
+      await engine.send("discord", "user-1", "Alert @everyone!");
+      expect(sendFn).toHaveBeenCalledWith("user-1", expect.not.stringContaining("@everyone"), undefined);
     });
   });
 });
