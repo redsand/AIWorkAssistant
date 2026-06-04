@@ -55,6 +55,7 @@ import {
 import { startTunnel } from "./integrations/file/tunnel";
 import { startCalendarScheduler } from "./scheduler/calendar-midnight";
 import { startKanbanCleanupScheduler } from "./scheduler/kanban-worktree-cleanup";
+import { cronEngine } from "./scheduler/cron-engine";
 import { initializeMCP } from "./integrations/mcp";
 import { codebaseIndexer } from "./agent/codebase-indexer";
 import { providerSettings } from "./agent/provider-settings";
@@ -390,12 +391,14 @@ async function start() {
     initPushDispatcher();
     startPollingEngine();
 
-    process.on("SIGTERM", () => {
+    process.on("SIGTERM", async () => {
       stopPollingEngine();
+      await cronEngine.stop();
       process.exit(0);
     });
-    process.on("SIGINT", () => {
+    process.on("SIGINT", async () => {
       stopPollingEngine();
+      await cronEngine.stop();
       process.exit(0);
     });
 
@@ -468,6 +471,9 @@ async function start() {
     const tunnelUrl = await startTunnel();
     startCalendarScheduler();
     startKanbanCleanupScheduler();
+    if (env.CRON_ENABLED) {
+      cronEngine.start();
+    }
     if (tunnelUrl) {
       const webcalUrl = tunnelUrl.replace(/^https?/, "webcal");
       console.log("");

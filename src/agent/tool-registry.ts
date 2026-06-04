@@ -7462,6 +7462,60 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
 ];
 
 /**
+ * Cron tools — scheduled automation
+ */
+const CRON_TOOLS: Tool[] = [
+  {
+    name: "cron.manage",
+    description:
+      "Create, list, edit, delete, or inspect scheduled automation jobs. Supports natural language schedules like 'every 30m', 'every day at 9am', standard cron expressions, and one-shot timestamps.",
+    params: {
+      action: {
+        type: "string",
+        description:
+          "Action to perform: create, list, edit, delete, status",
+        required: true,
+      },
+      schedule: {
+        type: "string",
+        description:
+          'Schedule expression (for create/edit). Examples: "every 30m", "every day at 9am", "every monday at 9am", "0 9 * * 1" (cron), "2026-06-15T14:00" (one-shot)',
+        required: false,
+      },
+      prompt: {
+        type: "string",
+        description:
+          "The task the job should execute (for create/edit)",
+        required: false,
+      },
+      name: {
+        type: "string",
+        description: "Human-readable job name (optional, for create/edit)",
+        required: false,
+      },
+      deliver: {
+        type: "string",
+        description:
+          'Delivery target for results: "discord", "telegram", etc. (optional)',
+        required: false,
+      },
+      job_id: {
+        type: "string",
+        description: "Job ID (for edit/delete)",
+        required: false,
+      },
+      enabled: {
+        type: "boolean",
+        description: "Enable or disable the job (for edit)",
+        required: false,
+      },
+    },
+    actionType: "cron.manage",
+    riskLevel: "medium",
+  },
+];
+
+/**
  * Agent run tools — query and inspect agent run history
  */
 const AGENT_RUN_TOOLS: Tool[] = [
@@ -8188,6 +8242,7 @@ export function getTools(mode: string): Tool[] {
     case AGENT_MODES.PRODUCTIVITY:
       return [
         ...AGENT_RUN_TOOLS,
+        ...CRON_TOOLS,
         ...APPROVAL_TOOLS,
         ...CORE_PRODUCTIVITY_TOOLS,
         DISCOVER_TOOL_META,
@@ -8196,6 +8251,7 @@ export function getTools(mode: string): Tool[] {
       return [
         ...AGENT_RUN_TOOLS,
         ...ENGINEERING_TOOLS,
+        ...CRON_TOOLS,
         ...APPROVAL_TOOLS,
         ...CORE_PRODUCTIVITY_TOOLS,
         DISCOVER_TOOL_META,
@@ -8383,9 +8439,9 @@ IMPORTANT: You MUST use these tools to take actions. Do NOT say "I don't have ac
 export function getAllToolsForMode(mode: string): Tool[] {
   switch (mode) {
     case AGENT_MODES.PRODUCTIVITY:
-      return [...AGENT_RUN_TOOLS, ...PRODUCTIVITY_TOOLS];
+      return [...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...PRODUCTIVITY_TOOLS];
     case AGENT_MODES.ENGINEERING:
-      return [...AGENT_RUN_TOOLS, ...ENGINEERING_TOOLS, ...PRODUCTIVITY_TOOLS];
+      return [...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...ENGINEERING_TOOLS, ...PRODUCTIVITY_TOOLS];
     case AGENT_MODES.MUSICIAN:
       return [...AGENT_RUN_TOOLS, ...MUSICIAN_TOOLS];
     default:
