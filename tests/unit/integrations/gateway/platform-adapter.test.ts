@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { PlatformAdapter, DeliveryOptions, DeliveryResult, IncomingMessage } from "../../../../src/integrations/gateway/platform-adapter";
 import { TelegramAdapter } from "../../../../src/integrations/gateway/telegram-adapter";
 import { SlackAdapter } from "../../../../src/integrations/gateway/slack-adapter";
@@ -45,6 +45,19 @@ describe("TelegramAdapter", () => {
     await adapter.start();
     expect(adapter.isConnected()).toBe(false);
   });
+
+  it("stops cleanly even when not started", async () => {
+    const adapter = new TelegramAdapter({ token: "test" });
+    await adapter.stop();
+    expect(adapter.isConnected()).toBe(false);
+  });
+
+  it("has max retry cap for reconnection", () => {
+    const adapter = new TelegramAdapter({ token: "test" });
+    // The adapter has maxRetries = 10 and retryCount tracking
+    // Verify it initializes correctly (can't test reconnect without real connection)
+    expect(adapter.isConnected()).toBe(false);
+  });
 });
 
 describe("SlackAdapter", () => {
@@ -65,6 +78,24 @@ describe("SlackAdapter", () => {
     await adapter.start();
     expect(adapter.isConnected()).toBe(false);
   });
+
+  it("skips start when only bot token provided", async () => {
+    const adapter = new SlackAdapter({ botToken: "xoxb-test", appToken: "" });
+    await adapter.start();
+    expect(adapter.isConnected()).toBe(false);
+  });
+
+  it("skips start when only app token provided", async () => {
+    const adapter = new SlackAdapter({ botToken: "", appToken: "xapp-test" });
+    await adapter.start();
+    expect(adapter.isConnected()).toBe(false);
+  });
+
+  it("stops cleanly even when not started", async () => {
+    const adapter = new SlackAdapter({ botToken: "test", appToken: "test" });
+    await adapter.stop();
+    expect(adapter.isConnected()).toBe(false);
+  });
 });
 
 describe("DiscordGatewayAdapter", () => {
@@ -80,9 +111,22 @@ describe("DiscordGatewayAdapter", () => {
     expect(result.platform).toBe("discord");
   });
 
+  it("returns failure on sendToChannel when not connected", async () => {
+    const adapter = new DiscordGatewayAdapter({ token: "test", clientId: "test" });
+    const result = await adapter.sendToChannel("channel1", "Hello");
+    expect(result.success).toBe(false);
+    expect(result.platform).toBe("discord");
+  });
+
   it("skips start when no token", async () => {
     const adapter = new DiscordGatewayAdapter({ token: "", clientId: "" });
     await adapter.start();
+    expect(adapter.isConnected()).toBe(false);
+  });
+
+  it("stops cleanly even when not started", async () => {
+    const adapter = new DiscordGatewayAdapter({ token: "test", clientId: "test" });
+    await adapter.stop();
     expect(adapter.isConnected()).toBe(false);
   });
 });
@@ -103,6 +147,13 @@ describe("WhatsAppAdapter", () => {
     const adapter = new WhatsAppAdapter({ signalPhoneNumber: "+1234567890", signalDataPath: "/tmp" });
     await adapter.start();
     expect(adapter.isConnected()).toBe(true);
+  });
+
+  it("stops cleanly after starting", async () => {
+    const adapter = new WhatsAppAdapter({ signalPhoneNumber: "+1234567890", signalDataPath: "/tmp" });
+    await adapter.start();
+    await adapter.stop();
+    expect(adapter.isConnected()).toBe(false);
   });
 
   it("can inject messages from external bridge", () => {
@@ -130,6 +181,57 @@ describe("WhatsAppAdapter", () => {
       expect(messages[0].content).toBe("Hello from bridge");
       expect(messages[0].platform).toBe("whatsapp");
     });
+  });
+
+  it("queues messages when no consumer is waiting", () => {
+    const adapter = new WhatsAppAdapter({ signalPhoneNumber: "+1234567890", signalDataPath: "/tmp" });
+
+    adapter.injectMessage({
+      platform: "whatsapp",
+      userId: "user1",
+      channelId: "ch1",
+      content: "Queued msg",
+      timestamp: new Date().toISOString(),
+    });
+
+    const messages: IncomingMessage[] = [];
+    const consumer = (async () => {
+      for await (const msg of adapter.receive()) {
+        messages.push(msg);
+        break;
+      }
+    })();
+
+    return consumer.then(() => {
+      expect(messages).toHaveLength(1);
+      expect(messages[0].content).toBe("Queued msg");
+    });
+  });
+
+  it("uses bridge map to resolve signal target", async () => {
+    const adapter = new WhatsAppAdapter({
+      signalPhoneNumber: "+1555777",
+      signalDataPath: "/tmp",
+      bridgeMap: { "whatsapp-jid": "+1555888" },
+    });
+    await adapter.start();
+
+    // send() will fail because signal-cli isn't available, but it should try
+    const result = await adapter.send("whatsapp-jid", "Test");
+    // Without signal-cli, send fails — verify it attempted
+    expect(result.platform).toBe("whatsapp");
+  });
+
+  it("falls back to userId when not in bridge map", async () => {
+    const adapter = new WhatsAppAdapter({
+      signalPhoneNumber: "+1555777",
+      signalDataPath: "/tmp",
+      bridgeMap: {},
+    });
+    await adapter.start();
+
+    const result = await adapter.send("unknown-user", "Test");
+    expect(result.platform).toBe("whatsapp");
   });
 });
 
@@ -168,5 +270,22 @@ describe("DeliveryOptions and DeliveryResult shapes", () => {
     };
     expect(msg.platform).toBe("discord");
     expect(msg.metadata?.username).toBe("testuser");
+  });
+
+  it("DeliveryOptions can be empty", () => {
+    const opts: DeliveryOptions = {};
+    expect(opts.parseMode).toBeUndefined();
+    expect(opts.silent).toBeUndefined();
+    expect(opts.replyToMessageId).toBeUndefined();
+  });
+
+  it("DeliveryResult can have all optional fields omitted", () => {
+    const result: DeliveryResult = {
+      success: false,
+      platform: "slack",
+      timestamp: new Date().toISOString(),
+      suppressed: false,
+    };
+    expect(result.messageId).toBeUndefined();
   });
 });

@@ -5,6 +5,18 @@ import os from "os";
 import { GatewayEngine } from "../../../../src/integrations/gateway/gateway-engine";
 import type { PlatformAdapter, DeliveryResult, IncomingMessage } from "../../../../src/integrations/gateway/platform-adapter";
 
+function waitForFile(filepath: string, timeoutMs = 2000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const check = () => {
+      if (fs.existsSync(filepath)) return resolve();
+      if (Date.now() - start > timeoutMs) return reject(new Error(`Timeout waiting for ${filepath}`));
+      setTimeout(check, 10);
+    };
+    check();
+  });
+}
+
 function createMockAdapter(overrides?: Partial<PlatformAdapter>): PlatformAdapter {
   const sendMock = vi.fn<() => Promise<DeliveryResult>>().mockResolvedValue({
     success: true,
@@ -52,6 +64,22 @@ describe("GatewayEngine", () => {
     it("returns undefined for unknown adapter", () => {
       expect(engine.getAdapter("nonexistent")).toBeUndefined();
     });
+
+    it("lists multiple registered platforms", () => {
+      engine.registerAdapter(createMockAdapter({ platform: "telegram" }));
+      engine.registerAdapter(createMockAdapter({ platform: "discord" }));
+      engine.registerAdapter(createMockAdapter({ platform: "slack" }));
+      expect(engine.getRegisteredPlatforms()).toEqual(["telegram", "discord", "slack"]);
+    });
+
+    it("overwrites adapter when re-registering same platform", () => {
+      const first = createMockAdapter({ platform: "telegram" });
+      const second = createMockAdapter({ platform: "telegram" });
+      engine.registerAdapter(first);
+      engine.registerAdapter(second);
+      expect(engine.getAdapter("telegram")).toBe(second);
+      expect(engine.getRegisteredPlatforms()).toEqual(["telegram"]);
+    });
   });
 
   describe("start/stop lifecycle", () => {
@@ -91,6 +119,15 @@ describe("GatewayEngine", () => {
       await engine.start();
       expect(engine.isRunning()).toBe(true);
     });
+
+    it("does not double-stop", async () => {
+      const adapter = createMockAdapter();
+      engine.registerAdapter(adapter);
+      await engine.start();
+      await engine.stop();
+      await engine.stop();
+      expect(adapter.stop).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("send", () => {
@@ -102,6 +139,14 @@ describe("GatewayEngine", () => {
       const result = await engine.send("telegram", "user1", "Hello");
       expect(result.success).toBe(true);
       expect(adapter.send).toHaveBeenCalledWith("user1", "Hello", undefined);
+    });
+
+    it("passes delivery options to adapter", async () => {
+      const adapter = createMockAdapter({ platform: "telegram" });
+      engine.registerAdapter(adapter);
+      const opts = { parseMode: "markdown" as const, silent: false, replyToMessageId: "42" };
+      await engine.send("telegram", "user1", "Hello", opts);
+      expect(adapter.send).toHaveBeenCalledWith("user1", "Hello", opts);
     });
 
     it("suppresses messages containing [SILENT]", async () => {
@@ -123,6 +168,15 @@ describe("GatewayEngine", () => {
       expect(adapter.send).not.toHaveBeenCalled();
     });
 
+    it("[SILENT] takes precedence even with message text", async () => {
+      const adapter = createMockAdapter({ platform: "telegram" });
+      engine.registerAdapter(adapter);
+
+      const result = await engine.send("telegram", "user1", "status update [SILENT]");
+      expect(result.suppressed).toBe(true);
+      expect(result.platform).toBe("telegram");
+    });
+
     it("returns failure for unknown platform", async () => {
       const result = await engine.send("unknown", "user1", "Hello");
       expect(result.success).toBe(false);
@@ -132,6 +186,22 @@ describe("GatewayEngine", () => {
       const adapter = createMockAdapter({
         platform: "telegram",
         send: vi.fn().mockRejectedValue(new Error("network error")),
+      });
+      engine.registerAdapter(adapter as unknown as PlatformAdapter);
+
+      const result = await engine.send("telegram", "user1", "Hello");
+      expect(result.success).toBe(false);
+    });
+
+    it("returns adapter failure when adapter reports unsuccessful result", async () => {
+      const adapter = createMockAdapter({
+        platform: "telegram",
+        send: vi.fn().mockResolvedValue({
+          success: false,
+          platform: "telegram",
+          timestamp: new Date().toISOString(),
+          suppressed: false,
+        }),
       });
       engine.registerAdapter(adapter as unknown as PlatformAdapter);
 
@@ -162,6 +232,34 @@ describe("GatewayEngine", () => {
       const results = await engine.broadcast("Hello!", "user1", ["telegram"]);
       expect(results).toHaveLength(1);
     });
+
+    it("handles mixed success and failure in broadcast", async () => {
+      const good = createMockAdapter({ platform: "telegram" });
+      const bad = createMockAdapter({
+        platform: "discord",
+        send: vi.fn().mockRejectedValue(new Error("boom")),
+      });
+      engine.registerAdapter(good);
+      engine.registerAdapter(bad as unknown as PlatformAdapter);
+
+      const results = await engine.broadcast("Hello!", "user1");
+      expect(results).toHaveLength(2);
+      expect(results[0].success).toBe(true);
+      expect(results[1].success).toBe(false);
+    });
+
+    it("broadcast respects [SILENT] suppression", async () => {
+      const telegram = createMockAdapter({ platform: "telegram" });
+      const discord = createMockAdapter({ platform: "discord" });
+      engine.registerAdapter(telegram);
+      engine.registerAdapter(discord);
+
+      const results = await engine.broadcast("[SILENT] quiet", "user1");
+      expect(results).toHaveLength(2);
+      expect(results.every((r) => r.suppressed)).toBe(true);
+      expect(telegram.send).not.toHaveBeenCalled();
+      expect(discord.send).not.toHaveBeenCalled();
+    });
   });
 
   describe("session mapping", () => {
@@ -170,10 +268,14 @@ describe("GatewayEngine", () => {
       expect(engine.getSession("user1", "telegram")).toBe("session-abc");
     });
 
-    it("persists sessions to disk", () => {
+    it("returns undefined for unmapped session", () => {
+      expect(engine.getSession("unknown", "telegram")).toBeUndefined();
+    });
+
+    it("persists sessions to disk", async () => {
       engine.mapSession("user1", "telegram", "session-abc");
       const filepath = path.join(tmpDir, "sessions.json");
-      expect(fs.existsSync(filepath)).toBe(true);
+      await waitForFile(filepath);
       const data = JSON.parse(fs.readFileSync(filepath, "utf-8"));
       expect(data).toHaveLength(1);
       expect(data[0].sessionId).toBe("session-abc");
@@ -181,7 +283,8 @@ describe("GatewayEngine", () => {
 
     it("loads sessions from disk on start", async () => {
       engine.mapSession("user1", "telegram", "session-abc");
-      await engine.stop();
+      const filepath = path.join(tmpDir, "sessions.json");
+      await waitForFile(filepath);
 
       const engine2 = new GatewayEngine(tmpDir);
       await engine2.start();
@@ -193,6 +296,24 @@ describe("GatewayEngine", () => {
       const found = engine.findSessionCrossPlatform("user1");
       expect(found?.sessionId).toBe("session-abc");
       expect(found?.platform).toBe("telegram");
+    });
+
+    it("returns undefined for cross-platform lookup with no sessions", () => {
+      expect(engine.findSessionCrossPlatform("nobody")).toBeUndefined();
+    });
+
+    it("overwrites session on re-map", () => {
+      engine.mapSession("user1", "telegram", "session-old");
+      engine.mapSession("user1", "telegram", "session-new");
+      expect(engine.getSession("user1", "telegram")).toBe("session-new");
+    });
+
+    it("handles corrupt sessions file gracefully", async () => {
+      fs.mkdirSync(tmpDir, { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, "sessions.json"), "not valid json{");
+      const engine2 = new GatewayEngine(tmpDir);
+      await engine2.start();
+      expect(engine2.getSession("user1", "telegram")).toBeUndefined();
     });
   });
 
@@ -221,6 +342,42 @@ describe("GatewayEngine", () => {
       const lines = fs.readFileSync(logPath, "utf-8").trim().split("\n");
       const entry = JSON.parse(lines[0]);
       expect(entry.suppressed).toBe(true);
+    });
+
+    it("logs error for unknown platform", async () => {
+      await engine.send("unknown", "user1", "Hello");
+
+      const logPath = path.join(tmpDir, "delivery-log.jsonl");
+      const lines = fs.readFileSync(logPath, "utf-8").trim().split("\n");
+      const entry = JSON.parse(lines[0]);
+      expect(entry.error).toContain("No adapter registered");
+    });
+
+    it("logs error when adapter throws", async () => {
+      const adapter = createMockAdapter({
+        platform: "telegram",
+        send: vi.fn().mockRejectedValue(new Error("connection lost")),
+      });
+      engine.registerAdapter(adapter as unknown as PlatformAdapter);
+
+      await engine.send("telegram", "user1", "Hello");
+
+      const logPath = path.join(tmpDir, "delivery-log.jsonl");
+      const lines = fs.readFileSync(logPath, "utf-8").trim().split("\n");
+      const entry = JSON.parse(lines[0]);
+      expect(entry.error).toBe("connection lost");
+    });
+
+    it("appends multiple log entries", async () => {
+      const adapter = createMockAdapter({ platform: "telegram" });
+      engine.registerAdapter(adapter);
+
+      await engine.send("telegram", "user1", "First");
+      await engine.send("telegram", "user2", "Second");
+
+      const logPath = path.join(tmpDir, "delivery-log.jsonl");
+      const lines = fs.readFileSync(logPath, "utf-8").trim().split("\n");
+      expect(lines).toHaveLength(2);
     });
   });
 });

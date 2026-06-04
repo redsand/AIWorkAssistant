@@ -7601,7 +7601,7 @@ const GATEWAY_TOOLS: Tool[] = [
       },
     },
     actionType: "gateway.deliver",
-    riskLevel: "low",
+    riskLevel: "medium",
   },
 ];
 

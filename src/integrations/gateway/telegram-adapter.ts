@@ -18,6 +18,8 @@ export class TelegramAdapter implements PlatformAdapter {
   private waitingConsumers: Array<(msg: IncomingMessage) => void> = [];
   private backoffMs = 1000;
   private maxBackoffMs = 30000;
+  private maxRetries = 10;
+  private retryCount = 0;
   private stopped = false;
 
   constructor(config: TelegramAdapterConfig) {
@@ -61,6 +63,7 @@ export class TelegramAdapter implements PlatformAdapter {
 
       this.connected = true;
       this.backoffMs = 1000;
+      this.retryCount = 0;
       console.log("[Telegram] Adapter started (polling mode)");
     } catch (error) {
       console.error("[Telegram] Connection failed:", error);
@@ -73,7 +76,12 @@ export class TelegramAdapter implements PlatformAdapter {
 
   private async reconnect(): Promise<void> {
     if (this.stopped) return;
-    console.log(`[Telegram] Reconnecting in ${this.backoffMs}ms...`);
+    if (this.retryCount >= this.maxRetries) {
+      console.error(`[Telegram] Max retries (${this.maxRetries}) reached. Giving up.`);
+      return;
+    }
+    this.retryCount++;
+    console.log(`[Telegram] Reconnecting in ${this.backoffMs}ms (attempt ${this.retryCount}/${this.maxRetries})...`);
     await new Promise((r) => setTimeout(r, this.backoffMs));
     this.backoffMs = Math.min(this.backoffMs * 2, this.maxBackoffMs);
     await this.connect();

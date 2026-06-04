@@ -3,7 +3,7 @@
  * maintains cross-platform session continuity, and logs deliveries.
  */
 
-import fs from "fs";
+import fs from "fs/promises";
 import path from "path";
 import type { PlatformAdapter, DeliveryOptions, DeliveryResult } from "./platform-adapter";
 
@@ -30,6 +30,7 @@ export class GatewayEngine {
   private sessions: Map<string, SessionMapping> = new Map();
   private dataDir: string;
   private running = false;
+  private logStream: fs.FileHandle | null = null;
 
   constructor(dataDir?: string) {
     this.dataDir = dataDir || path.join(process.cwd(), "data", "gateway");
@@ -50,7 +51,7 @@ export class GatewayEngine {
   async start(): Promise<void> {
     if (this.running) return;
 
-    this.loadSessions();
+    await this.loadSessions();
 
     const startResults = await Promise.allSettled(
       [...this.adapters.values()].map((a) => a.start()),
@@ -77,6 +78,11 @@ export class GatewayEngine {
       [...this.adapters.values()].map((a) => a.stop()),
     );
 
+    if (this.logStream) {
+      await this.logStream.close();
+      this.logStream = null;
+    }
+
     this.running = false;
     console.log("[Gateway] Engine stopped");
   }
@@ -101,7 +107,7 @@ export class GatewayEngine {
         timestamp: now,
         suppressed: true,
       };
-      this.logDelivery({ platform, userId, suppressed: true, timestamp: now });
+      await this.logDelivery({ platform, userId, suppressed: true, timestamp: now });
       return result;
     }
 
@@ -113,7 +119,7 @@ export class GatewayEngine {
         timestamp: now,
         suppressed: false,
       };
-      this.logDelivery({
+      await this.logDelivery({
         platform,
         userId,
         suppressed: false,
@@ -125,7 +131,7 @@ export class GatewayEngine {
 
     try {
       const result = await adapter.send(userId, message, options);
-      this.logDelivery({
+      await this.logDelivery({
         platform,
         userId,
         messageId: result.messageId,
@@ -142,7 +148,7 @@ export class GatewayEngine {
         timestamp: now,
         suppressed: false,
       };
-      this.logDelivery({ platform, userId, suppressed: false, timestamp: now, error: errMsg });
+      await this.logDelivery({ platform, userId, suppressed: false, timestamp: now, error: errMsg });
       return result;
     }
   }
@@ -167,7 +173,9 @@ export class GatewayEngine {
       sessionId,
       updatedAt: new Date().toISOString(),
     });
-    this.saveSessions();
+    this.saveSessions().catch((error) => {
+      console.error("[Gateway] Failed to save sessions:", error);
+    });
   }
 
   getSession(userId: string, platform: string): string | undefined {
@@ -181,38 +189,38 @@ export class GatewayEngine {
     return undefined;
   }
 
-  private loadSessions(): void {
+  private async loadSessions(): Promise<void> {
     const filepath = path.join(this.dataDir, "sessions.json");
-    if (!fs.existsSync(filepath)) return;
 
     try {
-      const data = JSON.parse(fs.readFileSync(filepath, "utf-8")) as SessionMapping[];
+      const raw = await fs.readFile(filepath, "utf-8");
+      const data = JSON.parse(raw) as SessionMapping[];
       for (const entry of data) {
         this.sessions.set(`${entry.platform}:${entry.userId}`, entry);
       }
     } catch {
-      // Corrupt file — start fresh
+      // File missing or corrupt — start fresh
     }
   }
 
-  private saveSessions(): void {
+  private async saveSessions(): Promise<void> {
     try {
-      fs.mkdirSync(this.dataDir, { recursive: true });
+      await fs.mkdir(this.dataDir, { recursive: true });
       const filepath = path.join(this.dataDir, "sessions.json");
       const tmpPath = filepath + ".tmp";
       const data = [...this.sessions.values()];
-      fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf-8");
-      fs.renameSync(tmpPath, filepath);
+      await fs.writeFile(tmpPath, JSON.stringify(data, null, 2), "utf-8");
+      await fs.rename(tmpPath, filepath);
     } catch (error) {
       console.error("[Gateway] Failed to save sessions:", error);
     }
   }
 
-  private logDelivery(entry: DeliveryLogEntry): void {
+  private async logDelivery(entry: DeliveryLogEntry): Promise<void> {
     try {
-      fs.mkdirSync(this.dataDir, { recursive: true });
+      await fs.mkdir(this.dataDir, { recursive: true });
       const filepath = path.join(this.dataDir, "delivery-log.jsonl");
-      fs.appendFileSync(filepath, JSON.stringify(entry) + "\n", "utf-8");
+      await fs.appendFile(filepath, JSON.stringify(entry) + "\n", "utf-8");
     } catch (error) {
       console.error("[Gateway] Failed to log delivery:", error);
     }
