@@ -121,7 +121,7 @@ export class OllamaLauncher {
     const child = spawn(command, args, {
       cwd: options.cwd || process.cwd(),
       env: childEnv,
-      stdio: ["pipe", "pipe", "inherit"],
+      stdio: ["pipe", "pipe", "pipe"],
       shell: process.platform === "win32",
       windowsHide: true,
     });
@@ -130,14 +130,27 @@ export class OllamaLauncher {
     child.stdin?.write(promptContent);
     child.stdin?.end();
 
+    let stderrBuf = "";
+    child.stderr?.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      stderrBuf += text;
+      process.stderr.write(text);
+    });
+
     // Propagate SIGINT to child
     const onSigInt = () => {
       child.kill("SIGINT");
     };
     process.on("SIGINT", onSigInt);
-    child.on("close", () => {
+    child.on("close", (code, signal) => {
       process.removeListener("SIGINT", onSigInt);
       try { fs.unlinkSync(promptFile); } catch {}
+      console.error(`[ollama-launcher] Agent exited code=${code} signal=${signal}`);
+      const stderr = stderrBuf.trim();
+      if (stderr && code !== 0) {
+        const tail = stderr.length > 2048 ? "…\n" + stderr.slice(-2048) : stderr;
+        process.stderr.write(tail + "\n");
+      }
     });
 
     return child;
