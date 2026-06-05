@@ -54,7 +54,11 @@ export function repairToolMessagePairs(messages: ChatMessage[]): ChatMessage[] {
 
       if (allPresent && toolResponses.length > 0) {
         result.push(msg);
-        toolResponses.forEach((m) => result.push(m));
+        // Only include tool responses that match the expected IDs — extra
+        // orphaned responses (e.g. from pruned history) would cause Z.ai 1214.
+        toolResponses
+          .filter((m) => m.tool_call_id && expectedIds.has(m.tool_call_id))
+          .forEach((m) => result.push(m));
       } else if (toolResponses.length > 0) {
         const filteredCalls = toolCalls.filter((tc) => tc.id && respondedIds.has(tc.id));
         if (filteredCalls.length > 0) {
@@ -63,15 +67,15 @@ export function repairToolMessagePairs(messages: ChatMessage[]): ChatMessage[] {
             .filter((m) => filteredCalls.some((tc) => tc.id === m.tool_call_id))
             .forEach((m) => result.push(m));
         } else {
-          const { tool_calls, ...rest } = msg as AssistantMessage;
-          result.push({ ...rest, content: rest.content ?? "" });
+          // No valid tool call / response pairing — strip tool_calls and
+          // merge with the next assistant if one follows immediately (avoids
+          // consecutive assistant messages that Z.ai/GLM rejects).
+          j = mergeOrphanedAssistant(msg as AssistantMessage, j, messages, result);
         }
       } else {
-        const { tool_calls, ...rest } = msg as AssistantMessage;
-        // Keep assistant message even with empty/null content to preserve
-        // role alternation. Some APIs (Z.ai/GLM) reject consecutive
-        // messages of the same role.
-        result.push({ ...rest, content: rest.content ?? "" });
+        // No tool responses at all — strip tool_calls and merge with the
+        // next assistant if present (avoids consecutive assistant messages).
+        j = mergeOrphanedAssistant(msg as AssistantMessage, j, messages, result);
       }
       i = j;
     } else if (msg.role === "tool") {
@@ -83,4 +87,37 @@ export function repairToolMessagePairs(messages: ChatMessage[]): ChatMessage[] {
   }
 
   return result;
+}
+
+/**
+ * Strip tool_calls from an orphaned assistant message and push it to result.
+ * If the very next non-tool message is another assistant (no tool_calls),
+ * merge the two to avoid consecutive assistant messages (Z.ai/GLM rejects them).
+ * Returns the updated `j` pointer so the caller can set `i = j`.
+ */
+function mergeOrphanedAssistant(
+  msg: AssistantMessage,
+  j: number,
+  messages: ChatMessage[],
+  result: ChatMessage[],
+): number {
+  const { tool_calls, ...rest } = msg;
+  const strippedContent = rest.content ?? "";
+
+  if (
+    j < messages.length &&
+    messages[j].role === "assistant" &&
+    !((messages[j] as AssistantMessage).tool_calls?.length)
+  ) {
+    // Merge: combine content, keep the next assistant's structure.
+    const next = messages[j] as AssistantMessage;
+    const mergedContent = [strippedContent, next.content ?? ""]
+      .filter((s) => (s ?? "").trim())
+      .join("\n");
+    result.push({ ...next, content: mergedContent || "" });
+    return j + 1;
+  }
+
+  result.push({ ...rest, content: strippedContent });
+  return j;
 }

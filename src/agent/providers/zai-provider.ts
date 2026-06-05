@@ -85,11 +85,18 @@ export class ZaiProvider extends AIProvider {
           prev.content = `${prev.content}\n\n${patched.content}`;
           continue;
         }
-        // For system/assistant/tool: do NOT merge or replace.
-        // Consecutive system messages shouldn't exist (mergeSystemMessages).
-        // Consecutive tool messages ARE valid (multiple tool responses).
-        // Consecutive assistant messages are a bug elsewhere; push and let
-        // validation catch it.
+        if (patched.role === "assistant" && !prev.tool_calls?.length && !patched.tool_calls?.length) {
+          // Merge consecutive plain assistant messages — they arise from context
+          // compression / session history and are rejected by Z.ai/GLM.
+          prev.content = [prev.content, patched.content]
+            .filter((s) => s && String(s).trim())
+            .join("\n\n") || " ";
+          continue;
+        }
+        // Consecutive system messages shouldn't exist (mergeSystemMessages handles them).
+        // Consecutive tool messages ARE valid (multiple tool responses for one assistant call).
+        // Consecutive assistant messages that include tool_calls cannot be safely merged
+        // here — push and let validation surface the error with context.
       }
 
       normalized.push(patched);
@@ -135,6 +142,15 @@ export class ZaiProvider extends AIProvider {
           }
         }
       }
+    }
+
+    // First non-system message must be 'user' (GLM/Z.ai requires user→assistant turn order)
+    const firstNonSystem = messages.find((m: any) => m.role !== "system");
+    if (firstNonSystem && firstNonSystem.role !== "user") {
+      throw new Error(
+        `[Z.ai PAYLOAD VALIDATION] first non-system message must be role=user, got '${firstNonSystem.role}'. ` +
+        `GLM requires conversations to begin user→assistant.`,
+      );
     }
 
     // Consecutive same-role check (tool exempt)

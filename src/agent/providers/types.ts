@@ -342,6 +342,17 @@ export abstract class AIProvider {
       userMsg,
     ];
 
+    // Strict APIs (Z.ai/GLM) require the first non-system message to be 'user'.
+    // If context pruning left an assistant or tool message at that position,
+    // insert a placeholder so the turn structure is valid.
+    const firstNonSysIdx = kept.findIndex((m) => m.role !== "system");
+    if (firstNonSysIdx !== -1 && kept[firstNonSysIdx].role !== "user") {
+      kept.splice(firstNonSysIdx, 0, {
+        role: "user",
+        content: "[conversation continues]",
+      });
+    }
+
     console.warn(
       `[${this.name}] Pruned ${pruned.length} messages to ${kept.length}`,
     );

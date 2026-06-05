@@ -59,6 +59,7 @@ import { cronEngine } from "./scheduler/cron-engine";
 import { initializeMCP } from "./integrations/mcp";
 import { codebaseIndexer } from "./agent/codebase-indexer";
 import { providerSettings } from "./agent/provider-settings";
+import { toolCallCache } from "./memory/tool-cache";
 import path from "path";
 
 export async function buildServer() {
@@ -258,6 +259,12 @@ async function start() {
           });
           console.error("[RAG] Indexing failed:", err);
         });
+    }
+
+    // ─── Tool cache: connect Redis for cross-restart persistence ───
+    const redisUrl = process.env.CLAIMKIT_REDIS_URL || "";
+    if (redisUrl) {
+      void toolCallCache.connectRedis(redisUrl);
     }
 
     // ─── ClaimKit init: block server.listen() until init resolves ───

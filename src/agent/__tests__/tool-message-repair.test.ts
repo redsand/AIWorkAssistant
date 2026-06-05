@@ -57,7 +57,7 @@ describe("repairToolMessagePairs", () => {
 
   // ── Orphaned tool calls (no matching tool responses) ────────────────
 
-  it("should strip tool_calls from assistant when no tool responses follow", () => {
+  it("should strip tool_calls and merge with the following assistant when no tool responses follow", () => {
     const messages: ChatMessage[] = [
       {
         role: "assistant",
@@ -68,13 +68,15 @@ describe("repairToolMessagePairs", () => {
     ];
 
     const result = repairToolMessagePairs(messages);
-    expect(result).toHaveLength(2);
-    // First assistant should have tool_calls stripped but content preserved
+    // Merged to prevent consecutive assistant messages (rejected by Z.ai/GLM)
+    expect(result).toHaveLength(1);
     expect(result[0]).not.toHaveProperty("tool_calls");
-    expect((result[0] as { content: string }).content).toBe("I tried to call a tool");
+    const content = (result[0] as { content: string }).content;
+    expect(content).toContain("I tried to call a tool");
+    expect(content).toContain("Moving on");
   });
 
-  it("should keep orphaned assistant even with no content to preserve role alternation", () => {
+  it("should merge orphaned assistant (empty content) into the following assistant", () => {
     const messages: ChatMessage[] = [
       {
         role: "assistant",
@@ -85,11 +87,30 @@ describe("repairToolMessagePairs", () => {
     ];
 
     const result = repairToolMessagePairs(messages);
-    // Assistant kept to avoid breaking role alternation (required by Z.ai/GLM)
-    expect(result).toHaveLength(2);
+    // Drop the empty orphaned assistant and keep only the second one —
+    // consecutive assistant messages are rejected by Z.ai/GLM.
+    expect(result).toHaveLength(1);
     expect(result[0]).not.toHaveProperty("tool_calls");
-    expect((result[0] as { content: string }).content).toBe("");
-    expect((result[1] as { content: string }).content).toBe("Next message");
+    expect((result[0] as { content: string }).content).toBe("Next message");
+  });
+
+  it("should merge orphaned assistant with content into the following assistant", () => {
+    const messages: ChatMessage[] = [
+      {
+        role: "assistant",
+        content: "Let me check that",
+        tool_calls: [{ id: "tc1", function: { name: "search" } }],
+      } as AssistantMessage,
+      { role: "assistant", content: "I found the answer" },
+    ];
+
+    const result = repairToolMessagePairs(messages);
+    // Both content strings should be merged into a single assistant message
+    expect(result).toHaveLength(1);
+    expect(result[0]).not.toHaveProperty("tool_calls");
+    const content = (result[0] as { content: string }).content;
+    expect(content).toContain("Let me check that");
+    expect(content).toContain("I found the answer");
   });
 
   // ── Orphaned tool responses (no matching tool call) ─────────────────
@@ -130,7 +151,7 @@ describe("repairToolMessagePairs", () => {
     expect(assistant.tool_calls![0].id).toBe("tc1");
   });
 
-  it("should keep assistant with empty content when no tool calls match responses", () => {
+  it("should keep assistant with empty content when no tool calls match responses (next message is user)", () => {
     const messages: ChatMessage[] = [
       {
         role: "assistant",
@@ -144,8 +165,9 @@ describe("repairToolMessagePairs", () => {
     ];
 
     const result = repairToolMessagePairs(messages);
-    // Assistant should be kept (with empty content) to preserve role alternation;
-    // orphaned tool response is dropped.
+    // Next message after the tool group is a user, not an assistant —
+    // keep the stripped assistant to maintain role alternation.
+    // The orphaned tool response is dropped.
     expect(result).toHaveLength(2);
     expect(result[0]).toHaveProperty("role", "assistant");
     expect((result[0] as { content: string }).content).toBe("");

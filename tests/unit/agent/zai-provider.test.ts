@@ -332,6 +332,35 @@ describe("ZaiProvider chatStream", () => {
       expect(assistant.content).toBe(" ");
     });
 
+    it("merges consecutive plain assistant messages from session history", async () => {
+      const fn = vi.fn().mockResolvedValue({
+        data: {
+          choices: [{ message: { content: "ok" } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+          model: "zai-test",
+        },
+      });
+      const mockClient = { post: fn, get: vi.fn() };
+      mockAxiosCreate.mockReturnValue(mockClient);
+
+      const provider = makeProvider();
+      await provider.chat({
+        messages: [
+          { role: "system", content: "sys" },
+          { role: "user", content: "hello" },
+          { role: "assistant", content: "first turn" },
+          { role: "assistant", content: "second turn" }, // consecutive — from compressed history
+          { role: "user", content: "follow up" },
+        ],
+      });
+
+      const body = fn.mock.calls[0][1];
+      const assistantMessages = body.messages.filter((m: any) => m.role === "assistant");
+      expect(assistantMessages).toHaveLength(1);
+      expect(assistantMessages[0].content).toContain("first turn");
+      expect(assistantMessages[0].content).toContain("second turn");
+    });
+
     it("merges consecutive user messages to avoid GLM rejection", async () => {
       const fn = vi.fn().mockResolvedValue({
         data: {
@@ -501,6 +530,21 @@ describe("ZaiProvider chatStream", () => {
 
       expect(() => (provider as any).validateZaiPayload(body)).toThrow(
         "missing tool_call_id",
+      );
+    });
+
+    it("short-circuits when first non-system message is not user", async () => {
+      const provider = makeProvider();
+      const body = {
+        model: "zai-test",
+        messages: [
+          { role: "system", content: "sys" },
+          { role: "assistant", content: "hello" }, // must be user
+        ],
+      };
+
+      expect(() => (provider as any).validateZaiPayload(body)).toThrow(
+        "first non-system message must be role=user",
       );
     });
   });

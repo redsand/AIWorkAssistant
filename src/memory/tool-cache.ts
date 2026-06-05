@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { createClient } from "redis";
 
 export interface CachedToolCall {
   ref: string;
@@ -42,12 +43,8 @@ const READ_PATTERNS = [
 ];
 
 // Tools that must NEVER be cached even if name matches a read pattern.
-// (e.g., system.get_time returns a different value every call by definition,
-// but caching is still acceptable because the manifest entry records when it
-// was called — the next time the model asks "what time is it" it sees the
-// previous answer and can decide whether to re-call. We leave it cacheable.)
 const NEVER_CACHE = new Set<string>([
-  "tools.fetch_cached", // self-reference would be pointless
+  "tools.fetch_cached",
   "agent.spawn",
   "agent.cancel_run",
   "memory.manage",
@@ -96,7 +93,6 @@ function shortenParams(params: Record<string, unknown>): string {
 }
 
 // Generate a short human-readable summary of a tool result for the manifest.
-// Aims for ~80-120 chars so the manifest stays compact.
 export function summarizeResult(result: unknown): string {
   if (result === null || result === undefined) return "null";
   if (typeof result !== "object") return String(result).substring(0, 120);
@@ -135,9 +131,76 @@ const LARGE_RESULT_THRESHOLD = parseInt(
   10,
 );
 
+// Redis TTL for tool cache entries: 7 days by default.
+const TOOL_CACHE_TTL_SECONDS = parseInt(
+  process.env.TOOL_CACHE_TTL_SECONDS || String(7 * 24 * 3600),
+  10,
+);
+
+const REDIS_PREFIX = (process.env.CLAIMKIT_REDIS_PREFIX || "aiworkassistant") + ":tool-cache";
+
+type RedisClient = ReturnType<typeof createClient>;
+
 class ToolCallCache {
   private bySession = new Map<string, Map<string, CachedToolCall>>();
   private byRef = new Map<string, { sessionId: string; key: string }>();
+  private warmedSessions = new Set<string>();
+  private redis: RedisClient | null = null;
+
+  // Called once at server startup if a Redis URL is configured.
+  async connectRedis(url: string): Promise<void> {
+    try {
+      const client = createClient({ url });
+      client.on("error", (err) => {
+        console.warn("[ToolCache] Redis error:", err.message);
+      });
+      await client.connect();
+      this.redis = client;
+      console.log("[ToolCache] Redis backing connected —", url);
+    } catch (err) {
+      console.warn("[ToolCache] Redis connect failed, falling back to memory-only:", (err as Error).message);
+    }
+  }
+
+  // Load all entries for a session from Redis into the in-memory map.
+  // Safe to call multiple times — skips sessions already warmed this process lifetime.
+  async warmSession(sessionId: string): Promise<void> {
+    if (this.warmedSessions.has(sessionId) || !this.redis) return;
+    this.warmedSessions.add(sessionId);
+
+    try {
+      const indexKey = `${REDIS_PREFIX}:index:${sessionId}`;
+      const keys = await this.redis.sMembers(indexKey);
+      if (keys.length === 0) return;
+
+      const redisKeys = keys.map((k) => `${REDIS_PREFIX}:entry:${sessionId}:${k}`);
+      const raws = await this.redis.mGet(redisKeys);
+
+      let loaded = 0;
+      for (let i = 0; i < keys.length; i++) {
+        const raw = raws[i];
+        if (!raw) continue;
+        try {
+          const entry: CachedToolCall = JSON.parse(raw);
+          let sessionCache = this.bySession.get(sessionId);
+          if (!sessionCache) {
+            sessionCache = new Map();
+            this.bySession.set(sessionId, sessionCache);
+          }
+          sessionCache.set(keys[i]!, entry);
+          this.byRef.set(entry.ref, { sessionId, key: keys[i]! });
+          loaded++;
+        } catch {
+          // corrupt entry — skip
+        }
+      }
+      if (loaded > 0) {
+        console.log(`[ToolCache] Warmed session ${sessionId}: ${loaded} entries from Redis`);
+      }
+    } catch (err) {
+      console.warn("[ToolCache] warmSession failed:", (err as Error).message);
+    }
+  }
 
   isCacheable(toolName: string): boolean {
     return isCacheableTool(toolName);
@@ -182,7 +245,28 @@ class ToolCallCache {
     }
     sessionCache.set(key, entry);
     this.byRef.set(ref, { sessionId, key });
+
+    // Persist to Redis asynchronously — don't block the caller.
+    if (this.redis) {
+      void this.persistEntry(sessionId, key, entry);
+    }
+
     return entry;
+  }
+
+  private async persistEntry(sessionId: string, key: string, entry: CachedToolCall): Promise<void> {
+    if (!this.redis) return;
+    try {
+      const entryKey = `${REDIS_PREFIX}:entry:${sessionId}:${key}`;
+      const indexKey = `${REDIS_PREFIX}:index:${sessionId}`;
+      await Promise.all([
+        this.redis.set(entryKey, JSON.stringify(entry), { EX: TOOL_CACHE_TTL_SECONDS }),
+        this.redis.sAdd(indexKey, key),
+        this.redis.expire(indexKey, TOOL_CACHE_TTL_SECONDS),
+      ]);
+    } catch (err) {
+      console.warn("[ToolCache] Redis persist failed:", (err as Error).message);
+    }
   }
 
   getByRef(ref: string): CachedToolCall | null {
@@ -199,14 +283,34 @@ class ToolCallCache {
 
   clear(sessionId: string): void {
     const sessionCache = this.bySession.get(sessionId);
-    if (!sessionCache) return;
-    for (const entry of sessionCache.values()) this.byRef.delete(entry.ref);
-    this.bySession.delete(sessionId);
+    if (sessionCache) {
+      for (const entry of sessionCache.values()) this.byRef.delete(entry.ref);
+      this.bySession.delete(sessionId);
+    }
+    this.warmedSessions.delete(sessionId);
+
+    // Remove from Redis asynchronously.
+    if (this.redis) {
+      void this.clearRedisSession(sessionId);
+    }
   }
 
-  // Build the system-prompt manifest of all tools already executed this
-  // session. The model sees this every turn — so even after context pruning
-  // strips out the actual results, the model knows what it has already done.
+  private async clearRedisSession(sessionId: string): Promise<void> {
+    if (!this.redis) return;
+    try {
+      const indexKey = `${REDIS_PREFIX}:index:${sessionId}`;
+      const keys = await this.redis.sMembers(indexKey);
+      if (keys.length > 0) {
+        const entryKeys = keys.map((k) => `${REDIS_PREFIX}:entry:${sessionId}:${k}`);
+        await this.redis.del([indexKey, ...entryKeys]);
+      } else {
+        await this.redis.del(indexKey);
+      }
+    } catch (err) {
+      console.warn("[ToolCache] Redis clear failed:", (err as Error).message);
+    }
+  }
+
   buildManifest(sessionId: string): string {
     const entries = this.list(sessionId);
     if (entries.length === 0) return "";
@@ -227,9 +331,6 @@ class ToolCallCache {
     return lines.join("\n");
   }
 
-  // Convert a full tool result into the form that should be injected into chat
-  // context. Small results pass through; large results are replaced with a
-  // summary + ref pointer so the chat context doesn't bloat.
   compactForContext(entry: CachedToolCall): unknown {
     if (entry.resultSize <= LARGE_RESULT_THRESHOLD) return entry.result;
     return {
@@ -244,10 +345,6 @@ class ToolCallCache {
     };
   }
 
-  // Wrap a cached entry as a tool result for the model, including the cache
-  // marker so the model knows the data was from a prior call. If the original
-  // result was a standard {success, data} envelope, unpack data so the model
-  // sees the same shape as a fresh call (not nested {data:{success,data:...}}).
   wrapCachedAsResult(entry: CachedToolCall): unknown {
     const compact = this.compactForContext(entry);
     const note =
@@ -278,7 +375,6 @@ class ToolCallCache {
     };
   }
 
-  // Stats helper for diagnostics / tests.
   sessionStats(sessionId: string): { entries: number; bytes: number } {
     const entries = this.list(sessionId);
     return {

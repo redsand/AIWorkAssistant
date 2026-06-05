@@ -381,6 +381,7 @@ async function dispatchToolCallCached(
   const canonical = resolveToolName(toolName);
 
   if (sessionId) {
+    await toolCallCache.warmSession(sessionId);
     const hit = toolCallCache.get(sessionId, canonical, params);
     if (hit) {
       const wrapped = toolCallCache.wrapCachedAsResult(hit);
