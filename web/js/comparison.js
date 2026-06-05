@@ -2,6 +2,7 @@
   "use strict";
 
   const charts = {};
+  let currentSource = "live";
   const COLORS = {
     ck: "#22c55e",
     ckLight: "#86efac",
@@ -17,6 +18,16 @@
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
+  }
+
+  function sourceQuery() {
+    return currentSource === "all" ? "" : "?source=" + encodeURIComponent(currentSource);
+  }
+
+  function sourceJoin(base, params) {
+    const source = currentSource === "all" ? "" : "source=" + encodeURIComponent(currentSource);
+    const allParams = [source, params].filter(Boolean).join("&");
+    return allParams ? base + "?" + allParams : base;
   }
 
   function showError(msg) {
@@ -411,7 +422,7 @@
   // ── Main load ────────────────────────────────────────────────────
 
   function loadDashboard() {
-    fetchJSON("/api/comparison/stats")
+    fetchJSON("/api/comparison/stats" + sourceQuery())
       .then(function (stats) {
         // Stat chips
         renderStat("stat-total-runs", stats.totalRuns);
@@ -442,7 +453,7 @@
       });
 
     // Confidence trend (separate endpoint)
-    fetchJSON("/api/comparison/trends?days=30")
+    fetchJSON(sourceJoin("/api/comparison/trends", "days=30"))
       .then(function (trends) {
         if (trends.length > 0) {
           renderConfidenceTrend(trends);
@@ -477,12 +488,28 @@
     });
   }
 
+  function initSourceToggle() {
+    var buttons = Array.from(document.querySelectorAll(".source-btn"));
+    buttons.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var source = btn.getAttribute("data-source") || "live";
+        if (source === currentSource) return;
+        currentSource = source;
+        buttons.forEach(function (b) {
+          b.classList.toggle("active", b === btn);
+        });
+        loadDashboard();
+      });
+    });
+  }
+
   // ── Init ─────────────────────────────────────────────────────────
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", function () { loadDashboard(); initClearButton(); });
+    document.addEventListener("DOMContentLoaded", function () { loadDashboard(); initClearButton(); initSourceToggle(); });
   } else {
     loadDashboard();
     initClearButton();
+    initSourceToggle();
   }
 })();

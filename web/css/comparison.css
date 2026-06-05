@@ -52,6 +52,33 @@ body {
 
 .comp-header-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 
+.source-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  background: #f9fafb;
+}
+
+.source-btn {
+  min-width: 54px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #6b7280;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.source-btn.active {
+  background: #fff;
+  color: #374151;
+  box-shadow: 0 1px 3px rgba(0,0,0,.12);
+}
+
 .clear-btn {
   display: inline-flex;
   align-items: center;

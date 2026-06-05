@@ -1,6 +1,6 @@
 import { FastifyInstance } from "fastify";
 import { comparisonRunDatabase, ComparisonRunDatabase } from "./database";
-import type { SaveComparisonInput } from "./types";
+import type { ComparisonSource, SaveComparisonInput } from "./types";
 
 function safeParseInt(
   value: string | undefined,
@@ -12,6 +12,10 @@ function safeParseInt(
   const parsed = parseInt(value, 10);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(Math.max(Math.round(parsed), min), max);
+}
+
+function safeSource(value: string | undefined): ComparisonSource | undefined {
+  return value === "batch" || value === "live" ? value : undefined;
 }
 
 export interface ComparisonRoutesOptions {
@@ -26,16 +30,17 @@ export async function comparisonRoutes(
 
   // ── Dashboard stats ──────────────────────────────────────────────
 
-  fastify.get("/stats", async (_request, _reply) => {
-    return db.getDashboardStats();
+  fastify.get("/stats", async (request, _reply) => {
+    const query = request.query as { source?: string };
+    return db.getDashboardStats({ source: safeSource(query.source) });
   });
 
   // ── Confidence trend ──────────────────────────────────────────────
 
   fastify.get("/trends", async (request, _reply) => {
-    const query = request.query as { days?: string };
+    const query = request.query as { days?: string; source?: string };
     const days = safeParseInt(query.days, 1, 365, 30);
-    return db.getConfidenceOverTime(days);
+    return db.getConfidenceOverTime(days, { source: safeSource(query.source) });
   });
 
   // ── Run listing ───────────────────────────────────────────────────

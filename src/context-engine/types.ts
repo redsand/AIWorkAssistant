@@ -86,6 +86,20 @@ export interface ContextPacket {
     compressionRatio: number;
     budgetUtilization: Record<string, number>;
     stageTimings: Record<string, number>;
+    claimkit: {
+      enabled: boolean;
+      available: boolean;
+      used: boolean;
+      timedOut: boolean;
+      includedInMessages: boolean;
+      preferredSource: PreferredSource;
+      routingReason: string;
+      confidence: number | null;
+      answerability: string | null;
+      claimCount: number | null;
+      sourceCount: number | null;
+      retrievalScore: number | null;
+    };
     createdAt: Date;
   };
 }

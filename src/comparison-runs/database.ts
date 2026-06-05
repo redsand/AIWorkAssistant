@@ -13,6 +13,7 @@ import type {
   ConfidenceTrendPoint,
   CategoryBreakdown,
   SaveComparisonInput,
+  ComparisonSource,
 } from "./types";
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -281,7 +282,15 @@ class ComparisonRunDatabase {
     };
   }
 
-  getDashboardStats(): ComparisonDashboardStats {
+  getDashboardStats(options?: { source?: ComparisonSource }): ComparisonDashboardStats {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (options?.source) {
+      conditions.push("cr.source = ?");
+      params.push(options.source);
+    }
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
     const winRow = this.db
       .prepare(
         `SELECT
@@ -293,13 +302,15 @@ class ComparisonRunDatabase {
            AVG(CASE WHEN ck_answerability = 'answerable' THEN 1.0 ELSE 0.0 END) as answerability_rate,
            AVG(ck_time_ms) as avg_ck_time,
            AVG(rag_time_ms) as avg_rag_time
-         FROM comparison_cases`,
+         FROM comparison_cases cc
+         JOIN comparison_runs cr ON cr.id = cc.run_id
+         ${whereClause}`,
       )
-      .get() as {
+      .get(...params) as {
         total_cases: number;
-        ck_wins: number;
-        rag_wins: number;
-        ties: number;
+        ck_wins: number | null;
+        rag_wins: number | null;
+        ties: number | null;
         avg_confidence: number | null;
         answerability_rate: number | null;
         avg_ck_time: number | null;
@@ -307,35 +318,42 @@ class ComparisonRunDatabase {
       };
 
     const totalRunsRow = this.db
-      .prepare("SELECT COUNT(*) as total FROM comparison_runs")
-      .get() as { total: number };
+      .prepare(`SELECT COUNT(*) as total FROM comparison_runs cr ${whereClause}`)
+      .get(...params) as { total: number };
 
     const catRows = this.db
       .prepare(
         `SELECT
-           category,
+           cc.category,
            COUNT(*) as total,
-           SUM(CASE WHEN overall_winner = 'claimkit' THEN 1 ELSE 0 END) as ck_wins,
-           SUM(CASE WHEN overall_winner = 'rag' THEN 1 ELSE 0 END) as rag_wins,
-           SUM(CASE WHEN overall_winner = 'tie' THEN 1 ELSE 0 END) as ties
-         FROM comparison_cases
-         GROUP BY category
+           SUM(CASE WHEN cc.overall_winner = 'claimkit' THEN 1 ELSE 0 END) as ck_wins,
+           SUM(CASE WHEN cc.overall_winner = 'rag' THEN 1 ELSE 0 END) as rag_wins,
+           SUM(CASE WHEN cc.overall_winner = 'tie' THEN 1 ELSE 0 END) as ties
+         FROM comparison_cases cc
+         JOIN comparison_runs cr ON cr.id = cc.run_id
+         ${whereClause}
+         GROUP BY cc.category
          ORDER BY total DESC`,
       )
-      .all() as Array<{
+      .all(...params) as Array<{
         category: string;
         total: number;
-        ck_wins: number;
-        rag_wins: number;
-        ties: number;
+        ck_wins: number | null;
+        rag_wins: number | null;
+        ties: number | null;
       }>;
 
-    const recentRuns = this.listRuns({ limit: 10 }).runs;
+    const recentRuns = this.listRuns({ source: options?.source, limit: 10 }).runs;
 
     return {
+      source: options?.source ?? "all",
       totalRuns: totalRunsRow.total,
       totalCases: winRow.total_cases,
-      overallWins: { claimkit: winRow.ck_wins, rag: winRow.rag_wins, tie: winRow.ties },
+      overallWins: {
+        claimkit: winRow.ck_wins ?? 0,
+        rag: winRow.rag_wins ?? 0,
+        tie: winRow.ties ?? 0,
+      },
       avgCkConfidence: winRow.avg_confidence ?? 0,
       avgAnswerabilityRate: winRow.answerability_rate ?? 0,
       avgCkTimeMs: winRow.avg_ck_time ?? 0,
@@ -343,28 +361,38 @@ class ComparisonRunDatabase {
       byCategory: catRows.map((r) => ({
         category: r.category as CategoryBreakdown["category"],
         total: r.total,
-        claimkitWins: r.ck_wins,
-        ragWins: r.rag_wins,
-        ties: r.ties,
+        claimkitWins: r.ck_wins ?? 0,
+        ragWins: r.rag_wins ?? 0,
+        ties: r.ties ?? 0,
       })),
       recentRuns,
     };
   }
 
-  getConfidenceOverTime(days: number = 30): ConfidenceTrendPoint[] {
+  getConfidenceOverTime(
+    days: number = 30,
+    options?: { source?: ComparisonSource },
+  ): ConfidenceTrendPoint[] {
     const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const conditions = ["cc.ck_confidence IS NOT NULL", "cc.created_at >= ?"];
+    const params: unknown[] = [cutoff];
+    if (options?.source) {
+      conditions.push("cr.source = ?");
+      params.push(options.source);
+    }
     const rows = this.db
       .prepare(
         `SELECT
-           date(created_at) as date,
-           AVG(ck_confidence) as avg_confidence,
+           date(cc.created_at) as date,
+           AVG(cc.ck_confidence) as avg_confidence,
            COUNT(*) as case_count
-         FROM comparison_cases
-         WHERE ck_confidence IS NOT NULL AND created_at >= ?
-         GROUP BY date(created_at)
-         ORDER BY date(created_at)`,
+         FROM comparison_cases cc
+         JOIN comparison_runs cr ON cr.id = cc.run_id
+         WHERE ${conditions.join(" AND ")}
+         GROUP BY date(cc.created_at)
+         ORDER BY date(cc.created_at)`,
       )
-      .all(cutoff) as Array<{ date: string; avg_confidence: number; case_count: number }>;
+      .all(...params) as Array<{ date: string; avg_confidence: number; case_count: number }>;
 
     return rows.map((r) => ({
       date: r.date,

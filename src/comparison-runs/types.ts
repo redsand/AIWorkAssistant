@@ -92,6 +92,7 @@ export interface CategoryBreakdown {
 }
 
 export interface ComparisonDashboardStats {
+  source: ComparisonSource | "all";
   totalRuns: number;
   totalCases: number;
   overallWins: { claimkit: number; rag: number; tie: number };

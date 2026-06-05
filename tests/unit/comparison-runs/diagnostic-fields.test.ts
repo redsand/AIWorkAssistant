@@ -153,6 +153,65 @@ describe("ComparisonRunDatabase — diagnostic fields", () => {
       expect(c.winner_reason).toBe("low_confidence");
     });
   });
+
+  describe("source-scoped dashboard stats", () => {
+    it("separates live and batch aggregate stats", () => {
+      db.createRun({
+        source: "live",
+        description: "live run",
+        cases: [
+          {
+            query: "live query",
+            category: "direct_fact",
+            overallWinner: "claimkit",
+            winnerReason: "high_confidence",
+            rag: { contextTokens: 100, sections: 1, processingTimeMs: 20 },
+            claimkit: {
+              confidence: 0.9,
+              answerability: "answerable",
+              claimCount: 3,
+              processingTimeMs: 80,
+              contradictions: 0,
+            },
+          },
+        ],
+      });
+      db.createRun({
+        source: "batch",
+        description: "batch run",
+        cases: [
+          {
+            query: "batch query",
+            category: "direct_fact",
+            overallWinner: "rag",
+            winnerReason: "low_confidence",
+            rag: { contextTokens: 100, sections: 1, processingTimeMs: 20 },
+            claimkit: {
+              confidence: 0.1,
+              answerability: "answerable",
+              claimCount: 1,
+              processingTimeMs: 10,
+              contradictions: 0,
+            },
+          },
+        ],
+      });
+
+      const liveStats = db.getDashboardStats({ source: "live" });
+      const batchStats = db.getDashboardStats({ source: "batch" });
+      const allStats = db.getDashboardStats();
+
+      expect(liveStats.source).toBe("live");
+      expect(liveStats.totalRuns).toBe(1);
+      expect(liveStats.overallWins).toEqual({ claimkit: 1, rag: 0, tie: 0 });
+      expect(batchStats.source).toBe("batch");
+      expect(batchStats.totalRuns).toBe(1);
+      expect(batchStats.overallWins).toEqual({ claimkit: 0, rag: 1, tie: 0 });
+      expect(allStats.source).toBe("all");
+      expect(allStats.totalRuns).toBe(2);
+      expect(allStats.overallWins).toEqual({ claimkit: 1, rag: 1, tie: 0 });
+    });
+  });
 });
 
 describe("saveLiveComparison — diagnostic fields", () => {

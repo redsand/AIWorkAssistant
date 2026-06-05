@@ -191,6 +191,7 @@ export async function assembleContextPacket(
 
   let claimKitResult: Awaited<ReturnType<typeof claimKitAdapter.query>> | null = null;
   let ckMs = 0;
+  let claimKitTimedOut = false;
   if (claimKitAvailable) {
     const seedStart = Date.now();
     void ingestScoredDocumentsForQuery(docs, query, env.CLAIMKIT_QUERY_SEED_LIMIT).catch((err) => {
@@ -207,6 +208,7 @@ export async function assembleContextPacket(
       ckMs = Date.now() - ckStart;
       stageTimings.claimkitQueryMs = ckMs;
       if (!claimKitResult) {
+        claimKitTimedOut = true;
         console.warn(`[ClaimKit] Query skipped after ${ckMs}ms timeout`);
       }
       if (claimKitResult) {
@@ -542,6 +544,20 @@ export async function assembleContextPacket(
           : 1,
       budgetUtilization,
       stageTimings,
+      claimkit: {
+        enabled: env.CLAIMKIT_ENABLED,
+        available: claimKitAvailable,
+        used: claimKitResult !== null,
+        timedOut: claimKitTimedOut,
+        includedInMessages: Boolean(claimKitEnforced?.content.trim()),
+        preferredSource: routing.preferredSource,
+        routingReason: routing.routingReason,
+        confidence: claimKitResult?.confidence ?? null,
+        answerability: claimKitResult?.answerability ?? null,
+        claimCount: claimKitResult?.metadata.claimCount ?? null,
+        sourceCount: claimKitResult?.metadata.sourceIds.length ?? null,
+        retrievalScore: claimKitResult?.metadata.retrievalScore ?? null,
+      },
       createdAt: new Date(),
     },
   };

@@ -63,34 +63,95 @@ export class ZaiProvider extends AIProvider {
 
   /**
    * Z.ai/GLM-specific message normalization. GLM is stricter than OpenAI
-   * about message format:
-   * 1. Assistant messages with tool_calls must have non-empty content.
-   * 2. No consecutive messages of the same role (user/user, assistant/assistant).
+   * about message format. The docs show error 1214 example:
+   *   {"error":{"code":"1214","message":"Input cannot be empty"}}
+   *
+   * Rules applied:
+   * 1. Every message must have non-empty string content (replace empty/null with " ").
+   * 2. Only consecutive user messages are merged; tool responses are left intact.
    */
   private normalizeMessagesForZai(messages: any[]): any[] {
     const normalized: any[] = [];
-    for (let msg of messages) {
-      // Ensure assistant messages with tool_calls have non-empty content
-      if (msg.role === "assistant" && msg.tool_calls?.length > 0 && (!msg.content || msg.content.trim() === "")) {
-        msg = { ...msg, content: " " };
+    for (const msg of messages) {
+      // Defensive: ensure no message has empty/null/undefined content.
+      let patched = msg;
+      if (!patched.content || String(patched.content).trim() === "") {
+        patched = { ...patched, content: " " };
       }
 
-      // Skip consecutive messages of the same role (keep the latest)
-      if (normalized.length > 0 && normalized[normalized.length - 1].role === msg.role) {
-        // Merge content for user/system messages; replace for assistant/tool
+      if (normalized.length > 0 && normalized[normalized.length - 1].role === patched.role) {
         const prev = normalized[normalized.length - 1];
-        if (msg.role === "user" || msg.role === "system") {
-          prev.content = `${prev.content}\n\n${msg.content}`;
+        if (patched.role === "user") {
+          prev.content = `${prev.content}\n\n${patched.content}`;
           continue;
         }
-        // For assistant/tool, replace the previous with the current
-        normalized[normalized.length - 1] = msg;
-        continue;
+        // For system/assistant/tool: do NOT merge or replace.
+        // Consecutive system messages shouldn't exist (mergeSystemMessages).
+        // Consecutive tool messages ARE valid (multiple tool responses).
+        // Consecutive assistant messages are a bug elsewhere; push and let
+        // validation catch it.
       }
 
-      normalized.push(msg);
+      normalized.push(patched);
     }
     return normalized;
+  }
+
+  /**
+   * Preflight payload validator for Z.ai/GLM. Throws immediately (before any
+   * HTTP request) if the message array violates known GLM invariants.
+   * This prevents token-wasting retry loops on unrecoverable payload errors.
+   */
+  private validateZaiPayload(body: Record<string, unknown>): void {
+    const messages = body.messages as any[];
+    if (!Array.isArray(messages) || messages.length === 0) {
+      throw new Error("[Z.ai PAYLOAD VALIDATION] messages array is empty or missing");
+    }
+
+    const allowedRoles = new Set(["system", "user", "assistant", "tool"]);
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      if (!msg.role || !allowedRoles.has(msg.role)) {
+        throw new Error(
+          `[Z.ai PAYLOAD VALIDATION] message[${i}] has invalid role '${msg.role}'. Raw: ${JSON.stringify(msg).substring(0, 200)}`,
+        );
+      }
+      if (typeof msg.content !== "string" || msg.content === "") {
+        throw new Error(
+          `[Z.ai PAYLOAD VALIDATION] message[${i}] (role=${msg.role}) has empty or missing content. Raw: ${JSON.stringify(msg).substring(0, 200)}`,
+        );
+      }
+      if (msg.role === "tool" && (!msg.tool_call_id || typeof msg.tool_call_id !== "string")) {
+        throw new Error(
+          `[Z.ai PAYLOAD VALIDATION] message[${i}] (role=tool) is missing tool_call_id. Raw: ${JSON.stringify(msg).substring(0, 200)}`,
+        );
+      }
+      if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
+        for (const tc of msg.tool_calls) {
+          if (!tc.id || typeof tc.id !== "string") {
+            throw new Error(
+              `[Z.ai PAYLOAD VALIDATION] message[${i}] (role=assistant) has tool_call missing id. Raw: ${JSON.stringify(msg).substring(0, 200)}`,
+            );
+          }
+        }
+      }
+    }
+
+    // Consecutive same-role check (tool exempt)
+    for (let i = 1; i < messages.length; i++) {
+      const prev = messages[i - 1];
+      const curr = messages[i];
+      if (prev.role === curr.role && curr.role !== "tool") {
+        throw new Error(
+          `[Z.ai PAYLOAD VALIDATION] consecutive ${curr.role} messages at index ${i - 1} and ${i}. ` +
+          `This usually means a message was dropped during pruning/repair.`,
+        );
+      }
+    }
+
+    if (messages[0].role === "tool") {
+      throw new Error("[Z.ai PAYLOAD VALIDATION] first message cannot be role=tool");
+    }
   }
 
 
@@ -113,6 +174,7 @@ export class ZaiProvider extends AIProvider {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const requestBody = this.buildRequestBody(request);
+        this.validateZaiPayload(requestBody);
         const attemptTimeout = this.getAttemptTimeout(attempt);
 
         console.log("[Z.ai API] Sending request:", {
@@ -166,6 +228,10 @@ export class ZaiProvider extends AIProvider {
         return result;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
+
+        if (lastError.message.includes("[Z.ai PAYLOAD VALIDATION]")) {
+          throw lastError; // don't retry unrecoverable payload errors
+        }
 
         if (axios.isAxiosError(error)) {
           const status = error.response?.status;
@@ -268,6 +334,7 @@ export class ZaiProvider extends AIProvider {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const requestBody = this.buildRequestBody({ ...request, stream: true });
+        this.validateZaiPayload(requestBody);
         const toolNameMap = (requestBody as any)[kToolNameMap] as Map<string, string> | undefined;
 
         console.log("[Z.ai API] Sending stream request:", {
@@ -408,8 +475,10 @@ export class ZaiProvider extends AIProvider {
         return;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
-        // Context overflow and auth errors should not be retried
+        // Context overflow, auth, and payload validation errors should not be retried
         if (
+          lastError.message.includes("[Z.ai PAYLOAD VALIDATION]") ||
+          lastError.message.includes("bad request") ||
           lastError.message.includes("context length exceeded") ||
           lastError.message.includes("authentication failed") ||
           lastError.message.includes("permission denied")

@@ -64,7 +64,7 @@ export function repairToolMessagePairs(messages: ChatMessage[]): ChatMessage[] {
             .forEach((m) => result.push(m));
         } else {
           const { tool_calls, ...rest } = msg as AssistantMessage;
-          if (rest.content) result.push(rest);
+          result.push({ ...rest, content: rest.content ?? "" });
         }
       } else {
         const { tool_calls, ...rest } = msg as AssistantMessage;

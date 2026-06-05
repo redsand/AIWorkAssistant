@@ -85,6 +85,9 @@ export function saveLiveComparison(params: {
   db?: ComparisonRunDatabase;
 }): void {
   try {
+    if (!params.db && process.env.NODE_ENV === "test") {
+      return;
+    }
     const target = params.db ?? comparisonRunDatabase;
     target.createRun({
       source: "live",

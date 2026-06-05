@@ -66,6 +66,9 @@ vi.doMock("../../../src/config/env", () => ({
     CLAIMKIT_TOP_K: 10,
     CLAIMKIT_MIN_SCORE: 0.0,
     CLAIMKIT_MAX_EVIDENCE_ITEMS: 20,
+    CLAIMKIT_QUERY_SEED_LIMIT: 5,
+    CLAIMKIT_QUERY_TIMEOUT_MS: 120000,
+    CLAIMKIT_INIT_TIMEOUT_MS: 5000,
   },
 }));
 
@@ -207,12 +210,54 @@ describe("assembleContextPacket - ClaimKit integration", () => {
     expect(typedSection.confidence).toBe(0.85);
   });
 
+  it("should expose ClaimKit usage diagnostics", async () => {
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+
+    const packet = await assembleContextPacket(baseParams);
+
+    expect(packet.diagnostics.claimkit).toMatchObject({
+      enabled: true,
+      available: true,
+      used: true,
+      timedOut: false,
+      includedInMessages: true,
+      preferredSource: "claimkit",
+      routingReason: "high_confidence",
+      confidence: 0.85,
+      answerability: "answerable",
+      claimCount: 4,
+      sourceCount: 2,
+      retrievalScore: 0.92,
+    });
+  });
+
   it("should not call claimKitAdapter.query() when ClaimKit is unavailable", async () => {
     mockClaimKitAdapter.initialize.mockResolvedValue(false);
 
     await assembleContextPacket(baseParams);
 
     expect(mockClaimKitAdapter.query).not.toHaveBeenCalled();
+  });
+
+  it("should expose ClaimKit unavailable diagnostics", async () => {
+    mockClaimKitAdapter.initialize.mockResolvedValue(false);
+
+    const packet = await assembleContextPacket(baseParams);
+
+    expect(packet.diagnostics.claimkit).toMatchObject({
+      enabled: true,
+      available: false,
+      used: false,
+      timedOut: false,
+      includedInMessages: false,
+      preferredSource: "rag",
+      routingReason: "ck_unavailable",
+      confidence: null,
+      answerability: null,
+      claimCount: null,
+      sourceCount: null,
+      retrievalScore: null,
+    });
   });
 
   it("should not include claimkit section when ClaimKit is unavailable", async () => {

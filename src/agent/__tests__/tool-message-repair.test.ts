@@ -130,6 +130,28 @@ describe("repairToolMessagePairs", () => {
     expect(assistant.tool_calls![0].id).toBe("tc1");
   });
 
+  it("should keep assistant with empty content when no tool calls match responses", () => {
+    const messages: ChatMessage[] = [
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "tc1", function: { name: "read_file" } },
+        ],
+      } as AssistantMessage,
+      { role: "tool", content: "orphan", tool_call_id: "tc-different" } as ToolMessage,
+      { role: "user", content: "next" },
+    ];
+
+    const result = repairToolMessagePairs(messages);
+    // Assistant should be kept (with empty content) to preserve role alternation;
+    // orphaned tool response is dropped.
+    expect(result).toHaveLength(2);
+    expect(result[0]).toHaveProperty("role", "assistant");
+    expect((result[0] as { content: string }).content).toBe("");
+    expect(result[1]).toHaveProperty("role", "user");
+  });
+
   // ── Non-tool messages ───────────────────────────────────────────────
 
   it("should pass through non-tool messages unchanged", () => {
