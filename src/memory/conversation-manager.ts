@@ -69,7 +69,10 @@ export class ConversationManager {
 
   // Configuration thresholds — compact early to keep context lean
   private readonly MAX_MESSAGES_BEFORE_COMPACT = 40;
-  private readonly MIN_RECENT_MESSAGES = 10;
+  // Keep more recent messages outside the summary so short-term context is never lost.
+  private readonly MIN_RECENT_MESSAGES = 20;
+  // Re-summarize when this many new messages have accumulated since the last summary.
+  private readonly RESUMMARY_THRESHOLD = 15;
   private readonly MAX_CONTEXT_TOOL_CHARS = 12_000;
   private readonly MAX_CONTEXT_MESSAGE_CHARS = 8_000;
   private readonly SESSION_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -281,7 +284,7 @@ export class ConversationManager {
         const oldMessages = allMessages.slice(0, -this.MIN_RECENT_MESSAGES);
         const recentMessages = allMessages.slice(-this.MIN_RECENT_MESSAGES);
         if (includeSummaries) {
-          const summary = this.ensureActiveSessionSummary(
+          const summary = await this.ensureActiveSessionSummary(
             session,
             oldMessages,
           );
@@ -322,7 +325,7 @@ export class ConversationManager {
       const recentMessages = allMessages.slice(-recentCount);
 
       if (includeSummaries) {
-        const summary = this.ensureActiveSessionSummary(session, oldMessages);
+        const summary = await this.ensureActiveSessionSummary(session, oldMessages);
         messages.push(this.toSummaryChatMessage(summary));
       }
 
@@ -379,9 +382,16 @@ export class ConversationManager {
   }
 
   private toSummaryChatMessage(summary: MemorySummary): ChatMessage {
+    const topics = summary.keyTopics.length > 0
+      ? `\n\nTopics covered: ${summary.keyTopics.join(", ")}`
+      : "";
     return {
       role: "system",
-      content: `Previous conversation summary:\n${summary.summary}\n\nKey topics discussed: ${summary.keyTopics.join(", ")}`,
+      content:
+        `CONVERSATION HISTORY (earlier messages compressed — treat this as authoritative):\n\n` +
+        `${summary.summary}${topics}\n\n` +
+        `IMPORTANT: Do NOT re-call any tool whose result is already recorded above. ` +
+        `If a cached ref (tc-xxx) is listed, use tools.fetch_cached to retrieve that data instead of repeating the original call.`,
     };
   }
 
@@ -671,23 +681,25 @@ export class ConversationManager {
   private async buildCompactSummaryLLM(messages: Message[]): Promise<string> {
     const conversationText = this.serializeMessagesForSummary(messages);
 
-    const summaryPrompt = `You are summarizing a conversation between a user and an AI assistant. Your summary will replace the older messages in the conversation history, so the AI can continue seamlessly WITHOUT re-calling tools or re-asking questions.
+    const summaryPrompt = `You are summarizing a conversation between a user and an AI assistant. Your summary REPLACES the older messages in the context window — the AI will only see this summary plus the most recent messages. The summary must be complete enough that the AI never needs to re-call a tool or re-ask a question whose answer was already obtained.
 
-PRESERVE ALL OF THE FOLLOWING — this is critical to prevent the AI from wasting tokens on redundant actions:
+CRITICAL — preserve ALL of the following with full fidelity:
 
-1. **Tool results with actual data**: For every tool call, include the tool name, its parameters, and the KEY DATA from the result (IDs, names, statuses, counts, specific items found). Do NOT just say "OK" or "completed" — include the actual data.
+1. **Every tool call and its result**: For each tool invoked, record the tool name, key parameters, and the ACTUAL DATA returned — IDs, names, counts, statuses, dates, error messages. Never say "returned data" without saying what the data was. If a cached ref is available (e.g. [cached ref: tc-abc123]), include it so the AI can retrieve the full result later.
 
-2. **Decisions made**: Any conclusions the assistant reached, recommendations given, or choices the user confirmed.
+2. **What the user asked for**: Exact request(s), including any specific date ranges, customer names, filters, or formats requested.
 
-3. **User's goals**: What the user explicitly asked for and whether it was completed or still pending.
+3. **What has been completed**: Specific outcomes — reports generated, data fetched, items found. Include concrete numbers (e.g. "37 HAWK IR incidents found for May 1–Jun 4").
 
-4. **Pending actions**: Anything the assistant said it would do but hasn't done yet.
+4. **What is still in progress or pending**: Any task the user requested that is not yet done.
 
-5. **Facts established**: Specific Jira keys, roadmap IDs, ticket statuses, dates, or other concrete data referenced.
+5. **Decisions, conclusions, and recommendations**: Any choices confirmed, paths taken, or advice given.
 
-FORMAT: Use bullet points grouped by category. Be concise but never omit concrete data (IDs, keys, names, statuses).
+6. **Concrete identifiers**: Jira/ticket keys, case IDs, host names, CVE IDs, usernames, session IDs, dates — anything the AI would need to continue the work without starting over.
 
-Here is the conversation to summarize:
+FORMAT: Bullet points grouped by category. Each tool result gets its own bullet. Never compress actual data into vague phrases.
+
+Conversation to summarize (${messages.length} messages):
 
 ---
 ${conversationText}
@@ -697,7 +709,7 @@ ${conversationText}
       const summarizationTimeout = new Promise<never>((_, reject) =>
         setTimeout(
           () => reject(new Error("LLM summarization timed out")),
-          30_000,
+          25_000,
         ),
       );
       const response = await Promise.race([
@@ -706,17 +718,17 @@ ${conversationText}
             {
               role: "system",
               content:
-                "You are a precise conversation summarizer. You preserve all concrete data (IDs, keys, names, statuses) from tool results so the AI does not re-call tools.",
+                "You are a lossless conversation archivist. Your summaries preserve every fact, ID, count, and decision so an AI agent can continue work seamlessly. You never omit concrete data.",
             },
             { role: "user", content: summaryPrompt },
           ],
-          temperature: 0.3,
+          temperature: 0.1,
         }),
         summarizationTimeout,
       ]);
 
       if (response.content && response.content.trim().length > 50) {
-        return `[LLM Summary — ${messages.length} earlier messages]\n\n${response.content.trim()}`;
+        return `[Context Summary — ${messages.length} earlier messages compressed]\n\n${response.content.trim()}`;
       }
     } catch (error) {
       console.error(
@@ -750,7 +762,8 @@ ${conversationText}
       .map((m) => {
         switch (m.role) {
           case "user":
-            return `USER: ${m.content.substring(0, 500)}`;
+            // Include full user message — user intents must never be truncated away
+            return `USER: ${m.content.substring(0, 1500)}`;
           case "assistant": {
             const parts: string[] = [];
             if (m.toolCalls?.length) {
@@ -760,7 +773,7 @@ ${conversationText}
               }
             }
             if (m.content?.trim()) {
-              parts.push(m.content.substring(0, 400));
+              parts.push(m.content.substring(0, 800));
             }
             return `ASSISTANT: ${parts.join(" ")}`;
           }
@@ -774,9 +787,23 @@ ${conversationText}
             let resultText: string;
             try {
               const parsed = JSON.parse(m.content);
-              resultText = JSON.stringify(parsed, null, 0).substring(0, 600);
+              // If this result has a cache ref, include it so the AI can re-fetch if needed
+              const ref = parsed._cached_ref as string | undefined;
+              const refNote = ref ? ` [cached ref: ${ref}]` : "";
+              // For large results, keep the summary fields rather than raw JSON
+              if (parsed.data && typeof parsed.data === "object") {
+                const data = parsed.data as Record<string, unknown>;
+                const summary = data.summary ?? data.title ?? data.name ?? data.id;
+                if (summary) {
+                  resultText = `${JSON.stringify({ ...parsed, data: `[${typeof data}]` }, null, 0).substring(0, 1200)}${refNote}`;
+                } else {
+                  resultText = JSON.stringify(parsed, null, 0).substring(0, 1200) + refNote;
+                }
+              } else {
+                resultText = JSON.stringify(parsed, null, 0).substring(0, 1200) + refNote;
+              }
             } catch {
-              resultText = m.content.substring(0, 300);
+              resultText = m.content.substring(0, 600);
             }
             return `${label}${resultText}`;
           }
@@ -866,43 +893,35 @@ ${conversationText}
     return lines.join("\n");
   }
 
-  private ensureActiveSessionSummary(
+  private async ensureActiveSessionSummary(
     session: ConversationSession,
     summarizedMessages: Message[],
-  ): MemorySummary {
+  ): Promise<MemorySummary> {
     const existing = this.loadSessionSummary(session.id);
-    if (existing && existing.messageCount >= summarizedMessages.length) {
+    // Reuse summary if still fresh — re-summarize once RESUMMARY_THRESHOLD new
+    // messages have accumulated since the last summary was written.
+    if (existing && (summarizedMessages.length - existing.messageCount) < this.RESUMMARY_THRESHOLD) {
       return existing;
     }
 
-    const summary = this.buildDeterministicSessionSummary(
-      session,
-      summarizedMessages,
-    );
-    this.saveSessionSummary(summary);
-    return summary;
-  }
-
-  private buildDeterministicSessionSummary(
-    session: ConversationSession,
-    messages: Message[],
-  ): MemorySummary {
     const timeRange = {
-      start: messages[0]?.timestamp || session.createdAt,
-      end: messages[messages.length - 1]?.timestamp || session.updatedAt,
+      start: summarizedMessages[0]?.timestamp || session.createdAt,
+      end: summarizedMessages[summarizedMessages.length - 1]?.timestamp || session.updatedAt,
     };
 
-    return {
+    // Use the LLM-backed summarizer — same quality as session-end summaries.
+    const summaryText = await this.buildCompactSummaryLLM(summarizedMessages);
+
+    const summary: MemorySummary = {
       id: uuidv4(),
       userId: session.userId,
       sessionId: session.id,
-      title:
-        session.metadata.title || `Session ${new Date().toLocaleDateString()}`,
-      summary: this.buildCompactSummaryFallback(messages),
-      keyTopics: this.extractTopics(messages),
+      title: session.metadata.title || `Session ${new Date().toLocaleDateString()}`,
+      summary: summaryText,
+      keyTopics: this.extractTopics(summarizedMessages),
       startDate: timeRange.start,
       endDate: timeRange.end,
-      messageCount: messages.length,
+      messageCount: summarizedMessages.length,
       createdAt: new Date(),
       metadata: {
         mode: session.mode,
@@ -910,6 +929,8 @@ ${conversationText}
         active: true,
       },
     };
+    this.saveSessionSummary(summary);
+    return summary;
   }
 
   /**

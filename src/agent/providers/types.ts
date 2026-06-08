@@ -328,9 +328,11 @@ export abstract class AIProvider {
     if (pruned.length <= 4) return pruned;
 
     const system = pruned[0];
-    const userMsg = pruned[pruned.length - 1];
+    const userMsg = [...pruned].reverse().find((m) => m.role === "user");
     const recentCount = Math.min(pruned.length - 2, 6);
-    const recent = this.extractRecentMessages(pruned, recentCount);
+    const recent = this.extractRecentMessages(pruned, recentCount).filter(
+      (m) => m !== userMsg,
+    );
 
     const kept: ChatMessage[] = [
       system,
@@ -338,8 +340,8 @@ export abstract class AIProvider {
         role: "system",
         content: `[Earlier conversation truncated — ${pruned.length - recentCount - 2} messages removed to fit context window of ${messageBudget} tokens]`,
       },
+      ...(userMsg ? [userMsg] : []),
       ...recent,
-      userMsg,
     ];
 
     // Strict APIs (Z.ai/GLM) require the first non-system message to be 'user'.
@@ -364,7 +366,7 @@ export abstract class AIProvider {
     const perMsgBudget = Math.floor(messageBudget * 0.4 / kept.length);
     const perMsgChars = Math.max(200, perMsgBudget * CHARS_PER_TOKEN);
     const shrunk = kept.map((m, i) => {
-      if (i === 0 || i === kept.length - 1) return m;
+      if (i === 0 || m === userMsg) return m;
       if (m.content.length > perMsgChars) {
         return { ...m, content: m.content.substring(0, perMsgChars) + "\n...[truncated]" };
       }
@@ -409,17 +411,19 @@ export abstract class AIProvider {
     // Step 2: keep system + last 6 messages + user
     if (truncated.length > 4) {
       const system = truncated[0];
-      const userMsg = truncated[truncated.length - 1];
+      const userMsg = [...truncated].reverse().find((m) => m.role === "user");
       const recentCount = Math.min(truncated.length - 2, 6);
-      const recent = this.extractRecentMessages(truncated, recentCount);
+      const recent = this.extractRecentMessages(truncated, recentCount).filter(
+        (m) => m !== userMsg,
+      );
       const kept: ChatMessage[] = [
         system,
         {
           role: "system" as const,
           content: `[Earlier conversation truncated — ${truncated.length - recentCount - 2} messages removed]`,
         },
+        ...(userMsg ? [userMsg] : []),
         ...recent,
-        userMsg,
       ];
 
       estimated = this.estimateTokens(kept);
@@ -429,7 +433,7 @@ export abstract class AIProvider {
       const perMsgBudget = Math.floor(messageBudget * 0.4 / kept.length);
       const perMsgChars = Math.max(200, perMsgBudget * CHARS_PER_TOKEN);
       const shrunk = kept.map((m, i) => {
-        if (i === 0 || i === kept.length - 1) return m;
+        if (i === 0 || m === userMsg) return m;
         if (m.content.length > perMsgChars) {
           return { ...m, content: m.content.substring(0, perMsgChars) + "\n...[truncated]" };
         }
@@ -441,7 +445,7 @@ export abstract class AIProvider {
 
       // Step 4: emergency — all non-system/user messages to 1000 chars
       return shrunk.map((m, i) => {
-        if (i === 0 || i === kept.length - 1) return m;
+        if (i === 0 || m === userMsg) return m;
         if (m.content.length > 1000) {
           return { ...m, content: m.content.substring(0, 1000) + "\n...[truncated]" };
         }

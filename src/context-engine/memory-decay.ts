@@ -105,12 +105,31 @@ export function deduplicateByJaccard(
   if (scored.length <= 1) return scored;
 
   const result: ScoredMessage[] = [];
+  const lastUserIndex = [...scored]
+    .reverse()
+    .find((item) => item.message.role === "user")?.index;
 
   for (const item of scored) {
+    if (
+      item.index === lastUserIndex ||
+      item.message.role === "tool" ||
+      (item.message.role === "assistant" && item.message.tool_calls?.length)
+    ) {
+      result.push(item);
+      continue;
+    }
+
     const itemTokens = tokenize(item.message.content || "");
     let isDuplicate = false;
 
     for (const kept of result) {
+      if (
+        kept.index === lastUserIndex ||
+        kept.message.role === "tool" ||
+        (kept.message.role === "assistant" && kept.message.tool_calls?.length)
+      ) {
+        continue;
+      }
       const keptTokens = tokenize(kept.message.content || "");
       const sim = jaccardSimilarity(itemTokens, keptTokens);
       if (sim >= threshold) {

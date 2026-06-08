@@ -10,6 +10,7 @@ import {
   ToolCall,
 } from "./types";
 import { sanitizeToolName, repairToolMessagePairs } from "./tool-message-repair";
+import { zaiRateLimiter } from "./zai-rate-limiter";
 
 const kToolNameMap = Symbol("toolNameMap");
 
@@ -201,11 +202,17 @@ export class ZaiProvider extends AIProvider {
           timeout: `${Math.round(attemptTimeout / 1000)}s`,
         });
 
-        const response = await this.client.post(
-          "/chat/completions",
-          requestBody,
-          { timeout: attemptTimeout },
-        );
+        await zaiRateLimiter.acquire();
+        let response;
+        try {
+          response = await this.client.post(
+            "/chat/completions",
+            requestBody,
+            { timeout: attemptTimeout },
+          );
+        } finally {
+          zaiRateLimiter.release();
+        }
 
         const data = response.data;
         const message = data.choices[0].message;
@@ -298,6 +305,7 @@ export class ZaiProvider extends AIProvider {
               throw new Error(`Z.ai API rate limited (429) on final attempt`);
             }
             const delay = this.getRateLimitDelay(error, attempt);
+            zaiRateLimiter.reportRateLimit(delay);
             console.warn(
               `[Z.ai API] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`,
             );
@@ -360,11 +368,17 @@ export class ZaiProvider extends AIProvider {
           attempt: `${attempt}/${maxAttempts}`,
         });
 
-        const response = await this.client.post(
-          "/chat/completions",
-          requestBody,
-          { responseType: "stream", validateStatus: () => true },
-        );
+        await zaiRateLimiter.acquire();
+        let response;
+        try {
+          response = await this.client.post(
+            "/chat/completions",
+            requestBody,
+            { responseType: "stream", validateStatus: () => true },
+          );
+        } finally {
+          zaiRateLimiter.release();
+        }
 
         if (response.status !== 200) {
           const errorBody = await this.readStreamBody(response.data);
@@ -405,7 +419,8 @@ export class ZaiProvider extends AIProvider {
             if (attempt >= maxAttempts) {
               throw new Error(`Z.ai API rate limited (429) on final attempt: ${errorBody}`);
             }
-            const delay = this.getRetryDelay(attempt);
+            const delay = this.getStreamRateLimitDelay(response.headers, attempt);
+            zaiRateLimiter.reportRateLimit(delay);
             console.warn(`[Z.ai API] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
             await this.sleep(delay);
             continue;
@@ -586,8 +601,12 @@ export class ZaiProvider extends AIProvider {
   }
 
   private getRateLimitDelay(error: AxiosError, attempt: number): number {
+    return this.getStreamRateLimitDelay(error.response?.headers, attempt);
+  }
+
+  private getStreamRateLimitDelay(headers: Record<string, unknown> | undefined, attempt: number): number {
     const maxDelay = 60000;
-    const retryAfter = error.response?.headers?.["retry-after"];
+    const retryAfter = headers?.["retry-after"];
     if (retryAfter) {
       const seconds = Number(retryAfter);
       if (!isNaN(seconds) && seconds > 0) {

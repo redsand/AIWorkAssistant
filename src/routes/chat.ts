@@ -316,6 +316,55 @@ function compactToolResultForContext(result: unknown): unknown {
   return result;
 }
 
+function stripInternalParams(params: unknown): unknown {
+  if (!params || typeof params !== "object" || Array.isArray(params)) return params;
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(params as Record<string, unknown>)) {
+    if (!key.startsWith("_")) cleaned[key] = value;
+  }
+  return cleaned;
+}
+
+function summarizeFetchedResult(result: unknown): string {
+  if (!result || typeof result !== "object") return String(result ?? "null").substring(0, 200);
+  const obj = result as Record<string, unknown>;
+  if (obj.success === false) return `ERROR: ${String(obj.error ?? "unknown").substring(0, 160)}`;
+  const data = obj.data;
+  if (Array.isArray(data)) return `array of ${data.length} items`;
+  if (data && typeof data === "object") {
+    const dataObj = data as Record<string, unknown>;
+    if (typeof dataObj.path === "string") return `file ${dataObj.path}`;
+    if (typeof dataObj.name === "string") return `object ${dataObj.name}`;
+    if (Array.isArray(dataObj.items)) return `${dataObj.items.length} items`;
+    if (Array.isArray(dataObj.results)) return `${dataObj.results.length} results`;
+    if (typeof dataObj.summary === "string") return dataObj.summary.substring(0, 200);
+    return `object {${Object.keys(dataObj).slice(0, 6).join(",")}}`;
+  }
+  return String(data ?? "ok").substring(0, 200);
+}
+
+function compactToolResultForMemory(toolName: string, result: unknown): unknown {
+  if (toolName !== "tools.fetch_cached" || !result || typeof result !== "object") {
+    return compactToolResultForContext(result);
+  }
+
+  const obj = result as Record<string, unknown>;
+  const data = obj.data as Record<string, unknown> | undefined;
+  if (!data || typeof data !== "object") return compactToolResultForContext(result);
+
+  return {
+    success: obj.success ?? true,
+    data: {
+      ref: data.ref,
+      tool: data.tool,
+      params: stripInternalParams(data.params),
+      called_at: data.called_at,
+      result_summary: summarizeFetchedResult(data.result),
+      _note: "Full cached result was fetched in this turn but compacted in session memory. Use the ref only if exact full content is still needed.",
+    },
+  };
+}
+
 function shouldIndexToolResult(toolName: string, result: unknown): boolean {
   if (!env.CLAIMKIT_ENABLED || !claimKitAdapter.isAvailable()) return false;
   // Skip internal/meta tools and tools that change frequently
@@ -358,6 +407,58 @@ function stringifyToolResultForContext(result: unknown): string {
   const maxChars = 25_000;
   if (content.length <= maxChars) return content;
   return `${content.substring(0, maxChars)}\n...[tool result truncated for chat context: ${content.length - maxChars} chars omitted]`;
+}
+
+function stringifyToolResultForMemory(toolName: string, result: unknown): string {
+  const content = JSON.stringify(compactToolResultForMemory(toolName, result));
+  const maxChars = 4_000;
+  if (content.length <= maxChars) return content;
+  return `${content.substring(0, maxChars)}\n...[tool result compacted for session memory: ${content.length - maxChars} chars omitted]`;
+}
+
+function getMessageSequenceIssue(messages: ChatMessage[]): string | null {
+  const firstNonSystem = messages.findIndex((m) => m.role !== "system");
+  if (firstNonSystem !== -1 && messages[firstNonSystem].role !== "user") {
+    return `first non-system message at index ${firstNonSystem} is ${messages[firstNonSystem].role}`;
+  }
+
+  for (let i = 1; i < messages.length; i++) {
+    const prev = messages[i - 1];
+    const curr = messages[i];
+    if (prev.role === curr.role && curr.role !== "tool" && curr.role !== "system") {
+      return `consecutive ${curr.role} messages at index ${i - 1} and ${i}`;
+    }
+  }
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    const toolCalls = msg.role === "assistant" ? msg.tool_calls : undefined;
+    if (!toolCalls?.length) continue;
+    const expected = new Set(toolCalls.map((tc) => tc.id).filter(Boolean));
+    const actual = new Set<string>();
+    let j = i + 1;
+    while (j < messages.length && messages[j].role === "tool") {
+      const toolCallId = messages[j].tool_call_id;
+      if (toolCallId) actual.add(toolCallId);
+      j++;
+    }
+    const missing = [...expected].filter((id) => !actual.has(id));
+    if (missing.length > 0) {
+      return `assistant tool call at index ${i} is missing tool result(s): ${missing.join(",")}`;
+    }
+  }
+
+  return null;
+}
+
+function warnIfInvalidModelMessages(messages: ChatMessage[], source: string): void {
+  const issue = getMessageSequenceIssue(messages);
+  if (!issue) return;
+  console.warn("[Chat] Invalid model message sequence", {
+    source,
+    issue,
+    roles: messages.map((m, index) => `${index}:${m.role}`).join(" "),
+  });
 }
 
 /**
@@ -551,6 +652,7 @@ async function runChatJob(
   mode: string,
   userId: string,
   model?: string,
+  originalUserQueryOverride?: string,
 ) {
   console.log("[Chat/Job] runChatJob entered for", sessionId);
   const job = getOrCreateJob(sessionId);
@@ -569,7 +671,7 @@ async function runChatJob(
   job.lastActivityAt = new Date();
   job.completedAt = undefined;
 
-  const originalUserQuery = messages.find((m) => m.role === "user")?.content ?? "Unknown query";
+  const originalUserQuery = originalUserQueryOverride ?? messages.find((m) => m.role === "user")?.content ?? "Unknown query";
 
   let runId: string | null = job.runId ?? null;
   if (!runId) {
@@ -593,6 +695,7 @@ async function runChatJob(
     try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
     messages = injectManifest(messages, sessionId);
+    warnIfInvalidModelMessages(messages, "stream_initial");
     let { content, toolCalls } = await streamChatIteration(
       sessionId, job, messages, expandedTools.length > 0 ? expandedTools : tools, model,
     );
@@ -672,7 +775,7 @@ async function runChatJob(
 
         conversationManager.addMessage(sessionId, {
           role: "tool",
-          content: stringifyToolResultForContext(contextValue),
+          content: stringifyToolResultForMemory(canonicalName, contextValue),
           name: canonicalName,
           tool_call_id: tc.id,
         });
@@ -695,7 +798,7 @@ async function runChatJob(
           allToolResults[id] = result;
           emitJobEvent(sessionId, "tool_result", { id, result });
           ingestToolResult(name, result, sessionId);
-          conversationManager.addMessage(sessionId, { role: "tool", content: stringifyToolResultForContext(result), name, tool_call_id: id });
+          conversationManager.addMessage(sessionId, { role: "tool", content: stringifyToolResultForMemory(name, result), name, tool_call_id: id });
         }
       }
 
@@ -711,6 +814,7 @@ async function runChatJob(
       ];
       messages = aiClient.pruneMessages(messages, expandedTools.length > 0 ? expandedTools : tools || undefined) as ChatMessage[];
       messages = injectManifest(messages, sessionId);
+      warnIfInvalidModelMessages(messages, "stream_tool_loop");
 
       assertJobActive(job);
       try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
@@ -925,6 +1029,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       let stepOrder = 0;
       try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
       messages = injectManifest(messages, sessionId);
+      warnIfInvalidModelMessages(messages, "chat_initial");
       let response = await aiClient.chat({
         messages: messages,
         tools,
@@ -1039,7 +1144,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           if (sessionId) {
             conversationManager.addMessage(sessionId, {
               role: "tool",
-              content: stringifyToolResultForContext(contextValue),
+              content: stringifyToolResultForMemory(canonicalName, contextValue),
               name: canonicalName,
               tool_call_id: tc.id,
             });
@@ -1065,6 +1170,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           expandedTools.length > 0 ? expandedTools : tools || undefined;
         messages = aiClient.pruneMessages(messages, currentTools) as ChatMessage[];
         messages = injectManifest(messages, sessionId);
+        warnIfInvalidModelMessages(messages, "chat_tool_loop");
 
         // Use preserved original query (pruning may remove user messages)
         try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
@@ -1391,7 +1497,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       }
 
       console.log("[Chat/Stream] Starting runChatJob for", sessionId);
-      runChatJob(sessionId!, messages, tools, body.mode, body.userId, requestModel)
+      runChatJob(sessionId!, messages, tools, body.mode, body.userId, requestModel, body.message)
         .then(() => console.log("[Chat/Stream] runChatJob completed for", sessionId))
         .catch((err) => {
           logChatError({

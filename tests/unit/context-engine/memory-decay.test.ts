@@ -282,8 +282,8 @@ describe("deduplicateByJaccard", () => {
     const content1 = "the jira api endpoint is currently down and needs attention";
     const content2 = "the jira api endpoint is currently down and requires attention";
     const messages: ChatMessage[] = [
-      makeMessage({ role: "user", content: content1 }),
-      makeMessage({ role: "user", content: content2 }),
+      makeMessage({ role: "assistant", content: content1 }),
+      makeMessage({ role: "assistant", content: content2 }),
     ];
     const scored = scoreMessages(messages, "");
     const deduped = deduplicateByJaccard(scored, 0.72);
@@ -295,8 +295,8 @@ describe("deduplicateByJaccard", () => {
     const content1 = "identical content about the api endpoint bug issue";
     const content2 = "identical content about the api endpoint bug issue";
     const messages: ChatMessage[] = [
-      makeMessage({ role: "user", content: content1 }),
-      makeMessage({ role: "user", content: content2 }),
+      makeMessage({ role: "assistant", content: content1 }),
+      makeMessage({ role: "assistant", content: content2 }),
     ];
     const scored = scoreMessages(messages, "");
     const deduped = deduplicateByJaccard(scored);
@@ -307,8 +307,8 @@ describe("deduplicateByJaccard", () => {
     const content1 = "the jira api is down";
     const content2 = "the github api is down";
     const messages: ChatMessage[] = [
-      makeMessage({ role: "user", content: content1 }),
-      makeMessage({ role: "user", content: content2 }),
+      makeMessage({ role: "assistant", content: content1 }),
+      makeMessage({ role: "assistant", content: content2 }),
     ];
     const scored = scoreMessages(messages, "");
     // With a very high threshold, both should be kept
@@ -329,6 +329,56 @@ describe("deduplicateByJaccard", () => {
     const deduped = deduplicateByJaccard(scored);
     // Both have empty content, so Jaccard of two empty sets returns 0
     expect(deduped).toHaveLength(2);
+  });
+
+  it("keeps the latest user message even when it duplicates an older request", () => {
+    const content = "create a github dashboard for token usage with a progress bar";
+    const messages: ChatMessage[] = [
+      makeMessage({ role: "user", content }),
+      makeMessage({ role: "assistant", content: "I will inspect the repository." }),
+      makeMessage({ role: "user", content }),
+    ];
+    const scored = scoreMessages(messages, "");
+    const deduped = deduplicateByJaccard(scored);
+
+    expect(deduped.map((s) => s.index)).toContain(2);
+  });
+
+  it("does not dedupe assistant tool calls or tool responses", () => {
+    const messages: ChatMessage[] = [
+      makeMessage({
+        role: "assistant",
+        content: "",
+        tool_calls: [{
+          id: "call_1",
+          type: "function",
+          function: { name: "github.get_file", arguments: "{}" },
+        }],
+      }),
+      makeMessage({
+        role: "tool",
+        content: "{\"success\":true,\"_cached_ref\":\"tc-one\",\"_cached_size\":100}",
+        tool_call_id: "call_1",
+      }),
+      makeMessage({
+        role: "assistant",
+        content: "",
+        tool_calls: [{
+          id: "call_2",
+          type: "function",
+          function: { name: "github.get_file", arguments: "{}" },
+        }],
+      }),
+      makeMessage({
+        role: "tool",
+        content: "{\"success\":true,\"_cached_ref\":\"tc-two\",\"_cached_size\":100}",
+        tool_call_id: "call_2",
+      }),
+    ];
+    const scored = scoreMessages(messages, "");
+    const deduped = deduplicateByJaccard(scored);
+
+    expect(deduped.map((s) => s.index)).toEqual([0, 1, 2, 3]);
   });
 });
 
