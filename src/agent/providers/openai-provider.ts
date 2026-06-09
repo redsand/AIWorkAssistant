@@ -249,9 +249,53 @@ export class OpenAIProvider extends AIProvider {
 
       if (DEBUG) console.log("[OpenAI] Starting stream request");
 
-      const response = await this.client.post("/chat/completions", requestBody, {
-        responseType: "stream",
-      });
+      const maxAttempts = this.config.maxRetries + 1;
+      let lastError: Error | null = null;
+      let response: any;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          response = await this.client.post("/chat/completions", requestBody, {
+            responseType: "stream",
+          });
+          break;
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          if (axios.isAxiosError(error)) {
+            const status = error.response?.status;
+            if (status === 429) {
+              if (attempt >= maxAttempts) {
+                throw new Error(`OpenAI API rate limited (429) on final attempt`);
+              }
+              const delay = this.getRateLimitDelay(error, attempt);
+              if (DEBUG) console.warn(`[OpenAI] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
+              yield { type: "thinking" as const, content: `Rate limited by OpenAI API, retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${maxAttempts})...` };
+              await this.sleep(delay);
+              continue;
+            }
+            if (status && status >= 500) {
+              if (attempt >= maxAttempts) {
+                throw new Error(`OpenAI API server error (${status}) on final attempt`);
+              }
+              const delay = this.getRetryDelay(attempt);
+              if (DEBUG) console.warn(`[OpenAI] Server error (${status}), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
+              yield { type: "thinking" as const, content: `OpenAI API server error (${status}), retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${maxAttempts})...` };
+              await this.sleep(delay);
+              continue;
+            }
+            if (status === 400 || status === 401 || status === 403 || status === 404) {
+              throw lastError;
+            }
+          }
+          if (attempt < maxAttempts) {
+            const delay = this.getRetryDelay(attempt);
+            if (DEBUG) console.warn(`[OpenAI] Network error, waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
+            yield { type: "thinking" as const, content: `Network error connecting to OpenAI API, retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${maxAttempts})...` };
+            await this.sleep(delay);
+            continue;
+          }
+          throw lastError;
+        }
+      }
 
       let lineBuffer = "";
       const toolCallAccumulator: ToolCall[] = [];

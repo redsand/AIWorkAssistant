@@ -144,6 +144,7 @@ class JobTimeoutError extends Error {
   constructor(timeoutMs: number) {
     super(
       `The agent job timed out after ${Math.round(timeoutMs / 60000)} minutes. ` +
+      `This can happen with many tool loops or when the AI provider is rate-limiting. ` +
       `Try narrowing the scope or splitting into smaller requests.`,
     );
     this.name = "JobTimeoutError";
@@ -746,6 +747,10 @@ async function runChatJob(
 
     messages = injectManifest(messages, sessionId);
     warnIfInvalidModelMessages(messages, "stream_initial");
+    if (Date.now() - jobStartTime > JOB_TIMEOUT_MS) {
+      console.warn(`[Chat/Job] Job timeout (${JOB_TIMEOUT_MS}ms) reached before first stream for ${sessionId}`);
+      throw new JobTimeoutError(JOB_TIMEOUT_MS);
+    }
     let { content, thinking: lastThinking, toolCalls } = await streamChatIteration(
       sessionId, job, messages, expandedTools.length > 0 ? expandedTools : tools, model,
     );
@@ -914,9 +919,10 @@ async function runChatJob(
     // The new request has already created a fresh job with its own subscribers;
     // emitting error/state events here would leak into the new stream.
     if (!cancelled) {
+      const isTimeout = error instanceof JobTimeoutError;
       if (job.events[job.events.length - 1]?.event !== "error") {
         emitJobEvent(sessionId, "error", {
-          error: "Failed to process request",
+          error: isTimeout ? "Request timed out" : "Failed to process request",
           message: error instanceof Error ? error.message : "Unknown error",
           cancelled,
         });
@@ -1380,9 +1386,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
           const subscriber = (event: string, data: unknown) => {
             sendEvent(event, data);
             if (event === "done" || event === "error") {
+              const cleanupDelay = event === "error" ? 1500 : 100;
               setTimeout(() => {
                 cleanupConnection();
-              }, 100);
+              }, cleanupDelay);
             }
           };
           activeJob.subscribers.add(subscriber);
@@ -1456,9 +1463,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
         sendEvent(event, data);
         if (event === "done" || event === "error") {
           console.log(`[Chat/Stream] Subscriber received ${event}, scheduling cleanup`);
+          const cleanupDelay = event === "error" ? 1500 : 100;
           setTimeout(() => {
             cleanupConnection();
-          }, 100);
+          }, cleanupDelay);
         }
       };
       job.subscribers.add(subscriber);
@@ -1758,9 +1766,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
           const subscriber = (event: string, data: unknown) => {
             sendEvent(event, data);
             if (event === "done" || event === "error") {
+              const cleanupDelay = event === "error" ? 1500 : 100;
               setTimeout(() => {
                 cleanupConnection();
-              }, 100);
+              }, cleanupDelay);
             }
           };
           currentJob.subscribers.add(subscriber);

@@ -16,6 +16,7 @@ import { recordGateFindings } from "./autonomous-loop/review-gate-state";
 import { formatConvergenceReport, initConvergenceState, recordRoundFindings, checkConvergence, DEFAULT_CONVERGENCE_CONFIG } from "./autonomous-loop/convergence";
 import { loadConvergenceState } from "./autonomous-loop/convergence-state";
 import { closeSourceIssue } from "./autonomous-loop/close-source-issue";
+import { conversationManager } from "./memory/conversation-manager";
 
 // ── ANSI color helpers ──────────────────────────────────────────────────────
 const useColor = process.stdout.isTTY && process.env.NO_COLOR !== "1";
@@ -1102,6 +1103,16 @@ async function runLocalStreamingReview(
   const repoWorkspace = resolveRepoWorkspace(config, target);
   if (repoWorkspace) log.config(`Using workspace: ${repoWorkspace}`);
 
+  let thinkingBuffer = "";
+  let thinkingTimer: ReturnType<typeof setTimeout> | null = null;
+  const flushThinking = () => {
+    if (thinkingTimer) { clearTimeout(thinkingTimer); thinkingTimer = null; }
+    if (!thinkingBuffer) return;
+    const snippet = thinkingBuffer.replace(/\n/g, " ").slice(0, 120);
+    process.stdout.write(`${C.dim}[review thinking] ${snippet}${C.reset}\n`);
+    thinkingBuffer = "";
+  };
+
   try {
     const review = await reviewAssistant.reviewWithStreaming(
       target.source === "gitlab"
@@ -1111,16 +1122,17 @@ async function runLocalStreamingReview(
         if (event.type === "progress") {
           log.step(`[review] ${event.message}`);
         } else if (event.type === "thinking") {
-          // Show a brief snippet of the AI's reasoning
-          const snippet = (event.chunk || "").replace(/\n/g, " ").slice(0, 120);
-          process.stdout.write(`${C.dim}[review thinking] ${snippet}${C.reset}\n`);
+          thinkingBuffer += event.chunk || "";
+          if (thinkingTimer) clearTimeout(thinkingTimer);
+          thinkingTimer = setTimeout(flushThinking, 300);
         } else if (event.type === "stream") {
-          // Show a brief snippet of the streaming AI output
+          flushThinking();
           const snippet = (event.chunk || "").replace(/\n/g, " ").slice(0, 120);
           process.stdout.write(`${C.dim}[review stream] ${snippet}${C.reset}\n`);
         }
       },
     );
+    flushThinking();
 
     const findings = codeReviewToFindings(review);
 
@@ -1336,7 +1348,7 @@ async function runRegressionReview(
     const response = await aiClient.chat({
       messages: [
         { role: "system", content: REGRESSION_SYSTEM_PROMPT },
-        { role: "user", content: diff },
+        { role: "user", content: enrichReviewWithMemory(diff) },
       ],
       temperature: 0.3,
       maxTokens: 16384,
@@ -1424,6 +1436,17 @@ function buildSummary(findings: ReviewFinding[]): string {
   const grouped = { critical: 0, high: 0, medium: 0, low: 0 };
   findings.forEach((f) => grouped[f.severity]++);
   return `Findings: ${findings.length} total — Critical: ${grouped.critical}, High: ${grouped.high}, Medium: ${grouped.medium}, Low: ${grouped.low}`;
+}
+
+function enrichReviewWithMemory(diff: string): string {
+  try {
+    const memories = conversationManager.getRelevantMemories("reviewer", diff, 3);
+    if (!memories.length) return diff;
+    const block = ["## Relevant Past Reviews", ...memories, "## Diff to Review"].join("\n");
+    return `${block}\n\n${diff}`;
+  } catch {
+    return diff;
+  }
 }
 
 async function mergeWithSummary(

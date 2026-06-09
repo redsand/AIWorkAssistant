@@ -13,6 +13,7 @@ import { gitlabClient } from "./integrations/gitlab/gitlab-client";
 // githubClient imported dynamically where needed via github-client module
 import { agentRunDatabase } from "./agent-runs/database";
 import { createAgentRunsClient } from "./agent-runs/client";
+import { conversationManager } from "./memory/conversation-manager";
 import type { AgentRunStepCreate } from "./agent-runs/types";
 import type { AgentRun as AgentRunRecord } from "./agent-runs/types";
 // ── Module imports ─────────────────────────────────────────────────────────────
@@ -169,6 +170,30 @@ function extractFilesFromText(text: string): string[] {
     files.add(match[1]);
   }
   return [...files];
+}
+
+// Memory enrichment — injects relevant past sessions/work items into prompt context
+function enrichPromptWithMemory(prompt: string, item?: WorkItem): string {
+  try {
+    const context = item ? `${item.title}\n${item.body || ""}\n${prompt}` : prompt;
+    const memories = conversationManager.getRelevantMemories("aicoder", context, 5);
+    if (!memories.length) return prompt;
+
+    const memoryBlock = [
+      "## Relevant Past Work",
+      ...memories,
+      "## Current Task",
+    ].join("\n");
+
+    return `${memoryBlock}\n\n${prompt}`;
+  } catch {
+    return prompt;
+  }
+}
+
+async function buildAgentPrompt(prompt: string, item?: WorkItem): Promise<string> {
+  const withMemory = enrichPromptWithMemory(prompt, item);
+  return enrichPrompt(withMemory, WORKSPACE);
 }
 
 // Review result markers (must match reviewer.ts comment headers)
@@ -2655,7 +2680,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     agentRanTests = false;
   } else {
     trackStep(run.id, "note", `Running ${AGENT} agent...`);
-    const agentResult = await runAgent(await enrichPrompt(generated.prompt, WORKSPACE), undefined, run.id);
+    const agentResult = await runAgent(await buildAgentPrompt(generated.prompt, item), undefined, run.id);
     finDetected = agentResult.finDetected;
     exitCode = agentResult.exitCode;
     agentRanTests = agentResult.ranTests ?? false;
@@ -2948,13 +2973,13 @@ async function continueFromBaselineTestsPass(cfg: ServerConfig, item: WorkItem, 
   }
 
   const resumeId = state.sessionId && AGENT === "claude" ? state.sessionId : undefined;
-  const agentResult = await runAgent(await enrichPrompt(generated.prompt, WORKSPACE), resumeId);
+  const agentResult = await runAgent(await buildAgentPrompt(generated.prompt, item), resumeId);
 
   if (!agentResult.finDetected && agentResult.exitCode !== 0) {
     // Resume failed — try fresh if we were resuming
     if (resumeId) {
       runLogger.logWork("Resume session failed — restarting agent from scratch");
-      const freshResult = await runAgent(generated.prompt);
+      const freshResult = await runAgent(await buildAgentPrompt(generated.prompt, item));
       if (!freshResult.finDetected && freshResult.exitCode !== 0) {
         runLogger.logError(`Agent exited with code ${freshResult.exitCode} on retry — aborting`);
         if (freshResult.stderr) runLogger.logError(`Agent stderr: ${freshResult.stderr.slice(-1000)}`);
@@ -3318,7 +3343,8 @@ ${promptContent}
 Implement the changes described above. Follow the project's existing patterns and conventions.
 `;
 
-    return { prompt, skipped: false, skipReason: null };
+    const enriched = enrichPromptWithMemory(prompt, item);
+    return { prompt: enriched, skipped: false, skipReason: null };
   } catch (err) {
     runLogger.logError(`Failed to fetch work item ${item.id}: ${err instanceof Error ? err.message : err}`);
     return { prompt: "", skipped: true, skipReason: `Failed to fetch work item: ${err instanceof Error ? err.message : err}` };
@@ -3838,7 +3864,7 @@ async function runReviewLoop(
         return;
       }
 
-      const reworkResult = await runAgent(await enrichPrompt(reworkPrompt, WORKSPACE));
+      const reworkResult = await runAgent(await buildAgentPrompt(reworkPrompt, item));
       if (!reworkResult.finDetected && reworkResult.exitCode !== 0) {
         runLogger.logError(`Rework agent exited with code ${reworkResult.exitCode} — stopping`);
         return;
@@ -3921,7 +3947,7 @@ async function runReviewLoop(
             if (!decision.shouldEscalate) {
               recordPromptStrategy(decision.strategy);
               runLogger.logWork(`Empty PR convergence selected prompt strategy ${decision.strategy}; retrying immediately`);
-              const retryResult = await runAgent(decision.prompt);
+              const retryResult = await runAgent(await buildAgentPrompt(decision.prompt, item));
               if (!retryResult.finDetected && retryResult.exitCode !== 0) {
                 runLogger.logError(`Recovery rework agent exited with code ${retryResult.exitCode} — stopping`);
                 return;

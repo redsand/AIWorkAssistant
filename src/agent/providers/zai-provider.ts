@@ -430,6 +430,7 @@ export class ZaiProvider extends AIProvider {
             const delay = this.getStreamRateLimitDelay(response.headers, attempt);
             zaiRateLimiter.reportRateLimit(delay);
             console.warn(`[Z.ai API] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
+            yield { type: "thinking" as const, content: `Rate limited by Z.ai API, retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${maxAttempts})...` };
             await this.sleep(delay);
             continue;
           }
@@ -440,6 +441,7 @@ export class ZaiProvider extends AIProvider {
             }
             const delay = this.getRetryDelay(attempt);
             console.warn(`[Z.ai API] Server error (${response.status}), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
+            yield { type: "thinking" as const, content: `Z.ai API server error (${response.status}), retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${maxAttempts})...` };
             await this.sleep(delay);
             continue;
           }
@@ -532,6 +534,7 @@ export class ZaiProvider extends AIProvider {
         if (attempt < maxAttempts && !axios.isAxiosError(error)) {
           const delay = this.getRetryDelay(attempt);
           console.warn(`[Z.ai API] Stream error, retrying in ${Math.round(delay)}ms: ${lastError.message}`);
+          yield { type: "thinking" as const, content: `Z.ai stream interrupted, retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${maxAttempts})...` };
           await this.sleep(delay);
           continue;
         }

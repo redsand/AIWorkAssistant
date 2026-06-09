@@ -310,6 +310,7 @@ export class OllamaProvider extends AIProvider {
               }
               const delay = this.getRateLimitDelay(error, attempt);
               if (DEBUG) console.warn(`[Ollama API] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
+              yield { type: "thinking" as const, content: `Rate limited by Ollama API, retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${maxAttempts})...` };
               await this.sleep(delay);
               continue;
             }
@@ -319,6 +320,7 @@ export class OllamaProvider extends AIProvider {
               }
               const delay = this.getRetryDelay(attempt);
               if (DEBUG) console.warn(`[Ollama API] Server error (${status}), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
+              yield { type: "thinking" as const, content: `Ollama API server error (${status}), retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${maxAttempts})...` };
               await this.sleep(delay);
               continue;
             }
@@ -329,6 +331,7 @@ export class OllamaProvider extends AIProvider {
           if (attempt < maxAttempts) {
             const delay = this.getRetryDelay(attempt);
             if (DEBUG) console.warn(`[Ollama API] Network error, waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
+            yield { type: "thinking" as const, content: `Network error connecting to Ollama API, retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${maxAttempts})...` };
             await this.sleep(delay);
             continue;
           }

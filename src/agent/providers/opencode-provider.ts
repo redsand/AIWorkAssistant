@@ -241,13 +241,57 @@ export class OpenCodeProvider extends AIProvider {
 
       console.log("[OpenCode API] Starting stream request");
 
-      const response = await this.client.post(
-        "/chat/completions",
-        requestBody,
-        {
-          responseType: "stream",
-        },
-      );
+      const maxAttempts = this.config.maxRetries + 1;
+      let lastError: Error | null = null;
+      let response: any;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          response = await this.client.post(
+            "/chat/completions",
+            requestBody,
+            {
+              responseType: "stream",
+            },
+          );
+          break;
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          if (axios.isAxiosError(error)) {
+            const status = error.response?.status;
+            if (status === 429) {
+              if (attempt >= maxAttempts) {
+                throw new Error(`OpenCode API rate limited (429) on final attempt`);
+              }
+              const delay = this.getRateLimitDelay(error, attempt);
+              console.warn(`[OpenCode API] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
+              yield { type: "thinking" as const, content: `Rate limited by OpenCode API, retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${maxAttempts})...` };
+              await this.sleep(delay);
+              continue;
+            }
+            if (status && status >= 500) {
+              if (attempt >= maxAttempts) {
+                throw new Error(`OpenCode API server error (${status}) on final attempt`);
+              }
+              const delay = this.getRetryDelay(attempt);
+              console.warn(`[OpenCode API] Server error (${status}), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
+              yield { type: "thinking" as const, content: `OpenCode API server error (${status}), retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${maxAttempts})...` };
+              await this.sleep(delay);
+              continue;
+            }
+            if (status === 400 || status === 401 || status === 403 || status === 404) {
+              throw lastError;
+            }
+          }
+          if (attempt < maxAttempts) {
+            const delay = this.getRetryDelay(attempt);
+            console.warn(`[OpenCode API] Network error, waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
+            yield { type: "thinking" as const, content: `Network error connecting to OpenCode API, retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${maxAttempts})...` };
+            await this.sleep(delay);
+            continue;
+          }
+          throw lastError;
+        }
+      }
 
       const toolCallAccumulator: ToolCall[] = [];
       let lineBuffer = "";

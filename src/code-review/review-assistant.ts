@@ -2,6 +2,7 @@ import { aiClient } from "../agent/opencode-client";
 import { githubClient } from "../integrations/github/github-client";
 import { gitlabClient } from "../integrations/gitlab/gitlab-client";
 import { jiraClient } from "../integrations/jira/jira-client";
+import { conversationManager } from "../memory/conversation-manager";
 import { workItemDatabase } from "../work-items/database";
 
 // ── Streaming event type for review progress ─────────────────────────────────
@@ -244,6 +245,17 @@ class ReviewAssistant {
     return result.length > MAX_TOTAL_CHARS
       ? result.slice(0, MAX_TOTAL_CHARS) + "\n...(truncated)"
       : result;
+  }
+
+  private enrichDiffWithMemory(diffSummary: string): string {
+    try {
+      const memories = conversationManager.getRelevantMemories("reviewer", diffSummary, 3);
+      if (!memories.length) return diffSummary;
+      const block = ["## Relevant Past Reviews", ...memories, "## Diff to Review"].join("\n");
+      return `${block}\n\n${diffSummary}`;
+    } catch {
+      return diffSummary;
+    }
   }
 
   generateReviewComment(review: CodeReview): string {
@@ -885,7 +897,7 @@ class ReviewAssistant {
     // ── Agentic tool-use loop ───────────────────────────────────────────────
     onProgress?.({ type: "progress", message: `Tool-assisted review — workspace: ${workspace}` });
 
-    const diffSummary = this.summarizeDiff(changeSet);
+    const diffSummary = this.enrichDiffWithMemory(this.summarizeDiff(changeSet));
     const messages: import("../agent/providers/types").ChatMessage[] = [
       { role: "system", content: REVIEW_SYSTEM_PROMPT },
       {
@@ -1108,7 +1120,7 @@ class ReviewAssistant {
     if (changeSet.workspacePath) return this.buildReviewWithTools(changeSet, onProgress);
 
     const riskLevel = this.assessRisk(changeSet);
-    const diffSummary = this.summarizeDiff(changeSet);
+    const diffSummary = this.enrichDiffWithMemory(this.summarizeDiff(changeSet));
 
     onProgress?.({ type: "progress", message: `Assessing risk: ${riskLevel} — ${changeSet.files.length} files changed` });
 
