@@ -2863,6 +2863,12 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   if (pr) {
     saveProcessedIssue(issueKey);
     agentRunDatabase.clearFailedAttempt(issueKey, WORKSPACE); // Clear failure counter on success
+    try {
+      const changedFiles = getChangedFiles(getBaseBranch(), "HEAD");
+      conversationManager.saveMemory("aicoder", `[AI] ${item.title}`, `Completed issue ${issueKey}: created PR/MR #${pr.prNumber}. Files changed: ${changedFiles.join(", ") || "none"}.`, [issueKey, ...changedFiles.slice(0, 5)]);
+    } catch {
+      // Memory writeback is best-effort
+    }
   } else {
     runLogger.logError("PR/MR creation failed — not marking issue as processed so it can be retried");
   }

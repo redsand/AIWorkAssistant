@@ -614,6 +614,10 @@
   function drawDepArrowsInto(overlay, container, arrowheadId, ghostArrowheadId) {
     if (!overlay) return;
 
+    // Size overlay to full scrollable area so dependency lines never spill outside the board
+    overlay.style.width = container.scrollWidth + "px";
+    overlay.style.height = container.scrollHeight + "px";
+
     // Clear existing paths (keep <defs>)
     var existing = overlay.querySelectorAll(".dep-path");
     for (var i = 0; i < existing.length; i++) {

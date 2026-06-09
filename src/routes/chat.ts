@@ -1008,6 +1008,19 @@ export async function chatRoutes(fastify: FastifyInstance) {
         ? body.systemPrompt
         : getSystemPrompt(body.mode, body.message);
 
+      // Inject cross-session memories into system prompt when memory is enabled
+      let memoryContext = "";
+      if (body.includeMemory) {
+        try {
+          const memories = conversationManager.getRelevantMemories(body.userId, body.message, 3);
+          if (memories.length > 0) {
+            memoryContext = `## Relevant Past Context\n\n${memories.join("\n")}\n\n`;
+          }
+        } catch {
+          // Memory injection is best-effort
+        }
+      }
+
       if (existingSession) {
         conversationManager.addMessage(sessionId!, {
           role: "user",
@@ -1046,6 +1059,15 @@ export async function chatRoutes(fastify: FastifyInstance) {
           userId: body.userId,
         });
         messages = packet.messages;
+        // Inject cross-session memory into the system message
+        if (memoryContext) {
+          const first = messages[0];
+          if (first && first.role === "system") {
+            first.content = `${memoryContext}${first.content}`;
+          } else {
+            messages.unshift({ role: "system", content: memoryContext + systemPrompt });
+          }
+        }
         console.log(
           `[ContextEngine] Packet assembled: ${packet.diagnostics.finalMessageCount} messages, ${packet.totalTokens} tokens, compression=${packet.diagnostics.compressionRatio.toFixed(2)}, budget=${JSON.stringify(packet.diagnostics.budgetUtilization)}, timings=${JSON.stringify(packet.diagnostics.stageTimings)}`,
         );
@@ -1055,7 +1077,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           body.includeMemory,
         );
         messages = [
-          { role: "system", content: systemPrompt },
+          { role: "system", content: memoryContext ? `${memoryContext}${systemPrompt}` : systemPrompt },
           ...sessionMessages,
         ];
       }

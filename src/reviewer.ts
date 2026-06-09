@@ -722,8 +722,32 @@ async function verifyReviewerState(config: ReviewerConfig): Promise<void> {
   }
 }
 
+const MAX_REVIEWER_STATE_ENTRIES = 100;
+
+function pruneReviewerState(): void {
+  if (reviewedMRTimes.size <= MAX_REVIEWER_STATE_ENTRIES) return;
+  const sorted = [...reviewedMRTimes.entries()].sort((a, b) => b[1] - a[1]);
+  const keep = new Set(sorted.slice(0, MAX_REVIEWER_STATE_ENTRIES).map(([k]) => k));
+  for (const key of reviewedMRs) {
+    if (!keep.has(key)) reviewedMRs.delete(key);
+  }
+  for (const key of reviewedMRShas.keys()) {
+    if (!keep.has(key)) reviewedMRShas.delete(key);
+  }
+  for (const key of reviewedMRTimes.keys()) {
+    if (!keep.has(key)) reviewedMRTimes.delete(key);
+  }
+  for (const key of mrSkipCounts.keys()) {
+    if (!keep.has(key)) mrSkipCounts.delete(key);
+  }
+  for (const key of mrConflictCounts.keys()) {
+    if (!keep.has(key)) mrConflictCounts.delete(key);
+  }
+}
+
 function saveReviewerState(): void {
   try {
+    pruneReviewerState();
     const dir = path.dirname(getReviewerStateFile());
     fs.mkdirSync(dir, { recursive: true });
     const state: ReviewerState = {
@@ -914,6 +938,23 @@ async function pollMergeRequests(
       reviewedMRs.add(mrKey);
       reviewedMRTimes.set(mrKey, Date.now());
       saveReviewerState();
+
+      // Write review outcome to long-term memory
+      try {
+        const issueKey = vcs.extractLinkedIssueKey(mr.body) || vcs.extractIssueKeyFromBranch(mr.sourceBranch);
+        const memoryTitle = `[Reviewer] MR !${mr.number}: ${mr.title}`;
+        const memorySummary = result.clean
+          ? `Review passed with ${result.findings.length} findings. Merged.`
+          : `Review found ${result.findings.length} findings. ${result.recommendation || "needs_changes"}.`;
+        const keyTopics = [
+          `mr-${mr.number}`,
+          ...(issueKey ? [issueKey] : []),
+          ...result.findings.slice(0, 5).map((f) => f.file),
+        ];
+        conversationManager.saveMemory("reviewer", memoryTitle, memorySummary, keyTopics);
+      } catch {
+        // Memory writeback is best-effort
+      }
 
       const tag = mrIssueTag(vcs, mr);
       if (result.clean) {

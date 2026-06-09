@@ -846,7 +846,8 @@ body {
 
 .dep-overlay {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
   pointer-events: none;
   z-index: 5;
   overflow: visible;
