@@ -223,7 +223,7 @@ const envSchema = z.object({
   CLAIMKIT_DISABLE_CONTRADICTION_LLM: z.string().transform((s) => s === "true").default("false"),
   CLAIMKIT_INIT_TIMEOUT_MS: z.coerce.number().default(5000),
   CLAIMKIT_LLM_MODEL: z.string().default(""),
-  CLAIMKIT_LLM_TIMEOUT_MS: z.coerce.number().default(5000),
+  CLAIMKIT_LLM_TIMEOUT_MS: z.coerce.number().default(15000),
   CLAIMKIT_LLM_MAX_ATTEMPTS: z.coerce.number().default(5),
   // If true, server.listen() is preceded by `await claimKitAdapter.initialize()`
   // and a hard process.exit(1) on failure. If false, init runs in the background
