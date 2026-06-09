@@ -21,6 +21,7 @@ import type {
 import { claimKitAdapter } from "./adapters/claimkit-adapter";
 import { ingestScoredDocumentsForQuery } from "./claimkit-ingestion";
 import { saveLiveComparison } from "../comparison-runs/auto-capture";
+import type { CkStatus } from "../comparison-runs/types";
 import { createBudget, estimateTokens, enforceBudget } from "./budget";
 import { compressDocuments } from "./compressor";
 import { rerank } from "./reranker";
@@ -39,20 +40,22 @@ export interface RoutingDecision {
   routingReason: string;
 }
 
-export function determineRoutingTier(ckResult: ClaimKitQueryResult | null): RoutingDecision {
+export function determineRoutingTier(ckResult: ClaimKitQueryResult | null, ckUnavailableReason?: string): RoutingDecision {
   if (!ckResult) {
-    return { tier: "rag_primary", preferredSource: "rag", overallWinner: "rag", routingReason: "ck_unavailable" };
+    // CK did not produce an answer — routing falls back to RAG but this is NOT a quality win for RAG.
+    return { tier: "rag_primary", preferredSource: "rag", overallWinner: "tie", routingReason: ckUnavailableReason ?? "ck_unavailable" };
   }
 
   const { confidence, answerability } = ckResult;
 
-  // CK wins when it has real confidence. The scoring formula is multiplicative, so even with
-  // good evidence the combined score rarely exceeds 0.5 — 0.3 is the practical achievable bar.
-  if (confidence > 0.3 && answerability === "answerable") {
+  // CK wins when it has real confidence. Scoring is multiplicative without LLM verifiers,
+  // so 0.15 is the practical achievable bar. Accept partially-answerable — it still provides
+  // useful evidence even when the full query can't be answered.
+  if (confidence > 0.15 && (answerability === "answerable" || answerability === "partially-answerable")) {
     return { tier: "ck_primary", preferredSource: "claimkit", overallWinner: "claimkit", routingReason: "high_confidence" };
   }
 
-  if (confidence < 0.1 || answerability === "not_answerable") {
+  if (confidence < 0.05 || answerability === "not_answerable") {
     return {
       tier: "rag_primary",
       preferredSource: "rag",
@@ -191,13 +194,19 @@ export async function assembleContextPacket(
 
   let claimKitResult: Awaited<ReturnType<typeof claimKitAdapter.query>> | null = null;
   let ckMs = 0;
-  let claimKitTimedOut = false;
-  if (claimKitAvailable) {
+  let ckStatus: CkStatus | null = null;
+  if (!env.CLAIMKIT_ENABLED) {
+    ckStatus = "disabled";
+  } else if (!claimKitAvailable) {
+    ckStatus = "disabled";
+    console.warn("[ClaimKit] Skipped — not initialized (run `claimkit ingest` to populate stores)");
+  } else {
     const seedStart = Date.now();
-    void ingestScoredDocumentsForQuery(docs, query, env.CLAIMKIT_QUERY_SEED_LIMIT).catch((err) => {
-      console.warn("[ClaimKit] Query seed failed:", err);
-    });
-    stageTimings.claimkitSeedQueuedMs = Date.now() - seedStart;
+    // Always await seed — CK must see the current request's docs before querying.
+    // Fire-and-forget causes a race where CK queries an empty store and returns confidence=0.
+    await ingestScoredDocumentsForQuery(docs, query, env.CLAIMKIT_QUERY_SEED_LIMIT)
+      .catch((err) => { console.warn("[ClaimKit] Query seed failed:", err); });
+    stageTimings.claimkitSeedMs = Date.now() - seedStart;
     const ckStart = Date.now();
     try {
       claimKitResult = await withTimeout(
@@ -208,10 +217,10 @@ export async function assembleContextPacket(
       ckMs = Date.now() - ckStart;
       stageTimings.claimkitQueryMs = ckMs;
       if (!claimKitResult) {
-        claimKitTimedOut = true;
-        console.warn(`[ClaimKit] Query skipped after ${ckMs}ms timeout`);
-      }
-      if (claimKitResult) {
+        ckStatus = "timeout";
+        console.warn(`[ClaimKit] Query timed out after ${ckMs}ms (limit: ${env.CLAIMKIT_QUERY_TIMEOUT_MS}ms)`);
+      } else {
+        ckStatus = claimKitResult.metadata.claimCount === 0 ? "no_claims" : "answered";
         const symbol = claimKitResult.answerability === "answerable" ? "✅" : claimKitResult.answerability === "partially-answerable" ? "⚠️" : "❌";
         console.log(
           `[ClaimKit] ${symbol} ${claimKitResult.answerability} | confidence=${(claimKitResult.confidence * 100).toFixed(0)}% | claims=${claimKitResult.metadata.claimCount} | sources=${claimKitResult.metadata.sourceIds.length} | score=${claimKitResult.metadata.retrievalScore.toFixed(2)} | ${ckMs}ms`,
@@ -228,11 +237,11 @@ export async function assembleContextPacket(
         }
       }
     } catch (err) {
-      stageTimings.claimkitQueryMs = Date.now() - ckStart;
+      ckMs = Date.now() - ckStart;
+      ckStatus = "error";
+      stageTimings.claimkitQueryMs = ckMs;
       console.warn("[ClaimKit] Query failed:", err);
     }
-  } else if (env.CLAIMKIT_ENABLED) {
-    console.warn("[ClaimKit] Skipped — not initialized (run `claimkit ingest` to populate stores)");
   }
 
   const rerankedDocs = rerank(docs, query);
@@ -245,8 +254,8 @@ export async function assembleContextPacket(
   if (env.CLAIMKIT_ENABLED) {
     const ragTokens = compressedDocs.reduce((s, d) => s + d.tokens, 0);
     const ckWins = claimKitResult &&
-      claimKitResult.confidence > 0.3 &&
-      claimKitResult.answerability === "answerable";
+      claimKitResult.confidence > 0.15 &&
+      (claimKitResult.answerability === "answerable" || claimKitResult.answerability === "partially-answerable");
     const winner = claimKitResult
       ? (ckWins ? "ClaimKit ✅" : claimKitResult.answerability === "not_answerable" ? "RAG (CK n/a)" : "RAG (CK low confidence)")
       : "RAG (CK unavailable)";
@@ -266,8 +275,13 @@ export async function assembleContextPacket(
     }
 
     // Auto-save comparison data for dashboard — use routing decision
-    const comparisonRouting = determineRoutingTier(claimKitResult);
+    const unavailableReason = ckStatus === "timeout" ? "ck_timeout"
+      : ckStatus === "error" ? "ck_error"
+      : ckStatus === "disabled" ? "ck_disabled"
+      : undefined;
+    const comparisonRouting = determineRoutingTier(claimKitResult, unavailableReason);
     const ragMs = Date.now() - ragStart;
+    const ckIncludedInContext = claimKitResult != null;
     saveLiveComparison({
       query,
       ragTokens,
@@ -276,7 +290,7 @@ export async function assembleContextPacket(
       ckConfidence: claimKitResult?.confidence ?? null,
       ckAnswerability: claimKitResult?.answerability ?? null,
       ckClaimCount: claimKitResult?.metadata.claimCount ?? null,
-      ckTimeMs: claimKitResult ? ckMs : null,
+      ckTimeMs: ckMs > 0 ? ckMs : null,
       ckContradictions: claimKitResult?.contradictions.length ?? null,
       ckAnswer: claimKitResult?.answer ?? null,
       ckRetrievalScore: claimKitResult?.metadata.retrievalScore ?? null,
@@ -284,6 +298,8 @@ export async function assembleContextPacket(
       ckMissingEvidence: claimKitResult?.missingEvidence?.join(", ") ?? null,
       overallWinner: comparisonRouting.overallWinner,
       winnerReason: comparisonRouting.routingReason,
+      ckStatus,
+      ckIncludedInContext,
     });
   }
 
@@ -548,7 +564,7 @@ export async function assembleContextPacket(
         enabled: env.CLAIMKIT_ENABLED,
         available: claimKitAvailable,
         used: claimKitResult !== null,
-        timedOut: claimKitTimedOut,
+        timedOut: ckStatus === "timeout",
         includedInMessages: Boolean(claimKitEnforced?.content.trim()),
         preferredSource: routing.preferredSource,
         routingReason: routing.routingReason,

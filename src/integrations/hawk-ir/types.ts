@@ -247,3 +247,40 @@ export interface HawkDashboardRunResult {
   total?: number;
   [key: string]: unknown;
 }
+
+export interface MonthlySummaryWindow {
+  /** Inclusive start of this 10-day window (ISO string). */
+  from: string;
+  /** Inclusive end of this 10-day window (ISO string). */
+  to: string;
+  /** Human label e.g. "Week 1 (May 1 – May 10)". */
+  label: string;
+  /** Total matching records in this window. */
+  total: number;
+  /** Breakdown by a grouped field (e.g. riskLevel → count). */
+  breakdown: Record<string, number>;
+  /** Whether this window's query succeeded. */
+  partial: boolean;
+  /** Error message if the query failed. */
+  error?: string;
+}
+
+export interface MonthlySummary {
+  /** ISO date range actually queried. */
+  rangeFrom: string;
+  rangeTo: string;
+  /** Number of 10-day windows that make up this summary. */
+  windowCount: number;
+  /** Per-window detail. */
+  windows: MonthlySummaryWindow[];
+  /** Aggregate total across all windows. */
+  totalEvents: number;
+  /** Aggregate breakdown across all windows. */
+  totalBreakdown: Record<string, number>;
+  /** Week-over-week deltas (windows[n].total - windows[n+1].total). Positive = increase. */
+  weekOverWeekDeltas: number[];
+  /** True if any window returned partial/failed data. */
+  hasPartialData: boolean;
+  /** Field used for the groupBy breakdown. */
+  groupByField: string;
+}

@@ -121,6 +121,7 @@ const createSessionSchema = z.object({
 });
 
 const MAX_TOOL_LOOPS = env.MAX_TOOL_LOOPS;
+const JOB_TIMEOUT_MS = env.AGENT_JOB_TIMEOUT_MS;
 
 class ToolLoopLimitError extends Error {
   constructor(limit: number) {
@@ -135,6 +136,16 @@ class JobCancelledError extends Error {
   constructor(message = "Run cancelled by user") {
     super(message);
     this.name = "JobCancelledError";
+  }
+}
+
+class JobTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(
+      `The agent job timed out after ${Math.round(timeoutMs / 60000)} minutes. ` +
+      `Try narrowing the scope or splitting into smaller requests.`,
+    );
+    this.name = "JobTimeoutError";
   }
 }
 
@@ -406,7 +417,8 @@ function stringifyToolResultForContext(result: unknown): string {
   const content = JSON.stringify(compactToolResultForContext(result));
   const maxChars = 25_000;
   if (content.length <= maxChars) return content;
-  return `${content.substring(0, maxChars)}\n...[tool result truncated for chat context: ${content.length - maxChars} chars omitted]`;
+  const omitted = content.length - maxChars;
+  return `${content.substring(0, maxChars)}\n...[TRUNCATED: ${omitted} chars omitted — you MUST re-query with a narrower scope (smaller date range, fewer fields). Do NOT summarize or proceed from this partial data.]`;
 }
 
 function stringifyToolResultForMemory(toolName: string, result: unknown): string {
@@ -459,6 +471,42 @@ function warnIfInvalidModelMessages(messages: ChatMessage[], source: string): vo
     issue,
     roles: messages.map((m, index) => `${index}:${m.role}`).join(" "),
   });
+}
+
+/**
+ * After context pruning, an assistant message's tool_calls may reference IDs
+ * that had their corresponding tool-result messages pruned away. This produces
+ * an "Invalid model message sequence" error on the next API call.
+ *
+ * Repair strategy: scan for orphaned tool call IDs and inject a minimal
+ * placeholder tool result so the sequence stays valid. Logging keeps the
+ * event visible without crashing.
+ */
+function repairOrphanedToolCalls(messages: ChatMessage[]): ChatMessage[] {
+  const repaired: ChatMessage[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    repaired.push(msg);
+    if (msg.role !== "assistant" || !msg.tool_calls?.length) continue;
+
+    const expectedIds = new Set(msg.tool_calls.map((tc) => tc.id).filter(Boolean));
+    let j = i + 1;
+    while (j < messages.length && messages[j].role === "tool") {
+      const id = messages[j].tool_call_id;
+      if (id) expectedIds.delete(id);
+      j++;
+    }
+    for (const missingId of expectedIds) {
+      console.warn(`[Chat] Injecting placeholder result for pruned tool call ${missingId}`);
+      repaired.push({
+        role: "tool",
+        content: "[Result unavailable — pruned from context window]",
+        tool_call_id: missingId,
+        name: msg.tool_calls.find((tc) => tc.id === missingId)?.function?.name ?? "unknown",
+      } as ChatMessage);
+    }
+  }
+  return repaired;
 }
 
 /**
@@ -685,6 +733,7 @@ async function runChatJob(
   try {
     let stepOrder = 0;
     let loopCount = 0;
+    const jobStartTime = Date.now();
     let expandedTools = [...(tools || [])];
     preExpandFromSession(sessionId, mode, expandedTools);
     expandedTools = capExpandedTools(expandedTools, tools || []);
@@ -709,6 +758,10 @@ async function runChatJob(
       if (loopCount > MAX_TOOL_LOOPS) {
         console.warn(`[Chat/Job] Tool loop limit (${MAX_TOOL_LOOPS}) reached for ${sessionId}`);
         throw new ToolLoopLimitError(MAX_TOOL_LOOPS);
+      }
+      if (Date.now() - jobStartTime > JOB_TIMEOUT_MS) {
+        console.warn(`[Chat/Job] Job timeout (${JOB_TIMEOUT_MS}ms) reached for ${sessionId}`);
+        throw new JobTimeoutError(JOB_TIMEOUT_MS);
       }
 
       if (content.trim()) {
@@ -813,6 +866,7 @@ async function runChatJob(
         })),
       ];
       messages = aiClient.pruneMessages(messages, expandedTools.length > 0 ? expandedTools : tools || undefined) as ChatMessage[];
+      messages = repairOrphanedToolCalls(messages);
       messages = injectManifest(messages, sessionId);
       warnIfInvalidModelMessages(messages, "stream_tool_loop");
 
@@ -1049,6 +1103,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         expandedTools.map((t: Tool) => t.function.name);
 
       let loopCount = 0;
+      const jobStartTime = Date.now();
 
       while (response.toolCalls && response.toolCalls.length > 0) {
         loopCount++;
@@ -1058,6 +1113,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
             `[Chat] Tool loop limit (${MAX_TOOL_LOOPS}) reached, breaking`,
           );
           throw new ToolLoopLimitError(MAX_TOOL_LOOPS);
+        }
+        if (Date.now() - jobStartTime > JOB_TIMEOUT_MS) {
+          console.warn(`[Chat] Job timeout (${JOB_TIMEOUT_MS}ms) reached`);
+          throw new JobTimeoutError(JOB_TIMEOUT_MS);
         }
 
         if (response.thinking) {
@@ -1660,6 +1719,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
     const job = processingJobs.get(sessionId);
     if (job && job.status === "processing") {
+      // Tell the client immediately that a job is active so it can show the
+      // processing indicator before any replayed tool/token events arrive.
+      sendEvent("state", { processing: true, sessionId });
       for (const evt of job.events) {
         sendEvent(evt.event, evt.data);
       }

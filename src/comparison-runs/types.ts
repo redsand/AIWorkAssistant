@@ -16,6 +16,8 @@ export interface ComparisonRunRow {
   created_at: string;
 }
 
+export type CkStatus = "answered" | "timeout" | "error" | "no_claims" | "disabled";
+
 export interface ComparisonCaseRow {
   id: string;
   run_id: string;
@@ -35,6 +37,10 @@ export interface ComparisonCaseRow {
   ck_source_count: number | null;
   ck_missing_evidence: string | null;
   winner_reason: string | null;
+  /** Why ClaimKit did not produce an answer, or "answered" when it did. */
+  ck_status: CkStatus | null;
+  /** True when the ClaimKit section was included in the model context messages. */
+  ck_included_in_context: boolean | null;
   created_at: string;
 }
 
@@ -42,6 +48,10 @@ export interface ComparisonCaseRow {
 
 export interface ComparisonAggregate {
   wins: { claimkit: number; rag: number; tie: number };
+  /** Rows where CK actually ran (status = answered or no_claims). Excludes timeouts/errors/disabled. */
+  evaluatedCases: number;
+  ckTimeouts: number;
+  ckUnevaluated: number;
   claimkit: {
     mean: {
       confidence: number;
@@ -95,6 +105,9 @@ export interface ComparisonDashboardStats {
   source: ComparisonSource | "all";
   totalRuns: number;
   totalCases: number;
+  /** Rows where CK actually ran (not timeout/error/disabled). Win rates should use this as denominator. */
+  evaluatedCases: number;
+  ckTimeouts: number;
   overallWins: { claimkit: number; rag: number; tie: number };
   avgCkConfidence: number;
   avgAnswerabilityRate: number;
@@ -117,6 +130,8 @@ export interface SaveCaseInput {
   category: ComparisonEvalCategory;
   overallWinner: ComparisonWinner;
   winnerReason?: string;
+  ckStatus?: CkStatus | null;
+  ckIncludedInContext?: boolean | null;
   rag: {
     contextTokens: number;
     sections: number;

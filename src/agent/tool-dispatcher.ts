@@ -6796,10 +6796,12 @@ async function handleHawkIrMonthlySummary(
     return { success: false, error: "HAWK IR client not configured" };
   }
   const data = await hawkIrService.monthlySummary({
+    startDate: params.startDate as string | undefined,
+    endDate: params.endDate as string | undefined,
     query: params.query as string | undefined,
     index: params.index as string | undefined,
-    columns: params.columns as string[] | undefined,
-    groupBy: params.groupBy as string[] | undefined,
+    dashboardId: params.dashboardId as string | undefined,
+    groupByField: params.groupByField as string | undefined,
     metrics: params.metrics as { field: string; operator: string }[] | undefined,
   });
   return { success: true, data };

@@ -1,5 +1,5 @@
 import { comparisonRunDatabase, ComparisonRunDatabase } from "./database";
-import type { SaveComparisonInput, ComparisonEvalCategory } from "./types";
+import type { SaveComparisonInput, ComparisonEvalCategory, CkStatus } from "./types";
 import type { ComparisonRunResult } from "../eval/comparison/reportTypes";
 
 export function classifyQuery(query: string): ComparisonEvalCategory {
@@ -82,6 +82,8 @@ export function saveLiveComparison(params: {
   ckMissingEvidence?: string | null;
   overallWinner: "rag" | "claimkit" | "tie";
   winnerReason?: string;
+  ckStatus?: CkStatus | null;
+  ckIncludedInContext?: boolean | null;
   db?: ComparisonRunDatabase;
 }): void {
   try {
@@ -98,6 +100,8 @@ export function saveLiveComparison(params: {
           category: params.category ?? "direct_fact",
           overallWinner: params.overallWinner,
           winnerReason: params.winnerReason,
+          ckStatus: params.ckStatus,
+          ckIncludedInContext: params.ckIncludedInContext,
           rag: {
             contextTokens: params.ragTokens,
             sections: params.ragSections,

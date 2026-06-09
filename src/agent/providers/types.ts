@@ -232,7 +232,7 @@ export abstract class AIProvider {
   ): ChatMessage[] {
     const recent: ChatMessage[] = [];
     const addedIndices = new Set<number>();
-    let idx = messages.length - 2; // just before the last message
+    let idx = messages.length - 1;
 
     let collected = 0;
     while (idx >= 1 && collected < recentCount) {
@@ -251,7 +251,7 @@ export abstract class AIProvider {
         addedIndices.add(idx);
         let j = idx + 1;
         while (
-          j < messages.length - 1 &&
+          j < messages.length &&
           messages[j].role === "tool"
         ) {
           group.push(messages[j]);

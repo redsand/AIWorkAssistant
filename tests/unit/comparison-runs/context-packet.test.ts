@@ -77,11 +77,12 @@ describe("determineRoutingTier", () => {
       expect(decision.routingReason).toBe("not_answerable");
     });
 
-    it("routes to RAG when CK result is null (unavailable)", () => {
+    it("routes to RAG when CK result is null (unavailable), winner is tie not rag", () => {
       const decision = determineRoutingTier(null);
       expect(decision.tier).toBe("rag_primary");
       expect(decision.preferredSource).toBe("rag");
-      expect(decision.overallWinner).toBe("rag");
+      // overallWinner is "tie" — CK didn't participate, so this is not a quality win for RAG
+      expect(decision.overallWinner).toBe("tie");
       expect(decision.routingReason).toBe("ck_unavailable");
     });
 

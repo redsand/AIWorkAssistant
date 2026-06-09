@@ -5,6 +5,7 @@ import {
   historyIndex,
   draftBeforeHistory,
   setCurrentMode,
+  setCurrentSessionId,
   setHistoryIndex,
   setDraftBeforeHistory,
   setMessageHistory,
@@ -153,6 +154,16 @@ document.addEventListener("click", function (e) {
 
 document.addEventListener("DOMContentLoaded", async () => {
   loadBuildVersion();
+
+  // Prime currentSessionId from the URL hash BEFORE checkAuth so that
+  // initializeChat (called inside checkAuth) loads the right session and we
+  // avoid a double-load race between initializeChat and switchConversation.
+  const hashSessionId = readSessionHash();
+  if (hashSessionId) {
+    setCurrentSessionId(hashSessionId);
+    localStorage.setItem("currentSessionId", hashSessionId);
+  }
+
   await checkAuth();
 
   // Collapse noisy sections by default on mobile so conversations are visible
@@ -168,12 +179,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   const workItemsSection = document.getElementById("workItemsSection");
   if (workItemsSection && authHeaders()) {
     workItemsSection.style.display = "block";
-  }
-
-  // If URL hash points to a specific chat, navigate to it
-  const hashSessionId = readSessionHash();
-  if (hashSessionId) {
-    switchConversation(hashSessionId);
   }
 
   document.querySelectorAll(".mode-btn").forEach((btn) => {

@@ -3,6 +3,7 @@ import { authHeaders } from "./auth.js";
 import {
   addMessage,
   createToolProgress,
+  reuseOrCreateToolProgress,
   finalizeToolProgress,
   addToolCall,
   completeToolCall,
@@ -11,6 +12,7 @@ import {
   ensureScrollListener,
   finalizeStreamingMessage,
   markProgressAsGenerating,
+  updateMessageThinking,
 } from "./messages.js";
 import { loadRoadmaps } from "./sidebar.js";
 import { loadConversations } from "./conversations.js";
@@ -129,6 +131,12 @@ export function subscribeLive(sessionId) {
                 return { stop: true };
               }
 
+              if (eventType === "state" && data.processing === true) {
+                const processingEl = document.getElementById("processingIndicator");
+                if (processingEl) processingEl.classList.add("active");
+                showTyping(true);
+              }
+
               if (eventType === "processing") {
                 const processingEl = document.getElementById("processingIndicator");
                 if (processingEl) processingEl.classList.add("active");
@@ -157,8 +165,11 @@ export function subscribeLive(sessionId) {
                   hasActiveJob = true;
                   const processingEl = document.getElementById("processingIndicator");
                   processingEl.classList.add("active");
-                  progressEl = createToolProgress().progressEl;
-                  document.getElementById("chatMessages").appendChild(progressEl);
+                  const prog = reuseOrCreateToolProgress();
+                  progressEl = prog.progressEl;
+                  if (!prog.reused) {
+                    document.getElementById("chatMessages").appendChild(progressEl);
+                  }
                 }
                 addToolCall(data.id, data.name, data.params);
               }
@@ -175,6 +186,9 @@ export function subscribeLive(sessionId) {
 
               if (eventType === "thinking" && data.thinking) {
                 currentThinking += data.thinking;
+                if (streamingMessageId !== null) {
+                  updateMessageThinking(streamingMessageId, currentThinking);
+                }
               }
 
               if (eventType === "token" && data.token !== undefined) {

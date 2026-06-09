@@ -184,6 +184,13 @@ export class ClaimKitAdapter {
             topK: env.CLAIMKIT_TOP_K,
             minScore: env.CLAIMKIT_MIN_SCORE,
             maxEvidenceItems: env.CLAIMKIT_MAX_EVIDENCE_ITEMS,
+            usePlannerLLM: !env.CLAIMKIT_DISABLE_PLANNER_LLM,
+          },
+          verification: {
+            skipLLM: env.CLAIMKIT_DISABLE_VERIFIER_LLM,
+          },
+          contradiction: {
+            useLLM: !env.CLAIMKIT_DISABLE_CONTRADICTION_LLM,
           },
         },
       });
@@ -229,7 +236,11 @@ export class ClaimKitAdapter {
 
   async query(question: string, options?: QueryOptions): Promise<ClaimKitQueryResult> {
     if (!this.claimKit) throw new Error("ClaimKit not initialized");
+    const t0 = Date.now();
     const result = await this.claimKit.query(question, options);
+    const total = Date.now() - t0;
+    const ckMs = result.metadata.processingTimeMs;
+    console.log(`[ClaimKit:timing] total=${total}ms internal=${ckMs}ms claims=${result.metadata.claimCount} sources=${result.metadata.sourceIds.length}`);
     return {
       answer: result.answer,
       citations: result.citations.map((c) => ({

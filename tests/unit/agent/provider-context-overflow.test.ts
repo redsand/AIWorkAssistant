@@ -347,14 +347,54 @@ describe("pruneToContextWindow", () => {
     // Should always keep system message
     expect(pruned[0].role).toBe("system");
 
-    // Should always keep the last user message
-    expect(pruned[pruned.length - 1].content).toBe("Final question");
+    expect(pruned.some((m) => m.role === "user" && m.content === "Final question")).toBe(true);
 
     // Should contain a truncation notice (some messages were removed)
     const hasTruncationNotice = pruned.some(
       (m) => m.content.includes("truncated") || m.content.includes("removed"),
     );
     expect(hasTruncationNotice).toBe(true);
+  });
+
+  it("preserves the latest user message when the last message is a tool result", () => {
+    const provider = new TestProvider({
+      model: "test-model",
+      maxContextTokens: 200,
+    });
+
+    const longContent = "x".repeat(500);
+    const messages: ChatMessage[] = [
+      { role: "system", content: "You are a helpful assistant." },
+      { role: "user", content: "Original request" },
+      { role: "assistant", content: longContent },
+      { role: "user", content: "Current request" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "call_1",
+            type: "function",
+            function: { name: "github.get_file", arguments: "{}" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: longContent,
+        tool_call_id: "call_1",
+      },
+    ];
+
+    const pruned = provider.pruneToContextWindow(messages);
+
+    const currentUserIndex = pruned.findIndex(
+      (m) => m.role === "user" && m.content === "Current request",
+    );
+    const toolIndex = pruned.findIndex((m) => m.role === "tool");
+
+    expect(currentUserIndex).toBeGreaterThanOrEqual(0);
+    expect(toolIndex).toBeGreaterThan(currentUserIndex);
   });
 });
 

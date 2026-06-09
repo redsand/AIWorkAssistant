@@ -14,6 +14,7 @@ import type {
   CategoryBreakdown,
   SaveComparisonInput,
   ComparisonSource,
+  CkStatus,
 } from "./types";
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -85,6 +86,8 @@ class ComparisonRunDatabase {
       { col: "ck_source_count", def: "INTEGER" },
       { col: "ck_missing_evidence", def: "TEXT" },
       { col: "winner_reason", def: "TEXT" },
+      { col: "ck_status", def: "TEXT" },
+      { col: "ck_included_in_context", def: "INTEGER" },
     ];
     for (const { col, def } of migrations) {
       try {
@@ -109,8 +112,9 @@ class ComparisonRunDatabase {
           rag_tokens, rag_sections, rag_time_ms,
           ck_confidence, ck_answerability, ck_claim_count, ck_time_ms, ck_contradictions,
           ck_answer, ck_retrieval_score, ck_source_count, ck_missing_evidence, winner_reason,
+          ck_status, ck_included_in_context,
           created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     const txn = this.db.transaction(() => {
@@ -135,6 +139,8 @@ class ComparisonRunDatabase {
           c.claimkit?.sourceCount ?? null,
           c.claimkit?.missingEvidence ?? null,
           c.winnerReason ?? null,
+          c.ckStatus ?? null,
+          c.ckIncludedInContext != null ? (c.ckIncludedInContext ? 1 : 0) : null,
           now,
         );
       }
@@ -236,6 +242,9 @@ class ComparisonRunDatabase {
       .prepare(
         `SELECT
            COUNT(*) as total_cases,
+           SUM(CASE WHEN ck_status = 'answered' OR ck_status = 'no_claims' THEN 1 ELSE 0 END) as evaluated_cases,
+           SUM(CASE WHEN ck_status = 'timeout' THEN 1 ELSE 0 END) as ck_timeouts,
+           SUM(CASE WHEN ck_status IS NOT NULL AND ck_status NOT IN ('answered','no_claims') THEN 1 ELSE 0 END) as ck_unevaluated,
            SUM(CASE WHEN overall_winner = 'claimkit' THEN 1 ELSE 0 END) as ck_wins,
            SUM(CASE WHEN overall_winner = 'rag' THEN 1 ELSE 0 END) as rag_wins,
            SUM(CASE WHEN overall_winner = 'tie' THEN 1 ELSE 0 END) as ties,
@@ -250,9 +259,12 @@ class ComparisonRunDatabase {
       )
       .get(runId) as {
         total_cases: number;
+        evaluated_cases: number;
         ck_wins: number;
         rag_wins: number;
         ties: number;
+        ck_timeouts: number;
+        ck_unevaluated: number;
         avg_confidence: number | null;
         answerability_rate: number | null;
         avg_claims: number | null;
@@ -264,6 +276,9 @@ class ComparisonRunDatabase {
 
     return {
       wins: { claimkit: row.ck_wins, rag: row.rag_wins, tie: row.ties },
+      evaluatedCases: row.evaluated_cases,
+      ckTimeouts: row.ck_timeouts,
+      ckUnevaluated: row.ck_unevaluated,
       claimkit: {
         mean: {
           confidence: row.avg_confidence ?? 0,
@@ -295,6 +310,8 @@ class ComparisonRunDatabase {
       .prepare(
         `SELECT
            COUNT(*) as total_cases,
+           SUM(CASE WHEN ck_status = 'answered' OR ck_status = 'no_claims' THEN 1 ELSE 0 END) as evaluated_cases,
+           SUM(CASE WHEN ck_status = 'timeout' THEN 1 ELSE 0 END) as ck_timeouts,
            SUM(CASE WHEN overall_winner = 'claimkit' THEN 1 ELSE 0 END) as ck_wins,
            SUM(CASE WHEN overall_winner = 'rag' THEN 1 ELSE 0 END) as rag_wins,
            SUM(CASE WHEN overall_winner = 'tie' THEN 1 ELSE 0 END) as ties,
@@ -308,6 +325,8 @@ class ComparisonRunDatabase {
       )
       .get(...params) as {
         total_cases: number;
+        evaluated_cases: number;
+        ck_timeouts: number;
         ck_wins: number | null;
         rag_wins: number | null;
         ties: number | null;
@@ -349,6 +368,8 @@ class ComparisonRunDatabase {
       source: options?.source ?? "all",
       totalRuns: totalRunsRow.total,
       totalCases: winRow.total_cases,
+      evaluatedCases: winRow.evaluated_cases ?? 0,
+      ckTimeouts: winRow.ck_timeouts ?? 0,
       overallWins: {
         claimkit: winRow.ck_wins ?? 0,
         rag: winRow.rag_wins ?? 0,
@@ -432,6 +453,8 @@ class ComparisonRunDatabase {
       ck_source_count: row.ck_source_count as number | null,
       ck_missing_evidence: row.ck_missing_evidence as string | null,
       winner_reason: row.winner_reason as string | null,
+      ck_status: (row.ck_status as CkStatus | null) ?? null,
+      ck_included_in_context: row.ck_included_in_context != null ? Boolean(row.ck_included_in_context) : null,
       created_at: row.created_at as string,
     };
   }

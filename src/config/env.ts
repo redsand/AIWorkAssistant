@@ -217,6 +217,10 @@ const envSchema = z.object({
   CLAIMKIT_MAX_EVIDENCE_ITEMS: z.coerce.number().default(20),
   CLAIMKIT_QUERY_SEED_LIMIT: z.coerce.number().default(5),
   CLAIMKIT_QUERY_TIMEOUT_MS: z.coerce.number().default(120000),
+  CLAIMKIT_AWAIT_SEED: z.string().transform((s) => s === "true").default("false"),
+  CLAIMKIT_DISABLE_PLANNER_LLM: z.string().transform((s) => s === "true").default("false"),
+  CLAIMKIT_DISABLE_VERIFIER_LLM: z.string().transform((s) => s === "true").default("false"),
+  CLAIMKIT_DISABLE_CONTRADICTION_LLM: z.string().transform((s) => s === "true").default("false"),
   CLAIMKIT_INIT_TIMEOUT_MS: z.coerce.number().default(5000),
   CLAIMKIT_LLM_MODEL: z.string().default(""),
   // If true, server.listen() is preceded by `await claimKitAdapter.initialize()`
@@ -302,6 +306,9 @@ const envSchema = z.object({
 
   // Tool loop limit (max iterations before forcing a final response)
   MAX_TOOL_LOOPS: z.coerce.number().default(75),
+
+  // Job timeout (ms) — wall-clock limit for a single agent job before it is forcibly failed
+  AGENT_JOB_TIMEOUT_MS: z.coerce.number().default(600000),
 
   // Admin user IDs (comma-separated) — users allowed to override system prompts
   ADMIN_USER_IDS: z.string().default(""),

@@ -17,6 +17,8 @@ import type {
   HawkArtefactsParams,
   HawkDashboard,
   HawkDashboardRunResult,
+  MonthlySummaryWindow,
+  MonthlySummary,
   CaseRiskLevel,
 } from "./types";
 
@@ -508,49 +510,130 @@ export class HawkIrService {
   }
 
   /**
-   * Generate a monthly summary by aggregating weekly reports.
-   * Runs up to 3 weekly queries (each within the 10-day limit) and combines the results.
+   * Generate a monthly summary covering a user-specified date range.
+   *
+   * The range is sliced into non-overlapping 10-day windows (the API maximum).
+   * Each window is queried independently; failures are caught per-window so partial
+   * data is returned rather than nothing.  Results are pre-aggregated into a typed
+   * MonthlySummary so the model receives structured metrics rather than raw JSON blobs.
    */
   async monthlySummary(params: {
+    startDate?: string;
+    endDate?: string;
     query?: string;
     index?: string;
-    columns?: string[];
-    groupBy?: string[];
+    dashboardId?: string;
+    groupByField?: string;
     metrics?: { field: string; operator: string }[];
-  } = {}): Promise<HawkDashboardRunResult[]> {
-    const now = new Date();
-    const weeks: HawkDashboardRunResult[] = [];
+  } = {}): Promise<MonthlySummary> {
+    const rangeTo = params.endDate ? new Date(params.endDate) : new Date();
+    const rangeFrom = params.startDate
+      ? new Date(params.startDate)
+      : new Date(rangeTo.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-    for (let i = 0; i < 3; i++) {
-      const weekEnd = new Date(now.getTime() - i * 10 * 24 * 60 * 60 * 1000);
-      const weekStart = new Date(weekEnd.getTime() - 10 * 24 * 60 * 60 * 1000);
+    const groupByField = params.groupByField ?? "riskLevel";
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+    const WINDOW_MS = MAX_QUERY_RANGE_DAYS * MS_PER_DAY;
 
-      const validated = enforceMaxRange(weekStart, weekEnd);
+    // Build non-overlapping 10-day windows from oldest to newest.
+    const windowBoundaries: { from: Date; to: Date }[] = [];
+    let cursor = new Date(rangeFrom.getTime());
+    while (cursor < rangeTo) {
+      const windowEnd = new Date(Math.min(cursor.getTime() + WINDOW_MS, rangeTo.getTime()));
+      windowBoundaries.push({ from: new Date(cursor), to: windowEnd });
+      cursor = new Date(windowEnd.getTime());
+    }
+
+    // Resolve dashboard ID once — not on every iteration.
+    let dashboardId = params.dashboardId;
+    if (!dashboardId) {
       const dashboards = await this.client.listDashboards();
       if (!dashboards.length) {
         throw new Error("No dashboards available for running queries");
       }
-
-      const result = await this.client.runDashboardWidget(dashboards[0].id, {
-        widget: {
-          id: `monthly-week-${i}-${Date.now()}`,
-          title: `Monthly Summary — Week ${3 - i}`,
-          type: "table",
-          query: params.query ?? "*",
-          columns: params.columns ?? [],
-          groupBy: params.groupBy ?? [],
-          metrics: params.metrics ?? [{ field: "@timestamp", operator: "count" }],
-          size: 100,
-          sort: { field: "@timestamp", direction: "desc" },
-        },
-        index: params.index,
-        timeRange: { from: validated.from, to: validated.to },
-      });
-
-      weeks.push(result);
+      dashboardId = dashboards[0].id;
     }
 
-    return weeks;
+    const windowResults: MonthlySummaryWindow[] = [];
+
+    for (let i = 0; i < windowBoundaries.length; i++) {
+      const { from, to } = windowBoundaries[i];
+      const label = `Window ${i + 1} (${from.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${to.toLocaleDateString("en-US", { month: "short", day: "numeric" })})`;
+
+      try {
+        const result = await this.client.runDashboardWidget(dashboardId, {
+          widget: {
+            id: `monthly-w${i}-${Date.now()}`,
+            title: label,
+            type: "table",
+            query: params.query ?? "*",
+            columns: [groupByField],
+            groupBy: [groupByField],
+            metrics: params.metrics ?? [{ field: "@timestamp", operator: "count" }],
+            size: 500,
+            sort: { field: "@timestamp", direction: "desc" },
+          },
+          index: params.index,
+          timeRange: { from: from.toISOString(), to: to.toISOString() },
+        });
+
+        // Build the breakdown map from whichever shape the API returned.
+        const breakdown: Record<string, number> = {};
+        const buckets: any[] = Array.isArray(result.buckets) ? result.buckets : [];
+        const rows: any[] = Array.isArray(result.rows) ? result.rows : [];
+
+        for (const bucket of buckets) {
+          const key = String(bucket[groupByField] ?? bucket.key ?? bucket.name ?? "unknown");
+          const count = Number(bucket.count ?? bucket.doc_count ?? bucket.value ?? 0);
+          breakdown[key] = (breakdown[key] ?? 0) + count;
+        }
+        // Fall back to counting rows if buckets are absent.
+        if (buckets.length === 0 && rows.length > 0) {
+          for (const row of rows) {
+            const key = String(row[groupByField] ?? "unknown");
+            breakdown[key] = (breakdown[key] ?? 0) + 1;
+          }
+        }
+
+        const total = result.total ?? result.count ?? Object.values(breakdown).reduce((s, n) => s + n, 0);
+
+        windowResults.push({ from: from.toISOString(), to: to.toISOString(), label, total, breakdown, partial: false });
+      } catch (err) {
+        windowResults.push({
+          from: from.toISOString(),
+          to: to.toISOString(),
+          label,
+          total: 0,
+          breakdown: {},
+          partial: true,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // Aggregate across all windows.
+    const totalEvents = windowResults.reduce((s, w) => s + w.total, 0);
+    const totalBreakdown: Record<string, number> = {};
+    for (const w of windowResults) {
+      for (const [k, v] of Object.entries(w.breakdown)) {
+        totalBreakdown[k] = (totalBreakdown[k] ?? 0) + v;
+      }
+    }
+    // Week-over-week deltas: windows are oldest→newest so delta[i] = window[i+1].total - window[i].total.
+    const weekOverWeekDeltas = windowResults.slice(1).map((w, i) => w.total - windowResults[i].total);
+    const hasPartialData = windowResults.some((w) => w.partial);
+
+    return {
+      rangeFrom: rangeFrom.toISOString(),
+      rangeTo: rangeTo.toISOString(),
+      windowCount: windowResults.length,
+      windows: windowResults,
+      totalEvents,
+      totalBreakdown,
+      weekOverWeekDeltas,
+      hasPartialData,
+      groupByField,
+    };
   }
 
   // === Formatting ===

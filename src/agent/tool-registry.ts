@@ -5618,31 +5618,45 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "hawk_ir.monthly_summary",
     description:
-      "Generate a HAWK IR monthly summary by running up to 3 weekly queries (each within the 10-day limit) and returning combined results. Use for trend analysis across ~30 days.",
+      "Generate a structured HAWK IR monthly summary for a specified date range. " +
+      "Automatically slices the range into ≤10-day windows (API limit), queries each window independently, " +
+      "and returns pre-aggregated metrics: total event counts per window, breakdown by groupByField, " +
+      "week-over-week deltas, and a hasPartialData flag. Use this instead of manual multi-call patterns " +
+      "for monthly or multi-week reporting. Defaults to the last 30 days if no dates are provided.",
     params: {
+      startDate: {
+        type: "string",
+        description: "Start of the reporting period (ISO 8601 or YYYY-MM-DD). Defaults to 30 days before endDate.",
+        required: false,
+      },
+      endDate: {
+        type: "string",
+        description: "End of the reporting period (ISO 8601 or YYYY-MM-DD). Defaults to now.",
+        required: false,
+      },
       query: {
         type: "string",
-        description: "Optional Lucene/KQL filter query. Defaults to '*'.",
+        description: "Optional Lucene/KQL filter query. Defaults to '*' (all events).",
         required: false,
       },
       index: {
         type: "string",
-        description: "Index pattern to query (e.g. 'logs-*')",
+        description: "Index pattern to query (e.g. 'logs-*'). Omit to use the platform default.",
         required: false,
       },
-      columns: {
-        type: "array",
-        description: "List of field names to include as columns",
+      dashboardId: {
+        type: "string",
+        description: "Optional specific dashboard ID to run the query against. Omit to auto-select.",
         required: false,
       },
-      groupBy: {
-        type: "array",
-        description: "List of field names to group results by",
+      groupByField: {
+        type: "string",
+        description: "Field to group and break down counts by. Defaults to 'riskLevel'. Common values: 'riskLevel', 'progressStatus', 'category', 'ownerName'.",
         required: false,
       },
       metrics: {
         type: "array",
-        description: "Metric definitions: array of { field, operator }",
+        description: "Metric definitions: array of { field, operator }. Defaults to [{ field: '@timestamp', operator: 'count' }].",
         required: false,
       },
     },

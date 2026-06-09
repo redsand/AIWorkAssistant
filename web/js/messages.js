@@ -148,6 +148,31 @@ export function finalizeStreamingMessage(messageId) {
   }
 }
 
+// Update (or insert) the thinking section of an already-rendered message.
+// Called when thinking events arrive after the first response token.
+export function updateMessageThinking(messageId, thinking) {
+  if (!messageId || !thinking || !thinking.trim()) return;
+  const el = document.getElementById(messageId);
+  if (!el) return;
+  const bubble = el.querySelector(".message-bubble");
+  if (!bubble) return;
+  const thinkingSection = bubble.querySelector(".thinking-section");
+  if (thinkingSection) {
+    const body = thinkingSection.querySelector(".thinking-body");
+    if (body) body.textContent = thinking;
+  } else {
+    const thinkingId = "think-" + Date.now();
+    const wrapper = document.createElement("div");
+    wrapper.className = "thinking-section";
+    wrapper.innerHTML =
+      `<div class="thinking-header" onclick="document.getElementById('${thinkingId}').classList.toggle('expanded');document.getElementById('${thinkingId}-toggle').classList.toggle('expanded');">` +
+      `<span class="thinking-toggle" id="${thinkingId}-toggle">&#9654;</span> Thinking</div>` +
+      `<div class="thinking-body" id="${thinkingId}">${escapeHtml(thinking)}</div>`;
+    const contentEl = bubble.querySelector(".message-content");
+    bubble.insertBefore(wrapper, contentEl);
+  }
+}
+
 export function addMessage(content, type, thinking, { scroll = true, messageId = null, streaming = false } = {}) {
   const messagesDiv = document.getElementById("chatMessages");
 
@@ -236,6 +261,24 @@ export function addMessage(content, type, thinking, { scroll = true, messageId =
   return id;
 }
 
+// On SSE reconnect, reuse an existing non-completed progress element rather
+// than appending a duplicate. Falls back to createToolProgress() if none exists.
+export function reuseOrCreateToolProgress() {
+  const chatMessages = document.getElementById("chatMessages");
+  if (chatMessages) {
+    const all = chatMessages.querySelectorAll(".tool-progress");
+    const last = all[all.length - 1];
+    if (last) {
+      const headerText = last.querySelector(".tool-progress-header-left");
+      if (!headerText?.textContent?.trim().startsWith("Completed")) {
+        currentProgressEl = last;
+        return { progressEl: last, reused: true };
+      }
+    }
+  }
+  return { ...createToolProgress(), reused: false };
+}
+
 export function createToolProgress() {
   const progressEl = document.createElement("div");
   progressEl.className = "tool-progress";
@@ -281,6 +324,8 @@ export function markProgressAsGenerating() {
 export function addToolCall(id, name, params) {
   const progressEl = currentProgressEl;
   if (!progressEl) return;
+  // Deduplicate: skip tool calls replayed on SSE reconnect
+  if (id && progressEl.querySelector(`[data-tool-id="${id}"]`)) return;
 
   const body = progressEl.querySelector(".tool-progress-body");
   const item = document.createElement("div");
@@ -358,7 +403,7 @@ export function completeToolCall(id, result) {
     if (headerText) {
       headerText.innerHTML = `
         <span class="tool-call-status done"></span>
-        Generating response...
+        Tools complete
       `;
     }
   }

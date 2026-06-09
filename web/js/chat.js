@@ -33,6 +33,7 @@ import {
   markStreamingMessageInterrupted,
   finalizeStreamingMessage,
   markProgressAsGenerating,
+  updateMessageThinking,
 } from "./messages.js";
 import { loadRoadmaps } from "./sidebar.js";
 import { loadConversations } from "./conversations.js";
@@ -115,6 +116,11 @@ async function handleStreamResponse(response, progressElRef, onError) {
           }
           if (eventType === "thinking" && data.thinking) {
             currentThinking += data.thinking;
+            // If a message bubble already exists, update its thinking section
+            // rather than dropping thinking blocks that arrive after the first token.
+            if (streamingMessageId !== null) {
+              updateMessageThinking(streamingMessageId, currentThinking);
+            }
           }
           if (eventType === "token" && data.token !== undefined) {
             accumulatedContent += data.token;
@@ -533,11 +539,7 @@ async function executeSend(message, { resend = false } = {}) {
 
     if (result.error) return;
 
-    if (result.contentCount > 0) {
-      addCompletionMarker();
-    } else {
-      await loadChatHistory();
-    }
+    addCompletionMarker();
 
     if (result.roadmapTouched) loadRoadmaps();
 
