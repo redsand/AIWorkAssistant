@@ -121,6 +121,8 @@ export function enableAutoScroll() {
 export function showTyping(show) {
   const indicator = document.getElementById("typingIndicator");
   if (show) {
+    const processingEl = document.getElementById("processingIndicator");
+    if (processingEl && processingEl.classList.contains("active")) return;
     indicator.classList.add("active");
   } else {
     indicator.classList.remove("active");
@@ -135,6 +137,13 @@ export function showError(message) {
   chatMessages.insertBefore(errorDiv, chatMessages.firstChild);
 }
 
+function renderMermaidIn(el) {
+  if (!window.mermaid) return;
+  const nodes = Array.from(el.querySelectorAll(".mermaid:not([data-processed])"));
+  if (nodes.length === 0) return;
+  window.mermaid.run({ nodes }).catch(() => {});
+}
+
 export function finalizeStreamingMessage(messageId) {
   if (!messageId) return;
   const el = document.getElementById(messageId);
@@ -145,6 +154,7 @@ export function finalizeStreamingMessage(messageId) {
   if (raw !== undefined) {
     contentEl.innerHTML = renderMarkdown(raw);
     delete contentEl.dataset.streamRaw;
+    renderMermaidIn(contentEl);
   }
 }
 
@@ -201,6 +211,7 @@ export function addMessage(content, type, thinking, { scroll = true, messageId =
         } else {
           contentEl.innerHTML = renderMarkdown(content);
           delete contentEl.dataset.streamRaw;
+          renderMermaidIn(contentEl);
         }
         if (scroll && autoScrollEnabled) scrollChatToBottom();
       }
@@ -237,6 +248,7 @@ export function addMessage(content, type, thinking, { scroll = true, messageId =
     contentEl.innerHTML = renderMarkdown(content);
     if (streaming) contentEl.dataset.streamRaw = content;
     bubble.appendChild(contentEl);
+    if (!streaming) renderMermaidIn(contentEl);
   } else {
     bubble.textContent = content;
   }

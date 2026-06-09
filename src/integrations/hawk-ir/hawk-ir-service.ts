@@ -597,7 +597,16 @@ export class HawkIrService {
 
         const total = result.total ?? result.count ?? Object.values(breakdown).reduce((s, n) => s + n, 0);
 
-        windowResults.push({ from: from.toISOString(), to: to.toISOString(), label, total, breakdown, partial: false });
+        // Detect degenerate breakdown: if all items map to "unknown", the groupByField
+        // doesn't match the data shape — mark the window as partial so callers know to qualify the data.
+        const breakdownKeys = Object.keys(breakdown);
+        const allUnknown = breakdownKeys.length > 0 && breakdownKeys.every((k) => k === "unknown");
+        const windowPartial = allUnknown;
+        const windowError = allUnknown
+          ? `groupByField "${groupByField}" did not match any data fields — breakdown is unreliable`
+          : undefined;
+
+        windowResults.push({ from: from.toISOString(), to: to.toISOString(), label, total, breakdown, partial: windowPartial, error: windowError });
       } catch (err) {
         windowResults.push({
           from: from.toISOString(),

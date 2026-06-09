@@ -270,6 +270,7 @@ async function start() {
     // ─── ClaimKit init: block server.listen() until init resolves ───
     // CLAIMKIT_REQUIRE_INIT=true (default) → process.exit(1) on failure
     // CLAIMKIT_REQUIRE_INIT=false → log warning, continue with CK disabled (60s retry backoff)
+    console.log(`[ClaimKit] CLAIMKIT_ENABLED raw env: ${JSON.stringify(process.env.CLAIMKIT_ENABLED)}, parsed: ${env.CLAIMKIT_ENABLED}`);
     let ckInitialized = false;
     if (env.CLAIMKIT_ENABLED) {
       console.log("[ClaimKit] Initializing (blocking startup)…");

@@ -10,7 +10,7 @@
   },
   "scripts": {
     "dev:kill": "node scripts/kill-dev.js",
-    "dev": "npm run dev:kill && tsx watch src/server.ts",
+    "dev": "npm run dev:kill && node scripts/dev-with-logging.mjs",
     "build": "tsc",
     "start": "node dist/server.js",
     "test": "vitest run",

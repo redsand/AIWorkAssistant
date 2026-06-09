@@ -16,6 +16,7 @@ export interface Message {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
   timestamp: Date;
+  thinking?: string;
   name?: string;
   toolCalls?: Array<{
     id: string;
@@ -1449,6 +1450,7 @@ ${summary.keyTopics.map((topic) => `- ${topic}`).join("\n")}
     role: string;
     content: string;
     timestamp: string;
+    thinking?: string;
   }> {
     const session =
       this.sessions.get(sessionId) || this.loadActiveSession(sessionId);
@@ -1471,6 +1473,7 @@ ${summary.keyTopics.map((topic) => `- ${topic}`).join("\n")}
         role: m.role,
         content: m.content,
         timestamp: m.timestamp.toISOString(),
+        ...(m.thinking ? { thinking: m.thinking } : {}),
       }));
   }
 

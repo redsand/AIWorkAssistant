@@ -17,6 +17,42 @@ import type {
 } from "@redsand/claimkit";
 import type { AIProvider, ChatMessage } from "../../agent/providers/types";
 import { getProvider } from "../../agent/providers/factory";
+import { env } from "../../config/env";
+
+async function withLlmTimeout<T>(
+  makeCall: () => Promise<T>,
+  fallback: () => Promise<T>,
+): Promise<T> {
+  const maxAttempts = env.CLAIMKIT_LLM_MAX_ATTEMPTS;
+  const baseMs = env.CLAIMKIT_LLM_TIMEOUT_MS;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const timeoutMs = Math.min(baseMs * Math.pow(2, attempt - 1), baseMs * 16);
+    try {
+      const result = await new Promise<T | null>((resolve, reject) => {
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (!settled) { settled = true; resolve(null); }
+        }, timeoutMs);
+        makeCall().then(
+          (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } },
+          (e) => { if (!settled) { settled = true; clearTimeout(timer); reject(e); } },
+        );
+      });
+      if (result !== null) {
+        if (attempt > 1) console.log(`[ClaimKit LLM] Succeeded on attempt ${attempt}/${maxAttempts}`);
+        return result;
+      }
+      console.warn(`[ClaimKit LLM] Attempt ${attempt}/${maxAttempts} timed out after ${timeoutMs}ms`);
+    } catch (err) {
+      console.warn(`[ClaimKit LLM] Attempt ${attempt}/${maxAttempts} failed:`, err instanceof Error ? err.message : err);
+      if (attempt >= maxAttempts) throw err;
+    }
+  }
+
+  console.warn(`[ClaimKit LLM] All ${maxAttempts} attempts exhausted — falling back to MemoryLLMAdapter`);
+  return fallback();
+}
 
 function toChatMessages(messages: readonly LLMMessage[]): ChatMessage[] {
   return messages.map((m) => ({
@@ -122,11 +158,10 @@ export class AIProviderLLMAdapter implements LLMAdapter {
         : chunkText;
 
     try {
-      const result = await this.generateJson<{ claims: RawClaim[] }>(
-        [
-          {
-            role: "system",
-            content: `You are a claim extraction engine. Extract atomic factual claims from the provided evidence text as subject-predicate-object triples.
+      const messages = [
+        {
+          role: "system" as const,
+          content: `You are a claim extraction engine. Extract atomic factual claims from the provided evidence text as subject-predicate-object triples.
 
 Rules:
 - Each claim must express exactly one factual assertion.
@@ -150,16 +185,18 @@ Each claim object must have:
   "entities": ["extracted entities"],
   "confidence": <0-1>
 }`,
-          },
-          {
-            role: "user",
-            content: `Extract claims from the following evidence text (sourceId: ${sourceId}, chunkId: ${chunkId}):\n\n<evidence>\n${truncated}\n</evidence>`,
-          },
-        ],
-        {},
-      );
-      return (result.claims ?? []).filter(
-        (c) => c.confidence >= minConfidence,
+        },
+        {
+          role: "user" as const,
+          content: `Extract claims from the following evidence text (sourceId: ${sourceId}, chunkId: ${chunkId}):\n\n<evidence>\n${truncated}\n</evidence>`,
+        },
+      ];
+      return await withLlmTimeout(
+        async () => {
+          const r = await this.generateJson<{ claims: RawClaim[] }>(messages, {});
+          return (r.claims ?? []).filter((c) => c.confidence >= minConfidence);
+        },
+        () => this.fallback.extractClaims(chunkText, sourceId, chunkId, options),
       );
     } catch (err) {
       console.warn(
@@ -182,11 +219,10 @@ Each claim object must have:
       .join("\n");
 
     try {
-      return await this.generateJson<LLMGenerateAnswerResult>(
-        [
-          {
-            role: "system",
-            content: `You are an evidence-grounded answer generator. Answer the user's question using ONLY the provided evidence claims.
+      const answerMessages = [
+        {
+          role: "system" as const,
+          content: `You are an evidence-grounded answer generator. Answer the user's question using ONLY the provided evidence claims.
 
 Rules:
 - Every factual assertion in your answer must be supported by at least one claim.
@@ -194,13 +230,15 @@ Rules:
 - Rate your confidence (0-1) in the answer's completeness and accuracy.
 - List any aspects of the question that the evidence does not cover in missingEvidence.
 - Respond with JSON: { "answer": "...", "citationClaimIds": [...], "confidence": 0-1, "missingEvidence": [...] }`,
-          },
-          {
-            role: "user",
-            content: `Question: ${question}\n\nEvidence claims:\n${claimLines}`,
-          },
-        ],
-        {},
+        },
+        {
+          role: "user" as const,
+          content: `Question: ${question}\n\nEvidence claims:\n${claimLines}`,
+        },
+      ];
+      return await withLlmTimeout(
+        () => this.generateJson<LLMGenerateAnswerResult>(answerMessages, {}),
+        () => this.fallback.generateAnswer(packet, question),
       );
     } catch (err) {
       console.warn(
@@ -222,13 +260,10 @@ Rules:
       .join("\n");
 
     try {
-      const result = await this.generateJson<{
-        contradictions: EvidenceContradiction[];
-      }>(
-        [
-          {
-            role: "system",
-            content: `You are a contradiction detector. Analyze the following claims and identify logical contradictions between pairs.
+      const contradictionMessages = [
+        {
+          role: "system" as const,
+          content: `You are a contradiction detector. Analyze the following claims and identify logical contradictions between pairs.
 
 For each contradiction found, provide:
 - claimId1, claimId2: the IDs of the contradictory claims
@@ -237,18 +272,19 @@ For each contradiction found, provide:
 - severity: "low", "medium", or "high"
 
 Respond with JSON: { "contradictions": [...] }`,
-          },
-          {
-            role: "user",
-            content: `Analyze these claims for contradictions:\n\n${claimLines}`,
-          },
-        ],
-        {},
+        },
+        {
+          role: "user" as const,
+          content: `Analyze these claims for contradictions:\n\n${claimLines}`,
+        },
+      ];
+      return await withLlmTimeout(
+        async () => {
+          const r = await this.generateJson<{ contradictions: EvidenceContradiction[] }>(contradictionMessages, {});
+          return (r.contradictions ?? []).map((c) => ({ ...c, detectedBy: "llm" as const }));
+        },
+        () => this.fallback.detectContradictions(claims),
       );
-      return (result.contradictions ?? []).map((c) => ({
-        ...c,
-        detectedBy: "llm" as const,
-      }));
     } catch (err) {
       console.warn(
         "[AIProviderLLMAdapter] detectContradictions failed, falling back to MemoryLLMAdapter:",
@@ -270,11 +306,10 @@ Respond with JSON: { "contradictions": [...] }`,
       .join("\n");
 
     try {
-      return await this.generateJson<ClaimVerificationResult>(
-        [
-          {
-            role: "system",
-            content: `You are a claim verification engine. Verify that every factual assertion in the answer is supported by the evidence claims.
+      const verifyMessages = [
+        {
+          role: "system" as const,
+          content: `You are a claim verification engine. Verify that every factual assertion in the answer is supported by the evidence claims.
 
 For each assertion in the answer, determine:
 - text: the assertion text
@@ -292,13 +327,15 @@ Respond with JSON:
   "unsupportedAssertionCount": N,
   "unsupportedPhrases": [...]
 }`,
-          },
-          {
-            role: "user",
-            content: `Answer to verify:\n${answer}\n\nEvidence claims:\n${claimLines}`,
-          },
-        ],
-        {},
+        },
+        {
+          role: "user" as const,
+          content: `Answer to verify:\n${answer}\n\nEvidence claims:\n${claimLines}`,
+        },
+      ];
+      return await withLlmTimeout(
+        () => this.generateJson<ClaimVerificationResult>(verifyMessages, {}),
+        () => this.fallback.verifyClaims(answer, packet),
       );
     } catch (err) {
       console.warn(

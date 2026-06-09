@@ -209,7 +209,7 @@ const envSchema = z.object({
     .default("false"),
   CLAIMKIT_LLM_PROVIDER: z
     .enum(["memory", "comparison", "ollama"])
-    .default("memory"),
+    .default("comparison"),
   CLAIMKIT_REDIS_URL: z.string().default(""),
   CLAIMKIT_REDIS_PREFIX: z.string().default("aiworkassistant"),
   CLAIMKIT_TOP_K: z.coerce.number().default(10),
@@ -223,6 +223,8 @@ const envSchema = z.object({
   CLAIMKIT_DISABLE_CONTRADICTION_LLM: z.string().transform((s) => s === "true").default("false"),
   CLAIMKIT_INIT_TIMEOUT_MS: z.coerce.number().default(5000),
   CLAIMKIT_LLM_MODEL: z.string().default(""),
+  CLAIMKIT_LLM_TIMEOUT_MS: z.coerce.number().default(5000),
+  CLAIMKIT_LLM_MAX_ATTEMPTS: z.coerce.number().default(5),
   // If true, server.listen() is preceded by `await claimKitAdapter.initialize()`
   // and a hard process.exit(1) on failure. If false, init runs in the background
   // and failures are logged but non-fatal (existing 60s retry backoff applies).

@@ -7104,15 +7104,40 @@ async function handleTenableListVulnerabilities(params: Record<string, unknown>)
 
   // Map date_range (days) OR start_date/end_date (ISO strings) to since (unix timestamp)
   let since: number | undefined;
-  const dateRange = params.date_range as number | undefined;
+  const rawDateRange = params.date_range;
+  const dateRange = typeof rawDateRange === "number"
+    ? rawDateRange
+    : typeof rawDateRange === "string" && /^\d+$/.test(rawDateRange.trim())
+      ? parseInt(rawDateRange.trim(), 10)
+      : undefined;
   const startDate = params.start_date as string | undefined;
+  const endDate = params.end_date as string | undefined;
 
   if (startDate) {
     const parsed = new Date(startDate);
     if (!isNaN(parsed.getTime())) {
       since = Math.floor(parsed.getTime() / 1000);
     }
-  } else if (dateRange) {
+  } else if (endDate && !startDate) {
+    // end_date without start_date — treat end_date as the cutoff and look back 30 days
+    const parsed = new Date(endDate);
+    if (!isNaN(parsed.getTime())) {
+      since = Math.floor(parsed.getTime() / 1000) - 30 * 24 * 60 * 60;
+    }
+  } else if (typeof rawDateRange === "string" && rawDateRange.includes("-") && (rawDateRange.includes(":") || rawDateRange.includes("/"))) {
+    // Model passed a date string like "2026-05-01:2026-05-31" — parse start portion
+    const sep = rawDateRange.includes(":") ? ":" : "/";
+    const parts = rawDateRange.split(sep);
+    const parsedStart = new Date(parts[0]);
+    const parsedEnd = parts[1] ? new Date(parts[1]) : null;
+    if (!isNaN(parsedStart.getTime())) {
+      since = Math.floor(parsedStart.getTime() / 1000);
+    }
+    if (parsedEnd && !isNaN(parsedEnd.getTime())) {
+      // Override end_date param with parsed value so the export pipeline can use it
+      (params as Record<string, unknown>).end_date = parts[1];
+    }
+  } else if (dateRange !== undefined && !isNaN(dateRange)) {
     since = Math.floor(Date.now() / 1000) - dateRange * 24 * 60 * 60;
   }
 

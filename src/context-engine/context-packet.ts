@@ -314,6 +314,12 @@ export async function assembleContextPacket(
   const graphSection = trimmedGraph;
 
   const routing = determineRoutingTier(claimKitResult);
+  console.log(
+    `[ROUTING DECISION] winner=${routing.overallWinner.toUpperCase()} | tier=${routing.tier} | reason=${routing.routingReason}` +
+    (claimKitResult
+      ? ` | ck_confidence=${(claimKitResult.confidence * 100).toFixed(1)}% | ck_claims=${claimKitResult.metadata.claimCount} | ck_answerability=${claimKitResult.answerability}`
+      : ` | ck_available=${claimKitAvailable} | ck_status=${ckStatus}`),
+  );
 
   let claimKitSection: ClaimKitContextSection | null = null;
   if (claimKitResult) {

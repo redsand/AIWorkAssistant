@@ -281,6 +281,20 @@
   font-size: 0.85em;
 }
 
+.message.assistant .message-bubble .mermaid-diagram {
+  margin: 0.75em 0;
+  padding: 16px 12px;
+  background: #1e1e2e;
+  border-radius: 8px;
+  overflow-x: auto;
+  text-align: center;
+}
+
+.message.assistant .message-bubble .mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
 .message.assistant .message-bubble .thinking-section {
   background: #f8f9fc;
   border: 1px solid #e5e7eb;

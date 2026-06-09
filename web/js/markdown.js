@@ -3,6 +3,12 @@ import { escapeHtml } from "./utils.js";
 export function renderMarkdown(text) {
   let html = text;
 
+  // Mermaid diagrams — render as a diagram container instead of a code block.
+  // Only process complete blocks (closing ``` present) to avoid mangling mid-stream content.
+  html = html.replace(/```mermaid\n([\s\S]*?)```/g, (_, diagram) => {
+    return `<div class="mermaid-diagram"><div class="mermaid">${diagram.trim()}</div></div>`;
+  });
+
   html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
     const escaped = code
       .replace(/&/g, "&amp;")

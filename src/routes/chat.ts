@@ -33,6 +33,7 @@ import { runProviderPreflight } from "../agent/provider-preflight";
 import type { AIProviderName } from "../agent/provider-settings";
 import { errorLog } from "../observability/error-log";
 import { claimKitAdapter } from "../context-engine/adapters/claimkit-adapter";
+import { embeddingService } from "../agent/embedding-service";
 
 const MAX_SYSTEM_PROMPT_LENGTH = 4000;
 
@@ -745,7 +746,7 @@ async function runChatJob(
 
     messages = injectManifest(messages, sessionId);
     warnIfInvalidModelMessages(messages, "stream_initial");
-    let { content, toolCalls } = await streamChatIteration(
+    let { content, thinking: lastThinking, toolCalls } = await streamChatIteration(
       sessionId, job, messages, expandedTools.length > 0 ? expandedTools : tools, model,
     );
 
@@ -877,6 +878,7 @@ async function runChatJob(
         sessionId, job, messages, expandedTools.length > 0 ? expandedTools : undefined, model,
       );
       content = next.content;
+      lastThinking = next.thinking;
       toolCalls = next.toolCalls;
 
       assertJobActive(job);
@@ -884,7 +886,7 @@ async function runChatJob(
     }
 
     assertJobActive(job);
-    conversationManager.addMessage(sessionId, { role: "assistant", content });
+    conversationManager.addMessage(sessionId, { role: "assistant", content, ...(lastThinking ? { thinking: lastThinking } : {}) });
     if (content.trim()) {
       try { if (runId) agentRunDatabase.addStep({ runId, stepType: "content", content: { content }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
     }
@@ -1811,6 +1813,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
     const info = providerKeyMap[provider] || providerKeyMap.opencode;
 
+    const ckAvailable = claimKitAdapter.isAvailable();
+    const ckInitError = claimKitAdapter.getInitError();
+    const embeddingAvailable = await embeddingService.isAvailable();
+
     return {
       provider: {
         active: provider,
@@ -1824,6 +1830,14 @@ export async function chatRoutes(fastify: FastifyInstance) {
         gitlab: { configured: gitlabConfigured, valid: gitlabValid },
         jira: { configured: jiraConfigured, valid: jiraValid },
         jitbit: { configured: jitbitConfigured, valid: jitbitValid },
+      },
+      claimkit: {
+        envEnabled: env.CLAIMKIT_ENABLED,
+        envRaw: process.env.CLAIMKIT_ENABLED,
+        initialized: ckAvailable,
+        initError: ckInitError || null,
+        contextMode: env.CONTEXT_MODE,
+        embeddingAvailable,
       },
     };
   });

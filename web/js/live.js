@@ -186,7 +186,18 @@ export function subscribeLive(sessionId) {
 
               if (eventType === "thinking" && data.thinking) {
                 currentThinking += data.thinking;
-                if (streamingMessageId !== null) {
+                if (streamingMessageId === null) {
+                  // Show thinking in real-time before any token arrives.
+                  if (!hasActiveJob) {
+                    hasActiveJob = true;
+                    const processingEl = document.getElementById("processingIndicator");
+                    processingEl.classList.add("active");
+                    progressEl = createToolProgress().progressEl;
+                    document.getElementById("chatMessages").appendChild(progressEl);
+                  }
+                  markProgressAsGenerating();
+                  streamingMessageId = addMessage("", "assistant", currentThinking, { streaming: true });
+                } else {
                   updateMessageThinking(streamingMessageId, currentThinking);
                 }
               }
@@ -201,9 +212,9 @@ export function subscribeLive(sessionId) {
                   document.getElementById("chatMessages").appendChild(progressEl);
                 }
                 if (streamingMessageId === null) {
+                  // No thinking shown yet — create bubble on first token.
                   markProgressAsGenerating();
-                  streamingMessageId = addMessage(accumulatedContent, "assistant", currentThinking || undefined, { streaming: true });
-                  currentThinking = "";
+                  streamingMessageId = addMessage(accumulatedContent, "assistant", undefined, { streaming: true });
                 } else {
                   addMessage(accumulatedContent, "assistant", undefined, { messageId: streamingMessageId, streaming: true });
                 }

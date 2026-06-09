@@ -219,6 +219,19 @@ class EmbeddingService {
     };
   }
 
+  // Handles both old Ollama format ({ embedding: [...] }) and new format ({ embeddings: [[...]] })
+  private extractOllamaEmbedding(data: Record<string, unknown>): number[] | null {
+    if (Array.isArray(data.embedding)) return data.embedding as number[];
+    if (Array.isArray(data.embeddings) && Array.isArray((data.embeddings as unknown[][])[0])) {
+      return (data.embeddings as number[][])[0];
+    }
+    return null;
+  }
+
+  private hasOllamaEmbedding(data: Record<string, unknown>): boolean {
+    return this.extractOllamaEmbedding(data) !== null;
+  }
+
   private async ollamaEmbed(text: string): Promise<EmbeddingResult> {
     const response = await axios.post(
       `${this.baseUrl}/api/embeddings`,
@@ -229,8 +242,10 @@ class EmbeddingService {
       },
     );
 
+    const embedding = this.extractOllamaEmbedding(response.data);
+    if (!embedding) throw new Error("Ollama returned no embedding in response");
     return {
-      embedding: response.data.embedding,
+      embedding,
       model: this.model,
       provider: "ollama",
     };
@@ -351,7 +366,7 @@ class EmbeddingService {
           timeout: 10000,
         },
       );
-      return !!(response.data && response.data.embedding);
+      return !!(response.data && this.hasOllamaEmbedding(response.data));
     } catch (err: unknown) {
       if (this.isModelNotFoundError(err) && !this.pullAttempted) {
         console.log(`[Embedding] Model "${this.model}" not found locally — attempting ollama pull...`);
@@ -368,7 +383,7 @@ class EmbeddingService {
                 timeout: 30000,
               },
             );
-            return !!(retry.data && retry.data.embedding);
+            return !!(retry.data && this.hasOllamaEmbedding(retry.data));
           } catch {
             return false;
           }
@@ -386,7 +401,7 @@ class EmbeddingService {
         { model, prompt: "test" },
         { timeout },
       );
-      return !!(response.data && response.data.embedding);
+      return !!(response.data && this.hasOllamaEmbedding(response.data));
     } catch (err: unknown) {
       if (this.isModelNotFoundError(err) && !this.pullAttempted) {
         console.log(`[Embedding] Model "${model}" not found locally — attempting ollama pull...`);
@@ -398,7 +413,7 @@ class EmbeddingService {
               { model, prompt: "test" },
               { timeout: 30000 },
             );
-            return !!(retry.data && retry.data.embedding);
+            return !!(retry.data && this.hasOllamaEmbedding(retry.data));
           } catch {
             return false;
           }

@@ -116,19 +116,23 @@ async function handleStreamResponse(response, progressElRef, onError) {
           }
           if (eventType === "thinking" && data.thinking) {
             currentThinking += data.thinking;
-            // If a message bubble already exists, update its thinking section
-            // rather than dropping thinking blocks that arrive after the first token.
-            if (streamingMessageId !== null) {
+            if (streamingMessageId === null) {
+              // Show thinking immediately — create the bubble now so the user
+              // sees the AI reasoning in real-time, even before the first token.
+              markProgressAsGenerating();
+              streamingMessageId = addMessage("", "assistant", currentThinking, { streaming: true });
+              setCurrentStreamingMessageId(streamingMessageId);
+            } else {
               updateMessageThinking(streamingMessageId, currentThinking);
             }
           }
           if (eventType === "token" && data.token !== undefined) {
             accumulatedContent += data.token;
             if (streamingMessageId === null) {
+              // No thinking was shown — create the bubble on first token.
               markProgressAsGenerating();
-              streamingMessageId = addMessage(accumulatedContent, "assistant", currentThinking || undefined, { streaming: true });
+              streamingMessageId = addMessage(accumulatedContent, "assistant", undefined, { streaming: true });
               setCurrentStreamingMessageId(streamingMessageId);
-              currentThinking = "";
             } else {
               addMessage(accumulatedContent, "assistant", undefined, { messageId: streamingMessageId, streaming: true });
             }
@@ -396,7 +400,7 @@ async function loadChatHistory() {
         (!msg.content || msg.content.trim() === "")
       )
         continue;
-      addMessage(msg.content, msg.role, undefined, { scroll: false });
+      addMessage(msg.content, msg.role, msg.thinking || undefined, { scroll: false });
       if (msg.role === "user" && msg.content) {
         const hist = [...messageHistory];
         hist.push(msg.content);

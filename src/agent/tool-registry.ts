@@ -5622,7 +5622,12 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       "Automatically slices the range into ≤10-day windows (API limit), queries each window independently, " +
       "and returns pre-aggregated metrics: total event counts per window, breakdown by groupByField, " +
       "week-over-week deltas, and a hasPartialData flag. Use this instead of manual multi-call patterns " +
-      "for monthly or multi-week reporting. Defaults to the last 30 days if no dates are provided.",
+      "for monthly or multi-week reporting. Defaults to the last 30 days if no dates are provided.\n\n" +
+      "IMPORTANT: totalEvents is raw monitoring event/log counts from the HAWK IR platform — " +
+      "NOT case counts. These numbers are typically in the hundreds of millions or billions and represent " +
+      "raw telemetry volume, not security incidents. Always qualify this metric clearly when reporting it. " +
+      "If breakdown.unknown dominates (>80% of items), the groupByField likely does not map to the data — " +
+      "treat the breakdown as unreliable and note this in the report.",
     params: {
       startDate: {
         type: "string",
@@ -5666,7 +5671,8 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "hawk_ir.get_case_count",
     description:
-      "Get the count of HAWK IR incident response cases within the last 10 days.",
+      "Get the total count of ALL currently open HAWK IR incident response cases (not filtered by date). " +
+      "This is a point-in-time snapshot of the current open case backlog, NOT a count of cases opened in the last N days.",
     params: {},
     actionType: "hawk_ir.get_case_count",
     riskLevel: "low",
@@ -6091,9 +6097,9 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     name: "tenable.list_vulnerabilities",
     description: "Return a comprehensive list of ALL vulnerabilities from Tenable (not capped at 5,000). Internally uses the export API to download every chunk automatically. May take 10–60 seconds for large datasets. Provide accessKey/secretKey for per-customer access.",
     params: {
-      date_range: { type: "number", description: "Days of data to return (default: all). Use this OR start_date/end_date, not both.", required: false },
-      start_date: { type: "string", description: "Start date in ISO 8601 format (e.g., 2026-05-01). Use this with end_date for precise date ranges instead of date_range.", required: false },
-      end_date: { type: "string", description: "End date in ISO 8601 format (e.g., 2026-06-04). Use this with start_date for precise date ranges instead of date_range.", required: false },
+      date_range: { type: "number", description: "INTEGER number of days to look back (e.g., 30 = last 30 days). MUST be a plain integer, never a date string. Use start_date/end_date instead for specific date ranges.", required: false },
+      start_date: { type: "string", description: "Start date in ISO 8601 format (e.g., 2026-05-01). Use with end_date for a specific date window. Do NOT combine with date_range.", required: false },
+      end_date: { type: "string", description: "End date in ISO 8601 format (e.g., 2026-06-04). Use with start_date for a specific date window. Do NOT combine with date_range.", required: false },
       severity: { type: "array", description: "Severity filter: critical, high, medium, low, info", required: false },
       state: { type: "array", description: "State filter: open, reopened, fixed", required: false },
       plugin_id: { type: "array", description: "Filter by specific plugin IDs", required: false },

@@ -128,7 +128,7 @@ export async function switchConversation(sessionId) {
           (!msg.content || msg.content.trim() === "")
         )
           continue;
-        addMessage(msg.content, msg.role, undefined, { scroll: false });
+        addMessage(msg.content, msg.role, msg.thinking || undefined, { scroll: false });
         if (msg.role === "user" && msg.content) {
           const hist = [...messageHistory];
           hist.push(msg.content);

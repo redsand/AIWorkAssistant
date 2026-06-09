@@ -180,6 +180,9 @@ interface ReviewResult {
   summary: string;
   agentStatus?: Record<string, "passed" | "failed">;
   serviceUnavailable?: boolean;
+  /** True when review failed due to permanent config issues (invalid model, missing commands).
+   *  Unlike serviceUnavailable, this does NOT clear the SHA — the MR is not retried. */
+  configurationError?: boolean;
   recommendation?: string;
 }
 
@@ -741,6 +744,24 @@ function isServiceUnavailable(result: ReviewResult): boolean {
     result.findings.some((f) => f.message.startsWith("AI review service unavailable"));
 }
 
+const INFRA_FAILURE_PATTERNS = [
+  "review agent failed:",
+  "Regression analysis unavailable:",
+  "Unknown Model",
+  "spawnSync",
+  "ENOENT",
+] as const;
+
+function isInfrastructureFailureMessage(msg: string): boolean {
+  return INFRA_FAILURE_PATTERNS.some((p) => msg.includes(p));
+}
+
+function isConfigurationError(result: ReviewResult): boolean {
+  if (result.configurationError) return true;
+  return result.findings.length > 0 &&
+    result.findings.every((f) => isInfrastructureFailureMessage(f.message));
+}
+
 async function postPostponed(
   vcs: VcsClient,
   project: string,
@@ -965,6 +986,26 @@ async function pollMergeRequests(
         // Review recommends human review — don't merge, don't rework, just flag for human
         log.warn(`MR !${mr.number}${tag} flagged for human review — not merging or triggering rework`);
         await vcs.addComment(target.name, mr.number, `## 🟡 ${REVIEW_HUMAN_REVIEW_MARKER}\n\n${result.summary}\n\nThis MR has been reviewed and requires human judgment before merging. No automatic rework will be performed.\n\n${formatAgentStatus(result.agentStatus)}`);
+      } else if (isConfigurationError(result)) {
+        // All findings are infrastructure failures (invalid model, missing commands) — NOT a code quality issue.
+        // Post a clear error and keep the SHA tracked so we don't retry until the config is fixed.
+        log.error(`MR !${mr.number}${tag} review halted — configuration error (invalid model or missing review commands)`);
+        for (const f of result.findings) {
+          log.finding(`[${f.severity}] ${f.category}: ${f.message.slice(0, 120)}`);
+        }
+        const findingLines = result.findings.map((f) => `- \`[${f.severity}]\` **${f.category}**: ${f.message}`).join("\n");
+        await vcs.addComment(
+          target.name,
+          mr.number,
+          `## ❌ Review Halted — Configuration Error\n\n` +
+          `The automated review could not run because the review infrastructure is misconfigured. ` +
+          `**This is NOT a code quality issue — no rework is required.**\n\n` +
+          `**Failures:**\n${findingLines}\n\n` +
+          `**Fix the reviewer configuration** (check AI_PROVIDER, model name, and that review agent commands are installed), ` +
+          `then reset the reviewer state for this MR to re-run.`,
+        );
+        // Keep in reviewedMRs + reviewedMRShas — do NOT clear SHA; don't retry until config is fixed.
+        saveReviewerState();
       } else {
         log.rework(`MR !${mr.number}${tag} needs rework — ${result.findings.length} findings (${result.summary})`);
         for (const f of result.findings) {
@@ -1109,12 +1150,15 @@ async function runLocalStreamingReview(
     const reg = await runRegressionReview(diff, config.regressionAgentCmd);
     const findings: ReviewFinding[] = [...sec.findings, ...qa.findings, ...qual.findings, ...reg.findings];
     const hasCriticalOrHigh = findings.some((f) => f.severity === "critical" || f.severity === "high");
+    const allFailed = [sec.status, qa.status, qual.status, reg.status].every((s) => s === "failed");
+    const allInfraFailures = findings.every((f) => isInfrastructureFailureMessage(f.message));
     return {
       clean: !hasCriticalOrHigh,
       findings,
       summary: buildSummary(findings),
       agentStatus: { security: sec.status, qa: qa.status, quality: qual.status, regression: reg.status },
       recommendation: hasCriticalOrHigh ? "needs_changes" : "ready_for_human_review",
+      configurationError: allFailed && allInfraFailures,
     };
   }
 }
