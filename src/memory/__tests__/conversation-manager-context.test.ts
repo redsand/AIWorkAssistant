@@ -49,14 +49,15 @@ describe("ConversationManager context messages", () => {
 
     const messages = await manager.getSessionMessages(sessionId, true, "engine");
 
-    expect(messages.length).toBeLessThan(20);
+    // 45 messages → 25 old summarized + 20 recent = 21 total (1 summary + 20 recent)
+    expect(messages.length).toBe(21);
     expect(messages[0].role).toBe("system");
     expect(messages[0].content).toContain("Fallback summary");
     expect(messages.at(-1)?.content).toContain("message 44");
 
     const summaryPath = path.join(tempDir, "data", "memories", "sessions", `${sessionId}.summary.md`);
     expect(fs.existsSync(summaryPath)).toBe(true);
-    expect(fs.readFileSync(summaryPath, "utf-8")).toContain("**Messages:** 35");
+    expect(fs.readFileSync(summaryPath, "utf-8")).toContain("**Messages:** 25");
   });
 
   it("refreshes active summaries when the compacted message window advances", async () => {
@@ -72,14 +73,18 @@ describe("ConversationManager context messages", () => {
     }
 
     await manager.getSessionMessages(sessionId, true, "engine");
-    manager.addMessage(sessionId, {
-      role: "user",
-      content: "message 45 follow-up",
-    });
+    // Add enough messages to exceed RESUMMARY_THRESHOLD (15) and trigger a refresh.
+    for (let i = 45; i < 61; i++) {
+      manager.addMessage(sessionId, {
+        role: i % 2 === 0 ? "user" : "assistant",
+        content: `message ${i} follow-up`,
+      });
+    }
     await manager.getSessionMessages(sessionId, true, "engine");
 
     const summaryPath = path.join(tempDir, "data", "memories", "sessions", `${sessionId}.summary.md`);
-    expect(fs.readFileSync(summaryPath, "utf-8")).toContain("**Messages:** 36");
+    // 61 messages → 41 old summarized + 20 recent; summary messageCount = 41
+    expect(fs.readFileSync(summaryPath, "utf-8")).toContain("**Messages:** 41");
   });
 
   it("truncates large tool results in context without mutating stored session history", async () => {

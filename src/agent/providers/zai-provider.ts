@@ -11,6 +11,7 @@ import {
 } from "./types";
 import { sanitizeToolName, repairToolMessagePairs } from "./tool-message-repair";
 import { zaiRateLimiter } from "./zai-rate-limiter";
+import { aiRequestLimiter } from "./ai-request-limiter";
 
 const kToolNameMap = Symbol("toolNameMap");
 
@@ -202,16 +203,21 @@ export class ZaiProvider extends AIProvider {
           timeout: `${Math.round(attemptTimeout / 1000)}s`,
         });
 
-        await zaiRateLimiter.acquire();
         let response;
+        await aiRequestLimiter.acquire();
         try {
-          response = await this.client.post(
-            "/chat/completions",
-            requestBody,
-            { timeout: attemptTimeout },
-          );
+          await zaiRateLimiter.acquire();
+          try {
+            response = await this.client.post(
+              "/chat/completions",
+              requestBody,
+              { timeout: attemptTimeout },
+            );
+          } finally {
+            zaiRateLimiter.release();
+          }
         } finally {
-          zaiRateLimiter.release();
+          aiRequestLimiter.release();
         }
 
         const data = response.data;
@@ -368,19 +374,21 @@ export class ZaiProvider extends AIProvider {
           attempt: `${attempt}/${maxAttempts}`,
         });
 
-        await zaiRateLimiter.acquire();
-        let response;
+        await aiRequestLimiter.acquire();
         try {
-          response = await this.client.post(
-            "/chat/completions",
-            requestBody,
-            { responseType: "stream", validateStatus: () => true },
-          );
-        } finally {
-          zaiRateLimiter.release();
-        }
+          await zaiRateLimiter.acquire();
+          let response;
+          try {
+            response = await this.client.post(
+              "/chat/completions",
+              requestBody,
+              { responseType: "stream", validateStatus: () => true },
+            );
+          } finally {
+            zaiRateLimiter.release();
+          }
 
-        if (response.status !== 200) {
+          if (response.status !== 200) {
           const errorBody = await this.readStreamBody(response.data);
 
           if (response.status === 400) {
@@ -504,7 +512,10 @@ export class ZaiProvider extends AIProvider {
           }
         }
         return;
-      } catch (error) {
+      } finally {
+        aiRequestLimiter.release();
+      }
+    } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
         // Context overflow, auth, and payload validation errors should not be retried
         if (

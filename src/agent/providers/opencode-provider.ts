@@ -9,6 +9,7 @@ import {
   ToolCall,
 } from "./types";
 import { sanitizeToolName, repairToolMessagePairs } from "./tool-message-repair";
+import { aiRequestLimiter } from "./ai-request-limiter";
 
 const kToolNameMap = Symbol("toolNameMap");
 
@@ -99,11 +100,17 @@ export class OpenCodeProvider extends AIProvider {
           timeout: `${Math.round(attemptTimeout / 1000)}s`,
         });
 
-        const response = await this.client.post(
-          "/chat/completions",
-          requestBody,
-          { timeout: attemptTimeout },
-        );
+        await aiRequestLimiter.acquire();
+        let response;
+        try {
+          response = await this.client.post(
+            "/chat/completions",
+            requestBody,
+            { timeout: attemptTimeout },
+          );
+        } finally {
+          aiRequestLimiter.release();
+        }
 
         const data = response.data;
         const message = data.choices[0].message;
@@ -227,6 +234,7 @@ export class OpenCodeProvider extends AIProvider {
       );
     }
 
+    await aiRequestLimiter.acquire();
     try {
       const requestBody = this.buildRequestBody({ ...request, stream: true });
       const toolNameMap = (requestBody as any)[kToolNameMap] as Map<string, string> | undefined;
@@ -330,6 +338,8 @@ export class OpenCodeProvider extends AIProvider {
       throw new Error(
         `OpenCode API stream failed: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
+    } finally {
+      aiRequestLimiter.release();
     }
   }
 

@@ -707,26 +707,17 @@ ${conversationText}
 ---`;
 
     try {
-      const summarizationTimeout = new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(new Error("LLM summarization timed out")),
-          25_000,
-        ),
-      );
-      const response = await Promise.race([
-        aiClient.chat({
-          messages: [
-            {
-              role: "system",
-              content:
-                "You are a lossless conversation archivist. Your summaries preserve every fact, ID, count, and decision so an AI agent can continue work seamlessly. You never omit concrete data.",
-            },
-            { role: "user", content: summaryPrompt },
-          ],
-          temperature: 0.1,
-        }),
-        summarizationTimeout,
-      ]);
+      const response = await aiClient.chat({
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a lossless conversation archivist. Your summaries preserve every fact, ID, count, and decision so an AI agent can continue work seamlessly. You never omit concrete data.",
+          },
+          { role: "user", content: summaryPrompt },
+        ],
+        temperature: 0.1,
+      });
 
       if (response.content && response.content.trim().length > 50) {
         return `[Context Summary — ${messages.length} earlier messages compressed]\n\n${response.content.trim()}`;

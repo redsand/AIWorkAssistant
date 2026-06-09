@@ -9,6 +9,7 @@ import {
   ToolCall,
 } from "./types";
 import { sanitizeToolName, repairToolMessagePairs } from "./tool-message-repair";
+import { aiRequestLimiter } from "./ai-request-limiter";
 
 const DEBUG = process.env.AICODER_DEBUG === "true";
 
@@ -79,6 +80,7 @@ export class OpenAIProvider extends AIProvider {
 
     // Reasoning models (o1, o3, o4-*) reject temperature/top_p entirely and
     // require max_completion_tokens instead of max_tokens.
+    // GPT-5+ models require temperature=1.0.
     const model = String((body.model as string) || "");
     if (/^o\d/i.test(model)) {
       delete body.temperature;
@@ -87,6 +89,9 @@ export class OpenAIProvider extends AIProvider {
         body.max_completion_tokens = body.max_tokens;
         delete body.max_tokens;
       }
+    } else if (/^gpt-5/i.test(model)) {
+      body.temperature = 1.0;
+      delete body.top_p;
     }
 
     return body;
@@ -131,9 +136,15 @@ export class OpenAIProvider extends AIProvider {
           timeout: `${Math.round(attemptTimeout / 1000)}s`,
         });
 
-        const response = await this.client.post("/chat/completions", requestBody, {
-          timeout: attemptTimeout,
-        });
+        await aiRequestLimiter.acquire();
+        let response;
+        try {
+          response = await this.client.post("/chat/completions", requestBody, {
+            timeout: attemptTimeout,
+          });
+        } finally {
+          aiRequestLimiter.release();
+        }
 
         const data = response.data;
         const message = data.choices[0].message;
@@ -231,6 +242,7 @@ export class OpenAIProvider extends AIProvider {
       throw new Error("OpenAI API key not configured. Set OPENAI_API_KEY environment variable.");
     }
 
+    await aiRequestLimiter.acquire();
     try {
       const requestBody = this.buildRequestBody({ ...request, stream: true });
       const toolNameMap = (requestBody as any)[kToolNameMap] as Map<string, string> | undefined;
@@ -297,6 +309,8 @@ export class OpenAIProvider extends AIProvider {
     } catch (error) {
       console.error("[OpenAI] Stream error:", error);
       throw new Error(`OpenAI stream failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    } finally {
+      aiRequestLimiter.release();
     }
   }
 

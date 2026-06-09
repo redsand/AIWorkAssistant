@@ -24,6 +24,10 @@ const envSchema = z.object({
   // AI Provider Selection
   AI_PROVIDER: z.enum(["opencode", "zai", "ollama", "openai"]).default("opencode"),
 
+  // Global AI concurrency limit (applies to all providers)
+  AI_MAX_CONCURRENT: z.coerce.number().default(3),
+  AI_QUEUE_TIMEOUT_MS: z.coerce.number().default(120000),
+
   // OpenAI
   OPENAI_API_URL: z.string().url().default("https://api.openai.com/v1"),
   OPENAI_API_KEY: z.string().default(""),
