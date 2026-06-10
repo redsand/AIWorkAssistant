@@ -482,3 +482,94 @@ describe("saveBatchComparison — diagnostic fields", () => {
     expect(c.ck_confidence).toBeNull();
   });
 });
+
+/**
+ * updateCaseGrounding implements the truthfulness-first winner rule —
+ * the headline metric that makes the new "Truthfulness" dashboard panel
+ * meaningful. These tests pin down its semantics so the panel can't be
+ * silently invalidated by a refactor.
+ */
+describe("updateCaseGrounding — truthfulness-first winner rule (Idea 1)", () => {
+  let db: ComparisonRunDatabase;
+
+  beforeEach(() => {
+    cleanDb();
+    db = new ComparisonRunDatabase(TEST_DB);
+  });
+
+  afterEach(() => {
+    db.close();
+    cleanDb();
+  });
+
+  function seedCase(opts: {
+    overallWinner: "rag" | "claimkit" | "tie";
+    ckConfidence: number;
+  }): string {
+    const result = saveLiveComparison({
+      query: "test",
+      overallWinner: opts.overallWinner,
+      winnerReason: "low_confidence",
+      ragTokens: 100,
+      ragSections: 1,
+      ragTimeMs: 10,
+      ckConfidence: opts.ckConfidence,
+      ckAnswerability: "answerable",
+      ckClaimCount: 1,
+      ckTimeMs: 20,
+      ckContradictions: 0,
+      db,
+    });
+    expect(result).not.toBeNull();
+    return result!.caseId;
+  }
+
+  it("back-fills hallucination rate and grounded fields", () => {
+    const caseId = seedCase({ overallWinner: "rag", ckConfidence: 0.3 });
+    db.updateCaseGrounding(caseId, 0.0, true);
+    const runs = db.listRuns({ limit: 1 });
+    const c = db.getRun(runs.runs[0].id)!.cases[0];
+    expect(c.rag_hallucination_rate).toBe(0.0);
+    expect(c.rag_grounded).toBe(true);
+  });
+
+  it("flips winner to claimkit when RAG hallucinated and CK had non-trivial confidence", () => {
+    const caseId = seedCase({ overallWinner: "rag", ckConfidence: 0.6 });
+    db.updateCaseGrounding(caseId, 0.4, false);
+    const runs = db.listRuns({ limit: 1 });
+    const c = db.getRun(runs.runs[0].id)!.cases[0];
+    expect(c.overall_winner).toBe("claimkit");
+    expect(c.winner_reason).toBe("rag_hallucinated");
+    expect(c.rag_hallucination_rate).toBe(0.4);
+  });
+
+  it("does NOT flip winner when CK confidence was too low (<= 0.15)", () => {
+    const caseId = seedCase({ overallWinner: "rag", ckConfidence: 0.1 });
+    db.updateCaseGrounding(caseId, 0.5, false);
+    const runs = db.listRuns({ limit: 1 });
+    const c = db.getRun(runs.runs[0].id)!.cases[0];
+    // Stays RAG — ClaimKit didn't have the answer either.
+    expect(c.overall_winner).toBe("rag");
+    expect(c.winner_reason).toBe("low_confidence");
+  });
+
+  it("does NOT flip winner when RAG was grounded (hallucinationRate = 0)", () => {
+    const caseId = seedCase({ overallWinner: "rag", ckConfidence: 0.6 });
+    db.updateCaseGrounding(caseId, 0.0, true);
+    const runs = db.listRuns({ limit: 1 });
+    const c = db.getRun(runs.runs[0].id)!.cases[0];
+    expect(c.overall_winner).toBe("rag");
+    expect(c.winner_reason).toBe("low_confidence");
+  });
+
+  it("does NOT re-flip a case that already won for claimkit", () => {
+    const caseId = seedCase({ overallWinner: "claimkit", ckConfidence: 0.8 });
+    db.updateCaseGrounding(caseId, 0.5, false);
+    const runs = db.listRuns({ limit: 1 });
+    const c = db.getRun(runs.runs[0].id)!.cases[0];
+    expect(c.overall_winner).toBe("claimkit");
+    // winner_reason should NOT be overwritten with rag_hallucinated when
+    // the original winner was already claimkit.
+    expect(c.winner_reason).toBe("low_confidence");
+  });
+});

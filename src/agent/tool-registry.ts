@@ -3288,6 +3288,25 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "low",
   },
   {
+    name: "memory.get_entity_claims",
+    description:
+      "Get structured (attribute, value) claims about a named entity — the time-stamped, atomic facts extracted automatically from prior Jira/GitHub/GitLab tool calls. Includes supersession history when values changed. Prefer this over memory.get_entity_context when you need the CURRENT state of a property (e.g. 'what is IR-82's status right now?'). Returns 'found: false' if the entity has no structured claims yet.",
+    params: {
+      type: {
+        type: "string",
+        description: "Entity type (jira_issue, github_pr, gitlab_mr, etc.)",
+        required: true,
+      },
+      name: { type: "string", description: "Entity name (e.g. 'IR-82', 'acme/widgets#42')", required: true },
+      includeHistory: {
+        type: "boolean",
+        description: "If true, also return the supersession chain for each attribute (default false — only current values)",
+      },
+    },
+    actionType: "memory.get_entity_claims",
+    riskLevel: "low",
+  },
+  {
     name: "memory.add_entity_fact",
     description:
       "Store a new fact about a named entity. Creates the entity if it does not exist. Use this to remember something specific: a customer preference, a decision made, a person's role.",
@@ -8193,6 +8212,12 @@ const CORE_PRODUCTIVITY_TOOLS: Tool[] = [
   // Work items
   PRODUCTIVITY_TOOLS.find((t) => t.name === "work_items.list")!,
   PRODUCTIVITY_TOOLS.find((t) => t.name === "work_items.create")!,
+
+  // Structured-claim memory (Idea 2): keep this in the default tool set so
+  // the agent can answer "what's IR-82's current status?" with a free
+  // lookup instead of a fresh Jira API call. ~200 tokens of schema; pays
+  // for itself the first time it deflects a duplicate tool call.
+  PRODUCTIVITY_TOOLS.find((t) => t.name === "memory.get_entity_claims")!,
 ];
 
 const APPROVAL_TOOLS: Tool[] = [

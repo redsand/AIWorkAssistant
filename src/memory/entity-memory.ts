@@ -79,6 +79,35 @@ class EntityMemory {
       CREATE INDEX IF NOT EXISTS idx_links_from ON memory_entity_links(from_entity_id);
       CREATE INDEX IF NOT EXISTS idx_links_to ON memory_entity_links(to_entity_id);
     `);
+
+    // Migrations for structured-claim columns (Idea 2: tool results as claims).
+    // ALTER TABLE ADD COLUMN is idempotent via SQLite error swallow — only
+    // runs once per column. Reuses the existing fact storage so we don't
+    // fragment the schema.
+    const factColumns = this.db
+      .prepare(`PRAGMA table_info(memory_entity_facts)`)
+      .all() as Array<{ name: string }>;
+    const haveCol = (name: string) => factColumns.some((c) => c.name === name);
+
+    if (!haveCol("attribute")) {
+      this.db.exec(`ALTER TABLE memory_entity_facts ADD COLUMN attribute TEXT`);
+    }
+    if (!haveCol("value")) {
+      this.db.exec(`ALTER TABLE memory_entity_facts ADD COLUMN value TEXT`);
+    }
+    if (!haveCol("superseded_at")) {
+      this.db.exec(`ALTER TABLE memory_entity_facts ADD COLUMN superseded_at TEXT`);
+    }
+    if (!haveCol("superseded_by")) {
+      this.db.exec(`ALTER TABLE memory_entity_facts ADD COLUMN superseded_by TEXT`);
+    }
+
+    // Index supporting fast supersession lookups: "find the current claim
+    // for (entity, attribute)" needs entity_id + attribute + superseded_at.
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_facts_entity_attr
+        ON memory_entity_facts(entity_id, attribute, superseded_at)
+    `);
   }
 
   // ── Core entity operations ────────────────────────────────────────────────
@@ -233,6 +262,222 @@ class EntityMemory {
       .prepare("SELECT * FROM memory_entity_facts WHERE entity_id = ? ORDER BY created_at DESC")
       .all(entityId) as Record<string, unknown>[];
     return rows.map((r) => this.mapFact(r));
+  }
+
+  /**
+   * Set a structured (attribute, value) claim on an entity. Idea 2: tool
+   * results as claims.
+   *
+   * Supersession semantics:
+   * - If no current claim exists for (entityId, attribute), insert a new one.
+   * - If a current claim exists with the same value, just refresh its
+   *   updated_at and confidence (the observation was reconfirmed).
+   * - If a current claim exists with a DIFFERENT value, mark the old claim
+   *   as superseded (stamp superseded_at + superseded_by) and insert a new
+   *   current claim. The history is preserved for audit / "what changed".
+   *
+   * Returns the now-current EntityFact for (entity, attribute).
+   */
+  setStructuredFact(
+    entityId: string,
+    attribute: string,
+    value: string,
+    options: {
+      source?: string;
+      sourceId?: string;
+      confidence?: number;
+      metadata?: Record<string, unknown>;
+      /** ISO timestamp of when the observation was made. Defaults to now. */
+      observedAt?: string;
+    } = {},
+  ): EntityFact {
+    const now = options.observedAt ?? new Date().toISOString();
+    const normalizedAttr = attribute.trim().toLowerCase();
+    const normalizedValue = value.trim();
+
+    const current = this.db
+      .prepare(
+        `SELECT * FROM memory_entity_facts
+         WHERE entity_id = ? AND attribute = ? AND superseded_at IS NULL
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(entityId, normalizedAttr) as Record<string, unknown> | undefined;
+
+    // Reconfirmation: same value, just bump updated_at + confidence.
+    if (current && current.value === normalizedValue) {
+      this.db
+        .prepare(
+          `UPDATE memory_entity_facts
+           SET updated_at = ?, confidence = MAX(confidence, ?)
+           WHERE id = ?`,
+        )
+        .run(now, options.confidence ?? 1.0, current.id);
+      this.db
+        .prepare("UPDATE memory_entities SET last_seen_at = ? WHERE id = ?")
+        .run(now, entityId);
+      return this.mapFact(
+        this.db
+          .prepare("SELECT * FROM memory_entity_facts WHERE id = ?")
+          .get(current.id) as Record<string, unknown>,
+      );
+    }
+
+    const newId = uuidv4();
+
+    const txn = this.db.transaction(() => {
+      // Supersede the previous claim if one existed with a different value.
+      if (current) {
+        this.db
+          .prepare(
+            `UPDATE memory_entity_facts
+             SET superseded_at = ?, superseded_by = ?
+             WHERE id = ?`,
+          )
+          .run(now, newId, current.id);
+      }
+
+      // Insert the new current claim. The free-text `fact` column is kept
+      // populated as "attribute: value" so existing readers that just print
+      // the fact still work.
+      this.db
+        .prepare(
+          `INSERT INTO memory_entity_facts
+             (id, entity_id, fact, source, source_id, confidence,
+              created_at, updated_at, metadata_json,
+              attribute, value, superseded_at, superseded_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+        )
+        .run(
+          newId,
+          entityId,
+          `${normalizedAttr}: ${normalizedValue}`,
+          options.source ?? "tool",
+          options.sourceId ?? null,
+          options.confidence ?? 1.0,
+          now,
+          now,
+          options.metadata ? JSON.stringify(options.metadata) : null,
+          normalizedAttr,
+          normalizedValue,
+        );
+
+      this.db
+        .prepare("UPDATE memory_entities SET last_seen_at = ? WHERE id = ?")
+        .run(now, entityId);
+    });
+    txn();
+
+    return this.mapFact(
+      this.db
+        .prepare("SELECT * FROM memory_entity_facts WHERE id = ?")
+        .get(newId) as Record<string, unknown>,
+    );
+  }
+
+  /**
+   * Return the current (non-superseded) structured claims for an entity.
+   * Use this in context assembly to give the agent a structured fact sheet
+   * instead of paragraphs of historical text.
+   */
+  getCurrentClaims(entityId: string): EntityFact[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM memory_entity_facts
+         WHERE entity_id = ?
+           AND attribute IS NOT NULL
+           AND superseded_at IS NULL
+         ORDER BY updated_at DESC`,
+      )
+      .all(entityId) as Record<string, unknown>[];
+    return rows.map((r) => this.mapFact(r));
+  }
+
+  /**
+   * Return supersession history for a specific (entity, attribute), newest
+   * first. Use this for "how did IR-82's status change over time?" queries.
+   */
+  getClaimHistory(entityId: string, attribute: string): EntityFact[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM memory_entity_facts
+         WHERE entity_id = ? AND attribute = ?
+         ORDER BY created_at DESC`,
+      )
+      .all(entityId, attribute.trim().toLowerCase()) as Record<string, unknown>[];
+    return rows.map((r) => this.mapFact(r));
+  }
+
+  /**
+   * Dashboard-facing snapshot of structured-claim memory health.
+   * Used by the comparison dashboard's "Structured Memory" panel to surface
+   * a story RAG cannot tell: how many time-stamped facts the agent has
+   * accumulated, how many have been superseded, and which sources are
+   * actually feeding the claim store.
+   */
+  getClaimStats(): {
+    totalEntities: number;
+    totalClaims: number;
+    currentClaims: number;
+    supersededClaims: number;
+    entitiesWithHistory: number;
+    topSources: Array<{ source: string; count: number }>;
+  } {
+    const entitiesRow = this.db
+      .prepare(`SELECT COUNT(*) as n FROM memory_entities`)
+      .get() as { n: number };
+    const claimsRow = this.db
+      .prepare(
+        `SELECT
+           COUNT(*) as total,
+           SUM(CASE WHEN superseded_at IS NULL THEN 1 ELSE 0 END) as current_,
+           SUM(CASE WHEN superseded_at IS NOT NULL THEN 1 ELSE 0 END) as superseded_
+         FROM memory_entity_facts
+         WHERE attribute IS NOT NULL`,
+      )
+      .get() as { total: number; current_: number | null; superseded_: number | null };
+    const withHistoryRow = this.db
+      .prepare(
+        `SELECT COUNT(DISTINCT entity_id) as n
+         FROM memory_entity_facts
+         WHERE superseded_at IS NOT NULL`,
+      )
+      .get() as { n: number };
+    const topSourcesRows = this.db
+      .prepare(
+        `SELECT source, COUNT(*) as count
+         FROM memory_entity_facts
+         WHERE attribute IS NOT NULL
+         GROUP BY source
+         ORDER BY count DESC
+         LIMIT 6`,
+      )
+      .all() as Array<{ source: string; count: number }>;
+    return {
+      totalEntities: entitiesRow.n,
+      totalClaims: claimsRow.total,
+      currentClaims: claimsRow.current_ ?? 0,
+      supersededClaims: claimsRow.superseded_ ?? 0,
+      entitiesWithHistory: withHistoryRow.n,
+      topSources: topSourcesRows,
+    };
+  }
+
+  /**
+   * Bulk lookup by normalized name regardless of type. Used by the context
+   * engine to resolve entity-ID patterns (IR-82, repo#123, !456) extracted
+   * from the user's query into memory entities for claim injection.
+   */
+  getEntitiesByNormalizedNames(names: string[]): MemoryEntity[] {
+    if (names.length === 0) return [];
+    const placeholders = names.map(() => "?").join(",");
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM memory_entities
+         WHERE normalized_name IN (${placeholders})
+         ORDER BY last_seen_at DESC`,
+      )
+      .all(...names.map((n) => this.normalize(n))) as Record<string, unknown>[];
+    return rows.map((r) => this.mapEntity(r));
   }
 
   // ── Links ─────────────────────────────────────────────────────────────────
@@ -472,6 +717,10 @@ class EntityMemory {
       createdAt: row.created_at as string,
       updatedAt: row.updated_at as string,
       metadata: row.metadata_json ? JSON.parse(row.metadata_json as string) : {},
+      attribute: (row.attribute as string | null) ?? null,
+      value: (row.value as string | null) ?? null,
+      supersededAt: (row.superseded_at as string | null) ?? null,
+      supersededBy: (row.superseded_by as string | null) ?? null,
     };
   }
 

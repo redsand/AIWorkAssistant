@@ -35,6 +35,10 @@ import type { AIProviderName } from "../agent/provider-settings";
 import { errorLog } from "../observability/error-log";
 import { claimKitAdapter } from "../context-engine/adapters/claimkit-adapter";
 import { embeddingService } from "../agent/embedding-service";
+import { comparisonRunDatabase } from "../comparison-runs/database";
+import type { GroundingHandle } from "../context-engine/types";
+import { entityMemory } from "../memory/entity-memory";
+import { extractEntityIds } from "../context-engine/entity-claims-injector";
 
 const MAX_SYSTEM_PROMPT_LENGTH = 4000;
 
@@ -358,7 +362,13 @@ function stringifyToolResultForContext(result: unknown): string {
 
 function stringifyToolResultForMemory(toolName: string, result: unknown): string {
   const content = JSON.stringify(compactToolResultForMemory(toolName, result));
-  const maxChars = 4_000;
+  // 16K cap is large enough that typical fetch_cached results (10-15KB
+  // jira issues, github PR details, etc.) survive without mid-JSON truncation.
+  // Previous 4K cap was producing unparseable JSON that the model misread
+  // as "data was pruned" — see compactToolResultForMemory for context.
+  // Truly massive results (>16K) still get truncated, but the rehydration
+  // pass on session reload restores them from toolCallCache when available.
+  const maxChars = 16_000;
   if (content.length <= maxChars) return content;
   return `${content.substring(0, maxChars)}\n...[tool result compacted for session memory: ${content.length - maxChars} chars omitted]`;
 }
@@ -432,10 +442,19 @@ function repairOrphanedToolCalls(messages: ChatMessage[]): ChatMessage[] {
       j++;
     }
     for (const missingId of expectedIds) {
-      console.warn(`[Chat] Injecting placeholder result for pruned tool call ${missingId}`);
+      // Structural repair: an earlier assistant message has tool_calls
+      // whose results aren't in the message chain. Insert a neutral
+      // placeholder so the API call stays valid. The phrasing is
+      // deliberately bland — earlier versions used "pruned from context
+      // window" verbatim, which primed the model to repeat that complaint
+      // even when its actual tool results were intact.
+      console.warn(`[Chat] Inserting placeholder for unpaired tool_call_id ${missingId}`);
       repaired.push({
         role: "tool",
-        content: "[Result unavailable — pruned from context window]",
+        content:
+          "{ \"_placeholder\": true, " +
+          "\"_note\": \"Tool result not present in this message chain. " +
+          "If this data is needed, call the original tool again or use the matching tools.fetch_cached ref from the session manifest.\" }",
         tool_call_id: missingId,
         name: msg.tool_calls.find((tc) => tc.id === missingId)?.function?.name ?? "unknown",
       } as ChatMessage);
@@ -534,16 +553,36 @@ async function rehydrateCachedToolResults(
     }
     if (!parsed || typeof parsed !== "object") return msg;
 
-    // tools.fetch_cached compacted-for-memory shape — identified by data.ref +
-    // data._note mentioning "compacted in session memory". This is the result
-    // the agent explicitly asked for via fetch_cached. Without rehydration, the
-    // agent reloads the session, sees only a result_summary stub, and (correctly)
-    // concludes its data is gone — leading to the "context is fighting me" loop.
+    // NEW shape (current handleToolsFetchCached output): the original tool
+    // result spread at top level with `_cached_from_ref` metadata. If the
+    // stored content was truncated to fit the 16K cap, rehydrate from cache.
+    if (typeof parsed._cached_from_ref === "string") {
+      const entry = toolCallCache.getByRef(parsed._cached_from_ref);
+      if (entry && entry.result && typeof entry.result === "object") {
+        rehydratedCount++;
+        return {
+          ...msg,
+          content: JSON.stringify({
+            _cached_from_ref: entry.ref,
+            _cached_from_tool: entry.toolName,
+            _cached_at: new Date(entry.calledAt).toISOString(),
+            ...(entry.result as Record<string, unknown>),
+          }),
+        };
+      }
+      missingCount++;
+      return msg;
+    }
+
+    // LEGACY shape (sessions created before the fetch_cached restructure):
+    // tools.fetch_cached compacted-for-memory shape with data.ref + data._note
+    // mentioning "compacted in session memory". The result was stripped from
+    // session storage entirely — without rehydration the agent sees only a
+    // result_summary stub and concludes its data is gone, looping.
     //
-    // We deliberately do NOT rehydrate the original large-call stubs
-    // (`_cached_ref` + `_instructions`) because those represent results the
-    // agent chose NOT to fetch — inlining them could be hundreds of KB and
-    // blow the budget. The agent can still call fetch_cached if it needs them.
+    // Deliberately NOT rehydrating original large-call stubs (`_cached_ref` +
+    // `_instructions` at top level) — those represent results the agent chose
+    // not to fetch; inlining them could be hundreds of KB and blow the budget.
     const data = parsed.data;
     if (
       data &&
@@ -632,8 +671,8 @@ async function dispatchToolCallCached(
         _cached_size: entry.resultSize,
         _cached_summary: entry.resultSummary,
         _instructions:
-          `Result too large (${entry.resultSize} bytes) to inline. ` +
-          `Call tools.fetch_cached({ref:"${entry.ref}"}) to retrieve full data.`,
+          `Tool call succeeded. Full result (${entry.resultSize} bytes, ${entry.resultSummary}) is in the session cache. ` +
+          `To read it, call tools.fetch_cached({ref:"${entry.ref}"}). Treat the fetched data as authoritative.`,
       };
     }
   }
@@ -768,6 +807,134 @@ async function streamChatIteration(
   return { content, thinking, toolCalls };
 }
 
+/**
+ * Live shadow grounding (Idea 1 from the ClaimKit roadmap).
+ *
+ * Runs claimKitAdapter.ground() against the agent's actual final response and
+ * the RAG evidence that was assembled for the same query, then back-fills
+ * rag_hallucination_rate / rag_grounded on the live comparison_cases row.
+ *
+ * Background-only: never throws, never blocks the user-facing flow. The
+ * sampling rate is enforced upstream when populating handle (see
+ * context-packet.ts groundingHandle assignment).
+ */
+/**
+ * Per-document evidence size cap for shadow grounding. ClaimKit's
+ * `ground()` ingests every evidence doc which triggers LLM calls for
+ * claim extraction. With 12 docs at 5KB each, a single shadow-grounding
+ * run could spawn dozens of LLM calls — load amplification that defeats
+ * the "shadow" promise. 3K chars per doc keeps each ingestion fast.
+ */
+const SHADOW_GROUND_DOC_CHARS = 3000;
+/** Total evidence size ceiling. */
+const SHADOW_GROUND_TOTAL_CHARS = 24000;
+/** Don't shadow-ground responses below this length — too little signal. */
+const SHADOW_GROUND_MIN_RESPONSE_CHARS = 40;
+
+/**
+ * Collect pre-extracted entity claims relevant to the agent's response.
+ * Scans the response text for entity IDs (IR-82, owner/repo#123, etc.),
+ * looks them up in entity-memory, and converts each current claim into a
+ * natural-language sentence ClaimKit's grounding verifier can match
+ * against directly — no LLM extraction needed.
+ *
+ * This is the consumer side of ClaimKit's groundFast() pre-extracted
+ * claims API. By passing these structured claims, we save the ~30s of
+ * LLM extraction cost that ground() would otherwise spend re-deriving
+ * the same facts from the raw RAG docs.
+ */
+function collectPreExtractedClaimsForGrounding(
+  responseText: string,
+): Array<{ text: string; id: string; source: string; confidence: number }> {
+  const ids = extractEntityIds(responseText);
+  if (ids.length === 0) return [];
+
+  const entities = entityMemory.getEntitiesByNormalizedNames(ids);
+  const claims: Array<{ text: string; id: string; source: string; confidence: number }> = [];
+
+  for (const entity of entities.slice(0, 12)) {
+    const current = entityMemory.getCurrentClaims(entity.id);
+    for (const c of current.slice(0, 8)) {
+      // Render as a complete natural-language sentence so the token-overlap
+      // verifier can match it against the response.
+      const text = `${entity.name} has ${c.attribute} "${c.value}" as observed at ${c.updatedAt}.`;
+      claims.push({
+        text,
+        id: `entity:${entity.id}:${c.attribute}`,
+        source: c.source || "entity-memory",
+        confidence: c.confidence,
+      });
+    }
+    if (claims.length >= 30) break;
+  }
+  return claims;
+}
+
+async function runShadowGrounding(
+  handle: GroundingHandle,
+  responseText: string,
+  sessionId: string,
+): Promise<void> {
+  try {
+    const trimmedResponse = responseText.trim();
+    if (trimmedResponse.length < SHADOW_GROUND_MIN_RESPONSE_CHARS) return;
+    if (!claimKitAdapter.isAvailable()) return;
+
+    // Fast path: prefer pre-extracted entity claims when available. Skips
+    // the ~30s ingest+extract LLM cycle inside ClaimKit's ground().
+    const preExtracted = collectPreExtractedClaimsForGrounding(trimmedResponse);
+
+    // Standard path evidence: bounded per-doc and total to keep ingest
+    // cost predictable even when RAG returned huge docs.
+    let remaining = SHADOW_GROUND_TOTAL_CHARS;
+    const evidence: Array<{ title: string; content: string }> = [];
+    for (const e of handle.ragEvidence) {
+      if (remaining <= 100) break;
+      const cap = Math.min(SHADOW_GROUND_DOC_CHARS, remaining);
+      const content = e.content.length > cap
+        ? e.content.substring(0, cap) + "\n...[truncated for grounding]"
+        : e.content;
+      evidence.push({ title: e.title, content });
+      remaining -= content.length;
+    }
+
+    // Bail if neither path has any signal.
+    if (preExtracted.length === 0 && evidence.length === 0) return;
+
+    const start = Date.now();
+    const result = await claimKitAdapter.ground({
+      text: trimmedResponse,
+      evidence,
+      // ClaimKit fast path: when this is non-empty, ingest+extract is skipped
+      // entirely and verification runs directly against these claims. See
+      // ../../claimkit/src/core/ClaimKit.ts buildPacketFromPreExtractedClaims.
+      preExtractedClaims: preExtracted.length > 0 ? preExtracted : undefined,
+      // Token-overlap verifier is much cheaper than the LLM-classified one,
+      // and the fast path's claims are already authoritative — full LLM
+      // verification adds little. Set to false to enable LLM verification.
+      skipLLMVerification: preExtracted.length > 0,
+    });
+    comparisonRunDatabase.updateCaseGrounding(
+      handle.caseId,
+      result.hallucinationRate,
+      result.grounded,
+    );
+    console.log(
+      `[ShadowGrounding] session=${sessionId} case=${handle.caseId} ` +
+      `path=${preExtracted.length > 0 ? "fast" : "standard"} ` +
+      `grounded=${result.grounded} halluc=${result.hallucinationRate.toFixed(2)} ` +
+      `sentences=${result.sentenceResults.length} ` +
+      `pre-extracted=${preExtracted.length} evidence=${evidence.length}docs ` +
+      `took=${Date.now() - start}ms`,
+    );
+  } catch (err) {
+    console.warn(
+      `[ShadowGrounding] failed for case=${handle.caseId}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
 async function runChatJob(
   sessionId: string,
   messages: ChatMessage[],
@@ -776,6 +943,7 @@ async function runChatJob(
   userId: string,
   model?: string,
   originalUserQueryOverride?: string,
+  groundingHandle?: GroundingHandle,
 ) {
   console.log("[Chat/Job] runChatJob entered for", sessionId);
   const job = getOrCreateJob(sessionId);
@@ -956,6 +1124,7 @@ async function runChatJob(
       messages = repairConversationState(messages);
       messages = repairOrphanedToolCalls(messages);
       messages = injectManifest(messages, sessionId);
+
       warnIfInvalidModelMessages(messages, "stream_tool_loop");
 
       assertJobActive(job);
@@ -983,6 +1152,13 @@ async function runChatJob(
     try { if (runId) agentRunDatabase.completeRun(runId, { toolLoopCount: loopCount }); } catch (e) { console.error("[AgentRuns]", e); }
 
     emitJobEvent(sessionId, "done", {});
+
+    // Fire-and-forget shadow grounding (Idea 1): ground the agent's actual
+    // response against the same RAG evidence the model received, then update
+    // the comparison_cases row. Sampled by CLAIMKIT_LIVE_GROUNDING_RATE.
+    if (groundingHandle && content.trim()) {
+      void runShadowGrounding(groundingHandle, content, sessionId);
+    }
   } catch (error) {
     console.error(`[Chat/Job] Failed for session ${sessionId}:`, error);
     const cancelled = error instanceof JobCancelledError;
@@ -1128,8 +1304,11 @@ export async function chatRoutes(fastify: FastifyInstance) {
         });
       }
 
+      let nonStreamGroundingHandle: GroundingHandle | undefined = undefined;
       if (body.includeMemory && shouldUseContextEngine()) {
-        const rawSessionMessages = await conversationManager.getSessionMessages(
+        // Use getRawSessionMessages (no truncation) so rehydration can find cache refs
+        // in large tool results before they're truncated.
+        const rawSessionMessages = await conversationManager.getRawSessionMessages(
           sessionId!,
           body.includeMemory,
           "engine",
@@ -1150,6 +1329,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           userId: body.userId,
         });
         messages = packet.messages;
+        nonStreamGroundingHandle = packet.groundingHandle;
         // Inject cross-session memory into the system message
         if (memoryContext) {
           const first = messages[0];
@@ -1163,7 +1343,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
           `[ContextEngine] Packet assembled: ${packet.diagnostics.finalMessageCount} messages, ${packet.totalTokens} tokens, compression=${packet.diagnostics.compressionRatio.toFixed(2)}, budget=${JSON.stringify(packet.diagnostics.budgetUtilization)}, timings=${JSON.stringify(packet.diagnostics.stageTimings)}`,
         );
       } else {
-        const rawSessionMessages = await conversationManager.getSessionMessages(
+        // Use getRawSessionMessages (no truncation) so rehydration can find cache refs
+        // in large tool results before they're truncated.
+        const rawSessionMessages = await conversationManager.getRawSessionMessages(
           sessionId!,
           body.includeMemory,
         );
@@ -1208,6 +1390,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       messages = repairConversationState(messages);
       messages = repairOrphanedToolCalls(messages);
       messages = injectManifest(messages, sessionId);
+
       warnIfInvalidModelMessages(messages, "chat_initial");
       let response = await aiClient.chat({
         messages: messages,
@@ -1354,6 +1537,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         messages = repairConversationState(messages);
         messages = repairOrphanedToolCalls(messages);
         messages = injectManifest(messages, sessionId);
+
         warnIfInvalidModelMessages(messages, "chat_tool_loop");
 
         // Use preserved original query (pruning may remove user messages)
@@ -1383,6 +1567,14 @@ export async function chatRoutes(fastify: FastifyInstance) {
       }
 
       try { if (runId) agentRunDatabase.completeRun(runId, { model: response.model, promptTokens: response.usage?.promptTokens, completionTokens: response.usage?.completionTokens, totalTokens: response.usage?.totalTokens, toolLoopCount: loopCount }); } catch (e) { console.error("[AgentRuns]", e); }
+
+      // Fire-and-forget shadow grounding for the non-streaming /chat path.
+      // Same purpose as the streaming hook: back-fill rag_hallucination_rate /
+      // rag_grounded on the live comparison_cases row using the agent's
+      // actual response and the RAG evidence the model received.
+      if (nonStreamGroundingHandle && response.content?.trim() && sessionId) {
+        void runShadowGrounding(nonStreamGroundingHandle, response.content, sessionId);
+      }
 
       return {
         sessionId,
@@ -1595,12 +1787,19 @@ export async function chatRoutes(fastify: FastifyInstance) {
       const runProvider = getRunProviderMetadata(requestModel);
       try { earlyRunId = agentRunDatabase.startRun({ sessionId, userId: body.userId, mode: body.mode, ...runProvider }).id; job.runId = earlyRunId; } catch (e) { console.error("[AgentRuns]", e); }
 
+      // Carries the live shadow-grounding handle out of the context-assembly
+      // block so it can be passed to runChatJob and fired after the agent
+      // responds. Undefined when grounding wasn't sampled for this query.
+      let groundingHandle: GroundingHandle | undefined = undefined;
+
       if (body.includeMemory && shouldUseContextEngine()) {
         sendEvent("processing", { message: "Assembling context..." });
         const contextStart = Date.now();
         try {
           try { if (earlyRunId) agentRunDatabase.addStep({ runId: earlyRunId, stepType: "note", content: { stage: "context_start", message: body.message }, stepOrder: -4 }); } catch (e) { console.error("[AgentRuns]", e); }
-          const rawSessionMessages = await conversationManager.getSessionMessages(
+          // Use getRawSessionMessages (no truncation) so rehydration can find cache refs
+          // in large tool results before they're truncated.
+          const rawSessionMessages = await conversationManager.getRawSessionMessages(
             sessionId!,
             body.includeMemory,
             "engine",
@@ -1624,6 +1823,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
             onProgress: (message) => sendEvent("processing", { message }),
           });
           messages = packet.messages;
+          groundingHandle = packet.groundingHandle;
           console.log(
             `[ContextEngine] Packet assembled: ${packet.diagnostics.finalMessageCount} messages, ${packet.totalTokens} tokens, compression=${packet.diagnostics.compressionRatio.toFixed(2)}, budget=${JSON.stringify(packet.diagnostics.budgetUtilization)}, timings=${JSON.stringify(packet.diagnostics.stageTimings)}`,
           );
@@ -1652,7 +1852,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
           return;
         }
       } else {
-        const rawSessionMessages = await conversationManager.getSessionMessages(
+        // Use getRawSessionMessages (no truncation) so rehydration can find cache refs
+        // in large tool results before they're truncated.
+        const rawSessionMessages = await conversationManager.getRawSessionMessages(
           sessionId!,
           body.includeMemory,
         );
@@ -1701,7 +1903,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       }
 
       console.log("[Chat/Stream] Starting runChatJob for", sessionId);
-      runChatJob(sessionId!, messages, tools, body.mode, body.userId, requestModel, body.message)
+      runChatJob(sessionId!, messages, tools, body.mode, body.userId, requestModel, body.message, groundingHandle)
         .then(() => console.log("[Chat/Stream] runChatJob completed for", sessionId))
         .catch((err) => {
           logChatError({

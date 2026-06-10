@@ -17,6 +17,7 @@ import type {
   ScoredDocument,
   PreferredSource,
   RoutingTier,
+  GroundingHandle,
 } from "./types";
 import { claimKitAdapter } from "./adapters/claimkit-adapter";
 import { ingestScoredDocumentsForQuery } from "./claimkit-ingestion";
@@ -32,6 +33,7 @@ import { soulManager } from "../memory/soul-manager";
 import { skillManager } from "../skills/skill-manager";
 import { reflectionEngine } from "../agent/reflection-engine";
 import { conversationManager } from "../memory/conversation-manager";
+import { buildEntityClaimsSection } from "./entity-claims-injector";
 
 export interface RoutingDecision {
   tier: RoutingTier;
@@ -223,6 +225,13 @@ export async function assembleContextPacket(
   let claimKitResult: Awaited<ReturnType<typeof claimKitAdapter.query>> | null = null;
   let ckMs = 0;
   let ckStatus: CkStatus | null = null;
+  let groundingHandle: GroundingHandle | undefined = undefined;
+  // Collaboration trackers — recorded on the comparison_cases row so the
+  // dashboard can show how often each new feature actually fired.
+  let citationBoostCount = 0;
+  let gapFillDocsAdded = 0;
+  let entityClaimsInjectedCount = 0;
+  let contradictionsFlaggedCount = 0;
   if (!env.CLAIMKIT_ENABLED) {
     ckStatus = "disabled";
   } else if (!claimKitAvailable) {
@@ -275,7 +284,156 @@ export async function assembleContextPacket(
     }
   }
 
-  const compressedDocs = await docsCompressPromise;
+  let compressedDocs = await docsCompressPromise;
+
+  // Entity claims section (Idea 2): build BEFORE the comparison save so the
+  // collaboration counters (entityClaimsInjectedCount, contradictionsFlaggedCount)
+  // are populated. The section is consumed further down when assembling
+  // `sections[]`.
+  const MAX_ENTITY_CLAIMS_TOKENS = 600;
+  let entityClaimsSection: ContextSection | null = null;
+  try {
+    const ecResult = buildEntityClaimsSection(query);
+    if (ecResult.content) {
+      const ecTokens = estimateTokens(ecResult.content);
+      const ecTrimmed =
+        ecTokens > MAX_ENTITY_CLAIMS_TOKENS
+          ? ecResult.content.substring(0, MAX_ENTITY_CLAIMS_TOKENS * 4)
+          : ecResult.content;
+      entityClaimsSection = {
+        name: "entity_claims",
+        content: ecTrimmed,
+        tokens: Math.min(ecTokens, MAX_ENTITY_CLAIMS_TOKENS),
+        sourceCount: ecResult.entityCount,
+      };
+      entityClaimsInjectedCount = ecResult.claimCount;
+      contradictionsFlaggedCount = ecResult.contradictionCount;
+      console.log(
+        `[EntityClaims] injected ${ecResult.claimCount} claim(s) across ${ecResult.entityCount} entit${ecResult.entityCount === 1 ? "y" : "ies"}` +
+        (ecResult.entitiesWithHistory > 0
+          ? ` (${ecResult.entitiesWithHistory} with supersession history)`
+          : "") +
+        (ecResult.contradictionCount > 0
+          ? ` | ⚠️ ${ecResult.contradictionCount} recent cross-source contradiction${ecResult.contradictionCount === 1 ? "" : "s"} flagged`
+          : ""),
+      );
+    }
+  } catch (err) {
+    console.warn("[EntityClaims] section build failed:", err instanceof Error ? err.message : err);
+  }
+
+  // ── ClaimKit citation boost (Idea 5: collaborative scoring) ──────────
+  // After both retrieval paths have completed, push docs that ClaimKit's
+  // claims cite to the top of the compressed set. This is the join point
+  // between RAG and ClaimKit — docs ClaimKit found useful get surfaced
+  // first in the model's context window, rather than being randomly
+  // ordered by their pre-CK embedding score.
+  if (claimKitResult && claimKitResult.citations.length > 0 && compressedDocs.length > 1) {
+    const citationTexts = claimKitResult.citations
+      .map((c) => c.text.toLowerCase())
+      .filter((t) => t.length > 20);
+
+    const ckConfidence = Math.max(0, Math.min(1, claimKitResult.confidence));
+
+    let boostedCount = 0;
+    const withBoost = compressedDocs.map((doc) => {
+      const haystack = (doc.title + " " + doc.content).toLowerCase();
+      // Boost when a citation's first 80 chars (the most distinctive prefix)
+      // appears in the doc — a cheap proxy for "ClaimKit cited this doc."
+      const cited = citationTexts.some((c) => {
+        const probe = c.substring(0, Math.min(80, c.length));
+        return haystack.includes(probe);
+      });
+      if (!cited) return doc;
+      boostedCount++;
+      const boost = ckConfidence;
+      return {
+        ...doc,
+        claimKitBoost: boost,
+        score: doc.score + boost * 0.4,
+      };
+    });
+
+    if (boostedCount > 0) {
+      withBoost.sort((a, b) => b.score - a.score);
+      compressedDocs = withBoost;
+      citationBoostCount = boostedCount;
+      console.log(
+        `[ContextPacket] ClaimKit citation boost applied to ${boostedCount}/${compressedDocs.length} docs ` +
+        `(ck_confidence=${ckConfidence.toFixed(2)})`,
+      );
+    }
+  }
+
+  // ── Gap-fill cascade (Idea 4) ────────────────────────────────────────
+  // When ClaimKit's pass came back with low confidence AND it told us
+  // explicitly what evidence it was missing, run a targeted second-pass
+  // RAG retrieval against each missing-evidence item. This makes
+  // ClaimKit the gap detector for RAG — its "I can't answer because I
+  // don't know X" becomes "go fetch X."
+  if (
+    claimKitResult &&
+    claimKitResult.confidence < env.CLAIMKIT_GAP_FILL_THRESHOLD &&
+    claimKitResult.missingEvidence.length > 0 &&
+    env.CLAIMKIT_GAP_FILL_THRESHOLD > 0
+  ) {
+    const gapStart = Date.now();
+    const probes = claimKitResult.missingEvidence
+      .filter((m) => typeof m === "string" && m.trim().length > 0)
+      .slice(0, env.CLAIMKIT_GAP_FILL_MAX_QUERIES);
+
+    const existingIds = new Set(compressedDocs.map((d) => d.id));
+    const fillerDocs: ScoredDocument[] = [];
+
+    for (const probe of probes) {
+      try {
+        const hits = knowledgeStore.search(probe, { limit: 2 });
+        for (const hit of hits) {
+          if (existingIds.has(hit.entry.id)) continue;
+          existingIds.add(hit.entry.id);
+          fillerDocs.push({
+            id: hit.entry.id,
+            source: "knowledge",
+            content: hit.entry.content,
+            title: hit.entry.title,
+            score: hit.score,
+            baseScore: hit.score,
+            importanceScore: 0,
+            recencyScore: 0,
+            trustScore: 0,
+            // Mark these as cascade-derived so the rerank-boost weight
+            // recognizes them — ClaimKit literally asked for them.
+            claimKitBoost: 1,
+            tokens: Math.ceil(hit.entry.content.length / 1.8),
+            metadata: {
+              matchType: hit.matchType,
+              source: hit.entry.source,
+              tags: hit.entry.tags,
+              createdAt: hit.entry.createdAt,
+              gapFillProbe: probe.substring(0, 120),
+            },
+          });
+        }
+      } catch (err) {
+        console.warn(`[GapFill] probe "${probe.substring(0, 40)}..." failed:`, err instanceof Error ? err.message : err);
+      }
+    }
+
+    if (fillerDocs.length > 0) {
+      // Rerank the augmented set so cascade results are properly scored
+      // alongside the original docs, then trim back to the same budget.
+      const ranked = rerank([...compressedDocs, ...fillerDocs], query);
+      const targetCount = Math.max(compressedDocs.length, ranked.length);
+      compressedDocs = ranked.slice(0, targetCount);
+      stageTimings.gapFillMs = Date.now() - gapStart;
+      gapFillDocsAdded = fillerDocs.length;
+      console.log(
+        `[GapFill] CK confidence=${claimKitResult.confidence.toFixed(2)} ` +
+        `triggered ${probes.length} cascade probe(s), added ${fillerDocs.length} new doc(s) ` +
+        `(took ${stageTimings.gapFillMs}ms)`,
+      );
+    }
+  }
 
   if (env.CLAIMKIT_ENABLED) {
     const ragTokens = compressedDocs.reduce((s, d) => s + d.tokens, 0);
@@ -308,7 +466,7 @@ export async function assembleContextPacket(
     const comparisonRouting = determineRoutingTier(claimKitResult, unavailableReason);
     const ragMs = Date.now() - ragStart;
     const ckIncludedInContext = claimKitResult != null;
-    saveLiveComparison({
+    const saved = saveLiveComparison({
       query,
       ragTokens,
       ragSections: compressedDocs.length,
@@ -328,7 +486,29 @@ export async function assembleContextPacket(
       winnerReason: comparisonRouting.routingReason,
       ckStatus,
       ckIncludedInContext,
+      citationBoostApplied: citationBoostCount,
+      gapFillDocsAdded,
+      entityClaimsInjected: entityClaimsInjectedCount,
+      contradictionsFlagged: contradictionsFlaggedCount,
     });
+
+    // Stash the case ID + compressed RAG evidence so chat.ts can run live
+    // shadow grounding on the agent's actual response after it completes.
+    // Sampled by CLAIMKIT_LIVE_GROUNDING_RATE — set to 0 to disable.
+    if (
+      saved &&
+      env.CLAIMKIT_LIVE_GROUNDING_RATE > 0 &&
+      Math.random() < env.CLAIMKIT_LIVE_GROUNDING_RATE &&
+      compressedDocs.length > 0
+    ) {
+      groundingHandle = {
+        caseId: saved.caseId,
+        ragEvidence: compressedDocs.slice(0, 12).map((d) => ({
+          title: d.title || d.id,
+          content: d.content,
+        })),
+      };
+    }
   }
 
   onProgress?.("Building context packet...");
@@ -396,6 +576,10 @@ export async function assembleContextPacket(
     };
   }
 
+  // Entity claims section was built earlier (before saveLiveComparison) so
+  // collaboration counters are recorded. The same `entityClaimsSection` is
+  // used below when assembling the final section list — no rebuild needed.
+
   // Session search — find past conversations relevant to current query
   const MAX_SESSION_SEARCH_TOKENS = 400;
   let sessionSearchSection: ContextSection | null = null;
@@ -444,6 +628,13 @@ export async function assembleContextPacket(
     { name: "documents", content: knowledgeSection, tokens: estimateTokens(knowledgeSection), sourceCount: compressedDocs.length },
     { name: "graph", content: graphSection, tokens: estimateTokens(graphSection) },
   );
+
+  // Entity claims sit between RAG documents and ClaimKit evidence:
+  // they're structured facts the agent should prefer over fuzzy retrieval
+  // when the user is asking about a specific entity by ID.
+  if (entityClaimsSection) {
+    sections.push(entityClaimsSection);
+  }
 
   if (claimKitSection) {
     sections.push(claimKitSection);
@@ -497,6 +688,14 @@ export async function assembleContextPacket(
 
   const claimKitEnforced = enforced.find((s) => s.name === "claimkit_evidence");
   const docEnforced = enforced.find((s) => s.name === "documents");
+  const entityClaimsEnforced = enforced.find((s) => s.name === "entity_claims");
+
+  // Entity claims go FIRST in the evidence chain when the query mentions
+  // known entities — these are exact, time-stamped, and supersede whatever
+  // fading embedding match RAG might surface for the same query.
+  if (entityClaimsEnforced?.content.trim()) {
+    messages.push({ role: "system", content: entityClaimsEnforced.content });
+  }
 
   if (routing.tier === "ck_primary" && claimKitEnforced?.content.trim()) {
     // CK primary: show ClaimKit answer first with full detail
@@ -585,6 +784,7 @@ export async function assembleContextPacket(
     preferredSource: routing.preferredSource,
     routingReason: routing.routingReason,
     budgetBreakdown: budget.slots,
+    groundingHandle,
     diagnostics: {
       mode: "engine",
       originalMessageCount: sessionMessages.length,
@@ -638,9 +838,16 @@ async function retrieveAllStores(query: string): Promise<ScoredDocument[]> {
       score: r.score,
       baseScore: r.score,
       importanceScore: 0,
-      recencyScore: 1,
+      recencyScore: 0,
+      trustScore: 0,
+      claimKitBoost: 0,
       tokens: Math.ceil(r.entry.content.length / 1.8),
-      metadata: { matchType: r.matchType, source: r.entry.source, tags: r.entry.tags },
+      metadata: {
+        matchType: r.matchType,
+        source: r.entry.source,
+        tags: r.entry.tags,
+        createdAt: r.entry.createdAt,
+      },
     });
   }
 
@@ -653,7 +860,9 @@ async function retrieveAllStores(query: string): Promise<ScoredDocument[]> {
       score: r.score,
       baseScore: r.score,
       importanceScore: 0,
-      recencyScore: 1,
+      recencyScore: 0,
+      trustScore: 0,
+      claimKitBoost: 0,
       tokens: Math.ceil(r.content.length / 1.8),
       metadata: {
         language: r.language,
@@ -674,7 +883,9 @@ async function retrieveAllStores(query: string): Promise<ScoredDocument[]> {
       score: 1,
       baseScore: 1,
       importanceScore: 0,
-      recencyScore: 1,
+      recencyScore: 0,
+      trustScore: 0,
+      claimKitBoost: 0,
       tokens: Math.ceil(node.content.length / 1.8),
       metadata: { type: node.type, status: node.status, tags: node.tags },
     });

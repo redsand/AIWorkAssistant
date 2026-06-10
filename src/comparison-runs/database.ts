@@ -91,6 +91,13 @@ class ComparisonRunDatabase {
       { col: "ck_included_in_context", def: "INTEGER" },
       { col: "rag_hallucination_rate", def: "REAL" },
       { col: "rag_grounded", def: "INTEGER" },
+      // Collaboration columns — set when the RAG+ClaimKit collaborative
+      // features (Ideas 4, 5, 2) actually fire during context assembly.
+      // Lets the dashboard prove the new features are being used.
+      { col: "citation_boost_applied", def: "INTEGER" },
+      { col: "gap_fill_docs_added", def: "INTEGER" },
+      { col: "entity_claims_injected", def: "INTEGER" },
+      { col: "contradictions_flagged", def: "INTEGER" },
     ];
     for (const { col, def } of migrations) {
       try {
@@ -131,6 +138,10 @@ class ComparisonRunDatabase {
           ck_included_in_context INTEGER,
           rag_hallucination_rate REAL,
           rag_grounded INTEGER,
+          citation_boost_applied INTEGER,
+          gap_fill_docs_added INTEGER,
+          entity_claims_injected INTEGER,
+          contradictions_flagged INTEGER,
           created_at TEXT NOT NULL,
           FOREIGN KEY (run_id) REFERENCES comparison_runs(id) ON DELETE CASCADE
         );
@@ -141,6 +152,7 @@ class ComparisonRunDatabase {
                  ck_answer, ck_retrieval_score, ck_source_count, ck_missing_evidence, winner_reason,
                  ck_status, ck_included_in_context,
                  rag_hallucination_rate, rag_grounded,
+                 NULL, NULL, NULL, NULL,
                  created_at
           FROM comparison_cases_old;
         DROP TABLE comparison_cases_old;
@@ -168,8 +180,10 @@ class ComparisonRunDatabase {
           ck_answer, ck_retrieval_score, ck_source_count, ck_missing_evidence, winner_reason,
           ck_status, ck_included_in_context,
           rag_hallucination_rate, rag_grounded,
+          citation_boost_applied, gap_fill_docs_added,
+          entity_claims_injected, contradictions_flagged,
           created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     const txn = this.db.transaction(() => {
@@ -198,6 +212,10 @@ class ComparisonRunDatabase {
           c.ckIncludedInContext != null ? (c.ckIncludedInContext ? 1 : 0) : null,
           c.rag.hallucinationRate ?? null,
           c.rag.grounded != null ? (c.rag.grounded ? 1 : 0) : null,
+          c.citationBoostApplied ?? null,
+          c.gapFillDocsAdded ?? null,
+          c.entityClaimsInjected ?? null,
+          c.contradictionsFlagged ?? null,
           now,
         );
       }
@@ -205,6 +223,58 @@ class ComparisonRunDatabase {
 
     txn();
     return this.getRun(runId)!;
+  }
+
+  /**
+   * Update grounding fields on a previously-inserted comparison_case row.
+   * Used by the live shadow grounding pass to back-fill rag_hallucination_rate /
+   * rag_grounded after the agent's response has been generated and ground()
+   * has run asynchronously.
+   *
+   * Also recomputes overall_winner against the truthfulness-first rule: if RAG
+   * hallucinated (hallucinationRate > 0) and ClaimKit was available with
+   * non-trivial confidence, ClaimKit wins. Otherwise the original routing
+   * decision stands.
+   */
+  updateCaseGrounding(
+    caseId: string,
+    hallucinationRate: number,
+    grounded: boolean,
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE comparison_cases
+         SET rag_hallucination_rate = ?, rag_grounded = ?
+         WHERE id = ?`,
+      )
+      .run(hallucinationRate, grounded ? 1 : 0, caseId);
+
+    // Apply truthfulness-first winner rule on the back-fill, mirroring
+    // determineOverallWinner() in claimkit-comparison.ts: RAG hallucination
+    // hands the win to ClaimKit when CK had non-trivial confidence.
+    if (hallucinationRate > 0) {
+      const row = this.db
+        .prepare(
+          `SELECT ck_confidence, overall_winner FROM comparison_cases WHERE id = ?`,
+        )
+        .get(caseId) as
+        | { ck_confidence: number | null; overall_winner: string }
+        | undefined;
+      if (
+        row &&
+        row.ck_confidence !== null &&
+        row.ck_confidence > 0.15 &&
+        row.overall_winner !== "claimkit"
+      ) {
+        this.db
+          .prepare(
+            `UPDATE comparison_cases
+             SET overall_winner = 'claimkit', winner_reason = 'rag_hallucinated'
+             WHERE id = ?`,
+          )
+          .run(caseId);
+      }
+    }
   }
 
   // ── Read ────────────────────────────────────────────────────────────
@@ -383,7 +453,13 @@ class ComparisonRunDatabase {
            AVG(ck_time_ms) as avg_ck_time,
            AVG(rag_time_ms) as avg_rag_time,
            AVG(CASE WHEN rag_hallucination_rate IS NOT NULL THEN rag_hallucination_rate END) as avg_rag_hallucination_rate,
-           AVG(CASE WHEN rag_grounded IS NOT NULL THEN CAST(rag_grounded AS REAL) END) as avg_rag_grounded_rate
+           AVG(CASE WHEN rag_grounded IS NOT NULL THEN CAST(rag_grounded AS REAL) END) as avg_rag_grounded_rate,
+           SUM(CASE WHEN winner_reason = 'rag_hallucinated' THEN 1 ELSE 0 END) as ck_rescues,
+           SUM(CASE WHEN rag_hallucination_rate IS NOT NULL THEN 1 ELSE 0 END) as grounded_measurements,
+           SUM(CASE WHEN citation_boost_applied > 0 THEN 1 ELSE 0 END) as citation_boost_n,
+           SUM(CASE WHEN gap_fill_docs_added > 0 THEN 1 ELSE 0 END) as gap_fill_n,
+           SUM(CASE WHEN entity_claims_injected > 0 THEN 1 ELSE 0 END) as entity_claims_n,
+           SUM(CASE WHEN contradictions_flagged > 0 THEN 1 ELSE 0 END) as contradictions_n
          FROM comparison_cases cc
          JOIN comparison_runs cr ON cr.id = cc.run_id
          ${whereClause}`,
@@ -401,6 +477,12 @@ class ComparisonRunDatabase {
         avg_rag_time: number | null;
         avg_rag_hallucination_rate: number | null;
         avg_rag_grounded_rate: number | null;
+        ck_rescues: number | null;
+        grounded_measurements: number | null;
+        citation_boost_n: number | null;
+        gap_fill_n: number | null;
+        entity_claims_n: number | null;
+        contradictions_n: number | null;
       };
 
     const totalRunsRow = this.db
@@ -448,6 +530,15 @@ class ComparisonRunDatabase {
       avgRagTimeMs: winRow.avg_rag_time ?? 0,
       avgRagHallucinationRate: winRow.avg_rag_hallucination_rate ?? 0,
       avgRagGroundedRate: winRow.avg_rag_grounded_rate ?? 0,
+      ckRescues: winRow.ck_rescues ?? 0,
+      groundedMeasurements: winRow.grounded_measurements ?? 0,
+      collaboration: {
+        citationBoostApplied: winRow.citation_boost_n ?? 0,
+        gapFillTriggered: winRow.gap_fill_n ?? 0,
+        entityClaimsInjected: winRow.entity_claims_n ?? 0,
+        contradictionsFlagged: winRow.contradictions_n ?? 0,
+      },
+      lowConfidenceBreakdown: this.computeLowConfidenceBreakdown(options),
       byCategory: catRows.map((r) => ({
         category: r.category as CategoryBreakdown["category"],
         total: r.total,
@@ -528,6 +619,61 @@ class ComparisonRunDatabase {
       avgGroundedRate: r.avg_grounded_rate ?? 0,
       caseCount: r.case_count,
     }));
+  }
+
+  /**
+   * Classify each ck_confidence ≤ 0.1 case by the most likely root cause.
+   * Mirrors the [ClaimKit:lowconf] reason heuristic added in ClaimKit's
+   * query() method. Derived entirely from existing columns — no schema
+   * changes needed.
+   *
+   * Buckets (mutually exclusive, evaluated in order):
+   *   1. noClaimsRetrieved  — ck_claim_count = 0 (retrieval gap, fix ingestion)
+   *   2. notAnswerable      — ck_answerability = 'not_answerable'
+   *   3. lowConfidenceSignal — claims found and answerable, but confidence still low
+   *                           (generator or verifier issue inside ClaimKit)
+   */
+  private computeLowConfidenceBreakdown(options?: { source?: ComparisonSource }): {
+    noClaimsRetrieved: number;
+    notAnswerable: number;
+    lowConfidenceSignal: number;
+    total: number;
+  } {
+    const conditions: string[] = [
+      "ck_confidence IS NOT NULL",
+      "ck_confidence <= 0.1",
+    ];
+    const params: unknown[] = [];
+    if (options?.source) {
+      conditions.push("cr.source = ?");
+      params.push(options.source);
+    }
+    const where = `WHERE ${conditions.join(" AND ")}`;
+    const row = this.db
+      .prepare(
+        `SELECT
+           COUNT(*) as total,
+           SUM(CASE WHEN ck_claim_count = 0 OR ck_claim_count IS NULL THEN 1 ELSE 0 END) as no_claims,
+           SUM(CASE WHEN (ck_claim_count IS NOT NULL AND ck_claim_count > 0)
+                     AND ck_answerability = 'not_answerable' THEN 1 ELSE 0 END) as not_answerable,
+           SUM(CASE WHEN (ck_claim_count IS NOT NULL AND ck_claim_count > 0)
+                     AND (ck_answerability IS NULL OR ck_answerability != 'not_answerable') THEN 1 ELSE 0 END) as low_signal
+         FROM comparison_cases cc
+         JOIN comparison_runs cr ON cr.id = cc.run_id
+         ${where}`,
+      )
+      .get(...params) as {
+        total: number;
+        no_claims: number | null;
+        not_answerable: number | null;
+        low_signal: number | null;
+      };
+    return {
+      total: row.total ?? 0,
+      noClaimsRetrieved: row.no_claims ?? 0,
+      notAnswerable: row.not_answerable ?? 0,
+      lowConfidenceSignal: row.low_signal ?? 0,
+    };
   }
 
   // ── Row mapping ─────────────────────────────────────────────────────

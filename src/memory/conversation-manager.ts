@@ -71,11 +71,14 @@ export class ConversationManager {
   // Configuration thresholds — compact early to keep context lean
   private readonly MAX_MESSAGES_BEFORE_COMPACT = 40;
   // Keep more recent messages outside the summary so short-term context is never lost.
-  private readonly MIN_RECENT_MESSAGES = 20;
+  private readonly MIN_RECENT_MESSAGES = 30;
   // Re-summarize when this many new messages have accumulated since the last summary.
   private readonly RESUMMARY_THRESHOLD = 15;
-  private readonly MAX_CONTEXT_TOOL_CHARS = 12_000;
-  private readonly MAX_CONTEXT_MESSAGE_CHARS = 8_000;
+  // Increased from 12k/8k to prevent tool results from being truncated,
+  // which then causes repairConversationState to inject "[Result unavailable]" placeholders.
+  // Ollama (kimi-k2.6:cloud) has ~120k token limit (~300k chars).
+  private readonly MAX_CONTEXT_TOOL_CHARS = 50_000;
+  private readonly MAX_CONTEXT_MESSAGE_CHARS = 30_000;
   private readonly SESSION_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
 
   constructor() {
@@ -373,10 +376,83 @@ export class ConversationManager {
     return messages;
   }
 
-  private toContextChatMessage(msg: Message): ChatMessage {
+  /**
+   * Get session messages WITHOUT truncation AND WITHOUT summary — for cache rehydration.
+   * Rehydration must happen BEFORE truncation so cache refs in large tool
+   * results aren't lost to the truncation suffix.
+   *
+   * CRITICAL: We exclude the session summary here because it contains
+   * "earlier messages compressed" language that triggers the model's
+   * "context window full" hallucination, even though the actual tool
+   * results are being rehydrated and are fully available.
+   */
+  async getRawSessionMessages(
+    sessionId: string,
+    _includeSummaries = false, // Kept for API compat; summary injection was disabled
+    contextMode: "rag" | "engine" = "rag",
+  ): Promise<ChatMessage[]> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return [];
+    }
+
+    // Same logic as getSessionMessages but with truncate=false and NO summaries
+    if (contextMode === "engine") {
+      const messages: ChatMessage[] = [];
+
+      const allMessages = session.messages;
+      if (allMessages.length > this.MAX_MESSAGES_BEFORE_COMPACT) {
+        const recentMessages = allMessages.slice(-this.MIN_RECENT_MESSAGES);
+        // Skip summary — it confuses the model into thinking context is full
+        // when actually tool results are rehydrated from cache
+
+        for (const msg of recentMessages) {
+          messages.push(this.toContextChatMessage(msg, false));
+        }
+      } else {
+        // Skip summary — it confuses the model
+
+        for (const msg of allMessages) {
+          messages.push(this.toContextChatMessage(msg, false));
+        }
+      }
+
+      return messages;
+    }
+
+    const messages: ChatMessage[] = [];
+
+    // Add system prompt
+    messages.push({
+      role: "system",
+      content: this.getSystemPrompt(session.mode, session.metadata),
+    });
+
+    const allMessages = session.messages;
+    const recentCount = this.MIN_RECENT_MESSAGES;
+    if (allMessages.length > this.MAX_MESSAGES_BEFORE_COMPACT) {
+      const recentMessages = allMessages.slice(-recentCount);
+
+      // Skip summary — it confuses the model into thinking context is full
+
+      for (const msg of recentMessages) {
+        messages.push(this.toContextChatMessage(msg, false));
+      }
+    } else {
+      // Skip summary
+
+      for (const msg of allMessages) {
+        messages.push(this.toContextChatMessage(msg, false));
+      }
+    }
+
+    return messages;
+  }
+
+  private toContextChatMessage(msg: Message, truncate = true): ChatMessage {
     const chatMsg: ChatMessage = {
       role: msg.role,
-      content: this.truncateContextContent(msg),
+      content: truncate ? this.truncateContextContent(msg) : msg.content,
     };
     if (msg.toolCalls) {
       chatMsg.tool_calls = msg.toolCalls.map((tc) => ({

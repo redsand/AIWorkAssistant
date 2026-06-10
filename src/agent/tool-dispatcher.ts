@@ -51,6 +51,7 @@ import { mcpClient } from "../integrations/mcp";
 import { codebaseIndexer } from "./codebase-indexer";
 import { knowledgeGraph } from "./knowledge-graph";
 import { entityMemory } from "../memory/entity-memory";
+import { ingestStructuredClaims } from "../memory/tool-claim-extractor";
 import { agentMemory } from "../memory/agent-memory";
 import { createMemoryManageHandler } from "./handlers/memory-manage";
 import { skillManager } from "../skills/skill-manager";
@@ -2288,6 +2289,94 @@ async function handleMemoryGetEntityContext(
   }
 }
 
+/**
+ * memory.get_entity_claims — Idea 2 outcome surfaced as a first-class
+ * agent tool. Returns the current (non-superseded) structured claims for
+ * an entity, optionally including the supersession chain for each attribute.
+ *
+ * This is the lookup path the agent should use when it needs the LATEST
+ * known state of a property without doing a fresh tool call to the upstream
+ * system. Returns time-stamped attributes the agent can cite back with full
+ * provenance.
+ */
+async function handleMemoryGetEntityClaims(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const type = params.type as EntityType;
+    const name = params.name as string;
+    if (!type || !name) {
+      return { success: false, error: "type and name are required" };
+    }
+    const entity = entityMemory.getEntityByName(type, name);
+    if (!entity) {
+      return {
+        success: true,
+        data: {
+          found: false,
+          message:
+            `No entity of type '${type}' named '${name}' has been observed yet. ` +
+            `Call the upstream tool (e.g. jira.get_issue) to populate it.`,
+        },
+      };
+    }
+    const includeHistory = params.includeHistory === true;
+    const current = entityMemory.getCurrentClaims(entity.id);
+    if (current.length === 0) {
+      return {
+        success: true,
+        data: {
+          found: true,
+          entity: { id: entity.id, type: entity.type, name: entity.name, summary: entity.summary },
+          claims: [],
+          note:
+            "Entity is known but has no structured claims yet. Call the upstream " +
+            "tool to record current state.",
+        },
+      };
+    }
+
+    const claims = current.map((c) => {
+      const base: Record<string, unknown> = {
+        attribute: c.attribute,
+        value: c.value,
+        source: c.source,
+        observedAt: c.updatedAt,
+        confidence: c.confidence,
+      };
+      if (includeHistory) {
+        const history = entityMemory.getClaimHistory(entity.id, c.attribute!);
+        base.history = history.map((h) => ({
+          value: h.value,
+          source: h.source,
+          observedAt: h.createdAt,
+          supersededAt: h.supersededAt,
+          supersededBy: h.supersededBy,
+        }));
+      }
+      return base;
+    });
+
+    return {
+      success: true,
+      data: {
+        found: true,
+        entity: {
+          id: entity.id,
+          type: entity.type,
+          name: entity.name,
+          summary: entity.summary,
+          sourceUrl: entity.sourceUrl,
+        },
+        claims,
+        claimCount: claims.length,
+      },
+    };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
+}
+
 async function handleMemoryAddEntityFact(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -2657,16 +2746,32 @@ async function handleToolsFetchCached(
       error: `No cached result for ref '${ref}'. Cached refs are visible in the session manifest. They expire when the session ends.`,
     };
   }
+  // Return the original tool result shape directly so the model sees the same
+  // {success, data, ...} structure it would have gotten from the source tool.
+  // Previously we nested under {data: {ref, tool, params, called_at, result}},
+  // which buried the actual payload three levels deep and the model often
+  // failed to recognize it as the data it had requested. Metadata about the
+  // cached call sits at top level with `_cached_*` prefixes so it's clearly
+  // distinguishable from the payload.
+  const cachedResult = entry.result;
+  if (cachedResult && typeof cachedResult === "object" && !Array.isArray(cachedResult)) {
+    const resultObj = cachedResult as Record<string, unknown>;
+    return {
+      success: typeof resultObj.success === "boolean" ? resultObj.success : true,
+      _cached_from_ref: entry.ref,
+      _cached_from_tool: entry.toolName,
+      _cached_at: new Date(entry.calledAt).toISOString(),
+      ...resultObj,
+    } as ToolCallResult;
+  }
+  // Fallback for non-object cached results (rare — most tools return objects).
   return {
     success: true,
-    data: {
-      ref: entry.ref,
-      tool: entry.toolName,
-      params: entry.params,
-      called_at: new Date(entry.calledAt).toISOString(),
-      result: entry.result,
-    },
-  };
+    _cached_from_ref: entry.ref,
+    _cached_from_tool: entry.toolName,
+    _cached_at: new Date(entry.calledAt).toISOString(),
+    data: cachedResult,
+  } as ToolCallResult;
 }
 
 async function handleDiscoverTools(
@@ -9257,6 +9362,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
 
   "memory.find_entities": handleMemoryFindEntities,
   "memory.get_entity_context": handleMemoryGetEntityContext,
+  "memory.get_entity_claims": handleMemoryGetEntityClaims,
   "memory.add_entity_fact": handleMemoryAddEntityFact,
   "memory.manage": handleMemoryManage,
   "skill.manage": handleSkillManage,
@@ -9398,6 +9504,37 @@ function ingestToolResult(toolName: string, result: unknown, userId: string): vo
   if (!shouldIndexToolResult(toolName, result)) return;
   const obj = result as Record<string, unknown>;
   const data = obj.data as Record<string, unknown> | undefined;
+
+  // Idea 2: structured-claim extraction. For tools we have extractors for
+  // (Jira/GitHub/GitLab), this turns the JSON result into atomic (entity,
+  // attribute, value) triples and writes them to entity-memory with
+  // automatic supersession. Synchronous, deterministic, zero LLM cost.
+  try {
+    const claimResult = ingestStructuredClaims(toolName, data ?? obj, {
+      source: `tool:${toolName}`,
+      observedAt: new Date().toISOString(),
+    });
+    if (claimResult.claimsWritten > 0) {
+      const suffix =
+        claimResult.supersessions > 0
+          ? ` (${claimResult.supersessions} superseded prior claim${claimResult.supersessions === 1 ? "" : "s"})`
+          : "";
+      console.log(
+        `[ToolClaims] ${toolName}: ${claimResult.claimsWritten} claim(s) across ` +
+        `${claimResult.entitiesTouched} entit${claimResult.entitiesTouched === 1 ? "y" : "ies"}${suffix}`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[ToolClaims] structured extraction failed for ${toolName}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  // Keep the existing text-based ClaimKit ingestion path running alongside.
+  // The structured claims handle queries about specific entity properties;
+  // the text path keeps ClaimKit's general retrieval working for fuzzy
+  // queries that aren't entity-specific.
   const text = `${toolName} result:\n${JSON.stringify(data ?? obj, null, 2)}`;
   claimKitAdapter
     .ingest(text, {

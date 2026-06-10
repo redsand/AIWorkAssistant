@@ -51,11 +51,12 @@ const envSchema = z.object({
   OLLAMA_API_KEY: z.string().default(""),
   OLLAMA_MODEL: z.string().default("llama3"),
   OLLAMA_TEMPERATURE: z.string().transform(Number).default("0.7"),
-  OLLAMA_MAX_CONTEXT_TOKENS: z.coerce.number().default(128000),
+  OLLAMA_MAX_CONTEXT_TOKENS: z.coerce.number().default(200000),
 
   // Per-model context limit overrides (JSON map of model name -> max tokens)
   // Example: {"glm-5.1:cloud": 202752, "llama3:70b": 8192}
-  OLLAMA_MODEL_CONTEXT_LIMITS: z.string().default('{"glm-5.1:cloud": 202752}'),
+  // kimi-k2.6:cloud supports 200k+ context
+  OLLAMA_MODEL_CONTEXT_LIMITS: z.string().default('{"glm-5.1:cloud": 202752, "kimi-k2.6:cloud": 200000}'),
 
   // Microsoft 365
   MICROSOFT_TENANT_ID: z.string().default(""),
@@ -233,6 +234,19 @@ const envSchema = z.object({
   CLAIMKIT_LLM_MODEL: z.string().default(""),
   CLAIMKIT_LLM_TIMEOUT_MS: z.coerce.number().default(15000),
   CLAIMKIT_LLM_MAX_ATTEMPTS: z.coerce.number().default(5),
+  // Live shadow grounding — fraction of live queries to run ground() on after
+  // the agent responds. Populates rag_hallucination_rate / rag_grounded in
+  // comparison_cases without affecting foreground latency. 0 disables; 1.0
+  // grounds every query. Default 0.5 — enough signal without doubling ZAI load.
+  CLAIMKIT_LIVE_GROUNDING_RATE: z.coerce.number().default(0.5),
+  // Cascading retrieval (Idea 4): when ClaimKit's answer comes back with
+  // confidence below this threshold and a non-empty missingEvidence list,
+  // do a targeted second-pass RAG retrieval against each missing-evidence
+  // item to fill the gap. Set to 0 to disable; 1.0 always cascades.
+  CLAIMKIT_GAP_FILL_THRESHOLD: z.coerce.number().default(0.5),
+  // Max missing-evidence items to use as second-pass RAG queries per turn.
+  // Each adds one knowledge-store search; cap small to bound latency.
+  CLAIMKIT_GAP_FILL_MAX_QUERIES: z.coerce.number().default(3),
   // If true, server.listen() is preceded by `await claimKitAdapter.initialize()`
   // and a hard process.exit(1) on failure. If false, init runs in the background
   // and failures are logged but non-fatal (existing 60s retry backoff applies).

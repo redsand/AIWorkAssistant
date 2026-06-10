@@ -125,9 +125,11 @@ export function summarizeResult(result: unknown): string {
 }
 
 // Threshold above which we replace the full result in chat context with a
-// summary + ref pointer. Tunable via env, default 8 KB.
+// summary + ref pointer. Tunable via env, default 50 KB (increased from 8 KB
+// to prevent excessive ref indirection which confuses models and causes
+// "pruned from context window" issues when refs can't be rehydrated in time).
 const LARGE_RESULT_THRESHOLD = parseInt(
-  process.env.TOOL_CACHE_LARGE_THRESHOLD || "8192",
+  process.env.TOOL_CACHE_LARGE_THRESHOLD || "51200",
   10,
 );
 
@@ -225,12 +227,20 @@ class ToolCallCache {
   ): CachedToolCall {
     const key = hashCall(toolName, params);
     const ref = `tc-${key}`;
+    // Strip internal dispatch params (e.g. _mode, _loadedTools) before storing.
+    // These are runtime context, not actual tool arguments, and dragging them
+    // through to fetch_cached responses adds ~700 chars of noise that buries
+    // the actual payload and confuses the model.
+    const cleanedParams: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(params)) {
+      if (!k.startsWith("_")) cleanedParams[k] = v;
+    }
     const resultStr =
       typeof result === "string" ? result : JSON.stringify(result ?? null);
     const entry: CachedToolCall = {
       ref,
       toolName,
-      params,
+      params: cleanedParams,
       result,
       resultSummary: summarizeResult(result),
       resultSize: resultStr.length,

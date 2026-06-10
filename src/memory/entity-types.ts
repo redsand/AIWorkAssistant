@@ -13,6 +13,12 @@ export const ENTITY_TYPES = [
   "preference",
   "system",
   "vendor",
+  // Structured-claim entity types added with the tool-claim-extractor.
+  // Tenable / HAWK IR sources need these to record per-asset and per-finding
+  // claims (severity, status, owner) with auto-supersession on rescan.
+  "asset",
+  "vulnerability",
+  "incident",
 ] as const;
 
 export type EntityType = (typeof ENTITY_TYPES)[number];
@@ -42,6 +48,25 @@ export interface EntityFact {
   createdAt: string;
   updatedAt: string;
   metadata: Record<string, unknown>;
+  /**
+   * Structured-claim fields (Idea 2: tool results as claims).
+   * When non-null, this fact represents an atomic (attribute, value) claim
+   * extracted deterministically from a tool result rather than an
+   * LLM-extracted free-text statement. Enables supersession tracking
+   * and direct claim-level queries.
+   *
+   * Example: entity=IR-82, attribute="status", value="In Progress".
+   */
+  attribute: string | null;
+  value: string | null;
+  /**
+   * ISO timestamp when a newer claim about the same (entity, attribute)
+   * superseded this one. NULL when this is the current claim.
+   * Together with `supersededBy`, gives a full audit trail of how a
+   * property changed over time.
+   */
+  supersededAt: string | null;
+  supersededBy: string | null;
 }
 
 export interface EntityLink {

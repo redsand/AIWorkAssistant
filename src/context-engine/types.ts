@@ -33,6 +33,20 @@ export interface ScoredDocument {
   baseScore: number;
   importanceScore: number;
   recencyScore: number;
+  /**
+   * Trust weight in [0, 1] derived from the doc's source + provenance.
+   * Higher = more authoritative. Used by the reranker to prefer
+   * curated/observed content over web-scraped chunks.
+   * See computeTrustScore() in reranker.ts.
+   */
+  trustScore: number;
+  /**
+   * ClaimKit citation boost in [0, 1]. Set when the same query's ClaimKit
+   * pass cited this doc (or a doc whose title overlaps with a citation),
+   * weighted by ClaimKit's overall confidence. Lets RAG and ClaimKit
+   * collaborate: docs ClaimKit found useful get a rerank boost.
+   */
+  claimKitBoost: number;
   tokens: number;
   metadata: Record<string, unknown>;
 }
@@ -69,6 +83,23 @@ export interface ClaimKitContextSection {
 export type PreferredSource = "claimkit" | "rag" | "blended";
 export type RoutingTier = "ck_primary" | "rag_primary" | "blended";
 
+/**
+ * A pointer the chat layer uses to back-fill RAG hallucinationRate / grounded
+ * onto a live comparison_case row after the agent's response is available.
+ *
+ * The grounding pass runs asynchronously after the user receives their answer
+ * so there is no added latency in the foreground path. ClaimKit's ground()
+ * call evaluates the agent's actual response against the same RAG evidence
+ * that was sent to the model — populating the truthfulness fields that the
+ * eval winner rule depends on but that were hardcoded to null in production.
+ */
+export interface GroundingHandle {
+  /** comparison_cases row to update with hallucination_rate / grounded. */
+  caseId: string;
+  /** Evidence documents that were sent to the LLM, used by ground(). */
+  ragEvidence: Array<{ title: string; content: string }>;
+}
+
 export interface ContextPacket {
   sections: ContextSection[];
   messages: ChatMessage[];
@@ -77,6 +108,8 @@ export interface ContextPacket {
   preferredSource?: PreferredSource;
   routingReason?: string;
   budgetBreakdown: BudgetSlot[];
+  /** Set when live shadow grounding should run on the agent's response. */
+  groundingHandle?: GroundingHandle;
   diagnostics: {
     mode: ContextMode;
     originalMessageCount: number;
@@ -121,13 +154,37 @@ export interface RerankOptions {
   baseScoreWeight: number;
   importanceWeight: number;
   queryRelevanceWeight: number;
+  /**
+   * Optional weight applied to recency in reranking. Recency comes from
+   * each doc's metadata.createdAt — recent observations beat stale
+   * knowledge for queries about evolving state (issue status, MR review).
+   * Optional so existing callers/tests stay valid; defaults to 0 in
+   * blendScores when omitted.
+   */
+  recencyWeight?: number;
+  /**
+   * Optional weight that favors authoritative sources (manual user
+   * assertions, file content, codebase chunks) over web-scraped or
+   * chat-derived content. See computeTrustScore() in reranker.ts.
+   */
+  trustWeight?: number;
+  /**
+   * Optional weight applied to ClaimKit-citation boost. When ClaimKit's
+   * claims cite a doc that RAG also retrieved, that doc gets pushed up.
+   * This is the join point that turns ClaimKit + RAG from competitors
+   * into collaborators (idea 5 from the ClaimKit roadmap).
+   */
+  claimKitBoostWeight?: number;
   diversityPenalty: number;
 }
 
 export const DEFAULT_RERANK_OPTIONS: RerankOptions = {
-  baseScoreWeight: 0.4,
-  importanceWeight: 0.3,
-  queryRelevanceWeight: 0.3,
+  baseScoreWeight: 0.35,
+  importanceWeight: 0.2,
+  queryRelevanceWeight: 0.2,
+  recencyWeight: 0.1,
+  trustWeight: 0.1,
+  claimKitBoostWeight: 0.15,
   diversityPenalty: 0.1,
 };
 
@@ -137,6 +194,11 @@ export const DEFAULT_SLOT_DEFINITIONS: BudgetSlotDefinition[] = [
   { name: "documents", priority: 60, fraction: 0.2, overflowTarget: "graph" },
   { name: "graph", priority: 40, fraction: 0.1, overflowTarget: "health" },
   { name: "claimkit_evidence", priority: 55, fraction: 0.15, overflowTarget: "documents" },
+  // entity_claims sits above claimkit_evidence in priority because it's
+  // exact, structured, query-aligned, and small. When the user is asking
+  // about a specific entity, this section should never be the first thing
+  // squeezed for budget.
+  { name: "entity_claims", priority: 70, fraction: 0.05, overflowTarget: "claimkit_evidence" },
   { name: "health", priority: 20, fraction: 0.05, overflowTarget: null },
 ];
 

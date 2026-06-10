@@ -24,6 +24,8 @@ function makeDoc(overrides: Partial<ScoredDocument> = {}): ScoredDocument {
     baseScore: 0.5,
     importanceScore: 0.0,
     recencyScore: 1.0,
+    trustScore: 0.5,
+    claimKitBoost: 0,
     tokens: 10,
     metadata: {},
     ...overrides,
@@ -163,20 +165,57 @@ describe("blendScores", () => {
       content: "jira api bug fix endpoint error",
       title: "Bug Report",
     });
-    const result = blendScores(doc, "jira api bug", defaultOpts);
+    // Disable new signals (trust/recency/ck) so the test only verifies the
+    // legacy contributions it was originally written for.
+    const legacyOpts: RerankOptions = {
+      baseScoreWeight: defaultOpts.baseScoreWeight,
+      importanceWeight: defaultOpts.importanceWeight,
+      queryRelevanceWeight: defaultOpts.queryRelevanceWeight,
+      diversityPenalty: defaultOpts.diversityPenalty,
+    };
+    const result = blendScores(doc, "jira api bug", legacyOpts);
     const importance = computeImportance(doc);
     const queryRel = computeQueryRelevance(doc, "jira api bug");
     const expected =
-      0.8 * defaultOpts.baseScoreWeight +
-      importance * defaultOpts.importanceWeight +
-      queryRel * defaultOpts.queryRelevanceWeight;
+      0.8 * legacyOpts.baseScoreWeight +
+      importance * legacyOpts.importanceWeight +
+      queryRel * legacyOpts.queryRelevanceWeight;
     expect(result).toBeCloseTo(expected, 10);
   });
 
   it("returns pure baseScore contribution when content is irrelevant to query", () => {
     const doc = makeDoc({ baseScore: 0.9, content: "weather", title: "Forecast" });
-    const result = blendScores(doc, "database migration", defaultOpts);
-    expect(result).toBeCloseTo(0.9 * defaultOpts.baseScoreWeight, 5);
+    const legacyOpts: RerankOptions = {
+      baseScoreWeight: defaultOpts.baseScoreWeight,
+      importanceWeight: defaultOpts.importanceWeight,
+      queryRelevanceWeight: defaultOpts.queryRelevanceWeight,
+      diversityPenalty: defaultOpts.diversityPenalty,
+    };
+    const result = blendScores(doc, "database migration", legacyOpts);
+    expect(result).toBeCloseTo(0.9 * legacyOpts.baseScoreWeight, 5);
+  });
+
+  it("adds trust + recency + claimKit signals when their weights are non-zero", () => {
+    const doc = makeDoc({
+      baseScore: 0.5,
+      content: "x",
+      title: "y",
+      trustScore: 0.8,
+      recencyScore: 0.9,
+      claimKitBoost: 0.6,
+    });
+    const optsWithNewSignals: RerankOptions = {
+      baseScoreWeight: 0,
+      importanceWeight: 0,
+      queryRelevanceWeight: 0,
+      recencyWeight: 0.2,
+      trustWeight: 0.3,
+      claimKitBoostWeight: 0.5,
+      diversityPenalty: 0,
+    };
+    const result = blendScores(doc, "unrelated", optsWithNewSignals);
+    // 0.9 * 0.2 + 0.8 * 0.3 + 0.6 * 0.5 = 0.18 + 0.24 + 0.30 = 0.72
+    expect(result).toBeCloseTo(0.72, 5);
   });
 
   it("respects custom weights", () => {

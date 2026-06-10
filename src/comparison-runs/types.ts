@@ -120,8 +120,66 @@ export interface ComparisonDashboardStats {
   avgRagTimeMs: number;
   avgRagHallucinationRate: number;
   avgRagGroundedRate: number;
+  /**
+   * Number of cases where the truthfulness-first rule flipped the winner to
+   * ClaimKit because RAG hallucinated. The headline metric for ClaimKit's
+   * complementary value over RAG (Idea 1 + the truthfulness winner rule).
+   */
+  ckRescues: number;
+  /**
+   * Number of cases that have a grounding measurement (rag_hallucination_rate
+   * IS NOT NULL). Used as the denominator for rescue / hallucination
+   * percentages so we don't mix unmeasured rows into the rate.
+   */
+  groundedMeasurements: number;
+  /**
+   * Collaboration counters: how often each of the new RAG+ClaimKit
+   * collaborative features actually fired in production. These let the
+   * dashboard prove the features aren't just plumbed — they're being used.
+   */
+  collaboration: {
+    citationBoostApplied: number;
+    gapFillTriggered: number;
+    entityClaimsInjected: number;
+    contradictionsFlagged: number;
+  };
+  /**
+   * Why ClaimKit reported low confidence. Classifies each ck_confidence ≤ 0.1
+   * case by the most likely root cause, derived from existing columns. Lets
+   * the dashboard answer "is CK failing because retrieval finds nothing, or
+   * because the verifier is too strict?" without new instrumentation.
+   */
+  lowConfidenceBreakdown: {
+    /** ck_claim_count = 0 → retrieval returned nothing. Usually a ingestion gap. */
+    noClaimsRetrieved: number;
+    /** ck_answerability = 'not_answerable' → claims found but didn't cover the question. */
+    notAnswerable: number;
+    /** Claims found, answerable, but confidence still low — generator or verifier issue. */
+    lowConfidenceSignal: number;
+    /** Total low-confidence cases (denominator). */
+    total: number;
+  };
   byCategory: CategoryBreakdown[];
   recentRuns: ComparisonRunSummary[];
+}
+
+/**
+ * Structured-claim memory health (Idea 2 outcome). Read from entity-memory,
+ * not the comparison DB. Surfaces on the dashboard as the "Structured Memory"
+ * panel — a story RAG cannot tell (RAG has no notion of supersession).
+ */
+export interface EntityClaimStats {
+  totalEntities: number;
+  /** Total claim rows (current + superseded). */
+  totalClaims: number;
+  /** Claims currently in force (not superseded). */
+  currentClaims: number;
+  /** Historical claims that were replaced by a newer observation. */
+  supersededClaims: number;
+  /** Entities that have had at least one supersession event. */
+  entitiesWithHistory: number;
+  /** Top sources contributing claims, ordered descending. */
+  topSources: Array<{ source: string; count: number }>;
 }
 
 export interface ConfidenceTrendPoint {
@@ -146,6 +204,14 @@ export interface SaveCaseInput {
   winnerReason?: string;
   ckStatus?: CkStatus | null;
   ckIncludedInContext?: boolean | null;
+  /** Number of docs that received the CK citation boost (Idea 5). */
+  citationBoostApplied?: number | null;
+  /** Number of new docs added by the gap-fill cascade (Idea 4). */
+  gapFillDocsAdded?: number | null;
+  /** Number of entity claims injected into the prompt (Idea 2). */
+  entityClaimsInjected?: number | null;
+  /** Number of cross-source contradictions flagged (Idea 3). */
+  contradictionsFlagged?: number | null;
   rag: {
     contextTokens: number;
     sections: number;

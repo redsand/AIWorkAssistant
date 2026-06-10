@@ -116,6 +116,50 @@ body {
 .stat-value.green { color: #22c55e; }
 .stat-value.blue { color: #3b82f6; }
 .stat-value.gray { color: #9ca3af; }
+.stat-value.warn { color: #f97316; }
+
+/* ── Section blurbs (added for the ClaimKit story panels) ─ */
+.section-blurb {
+  font-size: 13px;
+  color: #6b7280;
+  margin: -4px 0 14px 0;
+  line-height: 1.55;
+  max-width: 880px;
+}
+.section-blurb code {
+  background: #f3f4f6;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #1f2937;
+}
+
+.sources-list {
+  margin-top: 14px;
+  font-size: 13px;
+  color: #4b5563;
+}
+.sources-label {
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 6px;
+}
+.sources-ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 6px 18px;
+}
+.sources-ul li code {
+  background: #eef2ff;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #3730a3;
+}
+.muted { color: #9ca3af; }
 
 /* ── Charts Grid ────────────────────────────────── */
 .charts-row {

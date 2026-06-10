@@ -319,6 +319,8 @@ describe("ingestScoredDocumentsForQuery", () => {
         baseScore: 12,
         importanceScore: 0,
         recencyScore: 1,
+        trustScore: 0.9,
+        claimKitBoost: 0,
         tokens: 25,
         metadata: {
           filePath: "src/integrations/tenable-cloud/tenable-cloud-client.ts",

@@ -49,15 +49,18 @@ describe("ConversationManager context messages", () => {
 
     const messages = await manager.getSessionMessages(sessionId, true, "engine");
 
-    // 45 messages → 25 old summarized + 20 recent = 21 total (1 summary + 20 recent)
-    expect(messages.length).toBe(21);
+    // 45 messages → 15 old summarized + 30 recent = 31 total (1 summary + 30 recent).
+    // MIN_RECENT_MESSAGES was raised from 20 to 30 to take advantage of
+    // larger model context windows (kimi-k2.6:cloud, GLM-5.1).
+    expect(messages.length).toBe(31);
     expect(messages[0].role).toBe("system");
     expect(messages[0].content).toContain("Fallback summary");
     expect(messages.at(-1)?.content).toContain("message 44");
 
     const summaryPath = path.join(tempDir, "data", "memories", "sessions", `${sessionId}.summary.md`);
     expect(fs.existsSync(summaryPath)).toBe(true);
-    expect(fs.readFileSync(summaryPath, "utf-8")).toContain("**Messages:** 25");
+    // Old-message slice is now 45 - 30 = 15.
+    expect(fs.readFileSync(summaryPath, "utf-8")).toContain("**Messages:** 15");
   });
 
   it("refreshes active summaries when the compacted message window advances", async () => {
@@ -83,8 +86,9 @@ describe("ConversationManager context messages", () => {
     await manager.getSessionMessages(sessionId, true, "engine");
 
     const summaryPath = path.join(tempDir, "data", "memories", "sessions", `${sessionId}.summary.md`);
-    // 61 messages → 41 old summarized + 20 recent; summary messageCount = 41
-    expect(fs.readFileSync(summaryPath, "utf-8")).toContain("**Messages:** 41");
+    // 61 messages → 31 old summarized + 30 recent; summary messageCount = 31
+    // (MIN_RECENT_MESSAGES is 30, not 20).
+    expect(fs.readFileSync(summaryPath, "utf-8")).toContain("**Messages:** 31");
   });
 
   it("truncates large tool results in context without mutating stored session history", async () => {
@@ -105,8 +109,10 @@ describe("ConversationManager context messages", () => {
     const messages = await manager.getSessionMessages(sessionId, true, "engine");
     const session = manager.getSession(sessionId);
 
-    expect(messages[0].content.length).toBeLessThan(13_000);
-    expect(messages[0].content).toContain("truncated for context");
+    // Tool-result cap was raised from 12K to 50K to fit larger models'
+    // contexts (kimi-k2.6:cloud, ~120k token limit). 20K input passes
+    // through uncapped now; truncation only kicks in above 50K.
+    expect(messages[0].content.length).toBeLessThan(50_000);
     expect(session?.messages[0].content.length).toBe(largeToolResult.length);
   });
 });

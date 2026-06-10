@@ -115,6 +115,16 @@ MEMORY HONESTY RULES:
 - If context is unavailable, truncated, or missing: say so explicitly and re-query the source.
 - Fabricating data from "remembered" prior sessions and presenting it as fact is a critical failure.`;
 
+const CONTEXT_WINDOW_REALITY_CHECK = `
+
+TOOL RESULT FORMAT:
+- Every tool call in this session is persisted. Results arrive in one of two equivalent forms:
+  1. Inline: the full JSON payload appears directly in the tool message.
+  2. Reference: a stub with \`_cached_ref\` or \`_cached_from_ref\` — call tools.fetch_cached({ref:"tc-xxx"}) to retrieve the full payload.
+- Both forms carry real, authoritative data. Treat them the same.
+- If you need data from an earlier tool call, look it up via the cached ref shown in the prior result or the session manifest. Do not re-issue the original call.
+- Operate on the data you receive. Tool results that arrive in this conversation are the source of truth.`;
+
 const DATA_INTEGRITY_RULES = `
 
 DATA INTEGRITY RULES:
@@ -150,7 +160,14 @@ JITBIT ESCALATED TICKET RULES:
 EFFICIENCY RULES FOR DATA RETRIEVAL:
 - Never call the same data source twice with overlapping parameters. If you already retrieved a broad result set, filter or slice it in memory — do not re-fetch with a narrower query.
 - If a cached result is available (tools.fetch_cached), always fetch that instead of re-querying the source API.
-- When a tool returns a _cached_ref, fetch it immediately in the next round — do not defer cached fetches.`;
+- When a tool returns a _cached_ref, fetch it immediately in the next round — do not defer cached fetches.
+
+STRUCTURED CLAIM LOOKUP (memory.get_entity_claims):
+- When the user asks about a property of a known entity (e.g. "what's IR-82's status?", "who's assigned to acme/widgets#42?"), call memory.get_entity_claims({type, name}) FIRST.
+- This returns the CURRENT value with the timestamp it was observed and the source tool, with zero LLM cost. It's a direct lookup in our structured memory.
+- Only fall back to a live tool call (jira.get_issue, github.get_pull_request, etc.) if get_entity_claims returns found:false OR if the user explicitly asked for fresh data.
+- Cite back like: "IR-82 is currently \`Done\` [IR-82.status, observed 2h ago via jira.get_issue]" — preserves the provenance the user can audit.
+- If you see an entity_claims section in your context that already lists the field the user asked about, USE IT — do not call any other tool to re-derive what's already there.`;
 
 const TOOL_READINESS_RULES = `
 
@@ -410,6 +427,7 @@ You are a personal productivity assistant that helps me:
 - Make smart recommendations about what to work on today
 ${TASK_COMPLETION_RULES}
 ${MEMORY_HONESTY_RULES}
+${CONTEXT_WINDOW_REALITY_CHECK}
 ${DATA_INTEGRITY_RULES}
 ${REPORT_COMPILATION_RULES}
 ${VISUALIZATION_RULES}
@@ -490,6 +508,7 @@ export const ENGINEERING_SYSTEM_PROMPT = `${AGENT_NAME} v${AGENT_VERSION} - Engi
 You are an engineering strategist who helps me build better software by focusing on WORKFLOWS, not features.
 ${TASK_COMPLETION_RULES}
 ${MEMORY_HONESTY_RULES}
+${CONTEXT_WINDOW_REALITY_CHECK}
 ${DATA_INTEGRITY_RULES}
 ${VISUALIZATION_RULES}
 ${PLATFORM_RESPECT_RULES}

@@ -1,6 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { comparisonRunDatabase, ComparisonRunDatabase } from "./database";
 import type { ComparisonSource, SaveComparisonInput } from "./types";
+import { entityMemory } from "../memory/entity-memory";
 
 function safeParseInt(
   value: string | undefined,
@@ -49,6 +50,26 @@ export async function comparisonRoutes(
     const query = request.query as { days?: string; source?: string };
     const days = safeParseInt(query.days, 1, 365, 30);
     return db.getTruthfulnessOverTime(days, { source: safeSource(query.source) });
+  });
+
+  // ── Structured-claim memory stats (Idea 2) ────────────────────────
+  // Surfaces entity-memory health on the comparison dashboard so the
+  // "ClaimKit + RAG" story includes the structured-memory contribution
+  // that RAG alone cannot produce.
+  fastify.get("/claim-stats", async (_request, _reply) => {
+    try {
+      return entityMemory.getClaimStats();
+    } catch (err) {
+      return {
+        totalEntities: 0,
+        totalClaims: 0,
+        currentClaims: 0,
+        supersededClaims: 0,
+        entitiesWithHistory: 0,
+        topSources: [],
+        error: err instanceof Error ? err.message : "unknown",
+      };
+    }
   });
 
   // ── Run listing ───────────────────────────────────────────────────

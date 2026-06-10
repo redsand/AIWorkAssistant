@@ -55,6 +55,73 @@
         <div class="stat-chip"><div class="stat-value" id="stat-answerability">—</div><div class="stat-label">Answerability Rate</div></div>
       </div>
 
+      <!-- Truthfulness Panel (Idea 1: live grounding) -->
+      <div class="section" id="truthfulness-section">
+        <div class="section-title">Truthfulness — what RAG-alone gets wrong, ClaimKit catches</div>
+        <p class="section-blurb">
+          Every live RAG response is run through ClaimKit's <code>ground()</code> after the user receives it,
+          measuring whether each sentence is supported by the retrieved evidence. When RAG hallucinates,
+          the truthfulness-first winner rule flips the case to ClaimKit — a "rescue."
+        </p>
+        <div class="stats-bar">
+          <div class="stat-chip"><div class="stat-value" id="stat-grounded-rate">—</div><div class="stat-label">RAG Grounded Rate</div></div>
+          <div class="stat-chip"><div class="stat-value warn" id="stat-halluc-rate">—</div><div class="stat-label">RAG Hallucination Rate</div></div>
+          <div class="stat-chip"><div class="stat-value green" id="stat-ck-rescues">—</div><div class="stat-label">ClaimKit Rescues</div></div>
+          <div class="stat-chip"><div class="stat-value" id="stat-grounded-n">—</div><div class="stat-label">Measured Cases</div></div>
+        </div>
+      </div>
+
+      <!-- Low-Confidence Diagnosis Panel: when CK gave up, why? -->
+      <div class="section" id="lowconf-section">
+        <div class="section-title">When ClaimKit gave up — root cause</div>
+        <p class="section-blurb">
+          For every case where ClaimKit's confidence ≤ 0.1, this classifies the failure mode by stage.
+          A high "no claims retrieved" rate points to an ingestion gap (data is missing). A high
+          "not answerable" rate means retrieval worked but the question wasn't covered. A high
+          "low signal" means the generator or verifier inside ClaimKit is being too strict.
+        </p>
+        <div class="stats-bar">
+          <div class="stat-chip"><div class="stat-value" id="stat-lowconf-total">—</div><div class="stat-label">Low-Confidence Cases</div></div>
+          <div class="stat-chip"><div class="stat-value warn" id="stat-lowconf-noclaims">—</div><div class="stat-label">No Claims Retrieved</div></div>
+          <div class="stat-chip"><div class="stat-value warn" id="stat-lowconf-notanswerable">—</div><div class="stat-label">Not Answerable</div></div>
+          <div class="stat-chip"><div class="stat-value warn" id="stat-lowconf-lowsignal">—</div><div class="stat-label">Low Signal (CK Internal)</div></div>
+        </div>
+      </div>
+
+      <!-- Collaboration Panel (Ideas 2, 3, 4, 5: RAG + ClaimKit working together) -->
+      <div class="section" id="collab-section">
+        <div class="section-title">Collaboration — how often RAG + ClaimKit work together</div>
+        <p class="section-blurb">
+          The headline argument for ClaimKit isn't "beat RAG" — it's "make RAG better." Each counter below
+          is a case where one of the collaborative features (Ideas 2–5) actually fired in production.
+          Rising counters mean the integration is paying off.
+        </p>
+        <div class="stats-bar">
+          <div class="stat-chip"><div class="stat-value green" id="stat-citation-boost">—</div><div class="stat-label">Citation Boost (Idea 5)</div></div>
+          <div class="stat-chip"><div class="stat-value blue" id="stat-gap-fill">—</div><div class="stat-label">Gap-Fill Cascade (Idea 4)</div></div>
+          <div class="stat-chip"><div class="stat-value" id="stat-entity-inject">—</div><div class="stat-label">Entity Claims Injected (Idea 2)</div></div>
+          <div class="stat-chip"><div class="stat-value warn" id="stat-contradictions">—</div><div class="stat-label">Contradictions Flagged (Idea 3)</div></div>
+        </div>
+      </div>
+
+      <!-- Structured Memory Panel (Idea 2 + 3: tool results as claims) -->
+      <div class="section" id="memory-section">
+        <div class="section-title">Structured Memory — what RAG fundamentally cannot do</div>
+        <p class="section-blurb">
+          Every Jira / GitHub / GitLab tool result is parsed into atomic
+          <code>(entity, attribute, value)</code> claims with automatic supersession when values change.
+          The agent can answer "what's IR-82's status?" with a one-row SQL lookup instead of an embedding search.
+          Supersession history surfaces cross-source contradictions the user can resolve.
+        </p>
+        <div class="stats-bar">
+          <div class="stat-chip"><div class="stat-value" id="stat-entities">—</div><div class="stat-label">Entities Tracked</div></div>
+          <div class="stat-chip"><div class="stat-value green" id="stat-current-claims">—</div><div class="stat-label">Current Claims</div></div>
+          <div class="stat-chip"><div class="stat-value" id="stat-superseded-claims">—</div><div class="stat-label">Superseded</div></div>
+          <div class="stat-chip"><div class="stat-value" id="stat-history-entities">—</div><div class="stat-label">Entities With History</div></div>
+        </div>
+        <div id="claim-sources" class="sources-list"></div>
+      </div>
+
       <!-- Row 1: Win Rate + Answerability -->
       <div class="charts-row">
         <div class="section" id="winrate-section">
@@ -81,6 +148,17 @@
         <div class="section-title">ClaimKit Confidence Over Time</div>
         <div class="chart-wrap"><canvas id="confidenceTrendChart"></canvas></div>
         <div class="state-msg" id="trend-empty" style="display:none"><p>No data yet</p></div>
+      </div>
+
+      <!-- Row 3b: Truthfulness Trend (Idea 1) -->
+      <div class="section" id="truthfulness-trend-section">
+        <div class="section-title">Truthfulness Over Time — RAG grounded rate vs hallucination rate</div>
+        <p class="section-blurb">
+          Rising "grounded" + falling "hallucination" together tell you the assembly is improving.
+          Spikes in hallucination are exactly the moments ClaimKit's rescue rule fires.
+        </p>
+        <div class="chart-wrap"><canvas id="truthfulnessTrendChart"></canvas></div>
+        <div class="state-msg" id="truthfulness-trend-empty" style="display:none"><p>No truthfulness measurements yet — shadow grounding runs on the next live chat.</p></div>
       </div>
 
       <!-- Row 4: Category Breakdown -->

@@ -241,6 +241,64 @@
     );
   }
 
+  /**
+   * Truthfulness trend (Idea 1). Two overlaid series: RAG grounded rate
+   * (higher is better) and RAG hallucination rate (lower is better).
+   * Reads from /api/comparison/truthfulness which returns per-day averages.
+   */
+  function renderTruthfulnessTrend(trends) {
+    var canvas = document.getElementById("truthfulnessTrendChart");
+    if (!canvas) return;
+    destroyChart("truthfulnessTrendChart");
+    var validPoints = trends.filter(function (t) {
+      return t.avgGroundedRate != null || t.avgHallucinationRate != null;
+    });
+    if (validPoints.length === 0) {
+      showEmpty("truthfulness-trend-empty");
+      return;
+    }
+    charts.truthfulnessTrendChart = new Chart(canvas, {
+      type: "line",
+      data: {
+        labels: validPoints.map(function (t) { return t.date; }),
+        datasets: [
+          {
+            label: "RAG Grounded Rate",
+            data: validPoints.map(function (t) { return t.avgGroundedRate ?? null; }),
+            borderColor: COLORS.ck,
+            backgroundColor: COLORS.ckLight + "30",
+            fill: true,
+            tension: 0.3,
+            pointRadius: 3,
+          },
+          {
+            label: "RAG Hallucination Rate",
+            data: validPoints.map(function (t) { return t.avgHallucinationRate ?? null; }),
+            borderColor: "#f97316",
+            backgroundColor: "#fed7aa40",
+            fill: true,
+            tension: 0.3,
+            pointRadius: 3,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { position: "bottom", labels: { padding: 16, usePointStyle: true } },
+        },
+        scales: {
+          x: { grid: { color: "#f3f4f6" } },
+          y: {
+            min: 0,
+            max: 1,
+            ticks: { callback: function (v) { return (v * 100).toFixed(0) + "%"; } },
+          },
+        },
+      },
+    });
+  }
+
   function renderCategoryChart(stats) {
     var cats = stats.byCategory;
     makeStackedBar(
@@ -421,6 +479,62 @@
 
   // ── Main load ────────────────────────────────────────────────────
 
+  function renderLowConfidencePanel(stats) {
+    var lc = stats.lowConfidenceBreakdown || {};
+    renderStat("stat-lowconf-total", lc.total || 0);
+    renderStat("stat-lowconf-noclaims", lc.noClaimsRetrieved || 0);
+    renderStat("stat-lowconf-notanswerable", lc.notAnswerable || 0);
+    renderStat("stat-lowconf-lowsignal", lc.lowConfidenceSignal || 0);
+  }
+
+  function renderCollaborationPanel(stats) {
+    var c = stats.collaboration || {};
+    renderStat("stat-citation-boost", c.citationBoostApplied || 0);
+    renderStat("stat-gap-fill", c.gapFillTriggered || 0);
+    renderStat("stat-entity-inject", c.entityClaimsInjected || 0);
+    renderStat("stat-contradictions", c.contradictionsFlagged || 0);
+  }
+
+  function renderTruthfulnessPanel(stats) {
+    var groundedPct = stats.groundedMeasurements > 0
+      ? Math.round(stats.avgRagGroundedRate * 100) + "%"
+      : "—";
+    var hallucPct = stats.groundedMeasurements > 0
+      ? Math.round(stats.avgRagHallucinationRate * 100) + "%"
+      : "—";
+    renderStat("stat-grounded-rate", groundedPct);
+    renderStat("stat-halluc-rate", hallucPct);
+    renderStat("stat-ck-rescues", stats.ckRescues || 0);
+    renderStat("stat-grounded-n", stats.groundedMeasurements || 0);
+  }
+
+  function renderClaimStatsPanel(claimStats) {
+    renderStat("stat-entities", claimStats.totalEntities);
+    renderStat("stat-current-claims", claimStats.currentClaims);
+    renderStat("stat-superseded-claims", claimStats.supersededClaims);
+    renderStat("stat-history-entities", claimStats.entitiesWithHistory);
+
+    var sourcesEl = document.getElementById("claim-sources");
+    if (!sourcesEl) return;
+    if (!claimStats.topSources || claimStats.topSources.length === 0) {
+      sourcesEl.innerHTML = "<em class='muted'>No claims ingested yet — call a Jira/GitHub/GitLab tool to seed.</em>";
+      return;
+    }
+    var html = "<div class='sources-label'>Top sources contributing claims:</div><ul class='sources-ul'>";
+    claimStats.topSources.forEach(function (s) {
+      var name = s.source.replace(/^tool:/, "");
+      html += "<li><code>" + escapeHtml(name) + "</code> &mdash; " + s.count + "</li>";
+    });
+    html += "</ul>";
+    sourcesEl.innerHTML = html;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
   function loadDashboard() {
     fetchJSON("/api/comparison/stats" + sourceQuery())
       .then(function (stats) {
@@ -431,6 +545,15 @@
         renderStat("stat-rag-wins", stats.overallWins.rag);
         renderStat("stat-ck-conf", Math.round(stats.avgCkConfidence * 100) + "%");
         renderStat("stat-answerability", Math.round(stats.avgAnswerabilityRate * 100) + "%");
+
+        // Truthfulness panel (Idea 1)
+        renderTruthfulnessPanel(stats);
+
+        // Low-confidence diagnosis (why CK gave up — derived from existing columns)
+        renderLowConfidencePanel(stats);
+
+        // Collaboration panel (Ideas 2-5: features actually firing in prod)
+        renderCollaborationPanel(stats);
 
         // Charts
         if (stats.totalCases > 0) {
@@ -463,6 +586,37 @@
       })
       .catch(function () {
         showEmpty("trend-empty");
+      });
+
+    // Truthfulness trend (Idea 1: grounded vs hallucination rate over time)
+    fetchJSON(sourceJoin("/api/comparison/truthfulness", "days=30"))
+      .then(function (trends) {
+        if (trends.length > 0) {
+          renderTruthfulnessTrend(trends);
+        } else {
+          showEmpty("truthfulness-trend-empty");
+        }
+      })
+      .catch(function () {
+        showEmpty("truthfulness-trend-empty");
+      });
+
+    // Structured claim memory stats (Idea 2: tool results as claims).
+    // Source-toggle doesn't apply to entity-memory — it's a global store —
+    // so this endpoint is queried without parameters.
+    fetchJSON("/api/comparison/claim-stats")
+      .then(function (claimStats) {
+        renderClaimStatsPanel(claimStats);
+      })
+      .catch(function () {
+        renderClaimStatsPanel({
+          totalEntities: 0,
+          totalClaims: 0,
+          currentClaims: 0,
+          supersededClaims: 0,
+          entitiesWithHistory: 0,
+          topSources: [],
+        });
       });
   }
 

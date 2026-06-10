@@ -92,14 +92,22 @@ export function saveLiveComparison(params: {
   winnerReason?: string;
   ckStatus?: CkStatus | null;
   ckIncludedInContext?: boolean | null;
+  /** Set per case when CK citation boost applied to one or more docs. */
+  citationBoostApplied?: number | null;
+  /** Set per case when gap-fill cascade added docs. */
+  gapFillDocsAdded?: number | null;
+  /** Set per case when entity claims were injected into the prompt. */
+  entityClaimsInjected?: number | null;
+  /** Set per case when cross-source contradictions were flagged. */
+  contradictionsFlagged?: number | null;
   db?: ComparisonRunDatabase;
-}): void {
+}): { caseId: string } | null {
   try {
     if (!params.db && process.env.NODE_ENV === "test") {
-      return;
+      return null;
     }
     const target = params.db ?? comparisonRunDatabase;
-    target.createRun({
+    const run = target.createRun({
       source: "live",
       description: params.query.substring(0, 200),
       cases: [
@@ -110,6 +118,10 @@ export function saveLiveComparison(params: {
           winnerReason: params.winnerReason,
           ckStatus: params.ckStatus,
           ckIncludedInContext: params.ckIncludedInContext,
+          citationBoostApplied: params.citationBoostApplied,
+          gapFillDocsAdded: params.gapFillDocsAdded,
+          entityClaimsInjected: params.entityClaimsInjected,
+          contradictionsFlagged: params.contradictionsFlagged,
           rag: {
             contextTokens: params.ragTokens,
             sections: params.ragSections,
@@ -134,7 +146,12 @@ export function saveLiveComparison(params: {
         },
       ],
     });
+    // Return the case ID so the caller can back-fill grounding results
+    // asynchronously once the agent's response is available.
+    const caseId = run.cases[0]?.id;
+    return caseId ? { caseId } : null;
   } catch (err) {
     console.error("[ComparisonRuns] Failed to save live comparison:", err);
+    return null;
   }
 }

@@ -324,6 +324,8 @@ describe("compressDocuments", () => {
       baseScore: 0.7,
       importanceScore: 0.5,
       recencyScore: 1.0,
+      trustScore: 0.5,
+      claimKitBoost: 0,
       tokens: 20,
       metadata: {},
       ...overrides,
