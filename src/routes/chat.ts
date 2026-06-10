@@ -28,6 +28,7 @@ import { conversationManager } from "../memory/conversation-manager";
 import { env } from "../config/env";
 import { agentRunDatabase } from "../agent-runs/database";
 import { sanitizeValue } from "../agent-runs/sanitizer";
+import { zaiRateLimiter } from "../agent/providers/zai-rate-limiter";
 import { providerSettings } from "../agent/provider-settings";
 import { runProviderPreflight } from "../agent/provider-preflight";
 import type { AIProviderName } from "../agent/provider-settings";
@@ -705,8 +706,14 @@ async function runChatJob(
 
     const getLoadedToolNames = () => expandedTools.map((t: Tool) => t.function.name);
 
+    const zaiStats = zaiRateLimiter.stats;
+    if (zaiStats.active > 0 || zaiStats.queued > 0) {
+      console.warn(`[Chat/Job] ZAI contention at start of ${sessionId}: active=${zaiStats.active} queued=${zaiStats.queued} cooldown=${zaiStats.cooldownRemainingMs}ms burstThrottled=${zaiStats.burstThrottled}`);
+    }
+
     assertJobActive(job);
-    try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+    let modelStart = Date.now();
+    try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery, zaiQueueDepth: zaiStats.queued, zaiActive: zaiStats.active }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
     messages = injectManifest(messages, sessionId);
     warnIfInvalidModelMessages(messages, "stream_initial");
@@ -719,7 +726,7 @@ async function runChatJob(
     );
 
     assertJobActive(job);
-    try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { responsePreview: content.slice(0, 500) }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+    try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { responsePreview: content.slice(0, 500) }, durationMs: Date.now() - modelStart, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
     while (toolCalls && toolCalls.length > 0) {
       assertJobActive(job);
@@ -770,7 +777,7 @@ async function runChatJob(
         assertJobActive(job);
         const toolDuration = Date.now() - toolStart;
         allToolResults[tc.id] = cached ? contextValue : compactToolResultForContext(contextValue);
-        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: canonicalName, success: (result as any).success !== false, errorMessage: (result as any).error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+        try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: canonicalName, content: { preview: JSON.stringify(result).slice(0, 400) }, success: (result as any).success !== false, errorMessage: (result as any).error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
         emitJobEvent(sessionId, "tool_result", { id: tc.id, result: cached ? contextValue : result });
         if (canonicalName.startsWith("todo.")) emitJobEvent(sessionId, "todo_changed", { action: canonicalName });
 
@@ -812,7 +819,7 @@ async function runChatJob(
           const result = await dispatchToolCall(tc.name, dispatchParams, userId, false, { messages, mode });
           assertJobActive(job);
           const spawnDuration = Date.now() - spawnStart;
-          try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: tc.name, success: result.success !== false, errorMessage: result.error, durationMs: spawnDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+          try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: tc.name, content: { preview: JSON.stringify(result).slice(0, 400) }, success: result.success !== false, errorMessage: result.error, durationMs: spawnDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
           return { id: tc.id, result, name: tc.name };
         }));
         for (const { id, result, name } of spawnResults) {
@@ -838,6 +845,7 @@ async function runChatJob(
       warnIfInvalidModelMessages(messages, "stream_tool_loop");
 
       assertJobActive(job);
+      modelStart = Date.now();
       try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
       const next = await streamChatIteration(
@@ -848,7 +856,7 @@ async function runChatJob(
       toolCalls = next.toolCalls;
 
       assertJobActive(job);
-      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { responsePreview: content.slice(0, 500) }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+      try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_response", content: { responsePreview: content.slice(0, 500) }, durationMs: Date.now() - modelStart, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
     }
 
     assertJobActive(job);
@@ -1167,7 +1175,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           const contextResult = cached ? contextValue : compactToolResultForContext(contextValue);
           allToolResults[tc.id] = contextResult;
 
-          try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: canonicalName, success: (result as any).success !== false, errorMessage: (result as any).error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+          try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: canonicalName, content: { preview: JSON.stringify(result).slice(0, 400) }, success: (result as any).success !== false, errorMessage: (result as any).error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
           if (canonicalName === "tools.discover" && (result as any).success) {
             const singleCategory = tc.params.category as string | undefined;
