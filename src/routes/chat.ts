@@ -472,7 +472,10 @@ function repairOrphanedToolCalls(messages: ChatMessage[]): ChatMessage[] {
  *
  * 2. Dangling tool results at end — when a run crashes after executing tools but
  *    before the model responded, the conversation ends with role=tool messages
- *    that have no following assistant. Strip them so the next request starts clean.
+ *    that have no following assistant. Strip them ONLY if they are truly orphaned
+ *    (no matching assistant tool_calls precede them). Valid trailing tool results
+ *    that belong to a preceding assistant message are preserved so the model can
+ *    process them in the next iteration of the tool loop.
  */
 function repairConversationState(messages: ChatMessage[]): ChatMessage[] {
   // Pass 1: merge consecutive non-system same-role messages (handles user+user).
@@ -495,15 +498,52 @@ function repairConversationState(messages: ChatMessage[]): ChatMessage[] {
     }
   }
 
-  // Pass 2: trim trailing tool messages that have no following assistant.
-  // These are tool results from a prior run that crashed before the model turn.
+  // Pass 2: trim trailing tool messages ONLY if they are truly orphaned — i.e.,
+  // they don't belong to a preceding assistant message's tool_calls. Valid tool
+  // results (the current tool loop iteration's results awaiting the next model
+  // turn) must be preserved so the model can act on them.
   let end = merged.length;
   while (end > 0 && merged[end - 1].role === "tool") {
     end--;
   }
   if (end < merged.length) {
-    console.warn(`[Chat] Trimming ${merged.length - end} dangling tool result(s) at end of conversation (orphaned run state)`);
-    return merged.slice(0, end);
+    // Collect the tool_call_ids of the trailing tool results
+    const trailingToolIds = new Set<string>();
+    for (let i = end; i < merged.length; i++) {
+      if (merged[i].tool_call_id) {
+        trailingToolIds.add(merged[i].tool_call_id!);
+      }
+    }
+
+    // Walk backward from the first trailing tool result to find the nearest
+    // assistant message with tool_calls whose IDs cover these tool results.
+    let matchedAssistant = false;
+    for (let i = end - 1; i >= 0; i--) {
+      if (merged[i].role === "assistant" && merged[i].tool_calls?.length) {
+        const assistantIds = new Set(
+          merged[i].tool_calls!.map((tc) => tc.id).filter(Boolean),
+        );
+        // If ANY trailing tool result ID matches this assistant's calls,
+        // the tool results belong to this assistant and are valid — don't trim.
+        for (const id of trailingToolIds) {
+          if (assistantIds.has(id)) {
+            matchedAssistant = true;
+            break;
+          }
+        }
+        break; // Only check the nearest preceding assistant with tool_calls
+      }
+      // Stop searching if we hit another tool result that's part of a different
+      // group — the trailing results are past a message boundary.
+      if (merged[i].role !== "tool" && merged[i].role !== "assistant") {
+        break;
+      }
+    }
+
+    if (!matchedAssistant) {
+      console.warn(`[Chat] Trimming ${merged.length - end} dangling tool result(s) at end of conversation (orphaned run state)`);
+      return merged.slice(0, end);
+    }
   }
 
   return merged;
