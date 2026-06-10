@@ -211,7 +211,7 @@ export class ZaiProvider extends AIProvider {
             response = await this.client.post(
               "/chat/completions",
               requestBody,
-              { timeout: attemptTimeout },
+              { timeout: attemptTimeout, signal: request.signal },
             );
           } finally {
             zaiRateLimiter.release();
@@ -257,6 +257,8 @@ export class ZaiProvider extends AIProvider {
         return result;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
+
+        if (axios.isCancel(error)) throw error;
 
         if (lastError.message.includes("[Z.ai PAYLOAD VALIDATION]")) {
           throw lastError; // don't retry unrecoverable payload errors
@@ -628,12 +630,12 @@ export class ZaiProvider extends AIProvider {
       }
     }
 
-    const baseDelay = 4000;
+    const baseDelay = 10000;
     const exponentialDelay = Math.min(
       baseDelay * Math.pow(2, attempt - 1),
       maxDelay,
     );
-    const jitter = Math.random() * 2000;
+    const jitter = Math.random() * 8000;
     return exponentialDelay + jitter;
   }
 

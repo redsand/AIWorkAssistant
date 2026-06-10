@@ -106,7 +106,7 @@ export class OpenCodeProvider extends AIProvider {
           response = await this.client.post(
             "/chat/completions",
             requestBody,
-            { timeout: attemptTimeout },
+            { timeout: attemptTimeout, signal: request.signal },
           );
         } finally {
           aiRequestLimiter.release();
@@ -148,6 +148,8 @@ export class OpenCodeProvider extends AIProvider {
         return result;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
+
+        if (axios.isCancel(error)) throw error;
 
         if (axios.isAxiosError(error)) {
           const axiosError = error as AxiosError;

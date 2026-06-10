@@ -62,6 +62,7 @@ vi.doMock("../../../src/integrations/jira/jira-client", () => ({
 vi.doMock("../../../src/config/env", () => ({
   env: {
     AI_PROVIDER: "test",
+    AI_MAX_CONCURRENT: 3,
     CLAIMKIT_ENABLED: true,
     CLAIMKIT_TOP_K: 10,
     CLAIMKIT_MIN_SCORE: 0.0,
@@ -69,6 +70,7 @@ vi.doMock("../../../src/config/env", () => ({
     CLAIMKIT_QUERY_SEED_LIMIT: 5,
     CLAIMKIT_QUERY_TIMEOUT_MS: 120000,
     CLAIMKIT_INIT_TIMEOUT_MS: 5000,
+    CLAIMKIT_AWAIT_SEED: true,
   },
 }));
 

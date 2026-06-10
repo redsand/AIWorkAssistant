@@ -109,6 +109,19 @@ export function deduplicateByJaccard(
     .reverse()
     .find((item) => item.message.role === "user")?.index;
 
+  // Pre-tokenize only messages that participate in deduplication to avoid O(n²) repeated tokenization.
+  const tokenCache = new Map<number, Set<string>>();
+  for (const item of scored) {
+    if (
+      item.index === lastUserIndex ||
+      item.message.role === "tool" ||
+      (item.message.role === "assistant" && item.message.tool_calls?.length)
+    ) {
+      continue;
+    }
+    tokenCache.set(item.index, tokenize(item.message.content || ""));
+  }
+
   for (const item of scored) {
     if (
       item.index === lastUserIndex ||
@@ -119,7 +132,7 @@ export function deduplicateByJaccard(
       continue;
     }
 
-    const itemTokens = tokenize(item.message.content || "");
+    const itemTokens = tokenCache.get(item.index)!;
     let isDuplicate = false;
 
     for (const kept of result) {
@@ -130,7 +143,7 @@ export function deduplicateByJaccard(
       ) {
         continue;
       }
-      const keptTokens = tokenize(kept.message.content || "");
+      const keptTokens = tokenCache.get(kept.index)!;
       const sim = jaccardSimilarity(itemTokens, keptTokens);
       if (sim >= threshold) {
         isDuplicate = true;

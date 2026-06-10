@@ -210,6 +210,101 @@ describe("ComparisonRunDatabase — diagnostic fields", () => {
       expect(allStats.source).toBe("all");
       expect(allStats.totalRuns).toBe(2);
       expect(allStats.overallWins).toEqual({ claimkit: 1, rag: 1, tie: 0 });
+      expect(allStats.avgRagHallucinationRate).toBe(0);
+      expect(allStats.avgRagGroundedRate).toBe(0);
+    });
+
+    it("computes truthfulness metrics across cases", () => {
+      db.createRun({
+        source: "live",
+        description: "truthfulness run",
+        cases: [
+          {
+            query: "q1",
+            category: "direct_fact",
+            overallWinner: "rag",
+            winnerReason: "rag_grounded",
+            rag: { contextTokens: 100, sections: 1, processingTimeMs: 20, hallucinationRate: 0, grounded: true },
+            claimkit: {
+              confidence: 0.3,
+              answerability: "not_answerable",
+              claimCount: 0,
+              processingTimeMs: 50,
+              contradictions: 0,
+            },
+          },
+          {
+            query: "q2",
+            category: "direct_fact",
+            overallWinner: "claimkit",
+            winnerReason: "rag_hallucinated",
+            rag: { contextTokens: 100, sections: 1, processingTimeMs: 20, hallucinationRate: 0.8, grounded: false },
+            claimkit: {
+              confidence: 0.6,
+              answerability: "answerable",
+              claimCount: 3,
+              processingTimeMs: 80,
+              contradictions: 0,
+            },
+          },
+        ],
+      });
+
+      const stats = db.getDashboardStats({ source: "live" });
+      expect(stats.avgRagHallucinationRate).toBeCloseTo(0.4, 2);
+      expect(stats.avgRagGroundedRate).toBeCloseTo(0.5, 2);
+    });
+  });
+
+  describe("truthfulness trends over time", () => {
+    it("returns empty array when no cases", () => {
+      const trends = db.getTruthfulnessOverTime(30);
+      expect(trends).toEqual([]);
+    });
+
+    it("aggregates hallucination and grounded rates by date", () => {
+      const now = new Date().toISOString();
+      db.createRun({
+        source: "live",
+        description: "trend run",
+        cases: [
+          {
+            query: "q1",
+            category: "direct_fact",
+            overallWinner: "claimkit",
+            winnerReason: "rag_hallucinated",
+            rag: { contextTokens: 100, sections: 1, processingTimeMs: 20, hallucinationRate: 0.8, grounded: false },
+            claimkit: {
+              confidence: 0.6,
+              answerability: "answerable",
+              claimCount: 3,
+              processingTimeMs: 80,
+              contradictions: 0,
+            },
+          },
+          {
+            query: "q2",
+            category: "direct_fact",
+            overallWinner: "rag",
+            winnerReason: "rag_grounded",
+            rag: { contextTokens: 100, sections: 1, processingTimeMs: 20, hallucinationRate: 0, grounded: true },
+            claimkit: {
+              confidence: 0.3,
+              answerability: "not_answerable",
+              claimCount: 0,
+              processingTimeMs: 50,
+              contradictions: 0,
+            },
+          },
+        ],
+      });
+
+      const trends = db.getTruthfulnessOverTime(30, { source: "live" });
+      expect(trends.length).toBe(1);
+      expect(trends[0]!.avgHallucinationRate).toBeCloseTo(0.4, 2);
+      expect(trends[0]!.avgGroundedRate).toBeCloseTo(0.5, 2);
+      expect(trends[0]!.caseCount).toBe(2);
+      expect(trends[0]!.date).toBe(new Date().toISOString().slice(0, 10));
     });
   });
 });

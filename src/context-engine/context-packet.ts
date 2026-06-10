@@ -183,13 +183,40 @@ export async function assembleContextPacket(
   const systemTokens = estimateTokens(baseSystemPrompt);
   systemSlot.allocatedTokens = Math.max(systemSlot.allocatedTokens, systemTokens + memoryTokens + skillsTokens + soulTokens + reflectionsTokens);
 
-  const scored = scoreMessages(sessionMessages, query);
-  const deduped = deduplicateByJaccard(scored);
-  const selectedMessages = selectMessages(deduped, historySlot.allocatedTokens);
+  const ragStart = Date.now();
+
+  const [docs, selectedMessages] = await Promise.all([
+    timeStage("retrieveStoresMs", () => retrieveAllStores(query)),
+    Promise.resolve().then(() => {
+      const scored = scoreMessages(sessionMessages, query);
+      const deduped = deduplicateByJaccard(scored);
+      return selectMessages(deduped, historySlot.allocatedTokens);
+    }),
+  ]);
+
   const historyTokens = selectedMessages.reduce((sum, s) => sum + s.tokens, 0);
 
-  const ragStart = Date.now();
-  const docs = await timeStage("retrieveStoresMs", () => retrieveAllStores(query));
+  // Start independent async/sync work in parallel with ClaimKit query.
+  // These do not depend on ClaimKit result and can overlap with its latency.
+  const graphPromise = Promise.resolve().then(() => retrieveGraphContext(query));
+  const sessionsPromise = Promise.resolve().then(() => {
+    try {
+      return conversationManager.searchSessions(query, 3);
+    } catch {
+      return [] as ReturnType<typeof conversationManager.searchSessions>;
+    }
+  });
+  const healthPromise = withTimeout(buildHealthStatus(), 2000, null);
+
+  // Start document ranking and compression immediately — only depends on docs, not ClaimKit.
+  const docsCompressPromise = Promise.resolve().then(() => {
+    const reranked = rerank(docs, query);
+    return compressDocuments(
+      reranked.slice(0, 10),
+      query,
+      documentsSlot.allocatedTokens,
+    );
+  });
 
   let claimKitResult: Awaited<ReturnType<typeof claimKitAdapter.query>> | null = null;
   let ckMs = 0;
@@ -201,10 +228,11 @@ export async function assembleContextPacket(
     console.warn("[ClaimKit] Skipped — not initialized (run `claimkit ingest` to populate stores)");
   } else {
     const seedStart = Date.now();
-    // Always await seed — CK must see the current request's docs before querying.
-    // Fire-and-forget causes a race where CK queries an empty store and returns confidence=0.
-    await ingestScoredDocumentsForQuery(docs, query, env.CLAIMKIT_QUERY_SEED_LIMIT)
+    const seedPromise = ingestScoredDocumentsForQuery(docs, query, env.CLAIMKIT_QUERY_SEED_LIMIT)
       .catch((err) => { console.warn("[ClaimKit] Query seed failed:", err); });
+    if (env.CLAIMKIT_AWAIT_SEED) {
+      await seedPromise;
+    }
     stageTimings.claimkitSeedMs = Date.now() - seedStart;
     const ckStart = Date.now();
     try {
@@ -243,12 +271,7 @@ export async function assembleContextPacket(
     }
   }
 
-  const rerankedDocs = rerank(docs, query);
-  const compressedDocs = compressDocuments(
-    rerankedDocs.slice(0, 10),
-    query,
-    documentsSlot.allocatedTokens,
-  );
+  const compressedDocs = await docsCompressPromise;
 
   if (env.CLAIMKIT_ENABLED) {
     const ragTokens = compressedDocs.reduce((s, d) => s + d.tokens, 0);
@@ -286,6 +309,8 @@ export async function assembleContextPacket(
       ragTokens,
       ragSections: compressedDocs.length,
       ragTimeMs: ragMs,
+      ragHallucinationRate: null,
+      ragGrounded: null,
       ckConfidence: claimKitResult?.confidence ?? null,
       ckAnswerability: claimKitResult?.answerability ?? null,
       ckClaimCount: claimKitResult?.metadata.claimCount ?? null,
@@ -302,7 +327,18 @@ export async function assembleContextPacket(
     });
   }
 
-  const graphContext = retrieveGraphContext(query);
+  // Await parallel work started before ClaimKit query
+  const healthStart = Date.now();
+  const [graphContext, sessionResults, healthText] = await Promise.all([
+    graphPromise,
+    sessionsPromise,
+    healthPromise,
+  ]);
+  stageTimings.healthStatusMs = Date.now() - healthStart;
+  if (!healthText) {
+    console.warn(`[ContextPacket] Health status skipped after ${stageTimings.healthStatusMs}ms`);
+  }
+
   const graphTokens = estimateTokens(graphContext);
   const trimmedGraph =
     graphTokens <= graphSlot.allocatedTokens
@@ -358,31 +394,22 @@ export async function assembleContextPacket(
   // Session search — find past conversations relevant to current query
   const MAX_SESSION_SEARCH_TOKENS = 400;
   let sessionSearchSection: ContextSection | null = null;
-  try {
-    const sessionResults = conversationManager.searchSessions(query, 3);
-    if (sessionResults.length > 0) {
-      const lines = sessionResults.map((r) => {
-        const topics = r.keyTopics.length > 0 ? ` | topics: ${r.keyTopics.join(", ")}` : "";
-        return `- [${r.title}]${topics}\n  ${r.summary.substring(0, 200)}`;
-      });
-      const content = `=== PAST SESSIONS ===\n${lines.join("\n")}`;
-      const tokens = estimateTokens(content);
-      sessionSearchSection = {
-        name: "recent_sessions",
-        content: tokens > MAX_SESSION_SEARCH_TOKENS
-          ? content.substring(0, MAX_SESSION_SEARCH_TOKENS * 4)
-          : content,
-        tokens: Math.min(tokens, MAX_SESSION_SEARCH_TOKENS),
-      };
-    }
-  } catch {}
-
-  const healthStart = Date.now();
-  const healthText = await withTimeout(buildHealthStatus(), 2000, null);
-  stageTimings.healthStatusMs = Date.now() - healthStart;
-  if (!healthText) {
-    console.warn(`[ContextPacket] Health status skipped after ${stageTimings.healthStatusMs}ms`);
+  if (sessionResults.length > 0) {
+    const lines = sessionResults.map((r) => {
+      const topics = r.keyTopics.length > 0 ? ` | topics: ${r.keyTopics.join(", ")}` : "";
+      return `- [${r.title}]${topics}\n  ${r.summary.substring(0, 200)}`;
+    });
+    const content = `=== PAST SESSIONS ===\n${lines.join("\n")}`;
+    const tokens = estimateTokens(content);
+    sessionSearchSection = {
+      name: "recent_sessions",
+      content: tokens > MAX_SESSION_SEARCH_TOKENS
+        ? content.substring(0, MAX_SESSION_SEARCH_TOKENS * 4)
+        : content,
+      tokens: Math.min(tokens, MAX_SESSION_SEARCH_TOKENS),
+    };
   }
+
   const healthSection: ContextSection | null = healthText
     ? { name: "health", content: healthText, tokens: estimateTokens(healthText) }
     : null;
@@ -587,65 +614,66 @@ export async function assembleContextPacket(
 async function retrieveAllStores(query: string): Promise<ScoredDocument[]> {
   const docs: ScoredDocument[] = [];
 
-  try {
-    const knowledgeResults = knowledgeStore.search(query, { limit: 10 });
-    for (const r of knowledgeResults) {
-      docs.push({
-        id: r.entry.id,
-        source: "knowledge",
-        content: r.entry.content,
-        title: r.entry.title,
-        score: r.score,
-        baseScore: r.score,
-        importanceScore: 0,
-        recencyScore: 1,
-        tokens: Math.ceil(r.entry.content.length / 1.8),
-        metadata: { matchType: r.matchType, source: r.entry.source, tags: r.entry.tags },
-      });
-    }
-  } catch {}
+  const [
+    knowledgeResults = [],
+    codebaseResults = [],
+    graphResults = [],
+  ] = await Promise.all([
+    Promise.resolve().then(() => knowledgeStore.search(query, { limit: 10 })).catch(() => [] as ReturnType<typeof knowledgeStore.search>),
+    Promise.resolve().then(() => codebaseIndexer.search(query, { limit: 10 })).catch(() => [] as ReturnType<typeof codebaseIndexer.search>),
+    Promise.resolve().then(() => knowledgeGraph.queryNodes({ search: query, limit: 10 })).catch(() => [] as ReturnType<typeof knowledgeGraph.queryNodes>),
+  ]);
 
-  try {
-    const codebaseResults = codebaseIndexer.search(query, { limit: 10 });
-    for (const r of codebaseResults) {
-      docs.push({
-        id: `code-${r.filePath}:${r.startLine}`,
-        source: "codebase",
-        content: r.content,
-        title: r.filePath,
-        score: r.score,
-        baseScore: r.score,
-        importanceScore: 0,
-        recencyScore: 1,
-        tokens: Math.ceil(r.content.length / 1.8),
-        metadata: {
-          language: r.language,
-          filePath: r.filePath,
-          startLine: r.startLine,
-          endLine: r.endLine,
-          matchType: r.matchType,
-        },
-      });
-    }
-  } catch {}
+  for (const r of knowledgeResults) {
+    docs.push({
+      id: r.entry.id,
+      source: "knowledge",
+      content: r.entry.content,
+      title: r.entry.title,
+      score: r.score,
+      baseScore: r.score,
+      importanceScore: 0,
+      recencyScore: 1,
+      tokens: Math.ceil(r.entry.content.length / 1.8),
+      metadata: { matchType: r.matchType, source: r.entry.source, tags: r.entry.tags },
+    });
+  }
 
-  try {
-    const graphResults = knowledgeGraph.queryNodes({ search: query, limit: 10 });
-    for (const node of graphResults) {
-      docs.push({
-        id: node.id,
-        source: "graph",
-        content: node.content,
-        title: node.title,
-        score: 1,
-        baseScore: 1,
-        importanceScore: 0,
-        recencyScore: 1,
-        tokens: Math.ceil(node.content.length / 1.8),
-        metadata: { type: node.type, status: node.status, tags: node.tags },
-      });
-    }
-  } catch {}
+  for (const r of codebaseResults) {
+    docs.push({
+      id: `code-${r.filePath}:${r.startLine}`,
+      source: "codebase",
+      content: r.content,
+      title: r.filePath,
+      score: r.score,
+      baseScore: r.score,
+      importanceScore: 0,
+      recencyScore: 1,
+      tokens: Math.ceil(r.content.length / 1.8),
+      metadata: {
+        language: r.language,
+        filePath: r.filePath,
+        startLine: r.startLine,
+        endLine: r.endLine,
+        matchType: r.matchType,
+      },
+    });
+  }
+
+  for (const node of graphResults) {
+    docs.push({
+      id: node.id,
+      source: "graph",
+      content: node.content,
+      title: node.title,
+      score: 1,
+      baseScore: 1,
+      importanceScore: 0,
+      recencyScore: 1,
+      tokens: Math.ceil(node.content.length / 1.8),
+      metadata: { type: node.type, status: node.status, tags: node.tags },
+    });
+  }
 
   return docs;
 }
@@ -700,8 +728,18 @@ function formatDocumentsSection(docs: ScoredDocument[]): string {
   return parts.join("\n\n");
 }
 
+// Health status is cached with a 30-second TTL to avoid repeated external API validation calls.
+let _cachedHealthStatus: string | null = null;
+let _healthStatusCachedAt = 0;
+const HEALTH_STATUS_TTL_MS = 30_000;
+
 async function buildHealthStatus(): Promise<string | null> {
   try {
+    const now = Date.now();
+    if (_cachedHealthStatus !== null && now - _healthStatusCachedAt < HEALTH_STATUS_TTL_MS) {
+      return _cachedHealthStatus;
+    }
+
     const providerConfigured = aiClient.isConfigured();
     const providerValid = providerConfigured
       ? await aiClient.validateConfig().catch(() => false)
@@ -736,7 +774,10 @@ async function buildHealthStatus(): Promise<string | null> {
       lines.push(`- ${intg.name}: ${icon}`);
     }
 
-    return lines.join("\n");
+    const result = lines.join("\n");
+    _cachedHealthStatus = result;
+    _healthStatusCachedAt = now;
+    return result;
   } catch {
     return null;
   }

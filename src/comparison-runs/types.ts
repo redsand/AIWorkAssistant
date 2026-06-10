@@ -68,6 +68,8 @@ export interface ComparisonAggregate {
       avgTokens: number;
       avgSections: number;
       avgTimeMs: number;
+      hallucinationRate: number;
+      groundedRate: number;
     };
   };
 }
@@ -116,6 +118,8 @@ export interface ComparisonDashboardStats {
   avgAnswerabilityRate: number;
   avgCkTimeMs: number;
   avgRagTimeMs: number;
+  avgRagHallucinationRate: number;
+  avgRagGroundedRate: number;
   byCategory: CategoryBreakdown[];
   recentRuns: ComparisonRunSummary[];
 }
@@ -123,6 +127,13 @@ export interface ComparisonDashboardStats {
 export interface ConfidenceTrendPoint {
   date: string;
   avgConfidence: number;
+  caseCount: number;
+}
+
+export interface TruthfulnessTrendPoint {
+  date: string;
+  avgHallucinationRate: number;
+  avgGroundedRate: number;
   caseCount: number;
 }
 

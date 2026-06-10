@@ -1,4 +1,5 @@
 import type { ComparisonEvalCategory } from "../types";
+import type { CkStatus } from "../../comparison-runs/types";
 
 export interface ThresholdEvaluation {
   passed: boolean;
@@ -27,8 +28,11 @@ export interface ComparisonCase {
   query: string;
   category: ComparisonEvalCategory;
   overallWinner: "rag" | "claimkit" | "tie";
+  winnerReason?: string;
   rag: ComparisonCaseRag;
   claimkit: ComparisonCaseClaimKit | null;
+  ckStatus?: CkStatus | null;
+  ckIncludedInContext?: boolean | null;
 }
 
 export interface ComparisonRunResult {

@@ -20,7 +20,7 @@ import { getProvider } from "../../agent/providers/factory";
 import { env } from "../../config/env";
 
 async function withLlmTimeout<T>(
-  makeCall: () => Promise<T>,
+  makeCall: (signal: AbortSignal) => Promise<T>,
   fallback: () => Promise<T>,
 ): Promise<T> {
   const maxAttempts = env.CLAIMKIT_LLM_MAX_ATTEMPTS;
@@ -28,25 +28,21 @@ async function withLlmTimeout<T>(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const timeoutMs = Math.min(baseMs * Math.pow(2, attempt - 1), baseMs * 16);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const result = await new Promise<T | null>((resolve, reject) => {
-        let settled = false;
-        const timer = setTimeout(() => {
-          if (!settled) { settled = true; resolve(null); }
-        }, timeoutMs);
-        makeCall().then(
-          (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } },
-          (e) => { if (!settled) { settled = true; clearTimeout(timer); reject(e); } },
-        );
-      });
-      if (result !== null) {
-        if (attempt > 1) console.log(`[ClaimKit LLM] Succeeded on attempt ${attempt}/${maxAttempts}`);
-        return result;
-      }
-      console.warn(`[ClaimKit LLM] Attempt ${attempt}/${maxAttempts} timed out after ${timeoutMs}ms`);
+      const result = await makeCall(controller.signal);
+      if (attempt > 1) console.log(`[ClaimKit LLM] Succeeded on attempt ${attempt}/${maxAttempts}`);
+      return result;
     } catch (err) {
+      if (controller.signal.aborted) {
+        console.warn(`[ClaimKit LLM] Attempt ${attempt}/${maxAttempts} timed out after ${timeoutMs}ms`);
+        continue;
+      }
       console.warn(`[ClaimKit LLM] Attempt ${attempt}/${maxAttempts} failed:`, err instanceof Error ? err.message : err);
       if (attempt >= maxAttempts) throw err;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -114,19 +110,46 @@ export class AIProviderLLMAdapter implements LLMAdapter {
     messages: readonly LLMMessage[],
     options?: LLMGenerateOptions,
   ): Promise<LLMGenerateResult> {
-    const response = await this.getActiveProvider().chat({
-      messages: toChatMessages(messages),
-      model: this.model ?? options?.model,
-      temperature: options?.temperature,
-      maxTokens: options?.maxTokens,
-      top_p: options?.topP,
-    });
-    return toGenerateResult(response.content, response.model, response.usage);
+    try {
+      return await withLlmTimeout(
+        async (signal) => {
+          const response = await this.getActiveProvider().chat({
+            messages: toChatMessages(messages),
+            model: this.model ?? options?.model,
+            temperature: options?.temperature,
+            maxTokens: options?.maxTokens,
+            top_p: options?.topP,
+            signal,
+          });
+          return toGenerateResult(response.content, response.model, response.usage);
+        },
+        () => this.fallback.generateText(messages, options),
+      );
+    } catch (err) {
+      console.warn("[AIProviderLLMAdapter] generateText failed, falling back:", err instanceof Error ? err.message : String(err));
+      return this.fallback.generateText(messages, options);
+    }
   }
 
   async generateJson<T>(
     messages: readonly LLMMessage[],
     _schema: LLMJsonSchema,
+    options?: LLMGenerateOptions,
+  ): Promise<T> {
+    try {
+      return await withLlmTimeout(
+        (signal) => this.generateJsonAbortable<T>(messages, signal, options),
+        () => this.fallback.generateJson<T>(messages, _schema, options),
+      );
+    } catch (err) {
+      console.warn("[AIProviderLLMAdapter] generateJson failed, falling back:", err instanceof Error ? err.message : String(err));
+      return this.fallback.generateJson<T>(messages, _schema, options);
+    }
+  }
+
+  private async generateJsonAbortable<T>(
+    messages: readonly LLMMessage[],
+    signal: AbortSignal,
     options?: LLMGenerateOptions,
   ): Promise<T> {
     const response = await this.getActiveProvider().chat({
@@ -136,6 +159,7 @@ export class AIProviderLLMAdapter implements LLMAdapter {
       maxTokens: options?.maxTokens,
       top_p: options?.topP,
       jsonMode: true,
+      signal,
     });
     return JSON.parse(stripJsonFromLlmResponse(response.content)) as T;
   }
@@ -192,8 +216,8 @@ Each claim object must have:
         },
       ];
       return await withLlmTimeout(
-        async () => {
-          const r = await this.generateJson<{ claims: RawClaim[] }>(messages, {});
+        async (signal) => {
+          const r = await this.generateJsonAbortable<{ claims: RawClaim[] }>(messages, signal);
           return (r.claims ?? []).filter((c) => c.confidence >= minConfidence);
         },
         () => this.fallback.extractClaims(chunkText, sourceId, chunkId, options),
@@ -237,7 +261,7 @@ Rules:
         },
       ];
       return await withLlmTimeout(
-        () => this.generateJson<LLMGenerateAnswerResult>(answerMessages, {}),
+        (signal) => this.generateJsonAbortable<LLMGenerateAnswerResult>(answerMessages, signal),
         () => this.fallback.generateAnswer(packet, question),
       );
     } catch (err) {
@@ -279,8 +303,8 @@ Respond with JSON: { "contradictions": [...] }`,
         },
       ];
       return await withLlmTimeout(
-        async () => {
-          const r = await this.generateJson<{ contradictions: EvidenceContradiction[] }>(contradictionMessages, {});
+        async (signal) => {
+          const r = await this.generateJsonAbortable<{ contradictions: EvidenceContradiction[] }>(contradictionMessages, signal);
           return (r.contradictions ?? []).map((c) => ({ ...c, detectedBy: "llm" as const }));
         },
         () => this.fallback.detectContradictions(claims),
@@ -334,7 +358,7 @@ Respond with JSON:
         },
       ];
       return await withLlmTimeout(
-        () => this.generateJson<ClaimVerificationResult>(verifyMessages, {}),
+        (signal) => this.generateJsonAbortable<ClaimVerificationResult>(verifyMessages, signal),
         () => this.fallback.verifyClaims(answer, packet),
       );
     } catch (err) {

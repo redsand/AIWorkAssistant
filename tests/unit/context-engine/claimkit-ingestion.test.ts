@@ -21,6 +21,12 @@ vi.doMock("../../../src/agent/knowledge-store", () => ({
   knowledgeStore: mockKnowledgeStore,
 }));
 
+vi.doMock("../../../src/config/env", () => ({
+  env: {
+    AI_MAX_CONCURRENT: 3,
+  },
+}));
+
 describe("ingestKnowledgeStore", () => {
   let ingestKnowledgeStore: () => Promise<{
     total: number;

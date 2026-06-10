@@ -79,11 +79,22 @@ export async function runClaimKitComparison(
 
     // Truthfulness-first winner determination
     const overallWinner = determineOverallWinner(ckResult, ragHallucinationRate, ragGrounded);
+    const winnerReason = determineWinnerReason(overallWinner, ckResult, ragHallucinationRate, ragGrounded);
+
+    let ckStatus: "answered" | "timeout" | "error" | "no_claims" | "disabled" | null = null;
+    if (!ckAvailable) {
+      ckStatus = "disabled";
+    } else if (ckResult) {
+      ckStatus = ckResult.metadata.claimCount === 0 ? "no_claims" : "answered";
+    } else {
+      ckStatus = "error";
+    }
 
     cases.push({
       query,
       category: categorizeQuery(query, config.categories),
       overallWinner,
+      winnerReason,
       rag: {
         contextTokens: ragPacket.totalTokens,
         sections: ragPacket.sections.length,
@@ -100,6 +111,8 @@ export async function runClaimKitComparison(
             contradictions: ckResult.contradictions.length,
           }
         : null,
+      ckStatus,
+      ckIncludedInContext: null,
     });
   }
 
@@ -179,6 +192,30 @@ function determineOverallWinner(
   if (ck.confidence < 0.3 && ragGrounded === true) return "tie";
 
   return "tie";
+}
+
+function determineWinnerReason(
+  winner: "rag" | "claimkit" | "tie",
+  ck: Awaited<ReturnType<typeof claimKitAdapter.query>> | null,
+  ragHallucinationRate: number | null,
+  ragGrounded: boolean | null,
+): string {
+  if (winner === "claimkit" && ragHallucinationRate !== null && ragHallucinationRate > 0) {
+    return "rag_hallucinated";
+  }
+  if (winner === "rag" && ragGrounded === true) {
+    return "rag_grounded";
+  }
+  if (winner === "claimkit" && ck && ck.confidence > 0.5) {
+    return "high_confidence";
+  }
+  if (winner === "tie" && ck && ck.answerability === "not_answerable" && ragGrounded === true) {
+    return "both_honest";
+  }
+  if (winner === "claimkit" && ck && ck.confidence < 0.3) {
+    return "low_confidence";
+  }
+  return "default";
 }
 
 function categorizeQuery(

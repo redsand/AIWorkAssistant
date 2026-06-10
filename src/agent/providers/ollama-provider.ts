@@ -92,7 +92,7 @@ export class OllamaProvider extends AIProvider {
           response = await this.client.post(
             "/v1/chat/completions",
             requestBody,
-            { timeout: attemptTimeout },
+            { timeout: attemptTimeout, signal: request.signal },
           );
         } finally {
           aiRequestLimiter.release();
@@ -139,6 +139,8 @@ export class OllamaProvider extends AIProvider {
         return result;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
+
+        if (axios.isCancel(error)) throw error;
 
         if (axios.isAxiosError(error)) {
           const status = error.response?.status;

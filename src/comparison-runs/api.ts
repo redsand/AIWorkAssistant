@@ -43,6 +43,14 @@ export async function comparisonRoutes(
     return db.getConfidenceOverTime(days, { source: safeSource(query.source) });
   });
 
+  // ── Truthfulness trend ────────────────────────────────────────────
+
+  fastify.get("/truthfulness", async (request, _reply) => {
+    const query = request.query as { days?: string; source?: string };
+    const days = safeParseInt(query.days, 1, 365, 30);
+    return db.getTruthfulnessOverTime(days, { source: safeSource(query.source) });
+  });
+
   // ── Run listing ───────────────────────────────────────────────────
 
   fastify.get("/runs", async (request, _reply) => {

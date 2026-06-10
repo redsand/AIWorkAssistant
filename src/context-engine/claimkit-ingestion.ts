@@ -6,6 +6,7 @@ import type { IndexedFile } from "../agent/codebase-indexer";
 import { knowledgeGraph } from "../agent/knowledge-graph";
 import type { KGNode, KGEdge } from "../agent/knowledge-graph";
 import type { ScoredDocument } from "./types";
+import { env } from "../config/env";
 
 export interface IngestionStats {
   total: number;
@@ -17,6 +18,69 @@ export interface IngestionStats {
 }
 
 const ingestedIds = new Set<string>();
+
+async function ingestDocument(
+  doc: ScoredDocument,
+  query: string,
+  stats: IngestionStats,
+): Promise<void> {
+  const key = `scored-doc:${doc.source}:${doc.id}`;
+  if (ingestedIds.has(key)) {
+    stats.skipped++;
+    return;
+  }
+
+  try {
+    const sourceDetail = doc.source === "codebase"
+      ? `${doc.metadata.filePath ?? doc.title}:${doc.metadata.startLine ?? ""}-${doc.metadata.endLine ?? ""}`
+      : doc.title;
+    const text = [
+      `Source type: ${doc.source}`,
+      `Title: ${doc.title}`,
+      `Location: ${sourceDetail}`,
+      `Matched query: ${query}`,
+      "",
+      doc.content,
+    ].join("\n");
+
+    const { sourceId } = await claimKitAdapter.ingest(text, {
+      docId: doc.id,
+      title: doc.title,
+      source: doc.source,
+      trustTier: "curated",
+      querySeed: true,
+      score: doc.score,
+      ...doc.metadata,
+    });
+
+    stats.sourceIds.push(sourceId);
+    stats.ingested++;
+    ingestedIds.add(key);
+  } catch (err) {
+    console.warn(`[ClaimKit Ingestion] Failed to ingest scored document ${doc.id}:`, err);
+    stats.errors++;
+  }
+}
+
+async function runWithConcurrencyLimit<T>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  const queue = items.slice();
+  const workers: Promise<void>[] = [];
+  for (let i = 0; i < limit; i++) {
+    workers.push(
+      (async () => {
+        while (queue.length > 0) {
+          const item = queue.shift()!;
+          await fn(item);
+        }
+      })(),
+    );
+  }
+  await Promise.all(workers);
+}
 
 export async function ingestSingleKnowledgeEntry(entry: KnowledgeEntry): Promise<void> {
   if (!claimKitAdapter.isAvailable()) return;
@@ -54,44 +118,8 @@ export async function ingestScoredDocumentsForQuery(
     .slice(0, limit);
   stats.total = selected.length;
 
-  for (const doc of selected) {
-    const key = `scored-doc:${doc.source}:${doc.id}`;
-    if (ingestedIds.has(key)) {
-      stats.skipped++;
-      continue;
-    }
-
-    try {
-      const sourceDetail = doc.source === "codebase"
-        ? `${doc.metadata.filePath ?? doc.title}:${doc.metadata.startLine ?? ""}-${doc.metadata.endLine ?? ""}`
-        : doc.title;
-      const text = [
-        `Source type: ${doc.source}`,
-        `Title: ${doc.title}`,
-        `Location: ${sourceDetail}`,
-        `Matched query: ${query}`,
-        "",
-        doc.content,
-      ].join("\n");
-
-      const { sourceId } = await claimKitAdapter.ingest(text, {
-        docId: doc.id,
-        title: doc.title,
-        source: doc.source,
-        trustTier: "curated",
-        querySeed: true,
-        score: doc.score,
-        ...doc.metadata,
-      });
-
-      stats.sourceIds.push(sourceId);
-      stats.ingested++;
-      ingestedIds.add(key);
-    } catch (err) {
-      console.warn(`[ClaimKit Ingestion] Failed to ingest scored document ${doc.id}:`, err);
-      stats.errors++;
-    }
-  }
+  const concurrency = Math.max(1, env.AI_MAX_CONCURRENT);
+  await runWithConcurrencyLimit(selected, concurrency, (doc) => ingestDocument(doc, query, stats));
 
   stats.durationMs = Date.now() - start;
   if (stats.ingested > 0 || stats.errors > 0) {

@@ -39,7 +39,7 @@ export function createProvider(): AIProvider {
         model: process.env.ZAI_MODEL || env.ZAI_MODEL,
         temperature: env.ZAI_TEMPERATURE,
         topP: env.ZAI_TOP_P,
-        maxRetries: 9,
+        maxRetries: 2,
         timeout: 300000,
         maxContextTokens: env.ZAI_MAX_CONTEXT_TOKENS,
       });

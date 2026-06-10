@@ -11,6 +11,7 @@ import type {
   ComparisonDashboardStats,
   ComparisonAggregate,
   ConfidenceTrendPoint,
+  TruthfulnessTrendPoint,
   CategoryBreakdown,
   SaveComparisonInput,
   ComparisonSource,
@@ -310,7 +311,9 @@ class ComparisonRunDatabase {
            AVG(ck_time_ms) as avg_ck_time,
            AVG(rag_tokens) as avg_rag_tokens,
            AVG(rag_sections) as avg_rag_sections,
-           AVG(rag_time_ms) as avg_rag_time
+           AVG(rag_time_ms) as avg_rag_time,
+           AVG(CASE WHEN rag_hallucination_rate IS NOT NULL THEN rag_hallucination_rate END) as avg_rag_hallucination_rate,
+           AVG(CASE WHEN rag_grounded IS NOT NULL THEN CAST(rag_grounded AS REAL) END) as avg_rag_grounded_rate
          FROM comparison_cases WHERE run_id = ?`,
       )
       .get(runId) as {
@@ -328,6 +331,8 @@ class ComparisonRunDatabase {
         avg_rag_tokens: number | null;
         avg_rag_sections: number | null;
         avg_rag_time: number | null;
+        avg_rag_hallucination_rate: number | null;
+        avg_rag_grounded_rate: number | null;
       };
 
     return {
@@ -348,6 +353,8 @@ class ComparisonRunDatabase {
           avgTokens: row.avg_rag_tokens ?? 0,
           avgSections: row.avg_rag_sections ?? 0,
           avgTimeMs: row.avg_rag_time ?? 0,
+          hallucinationRate: row.avg_rag_hallucination_rate ?? 0,
+          groundedRate: row.avg_rag_grounded_rate ?? 0,
         },
       },
     };
@@ -374,7 +381,9 @@ class ComparisonRunDatabase {
            AVG(ck_confidence) as avg_confidence,
            AVG(CASE WHEN ck_answerability = 'answerable' THEN 1.0 ELSE 0.0 END) as answerability_rate,
            AVG(ck_time_ms) as avg_ck_time,
-           AVG(rag_time_ms) as avg_rag_time
+           AVG(rag_time_ms) as avg_rag_time,
+           AVG(CASE WHEN rag_hallucination_rate IS NOT NULL THEN rag_hallucination_rate END) as avg_rag_hallucination_rate,
+           AVG(CASE WHEN rag_grounded IS NOT NULL THEN CAST(rag_grounded AS REAL) END) as avg_rag_grounded_rate
          FROM comparison_cases cc
          JOIN comparison_runs cr ON cr.id = cc.run_id
          ${whereClause}`,
@@ -390,6 +399,8 @@ class ComparisonRunDatabase {
         answerability_rate: number | null;
         avg_ck_time: number | null;
         avg_rag_time: number | null;
+        avg_rag_hallucination_rate: number | null;
+        avg_rag_grounded_rate: number | null;
       };
 
     const totalRunsRow = this.db
@@ -435,6 +446,8 @@ class ComparisonRunDatabase {
       avgAnswerabilityRate: winRow.answerability_rate ?? 0,
       avgCkTimeMs: winRow.avg_ck_time ?? 0,
       avgRagTimeMs: winRow.avg_rag_time ?? 0,
+      avgRagHallucinationRate: winRow.avg_rag_hallucination_rate ?? 0,
+      avgRagGroundedRate: winRow.avg_rag_grounded_rate ?? 0,
       byCategory: catRows.map((r) => ({
         category: r.category as CategoryBreakdown["category"],
         total: r.total,
@@ -474,6 +487,45 @@ class ComparisonRunDatabase {
     return rows.map((r) => ({
       date: r.date,
       avgConfidence: r.avg_confidence,
+      caseCount: r.case_count,
+    }));
+  }
+
+  getTruthfulnessOverTime(
+    days: number = 30,
+    options?: { source?: ComparisonSource },
+  ): TruthfulnessTrendPoint[] {
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const conditions = ["cc.created_at >= ?"];
+    const params: unknown[] = [cutoff];
+    if (options?.source) {
+      conditions.push("cr.source = ?");
+      params.push(options.source);
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT
+           date(cc.created_at) as date,
+           AVG(CASE WHEN cc.rag_hallucination_rate IS NOT NULL THEN cc.rag_hallucination_rate END) as avg_hallucination_rate,
+           AVG(CASE WHEN cc.rag_grounded IS NOT NULL THEN CAST(cc.rag_grounded AS REAL) END) as avg_grounded_rate,
+           COUNT(*) as case_count
+         FROM comparison_cases cc
+         JOIN comparison_runs cr ON cr.id = cc.run_id
+         WHERE ${conditions.join(" AND ")}
+         GROUP BY date(cc.created_at)
+         ORDER BY date(cc.created_at)`,
+      )
+      .all(...params) as Array<{
+        date: string;
+        avg_hallucination_rate: number | null;
+        avg_grounded_rate: number | null;
+        case_count: number;
+      }>;
+
+    return rows.map((r) => ({
+      date: r.date,
+      avgHallucinationRate: r.avg_hallucination_rate ?? 0,
+      avgGroundedRate: r.avg_grounded_rate ?? 0,
       caseCount: r.case_count,
     }));
   }

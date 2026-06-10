@@ -141,6 +141,7 @@ export class OpenAIProvider extends AIProvider {
         try {
           response = await this.client.post("/chat/completions", requestBody, {
             timeout: attemptTimeout,
+            signal: request.signal,
           });
         } finally {
           aiRequestLimiter.release();
@@ -169,6 +170,8 @@ export class OpenAIProvider extends AIProvider {
         return result;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
+
+        if (axios.isCancel(error)) throw error;
 
         if (axios.isAxiosError(error)) {
           const status = error.response?.status;

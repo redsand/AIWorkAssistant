@@ -39,6 +39,8 @@ export interface ChatRequest {
   maxTokens?: number;
   /** Force JSON output via response_format (OpenAI-compatible providers: Ollama, ZAI, OpenCode). */
   jsonMode?: boolean;
+  /** Cancellation signal. When aborted, the in-flight HTTP request is cancelled and no retry is attempted. */
+  signal?: AbortSignal;
 }
 
 export interface ChatResponse {

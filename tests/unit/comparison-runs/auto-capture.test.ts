@@ -86,12 +86,50 @@ describe("classifyQuery", () => {
     });
   });
 
-  describe("priority order (code_retrieval checked first)", () => {
-    it("prefers code_retrieval when query contains both 'code' and 'who'", () => {
+  describe("planning_synthesis", () => {
+    it("matches 'build' keyword", () => {
+      expect(classifyQuery("how do we build a process?")).toBe("planning_synthesis");
+    });
+    it("matches 'workflow' keyword", () => {
+      expect(classifyQuery("what is the workflow for onboarding?")).toBe("planning_synthesis");
+    });
+    it("matches 'assessment' keyword", () => {
+      expect(classifyQuery("what is the risk assessment?")).toBe("planning_synthesis");
+    });
+    it("matches 'feasibility' keyword", () => {
+      expect(classifyQuery("what is the feasibility of this roadmap?")).toBe("planning_synthesis");
+    });
+    it("matches 'strategy' keyword", () => {
+      expect(classifyQuery("what is the strategy for Q3?")).toBe("planning_synthesis");
+    });
+    it("matches 'calculate' keyword", () => {
+      expect(classifyQuery("how do we calculate MTTR?")).toBe("planning_synthesis");
+    });
+    it("matches 'design' keyword", () => {
+      expect(classifyQuery("how do we design this system?")).toBe("planning_synthesis");
+    });
+    it("matches 'framework' keyword", () => {
+      expect(classifyQuery("what framework should we use?")).toBe("planning_synthesis");
+    });
+    it("matches 'roadmap' keyword", () => {
+      expect(classifyQuery("what is the roadmap for this?")).toBe("planning_synthesis");
+    });
+    it("is checked before code_retrieval", () => {
+      expect(classifyQuery("how do we build a code review process?")).toBe("planning_synthesis");
+    });
+  });
+
+  describe("priority order (planning_synthesis checked first)", () => {
+    it("prefers planning_synthesis when query contains both 'build' and 'code'", () => {
+      expect(classifyQuery("how do we build this code?")).toBe("planning_synthesis");
+    });
+    it("prefers planning_synthesis when query contains both 'process' and 'who'", () => {
+      expect(classifyQuery("who owns this process?")).toBe("planning_synthesis");
+    });
+    it("prefers code_retrieval over entity_linking when 'code' and 'who' both present", () => {
       expect(classifyQuery("who wrote this code?")).toBe("code_retrieval");
     });
     it("prefers entity_linking over staleness when 'who' and 'when' both present", () => {
-      // 'who' comes before 'when' in check order — code_retrieval first, then entity_linking
       expect(classifyQuery("who changed it when?")).toBe("entity_linking");
     });
   });

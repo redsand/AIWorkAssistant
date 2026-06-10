@@ -4,6 +4,7 @@ import type { ComparisonRunResult } from "../eval/comparison/reportTypes";
 
 export function classifyQuery(query: string): ComparisonEvalCategory {
   const lower = query.toLowerCase();
+  if (lower.includes("build") || lower.includes("process") || lower.includes("plan") || lower.includes("workflow") || lower.includes("methodology") || lower.includes("assessment") || lower.includes("calculate") || lower.includes("determine") || lower.includes("create") || lower.includes("design") || lower.includes("feasibility") || lower.includes("evaluate") || lower.includes("measure") || lower.includes("framework") || lower.includes("roadmap") || lower.includes("strategy")) return "planning_synthesis";
   if (lower.includes("code") || lower.includes("file") || lower.includes("function") || lower.includes("class")) return "code_retrieval";
   if (lower.includes("who") || lower.includes("person") || lower.includes("owner") || lower.includes("author")) return "entity_linking";
   if (lower.includes("when") || lower.includes("date") || lower.includes("last") || lower.includes("recent") || lower.includes("latest")) return "staleness";
@@ -25,10 +26,15 @@ function fromBatchResult(
       query: c.query,
       category: c.category,
       overallWinner: c.overallWinner,
+      winnerReason: c.winnerReason,
+      ckStatus: c.ckStatus,
+      ckIncludedInContext: c.ckIncludedInContext,
       rag: {
         contextTokens: c.rag.contextTokens,
         sections: c.rag.sections,
         processingTimeMs: c.rag.processingTimeMs,
+        hallucinationRate: c.rag.hallucinationRate,
+        grounded: c.rag.grounded,
       },
       claimkit: c.claimkit
         ? {
@@ -71,6 +77,8 @@ export function saveLiveComparison(params: {
   ragTokens: number;
   ragSections: number;
   ragTimeMs: number;
+  ragHallucinationRate?: number | null;
+  ragGrounded?: boolean | null;
   ckConfidence: number | null;
   ckAnswerability: string | null;
   ckClaimCount: number | null;
@@ -106,6 +114,8 @@ export function saveLiveComparison(params: {
             contextTokens: params.ragTokens,
             sections: params.ragSections,
             processingTimeMs: params.ragTimeMs,
+            hallucinationRate: params.ragHallucinationRate,
+            grounded: params.ragGrounded,
           },
           claimkit:
             params.ckConfidence !== null
