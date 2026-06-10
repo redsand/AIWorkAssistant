@@ -9,6 +9,8 @@ export interface ComparisonCaseRag {
   contextTokens: number;
   sections: number;
   processingTimeMs: number;
+  hallucinationRate: number | null;
+  grounded: boolean | null;
 }
 
 import type { AnswerabilityStatus } from "../../context-engine/adapters/claimkit-adapter";
@@ -47,6 +49,8 @@ export interface ComparisonRunResult {
         avgTokens: number;
         avgSections: number;
         avgTimeMs: number;
+        hallucinationRate: number;
+        groundedRate: number;
       };
     };
   };

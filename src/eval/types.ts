@@ -3,4 +3,5 @@ export type ComparisonEvalCategory =
   | "entity_linking"
   | "staleness"
   | "citation_laundering"
-  | "direct_fact";
+  | "direct_fact"
+  | "planning_synthesis";

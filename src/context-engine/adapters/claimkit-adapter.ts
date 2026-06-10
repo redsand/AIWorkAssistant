@@ -10,6 +10,8 @@ import type {
   SourceInput,
   AnswerabilityStatus,
   Stores,
+  GroundInput,
+  GroundResult,
 } from "@redsand/claimkit";
 import {
   createRedisClient,
@@ -263,6 +265,11 @@ export class ClaimKitAdapter {
         retrievalScore: result.metadata.retrievalScore,
       },
     };
+  }
+
+  async ground(input: GroundInput): Promise<GroundResult> {
+    if (!this.claimKit) throw new Error("ClaimKit not initialized");
+    return this.claimKit.ground(input);
   }
 }
 

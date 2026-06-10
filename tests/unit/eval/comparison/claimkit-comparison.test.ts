@@ -8,17 +8,26 @@ vi.mock('../../../../src/context-engine/adapters/claimkit-adapter', () => ({
   claimKitAdapter: {
     initialize: vi.fn(),
     query: vi.fn(),
+    ground: vi.fn(),
+  },
+}));
+
+vi.mock('../../../../src/agent/opencode-client', () => ({
+  aiClient: {
+    isConfigured: vi.fn(),
+    chat: vi.fn(),
   },
 }));
 
 import { runClaimKitComparison } from '../../../../src/eval/comparison/claimkit-comparison';
 import { assembleContextPacket } from '../../../../src/context-engine/context-packet';
 import { claimKitAdapter } from '../../../../src/context-engine/adapters/claimkit-adapter';
+import { aiClient } from '../../../../src/agent/opencode-client';
 
 function makeRagPacket(overrides: Record<string, unknown> = {}) {
   return {
     totalTokens: 1000,
-    sections: [{ name: 'system' }, { name: 'documents' }],
+    sections: [{ name: 'system', content: 'system context' }, { name: 'documents', content: 'doc content' }],
     messages: [],
     budgetBreakdown: [],
     diagnostics: {
@@ -59,6 +68,7 @@ const ALL_CATEGORIES = [
   'staleness',
   'citation_laundering',
   'direct_fact',
+  'planning_synthesis',
 ] as const;
 
 describe('runClaimKitComparison', () => {
@@ -66,6 +76,15 @@ describe('runClaimKitComparison', () => {
     vi.mocked(claimKitAdapter.initialize).mockResolvedValue(true);
     vi.mocked(assembleContextPacket).mockResolvedValue(makeRagPacket() as never);
     vi.mocked(claimKitAdapter.query).mockResolvedValue(makeCkResult() as never);
+    vi.mocked(claimKitAdapter.ground).mockResolvedValue({
+      grounded: true,
+      hallucinationRate: 0,
+      sentenceResults: [],
+      evidenceClaimCount: 3,
+      sourceIds: ['s1'],
+      processingTimeMs: 50,
+    } as never);
+    vi.mocked(aiClient.isConfigured).mockReturnValue(false);
   });
 
   describe('winner determination', () => {
@@ -82,28 +101,27 @@ describe('runClaimKitComparison', () => {
       expect(result.aggregate.wins.rag).toBe(0);
     });
 
-    it('returns rag winner when ClaimKit is unavailable', async () => {
+    it('returns tie when ClaimKit is unavailable and RAG not measured', async () => {
       vi.mocked(claimKitAdapter.initialize).mockResolvedValue(false);
       const result = await runClaimKitComparison({
         queries: ['test query'],
         categories: [...ALL_CATEGORIES],
       });
-      expect(result.cases[0].overallWinner).toBe('rag');
+      expect(result.cases[0].overallWinner).toBe('tie');
       expect(result.cases[0].claimkit).toBeNull();
-      expect(result.aggregate.wins.rag).toBe(1);
     });
 
-    it('returns rag winner when ClaimKit query throws', async () => {
+    it('returns tie when ClaimKit query throws', async () => {
       vi.mocked(claimKitAdapter.query).mockRejectedValue(new Error('network error'));
       const result = await runClaimKitComparison({
         queries: ['test query'],
         categories: [...ALL_CATEGORIES],
       });
-      expect(result.cases[0].overallWinner).toBe('rag');
+      expect(result.cases[0].overallWinner).toBe('tie');
       expect(result.cases[0].claimkit).toBeNull();
     });
 
-    it('returns rag winner when confidence < 0.3', async () => {
+    it('returns tie when confidence < 0.3 and RAG not measured', async () => {
       vi.mocked(claimKitAdapter.query).mockResolvedValue(
         makeCkResult({ confidence: 0.2, answerability: 'answerable' }) as never,
       );
@@ -111,10 +129,10 @@ describe('runClaimKitComparison', () => {
         queries: ['test query'],
         categories: [...ALL_CATEGORIES],
       });
-      expect(result.cases[0].overallWinner).toBe('rag');
+      expect(result.cases[0].overallWinner).toBe('tie');
     });
 
-    it('returns rag winner when answerability is not_answerable', async () => {
+    it('returns claimkit when answerability is not_answerable (honest abstention)', async () => {
       vi.mocked(claimKitAdapter.query).mockResolvedValue(
         makeCkResult({ confidence: 0.8, answerability: 'not_answerable' }) as never,
       );
@@ -122,7 +140,7 @@ describe('runClaimKitComparison', () => {
         queries: ['test query'],
         categories: [...ALL_CATEGORIES],
       });
-      expect(result.cases[0].overallWinner).toBe('rag');
+      expect(result.cases[0].overallWinner).toBe('claimkit');
     });
 
     it('returns tie when confidence is between 0.3 and 0.5', async () => {
@@ -145,7 +163,86 @@ describe('runClaimKitComparison', () => {
         queries: ['test query'],
         categories: [...ALL_CATEGORIES],
       });
-      // 0.5 is not > 0.5, so it falls through to tie check
+      expect(result.cases[0].overallWinner).toBe('tie');
+    });
+
+    it('returns claimkit when RAG hallucinates (hallucinationRate > 0)', async () => {
+      vi.mocked(aiClient.isConfigured).mockReturnValue(true);
+      vi.mocked(aiClient.chat).mockResolvedValue({ content: ' hallucinated answer ' } as never);
+      vi.mocked(claimKitAdapter.ground).mockResolvedValue({
+        grounded: false,
+        hallucinationRate: 0.5,
+        sentenceResults: [{ text: 'hallucinated', supported: false, supportingClaimIds: [], confidence: 0.3 }],
+        evidenceClaimCount: 2,
+        sourceIds: ['s1'],
+        processingTimeMs: 60,
+      } as never);
+
+      vi.mocked(claimKitAdapter.query).mockResolvedValue(
+        makeCkResult({ confidence: 0.2, answerability: 'not_answerable' }) as never,
+      );
+
+      const result = await runClaimKitComparison({
+        queries: ['test query'],
+        categories: [...ALL_CATEGORIES],
+      });
+      expect(result.cases[0].rag.hallucinationRate).toBe(0.5);
+      expect(result.cases[0].rag.grounded).toBe(false);
+      expect(result.cases[0].overallWinner).toBe('claimkit');
+    });
+
+    it('returns tie when CK is unavailable (cannot measure RAG)', async () => {
+      vi.mocked(claimKitAdapter.initialize).mockResolvedValue(false);
+      const result = await runClaimKitComparison({
+        queries: ['test query'],
+        categories: [...ALL_CATEGORIES],
+      });
+      expect(result.cases[0].overallWinner).toBe('tie');
+      expect(result.cases[0].rag.grounded).toBeNull();
+    });
+
+    it('returns rag when CK query fails but RAG is fully grounded', async () => {
+      vi.mocked(claimKitAdapter.initialize).mockResolvedValue(true);
+      vi.mocked(claimKitAdapter.query).mockRejectedValue(new Error('query error'));
+      vi.mocked(aiClient.isConfigured).mockReturnValue(true);
+      vi.mocked(aiClient.chat).mockResolvedValue({ content: 'grounded answer' } as never);
+      vi.mocked(claimKitAdapter.ground).mockResolvedValue({
+        grounded: true,
+        hallucinationRate: 0,
+        sentenceResults: [],
+        evidenceClaimCount: 3,
+        sourceIds: ['s1'],
+        processingTimeMs: 50,
+      } as never);
+
+      const result = await runClaimKitComparison({
+        queries: ['test query'],
+        categories: [...ALL_CATEGORIES],
+      });
+      expect(result.cases[0].overallWinner).toBe('rag');
+      expect(result.cases[0].rag.grounded).toBe(true);
+    });
+
+    it('returns tie when CK abstains and RAG is grounded', async () => {
+      vi.mocked(aiClient.isConfigured).mockReturnValue(true);
+      vi.mocked(aiClient.chat).mockResolvedValue({ content: 'grounded answer' } as never);
+      vi.mocked(claimKitAdapter.ground).mockResolvedValue({
+        grounded: true,
+        hallucinationRate: 0,
+        sentenceResults: [],
+        evidenceClaimCount: 3,
+        sourceIds: ['s1'],
+        processingTimeMs: 50,
+      } as never);
+
+      vi.mocked(claimKitAdapter.query).mockResolvedValue(
+        makeCkResult({ confidence: 0.1, answerability: 'not_answerable' }) as never,
+      );
+
+      const result = await runClaimKitComparison({
+        queries: ['test query'],
+        categories: [...ALL_CATEGORIES],
+      });
       expect(result.cases[0].overallWinner).toBe('tie');
     });
   });
@@ -191,6 +288,22 @@ describe('runClaimKitComparison', () => {
       expect(result.cases[0].category).toBe('citation_laundering');
     });
 
+    it('categorizes planning queries as planning_synthesis', async () => {
+      const result = await runClaimKitComparison({
+        queries: ['how do we build a process for onboarding'],
+        categories: [...ALL_CATEGORIES],
+      });
+      expect(result.cases[0].category).toBe('planning_synthesis');
+    });
+
+    it('categorizes assessment queries as planning_synthesis', async () => {
+      const result = await runClaimKitComparison({
+        queries: ['what is the feasibility of this roadmap'],
+        categories: [...ALL_CATEGORIES],
+      });
+      expect(result.cases[0].category).toBe('planning_synthesis');
+    });
+
     it('defaults to direct_fact for unrecognized queries', async () => {
       const result = await runClaimKitComparison({
         queries: ['is this correct'],
@@ -204,7 +317,6 @@ describe('runClaimKitComparison', () => {
         queries: ['what does this function do'],
         categories: ['entity_linking', 'staleness'],
       });
-      // code_retrieval not in categories, falls back to first: entity_linking
       expect(result.cases[0].category).toBe('entity_linking');
     });
   });
@@ -223,8 +335,8 @@ describe('runClaimKitComparison', () => {
 
       expect(result.totalCases).toBe(3);
       expect(result.aggregate.wins.claimkit).toBe(1);
-      expect(result.aggregate.wins.rag).toBe(1);
-      expect(result.aggregate.wins.tie).toBe(1);
+      expect(result.aggregate.wins.rag).toBe(0);
+      expect(result.aggregate.wins.tie).toBe(2);
     });
 
     it('computes correct mean confidence from claimkit results', async () => {
@@ -255,8 +367,8 @@ describe('runClaimKitComparison', () => {
 
     it('computes rag stats from packet data', async () => {
       vi.mocked(assembleContextPacket)
-        .mockResolvedValueOnce(makeRagPacket({ totalTokens: 500, sections: [{ name: 'a' }] }) as never)
-        .mockResolvedValueOnce(makeRagPacket({ totalTokens: 1500, sections: [{ name: 'a' }, { name: 'b' }, { name: 'c' }] }) as never);
+        .mockResolvedValueOnce(makeRagPacket({ totalTokens: 500, sections: [{ name: 'a', content: 'a' }] }) as never)
+        .mockResolvedValueOnce(makeRagPacket({ totalTokens: 1500, sections: [{ name: 'a', content: 'a' }, { name: 'b', content: 'b' }, { name: 'c', content: 'c' }] }) as never);
 
       const result = await runClaimKitComparison({
         queries: ['q1', 'q2'],
@@ -301,10 +413,12 @@ describe('runClaimKitComparison', () => {
         queries: ['q1'],
         categories: [...ALL_CATEGORIES],
         thresholds: {
-          minClaimKitWinRate: 0,
+          minTruthfulAnswerRate: 0,
           minClaimKitConfidence: 0,
           minAnswerabilityRate: 0,
           maxAvgProcessingTimeMs: 999999,
+          maxRagHallucinationRate: 1,
+          minRagGroundedRate: 0,
         },
       });
 
@@ -320,7 +434,6 @@ describe('runClaimKitComparison', () => {
         categories: [...ALL_CATEGORIES],
       });
 
-      // With no ClaimKit wins and default thresholds requiring 50% win rate, should fail
       expect(result.thresholdEvaluation?.passed).toBe(false);
       expect(result.thresholdEvaluation?.failures.length).toBeGreaterThan(0);
     });
@@ -362,7 +475,7 @@ describe('runClaimKitComparison', () => {
 
     it('records rag section count from packet sections', async () => {
       vi.mocked(assembleContextPacket).mockResolvedValue(
-        makeRagPacket({ sections: [{ name: 'a' }, { name: 'b' }, { name: 'c' }, { name: 'd' }] }) as never,
+        makeRagPacket({ sections: [{ name: 'a', content: 'a' }, { name: 'b', content: 'b' }, { name: 'c', content: 'c' }, { name: 'd', content: 'd' }] }) as never,
       );
 
       const result = await runClaimKitComparison({
@@ -371,6 +484,27 @@ describe('runClaimKitComparison', () => {
       });
 
       expect(result.cases[0].rag.sections).toBe(4);
+    });
+
+    it('records hallucinationRate and grounded when RAG answer is measured', async () => {
+      vi.mocked(aiClient.isConfigured).mockReturnValue(true);
+      vi.mocked(aiClient.chat).mockResolvedValue({ content: 'some answer' } as never);
+      vi.mocked(claimKitAdapter.ground).mockResolvedValue({
+        grounded: false,
+        hallucinationRate: 0.25,
+        sentenceResults: [],
+        evidenceClaimCount: 2,
+        sourceIds: ['s1'],
+        processingTimeMs: 60,
+      } as never);
+
+      const result = await runClaimKitComparison({
+        queries: ['test'],
+        categories: [...ALL_CATEGORIES],
+      });
+
+      expect(result.cases[0].rag.hallucinationRate).toBe(0.25);
+      expect(result.cases[0].rag.grounded).toBe(false);
     });
   });
 });

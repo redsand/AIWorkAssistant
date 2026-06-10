@@ -18,6 +18,7 @@ import type { TenableExportStatus } from "../integrations/tenable-cloud/types";
 import { roadmapDatabase } from "../roadmap/database";
 import { auditLogger } from "../audit/logger";
 import { env } from "../config/env";
+import { claimKitAdapter } from "../context-engine/adapters/claimkit-adapter";
 import { providerSettings } from "./provider-settings";
 import { reviewGate, formatGateBlockComment } from "../autonomous-loop/review-gate";
 import { loadReviewGateState } from "../autonomous-loop/review-gate-state";
@@ -9374,6 +9375,43 @@ export function resolveToolName(toolName: string): string {
   return SANITIZED_TOOL_NAME_MAP.get(toolName) ?? toolName;
 }
 
+function shouldIndexToolResult(toolName: string, result: unknown): boolean {
+  if (!env.CLAIMKIT_ENABLED || !claimKitAdapter.isAvailable()) return false;
+  // Skip internal/meta tools and tools that change frequently
+  const skippedPrefixes = new Set([
+    "system.", "agent.", "tools.discover", "tools.fetch_cached",
+    "calendar.", "cron.", "todo.", "memory.", "local.", "lsp.",
+    "codebase.", "git.", "workflow.", "session.", "productivity.",
+    "personal_os.", "cto.", "product.", "skill.", "soul.",
+  ]);
+  const prefix = toolName.includes(".") ? toolName.split(".")[0] + "." : toolName;
+  if (skippedPrefixes.has(prefix) || skippedPrefixes.has(toolName)) return false;
+  // Only index successful results with actual data
+  if (!result || typeof result !== "object") return false;
+  const obj = result as Record<string, unknown>;
+  if (obj.success === false) return false;
+  if (!obj.data) return false;
+  return true;
+}
+
+function ingestToolResult(toolName: string, result: unknown, userId: string): void {
+  if (!shouldIndexToolResult(toolName, result)) return;
+  const obj = result as Record<string, unknown>;
+  const data = obj.data as Record<string, unknown> | undefined;
+  const text = `${toolName} result:\n${JSON.stringify(data ?? obj, null, 2)}`;
+  claimKitAdapter
+    .ingest(text, {
+      source: `tool:${toolName}`,
+      toolName,
+      userId,
+      timestamp: new Date().toISOString(),
+      trustTier: "observed",
+    })
+    .catch(() => {
+      // Non-blocking: indexing failures must not break the tool flow
+    });
+}
+
 export interface DispatchContext {
   /** Recent conversation messages for platform intent detection */
   messages?: import("../agent/providers/types").ChatMessage[];
@@ -9651,6 +9689,9 @@ export async function dispatchToolCall(
       details: { params, result: result.success ? "success" : "failed" },
       severity: result.success ? "info" : "warn",
     });
+
+    ingestToolResult(resolvedToolName, result, userId);
+
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

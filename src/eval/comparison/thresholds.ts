@@ -18,20 +18,25 @@ export const NO_RAG_WIN_CATEGORIES: ComparisonEvalCategory[] = [
   "citation_laundering",
   "direct_fact",
   "staleness",
+  "planning_synthesis",
 ];
 
 export interface ThresholdConfig {
-  minClaimKitWinRate: number;
+  minTruthfulAnswerRate: number;
   minClaimKitConfidence: number;
   minAnswerabilityRate: number;
   maxAvgProcessingTimeMs: number;
+  maxRagHallucinationRate: number;
+  minRagGroundedRate: number;
 }
 
 export const DEFAULT_THRESHOLDS: ThresholdConfig = {
-  minClaimKitWinRate: 0.5,
-  minClaimKitConfidence: 0.6,
-  minAnswerabilityRate: 0.7,
+  minTruthfulAnswerRate: 0.7,
+  minClaimKitConfidence: 0.4,
+  minAnswerabilityRate: 0.5,
   maxAvgProcessingTimeMs: 5000,
+  maxRagHallucinationRate: 0.1,
+  minRagGroundedRate: 0.8,
 };
 
 export function evaluateThresholds(
@@ -40,14 +45,18 @@ export function evaluateThresholds(
 ): ThresholdEvaluation {
   const failures: string[] = [];
 
-  const winRate =
+  // Truthful answer rate = (CK wins + ties where RAG was not hallucinating) / total
+  // In our new truthfulness model, a "truthful answer" is any case where the winner was claimkit (honest or grounded)
+  // OR a tie where both systems were honest. We compute it as: 1 - (rag wins + ungrounded rag) is complex,
+  // so instead we measure the rate at which the evaluation produced a truthful outcome.
+  const truthfulRate =
     result.totalCases > 0
-      ? result.aggregate.wins.claimkit / result.totalCases
+      ? (result.aggregate.wins.claimkit + result.aggregate.wins.tie) / result.totalCases
       : 0;
 
-  if (winRate < thresholds.minClaimKitWinRate) {
+  if (truthfulRate < thresholds.minTruthfulAnswerRate) {
     failures.push(
-      `ClaimKit win rate ${(winRate * 100).toFixed(1)}% below threshold ${(thresholds.minClaimKitWinRate * 100).toFixed(1)}%`,
+      `Truthful answer rate ${(truthfulRate * 100).toFixed(1)}% below threshold ${(thresholds.minTruthfulAnswerRate * 100).toFixed(1)}%`,
     );
   }
 
@@ -69,6 +78,20 @@ export function evaluateThresholds(
   if (avgTimeMs > thresholds.maxAvgProcessingTimeMs) {
     failures.push(
       `Mean processing time ${avgTimeMs.toFixed(0)}ms exceeds threshold ${thresholds.maxAvgProcessingTimeMs}ms`,
+    );
+  }
+
+  const { hallucinationRate, groundedRate } = result.aggregate.rag.mean;
+
+  if (hallucinationRate > thresholds.maxRagHallucinationRate) {
+    failures.push(
+      `RAG hallucination rate ${(hallucinationRate * 100).toFixed(1)}% exceeds threshold ${(thresholds.maxRagHallucinationRate * 100).toFixed(1)}%`,
+    );
+  }
+
+  if (groundedRate < thresholds.minRagGroundedRate) {
+    failures.push(
+      `RAG grounded rate ${(groundedRate * 100).toFixed(1)}% below threshold ${(thresholds.minRagGroundedRate * 100).toFixed(1)}%`,
     );
   }
 

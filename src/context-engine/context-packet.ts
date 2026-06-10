@@ -48,14 +48,13 @@ export function determineRoutingTier(ckResult: ClaimKitQueryResult | null, ckUna
 
   const { confidence, answerability } = ckResult;
 
-  // CK wins when it has real confidence. Scoring is multiplicative without LLM verifiers,
-  // so 0.15 is the practical achievable bar. Accept partially-answerable — it still provides
-  // useful evidence even when the full query can't be answered.
-  if (confidence > 0.15 && (answerability === "answerable" || answerability === "partially-answerable")) {
+  // Align with comparison framework thresholds:
+  // CK wins at > 0.5 with real evidence; RAG wins at < 0.3 or not answerable; blended in between.
+  if (confidence > 0.5 && (answerability === "answerable" || answerability === "partially-answerable")) {
     return { tier: "ck_primary", preferredSource: "claimkit", overallWinner: "claimkit", routingReason: "high_confidence" };
   }
 
-  if (confidence < 0.05 || answerability === "not_answerable") {
+  if (confidence < 0.3 || answerability === "not_answerable") {
     return {
       tier: "rag_primary",
       preferredSource: "rag",

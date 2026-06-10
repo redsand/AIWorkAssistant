@@ -5,7 +5,8 @@ export type ComparisonEvalCategory =
   | "entity_linking"
   | "staleness"
   | "citation_laundering"
-  | "direct_fact";
+  | "direct_fact"
+  | "planning_synthesis";
 
 // ── Raw DB row shapes ─────────────────────────────────────────────────
 
@@ -41,6 +42,8 @@ export interface ComparisonCaseRow {
   ck_status: CkStatus | null;
   /** True when the ClaimKit section was included in the model context messages. */
   ck_included_in_context: boolean | null;
+  rag_hallucination_rate: number | null;
+  rag_grounded: boolean | null;
   created_at: string;
 }
 
@@ -136,6 +139,8 @@ export interface SaveCaseInput {
     contextTokens: number;
     sections: number;
     processingTimeMs: number;
+    hallucinationRate?: number | null;
+    grounded?: boolean | null;
   };
   claimkit: {
     confidence: number;

@@ -2,7 +2,7 @@
 
 A personal productivity and engineering agent for CTOs and engineering leaders. Aggregates calendar, Jira, GitLab, GitHub, Jitbit, and HAWK IR into actionable daily briefs, code reviews, product signals, and work tracking — all behind a guardrails system that prevents destructive actions without approval.
 
-**Status:** v0.2.0 — Multi-provider AI with robust agent loop, 267+ tool handlers, full GitHub/GitLab/Jira/Jitbit/HAWK IR CRUD, streaming chat, auto-compaction, push notifications, and comprehensive test coverage.
+**Status:** v0.2.0 — Multi-provider AI with robust agent loop, 267+ tool handlers, full GitHub/GitLab/Jira/Jitbit/HAWK IR CRUD, streaming chat, auto-compaction, push notifications, ClaimKit evidence-grounded verification, and comprehensive test coverage.
 
 ## Overview
 
@@ -60,6 +60,7 @@ Visit **`/capabilities`** in the web UI to browse all available agents, tool cat
 | Web UI | ✅ Real | Chat, tool progress, collapsible JSON, export, stop button, sidebar, Agent Runs inspector |
 | Daily Planner | ✅ Real | Jira + GitLab data wired, real issue counts and activity |
 | Discord Bot | ✅ Real | Slash commands, sessions, API integration |
+| ClaimKit Verification | ✅ Real | Evidence-grounded answers, `ground()` API for hallucination detection, truthfulness-first comparison vs RAG, automatic tool-result ingestion |
 | Health Endpoints | ✅ Real | `/health` reports GitHub/GitLab/Jira status; `/chat/health` reports AI provider |
 
 ## Architecture
@@ -124,6 +125,39 @@ src/
 ├── middleware/              # Auth middleware (provider-agnostic)
 └── server.ts               # Fastify entry point
 ```
+
+## ClaimKit Evidence-Grounded Verification
+
+AIWorkAssistant integrates [ClaimKit](https://github.com/redsand/claimkit) as its evidence-first verification layer. Unlike naive RAG, ClaimKit extracts claims from ingested documents, verifies every answer assertion against those claims, and detects contradictions before they reach the user.
+
+### Key Features
+
+| Feature | What It Does |
+|---|---|
+| **Evidence-first answers** | Every answer is generated from structured claims, not raw chunk text |
+| **`ground()` API** | Evaluate *any* text (including competitor RAG answers) against evidence documents to detect hallucinations sentence-by-sentence |
+| **Truthfulness-first comparison** | The built-in comparison framework scores RAG on `hallucinationRate` and `grounded` status. Honest abstention beats fabrication. |
+| **Planning / synthesis intent** | Recognizes process, plan, and assessment questions and preserves more supporting evidence for synthesis answers |
+| **Automatic tool ingestion** | Every successful tool response (Jira, Tenable, HAWK IR, GitHub, GitLab, etc.) is automatically ingested into ClaimKit with `trustTier: "observed"` |
+| **Bulk integration backfill** | CLI command `claimkit ingest-integrations` pulls recent data from all configured integrations into the evidence store |
+
+### How truthfulness-first comparison works
+
+When comparing ClaimKit against a traditional RAG pipeline:
+
+1. **RAG answer generation** — The framework optionally generates a real RAG answer from the retrieved context.
+2. **Grounding check** — The RAG answer is fed into `claimKitAdapter.ground()` alongside the same evidence context.
+3. **Winner rules** — If RAG hallucinates (`hallucinationRate > 0`), ClaimKit wins by default. If ClaimKit abstains honestly and RAG is grounded, it's a tie. If ClaimKit is confident and answerable, it wins.
+
+This prevents the common evaluation trap where RAG "wins" simply by producing longer, more confident answers that happen to be ungrounded.
+
+### Evidence ingestion
+
+- **Automatic**: All tool responses are captured by the tool dispatcher and sent to ClaimKit automatically.
+- **CLI backfill**: `node src/cli.js claimkit ingest-integrations` backfills Tenable, Jira, and HAWK IR data.
+- **Manual**: Use `claimKitAdapter.ingest()` directly for runbooks, wiki pages, or arbitrary documents.
+
+See [docs/ai-assistant-integration.md](docs/ai-assistant-integration.md) for detailed integration instructions.
 
 ## Integrations
 
@@ -569,7 +603,7 @@ npm run test:production    # Production smoke tests
 
 ### Test Coverage
 
-**236+ tests across 11+ test files.**
+**3,800+ tests across 180+ test files.**
 
 | File | Tests | Notes |
 |------|-------|-------|
@@ -585,6 +619,10 @@ npm run test:production    # Production smoke tests
 | `src/integrations/jitbit/__tests__/jitbit-client.test.ts` | 23 | Jitbit client |
 | `src/integrations/jitbit/__tests__/jitbit-service.test.ts` | 18 | Jitbit snapshots, followups |
 | `tests/unit/product/product-chief-of-staff.test.ts` | 13 | Workflow brief, roadmap, signals |
+| `tests/unit/eval/comparison/claimkit-comparison.test.ts` | 21 | Truthfulness-first winner rules, hallucination detection, planning/synthesis categorization |
+| `tests/eval/comparison-gate.test.ts` | 10 | Retrieval readiness thresholds, coverage checks |
+| `src/context-engine/__tests__/context-packet.test.ts` | 34 | Context packet assembly, routing tier logic, budget enforcement |
+| `tests/unit/comparison-runs/context-packet.test.ts` | 14 | Live comparison routing, claimkit adapter mocks |
 
 ## Security Notes
 

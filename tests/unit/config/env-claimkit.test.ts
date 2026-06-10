@@ -58,9 +58,9 @@ describe("ClaimKit environment variables", () => {
       expect(env.CLAIMKIT_ENABLED).toBe(false);
     });
 
-    it("should default CLAIMKIT_LLM_PROVIDER to 'memory'", () => {
+    it("should default CLAIMKIT_LLM_PROVIDER to 'comparison'", () => {
       const env = loadEnv();
-      expect(env.CLAIMKIT_LLM_PROVIDER).toBe("memory");
+      expect(env.CLAIMKIT_LLM_PROVIDER).toBe("comparison");
     });
 
     it("should default CLAIMKIT_REDIS_URL to empty string", () => {

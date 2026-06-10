@@ -17,7 +17,7 @@ describe("determineRoutingTier", () => {
 
   it("should return ck_primary for high confidence + answerable", () => {
     const ck = {
-      confidence: 0.5,
+      confidence: 0.51,
       answerability: "answerable",
     } as ClaimKitQueryResult;
     const decision = determineRoutingTier(ck);
@@ -26,18 +26,18 @@ describe("determineRoutingTier", () => {
     expect(decision.overallWinner).toBe("claimkit");
   });
 
-  it("should return ck_primary at exactly 0.3 confidence threshold", () => {
+  it("should return ck_primary at exactly >0.5 confidence threshold", () => {
     const ck = {
-      confidence: 0.31,
+      confidence: 0.51,
       answerability: "answerable",
     } as ClaimKitQueryResult;
     const decision = determineRoutingTier(ck);
     expect(decision.tier).toBe("ck_primary");
   });
 
-  it("should NOT return ck_primary at 0.3 confidence (must be > 0.3)", () => {
+  it("should NOT return ck_primary at 0.5 confidence (must be > 0.5)", () => {
     const ck = {
-      confidence: 0.3,
+      confidence: 0.5,
       answerability: "answerable",
     } as ClaimKitQueryResult;
     const decision = determineRoutingTier(ck);
@@ -65,7 +65,7 @@ describe("determineRoutingTier", () => {
 
   it("should return rag_primary for not_answerable", () => {
     const ck = {
-      confidence: 0.5,
+      confidence: 0.51,
       answerability: "not_answerable",
     } as ClaimKitQueryResult;
     const decision = determineRoutingTier(ck);
@@ -75,7 +75,7 @@ describe("determineRoutingTier", () => {
 
   it("should return blended for mid-range confidence + answerable", () => {
     const ck = {
-      confidence: 0.2,
+      confidence: 0.4,
       answerability: "partially-answerable",
     } as ClaimKitQueryResult;
     const decision = determineRoutingTier(ck);

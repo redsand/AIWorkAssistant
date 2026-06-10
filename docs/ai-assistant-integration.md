@@ -370,3 +370,70 @@ if (!webhookHandler.verifyWebhook(signature, body)) {
   return 401;
 }
 ```
+
+---
+
+## ClaimKit Evidence Ingestion
+
+ClaimKit is the evidence-grounded verification layer. For it to answer questions
+about your operational data, that data must be in its evidence store.
+
+### Automatic ingestion
+
+**Tool results are ingested automatically.** Every successful tool call (Jira,
+Tenable, HAWK IR, GitHub, GitLab, etc.) is captured by the tool dispatcher and
+sent to ClaimKit with `trustTier: "observed"`. No manual action is required.
+
+### Bulk ingestion of integration data
+
+Use the CLI command to backfill recent data from all configured integrations:
+
+```bash
+# Backfill Tenable assets, Jira issues, and HAWK IR cases
+node src/cli.js claimkit ingest-integrations
+```
+
+Run this:
+- **After first enabling ClaimKit** — to populate the store with historical context.
+- **Weekly** — as a scheduled job to keep the store current.
+- **After adding a new integration** — to pull that integration's data into evidence.
+
+### What gets ingested
+
+| Integration | Data ingested | Trust tier |
+|---|---|---|
+| **Tenable** | Assets, scans, vulnerabilities | `observed` |
+| **Jira** | Issues (last 30 days) | `curated` |
+| **HAWK IR** | Cases, risky open cases summary | `curated` |
+| **Tool calls** | All successful tool responses | `observed` |
+
+### Manual ingestion
+
+You can also ingest arbitrary documents directly:
+
+```bash
+node src/cli.js claimkit ingest --knowledge
+```
+
+Or via the adapter in code:
+
+```typescript
+import { claimKitAdapter } from "./context-engine/adapters/claimkit-adapter";
+
+await claimKitAdapter.ingest(documentText, {
+  title: "Runbook: Incident Response",
+  source: "confluence",
+  trustTier: "curated",
+});
+```
+
+### When to add data
+
+- **Customer-specific questions fail with 0% confidence** → The relevant
+  integration data has not been ingested yet. Run `ingest-integrations` or
+  ensure the integration is configured.
+- **Planning questions return "partially-answerable" with large gaps** → The
+  process documentation exists but is not in ClaimKit. Ingest the runbooks,
+  playbooks, or wiki pages that define the process.
+- **Stale answers** → Re-ingest the source after it changes. ClaimKit does not
+  auto-refresh; ingestion is explicit.

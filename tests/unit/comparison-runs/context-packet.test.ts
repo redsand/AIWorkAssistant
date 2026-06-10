@@ -24,7 +24,7 @@ function makeCKResult(overrides: Partial<ClaimKitQueryResult> = {}): ClaimKitQue
 }
 
 describe("determineRoutingTier", () => {
-  describe("CK primary tier (confidence > 0.3 AND answerable)", () => {
+  describe("CK primary tier (confidence > 0.5 AND answerable or partially-answerable)", () => {
     it("routes to claimkit when confidence is 0.75 and answerable", () => {
       const result = makeCKResult({ confidence: 0.75, answerability: "answerable" });
       const decision = determineRoutingTier(result);
@@ -34,8 +34,8 @@ describe("determineRoutingTier", () => {
       expect(decision.routingReason).toBe("high_confidence");
     });
 
-    it("routes to blended when confidence is exactly 0.3", () => {
-      const result = makeCKResult({ confidence: 0.3, answerability: "answerable" });
+    it("routes to blended when confidence is exactly 0.5", () => {
+      const result = makeCKResult({ confidence: 0.5, answerability: "answerable" });
       const decision = determineRoutingTier(result);
       expect(decision.tier).toBe("blended");
     });
@@ -47,27 +47,27 @@ describe("determineRoutingTier", () => {
       expect(decision.preferredSource).toBe("claimkit");
     });
 
-    it("does NOT route to CK primary when partially-answerable even with high confidence", () => {
+    it("routes to CK primary when partially-answerable with high confidence", () => {
       const result = makeCKResult({ confidence: 0.8, answerability: "partially-answerable" });
       const decision = determineRoutingTier(result);
-      expect(decision.tier).not.toBe("ck_primary");
+      expect(decision.tier).toBe("ck_primary");
     });
   });
 
-  describe("RAG primary tier (confidence < 0.1 OR not_answerable OR CK unavailable)", () => {
-    it("routes to blended when confidence is 0.25", () => {
+  describe("RAG primary tier (confidence < 0.3 OR not_answerable OR CK unavailable)", () => {
+    it("routes to rag_primary when confidence is 0.25", () => {
       const result = makeCKResult({ confidence: 0.25, answerability: "answerable" });
       const decision = determineRoutingTier(result);
-      expect(decision.tier).toBe("blended");
-      expect(decision.preferredSource).toBe("blended");
-      expect(decision.overallWinner).toBe("tie");
-      expect(decision.routingReason).toBe("uncertain");
+      expect(decision.tier).toBe("rag_primary");
+      expect(decision.preferredSource).toBe("rag");
+      expect(decision.overallWinner).toBe("rag");
+      expect(decision.routingReason).toBe("low_confidence");
     });
 
-    it("routes to blended when confidence is exactly 0.1", () => {
+    it("routes to rag_primary when confidence is exactly 0.1", () => {
       const result = makeCKResult({ confidence: 0.1, answerability: "answerable" });
       const decision = determineRoutingTier(result);
-      expect(decision.tier).toBe("blended");
+      expect(decision.tier).toBe("rag_primary");
     });
 
     it("routes to RAG when answerability is not_answerable", () => {
@@ -93,14 +93,14 @@ describe("determineRoutingTier", () => {
     });
   });
 
-  describe("Blended tier (uncertain answerability or low-but-present confidence)", () => {
-    it("routes to claimkit when confidence is 0.5 and answerable", () => {
+  describe("Blended tier (confidence between 0.3 and 0.5 inclusive)", () => {
+    it("routes to blended when confidence is 0.5 and answerable", () => {
       const result = makeCKResult({ confidence: 0.5, answerability: "answerable" });
       const decision = determineRoutingTier(result);
-      expect(decision.tier).toBe("ck_primary");
-      expect(decision.preferredSource).toBe("claimkit");
-      expect(decision.overallWinner).toBe("claimkit");
-      expect(decision.routingReason).toBe("high_confidence");
+      expect(decision.tier).toBe("blended");
+      expect(decision.preferredSource).toBe("blended");
+      expect(decision.overallWinner).toBe("tie");
+      expect(decision.routingReason).toBe("uncertain");
     });
 
     it("routes to blended at lower boundary 0.3", () => {
@@ -116,7 +116,7 @@ describe("determineRoutingTier", () => {
     });
 
     it("routes to blended when partially-answerable with moderate confidence", () => {
-      const result = makeCKResult({ confidence: 0.5, answerability: "partially-answerable" });
+      const result = makeCKResult({ confidence: 0.4, answerability: "partially-answerable" });
       const decision = determineRoutingTier(result);
       expect(decision.tier).toBe("blended");
       expect(decision.routingReason).toBe("uncertain");

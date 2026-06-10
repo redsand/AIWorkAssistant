@@ -378,43 +378,6 @@ function compactToolResultForMemory(toolName: string, result: unknown): unknown 
   };
 }
 
-function shouldIndexToolResult(toolName: string, result: unknown): boolean {
-  if (!env.CLAIMKIT_ENABLED || !claimKitAdapter.isAvailable()) return false;
-  // Skip internal/meta tools and tools that change frequently
-  const skippedPrefixes = new Set([
-    "system.", "agent.", "tools.discover", "tools.fetch_cached",
-    "calendar.", "cron.", "todo.", "memory.", "local.", "lsp.",
-    "codebase.", "git.", "workflow.", "session.", "productivity.",
-    "personal_os.", "cto.", "product.", "skill.", "soul.",
-  ]);
-  const prefix = toolName.includes(".") ? toolName.split(".")[0] + "." : toolName;
-  if (skippedPrefixes.has(prefix) || skippedPrefixes.has(toolName)) return false;
-  // Only index successful results with actual data
-  if (!result || typeof result !== "object") return false;
-  const obj = result as Record<string, unknown>;
-  if (obj.success === false) return false;
-  if (!obj.data) return false;
-  return true;
-}
-
-function ingestToolResult(toolName: string, result: unknown, sessionId: string | null | undefined): void {
-  if (!shouldIndexToolResult(toolName, result)) return;
-  const obj = result as Record<string, unknown>;
-  const data = obj.data as Record<string, unknown> | undefined;
-  const text = `${toolName} result:\n${JSON.stringify(data ?? obj, null, 2)}`;
-  claimKitAdapter
-    .ingest(text, {
-      source: `tool:${toolName}`,
-      toolName,
-      sessionId: sessionId ?? "unknown",
-      timestamp: new Date().toISOString(),
-      trustTier: "observed",
-    })
-    .catch(() => {
-      // Non-blocking: indexing failures must not break the chat flow
-    });
-}
-
 function stringifyToolResultForContext(result: unknown): string {
   const content = JSON.stringify(compactToolResultForContext(result));
   const maxChars = 25_000;
@@ -809,7 +772,6 @@ async function runChatJob(
         allToolResults[tc.id] = cached ? contextValue : compactToolResultForContext(contextValue);
         try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: canonicalName, success: (result as any).success !== false, errorMessage: (result as any).error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
         emitJobEvent(sessionId, "tool_result", { id: tc.id, result: cached ? contextValue : result });
-        ingestToolResult(canonicalName, result, sessionId);
         if (canonicalName.startsWith("todo.")) emitJobEvent(sessionId, "todo_changed", { action: canonicalName });
 
         if (canonicalName === "tools.discover" && (result as any).success) {
@@ -856,7 +818,6 @@ async function runChatJob(
         for (const { id, result, name } of spawnResults) {
           allToolResults[id] = result;
           emitJobEvent(sessionId, "tool_result", { id, result });
-          ingestToolResult(name, result, sessionId);
           conversationManager.addMessage(sessionId, { role: "tool", content: stringifyToolResultForMemory(name, result), name, tool_call_id: id });
         }
       }
@@ -1207,8 +1168,6 @@ export async function chatRoutes(fastify: FastifyInstance) {
           allToolResults[tc.id] = contextResult;
 
           try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: canonicalName, success: (result as any).success !== false, errorMessage: (result as any).error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
-
-          ingestToolResult(canonicalName, result, body.sessionId);
 
           if (canonicalName === "tools.discover" && (result as any).success) {
             const singleCategory = tc.params.category as string | undefined;

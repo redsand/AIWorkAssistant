@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { claimKitAdapter } from "../../context-engine/adapters/claimkit-adapter";
 import { ingestKnowledgeStore, ingestCodebaseStore, ingestGraphStore } from "../../context-engine/claimkit-ingestion";
+import { ingestAllIntegrations } from "../../context-engine/integrations-ingestion";
 import { runClaimKitComparison } from "../../eval/comparison/claimkit-comparison";
 
 export function registerClaimKitCommand(program: Command): void {
@@ -40,6 +41,19 @@ export function registerClaimKitCommand(program: Command): void {
         const stats = await ingestGraphStore();
         console.log(`Graph: ${stats.ingested}/${stats.total} ingested (${stats.errors} errors) in ${stats.durationMs}ms`);
       }
+    });
+
+  ck
+    .command("ingest-integrations")
+    .description("Ingest Tenable, Jira, and HAWK IR data into ClaimKit")
+    .action(async () => {
+      const stats = await ingestAllIntegrations();
+      for (const s of stats) {
+        console.log(`${s.source}: ${s.ingested} ingested, ${s.skipped} skipped, ${s.errors} errors in ${s.durationMs}ms`);
+      }
+      const total = stats.reduce((sum, s) => sum + s.ingested, 0);
+      const errors = stats.reduce((sum, s) => sum + s.errors, 0);
+      console.log(`\nDone: ${total} total items ingested, ${errors} errors`);
     });
 
   ck

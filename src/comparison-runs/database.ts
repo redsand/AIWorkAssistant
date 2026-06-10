@@ -88,6 +88,8 @@ class ComparisonRunDatabase {
       { col: "winner_reason", def: "TEXT" },
       { col: "ck_status", def: "TEXT" },
       { col: "ck_included_in_context", def: "INTEGER" },
+      { col: "rag_hallucination_rate", def: "REAL" },
+      { col: "rag_grounded", def: "INTEGER" },
     ];
     for (const { col, def } of migrations) {
       try {
@@ -95,6 +97,57 @@ class ComparisonRunDatabase {
       } catch {
         // Column already exists — skip
       }
+    }
+
+    // Migrate category CHECK constraint to include planning_synthesis
+    const checkInfo = this.db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='comparison_cases'",
+    ).get() as { sql: string } | undefined;
+    if (checkInfo && !checkInfo.sql.includes("planning_synthesis")) {
+      this.db.exec(`
+        ALTER TABLE comparison_cases RENAME TO comparison_cases_old;
+        CREATE TABLE comparison_cases (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          query TEXT NOT NULL,
+          category TEXT NOT NULL
+            CHECK(category IN ('code_retrieval','entity_linking','staleness','citation_laundering','direct_fact','planning_synthesis')),
+          overall_winner TEXT NOT NULL CHECK(overall_winner IN ('rag','claimkit','tie')),
+          rag_tokens INTEGER NOT NULL,
+          rag_sections INTEGER NOT NULL,
+          rag_time_ms INTEGER NOT NULL,
+          ck_confidence REAL,
+          ck_answerability TEXT,
+          ck_claim_count INTEGER,
+          ck_time_ms INTEGER,
+          ck_contradictions INTEGER,
+          ck_answer TEXT,
+          ck_retrieval_score REAL,
+          ck_source_count INTEGER,
+          ck_missing_evidence TEXT,
+          winner_reason TEXT,
+          ck_status TEXT,
+          ck_included_in_context INTEGER,
+          rag_hallucination_rate REAL,
+          rag_grounded INTEGER,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (run_id) REFERENCES comparison_runs(id) ON DELETE CASCADE
+        );
+        INSERT INTO comparison_cases
+          SELECT id, run_id, query, category, overall_winner,
+                 rag_tokens, rag_sections, rag_time_ms,
+                 ck_confidence, ck_answerability, ck_claim_count, ck_time_ms, ck_contradictions,
+                 ck_answer, ck_retrieval_score, ck_source_count, ck_missing_evidence, winner_reason,
+                 ck_status, ck_included_in_context,
+                 rag_hallucination_rate, rag_grounded,
+                 created_at
+          FROM comparison_cases_old;
+        DROP TABLE comparison_cases_old;
+        CREATE INDEX idx_comparison_cases_run_id ON comparison_cases(run_id);
+        CREATE INDEX idx_comparison_cases_winner ON comparison_cases(overall_winner);
+        CREATE INDEX idx_comparison_cases_category ON comparison_cases(category);
+        CREATE INDEX idx_comparison_cases_created ON comparison_cases(created_at);
+      `);
     }
   }
 
@@ -113,8 +166,9 @@ class ComparisonRunDatabase {
           ck_confidence, ck_answerability, ck_claim_count, ck_time_ms, ck_contradictions,
           ck_answer, ck_retrieval_score, ck_source_count, ck_missing_evidence, winner_reason,
           ck_status, ck_included_in_context,
+          rag_hallucination_rate, rag_grounded,
           created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     const txn = this.db.transaction(() => {
@@ -141,6 +195,8 @@ class ComparisonRunDatabase {
           c.winnerReason ?? null,
           c.ckStatus ?? null,
           c.ckIncludedInContext != null ? (c.ckIncludedInContext ? 1 : 0) : null,
+          c.rag.hallucinationRate ?? null,
+          c.rag.grounded != null ? (c.rag.grounded ? 1 : 0) : null,
           now,
         );
       }
@@ -455,6 +511,8 @@ class ComparisonRunDatabase {
       winner_reason: row.winner_reason as string | null,
       ck_status: (row.ck_status as CkStatus | null) ?? null,
       ck_included_in_context: row.ck_included_in_context != null ? Boolean(row.ck_included_in_context) : null,
+      rag_hallucination_rate: row.rag_hallucination_rate as number | null,
+      rag_grounded: row.rag_grounded != null ? Boolean(row.rag_grounded) : null,
       created_at: row.created_at as string,
     };
   }

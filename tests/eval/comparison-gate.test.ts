@@ -130,11 +130,12 @@ describe("evaluateRetrievalReadiness", () => {
     expect(coverage!.passed).toBe(false);
   });
 
-  it("passes when all three categories have cases and 0 RAG wins", () => {
+  it("passes when all four categories have cases and 0 RAG wins", () => {
     const result = makeResult([
       makeCase("direct_fact", "claimkit"),
       makeCase("citation_laundering", "claimkit"),
       makeCase("staleness", "tie"),
+      makeCase("planning_synthesis", "claimkit"),
     ]);
     const readiness = evaluateRetrievalReadiness(result);
     expect(readiness.productReady).toBe(true);
@@ -173,9 +174,10 @@ describe("evaluateRetrievalReadiness", () => {
       makeCase("direct_fact"),
       makeCase("citation_laundering"),
       makeCase("staleness"),
+      makeCase("planning_synthesis"),
     ]);
     const readiness = evaluateRetrievalReadiness(result);
-    expect(readiness.checks).toHaveLength(6);
+    expect(readiness.checks).toHaveLength(8);
     const names = readiness.checks.map(c => c.name);
     for (const cat of NO_RAG_WIN_CATEGORIES) {
       expect(names).toContain(`Retrieval product-ready: ${cat} coverage`);
