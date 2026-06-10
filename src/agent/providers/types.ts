@@ -84,10 +84,12 @@ export type StreamEvent =
 export type OpenCodeConfig = ProviderConfig;
 
 export const DEFAULT_MAX_CONTEXT_TOKENS = 64000;
-export const MAX_TOOL_RESULT_CHARS = 50000;
-export const CHARS_PER_TOKEN = 2.5; // Conservative: ensures estimates ≥ actual for GLM (~1.4-2 chars/token)
-export const TOOL_SCHEMA_CHARS_PER_TOKEN = 2.5; // Tool schemas also conservative
-export const CONTEXT_SAFETY_MARGIN = 0.7; // Use 70% of max context - char-based estimates are inherently imprecise
+export const MAX_TOOL_RESULT_CHARS = 20000;
+// GLM-5.1 and Kimi K2 both use BPE tokenizers — English is ~3.5 chars/token.
+// Using 3.5 gives accurate estimates without the ~40% overestimate from 2.5.
+export const CHARS_PER_TOKEN = 3.5;
+export const TOOL_SCHEMA_CHARS_PER_TOKEN = 3.5;
+export const CONTEXT_SAFETY_MARGIN = 0.85; // 85% leaves ~30K tokens headroom for output on a 200K model
 
 export abstract class AIProvider {
   abstract readonly name: string;
@@ -364,13 +366,26 @@ export abstract class AIProvider {
     estimated = this.estimateTokens(kept);
     if (estimated <= messageBudget) return kept;
 
-    // Truncate non-system/non-user messages proportionally to fit budget
-    const perMsgBudget = Math.floor(messageBudget * 0.4 / kept.length);
-    const perMsgChars = Math.max(200, perMsgBudget * CHARS_PER_TOKEN);
+    // Truncate non-system/non-user messages proportionally to fit budget.
+    // Protect the most recent tool-call group (assistant + its tool results) — the
+    // model needs the current iteration's results intact to make forward progress.
+    const lastAssistantIdx = [...kept].reduce(
+      (best, m, i) => (m.role === "assistant" && m.tool_calls?.length ? i : best),
+      -1,
+    );
+    const protectedIndices = new Set<number>();
+    if (lastAssistantIdx !== -1) {
+      protectedIndices.add(lastAssistantIdx);
+      for (let j = lastAssistantIdx + 1; j < kept.length && kept[j].role === "tool"; j++) {
+        protectedIndices.add(j);
+      }
+    }
+    const perMsgBudget = Math.floor(messageBudget / kept.length);
+    const perMsgChars = Math.max(400, perMsgBudget * CHARS_PER_TOKEN);
     const shrunk = kept.map((m, i) => {
-      if (i === 0 || m === userMsg) return m;
+      if (i === 0 || m === userMsg || protectedIndices.has(i)) return m;
       if (m.content.length > perMsgChars) {
-        return { ...m, content: m.content.substring(0, perMsgChars) + "\n...[truncated]" };
+        return { ...m, content: m.content.substring(0, perMsgChars) + "\n...[truncated — use fetch_cached if full result needed]" };
       }
       return m;
     });

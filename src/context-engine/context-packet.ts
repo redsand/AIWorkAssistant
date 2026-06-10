@@ -93,6 +93,7 @@ export async function assembleContextPacket(
     sessionMessages,
     providerMaxTokens,
     toolTokens,
+    onProgress,
   } = params;
 
   const budget = createBudget(undefined, providerMaxTokens, toolTokens);
@@ -183,6 +184,7 @@ export async function assembleContextPacket(
   const systemTokens = estimateTokens(baseSystemPrompt);
   systemSlot.allocatedTokens = Math.max(systemSlot.allocatedTokens, systemTokens + memoryTokens + skillsTokens + soulTokens + reflectionsTokens);
 
+  onProgress?.("Retrieving knowledge sources...");
   const ragStart = Date.now();
 
   const [docs, selectedMessages] = await Promise.all([
@@ -227,6 +229,7 @@ export async function assembleContextPacket(
     ckStatus = "disabled";
     console.warn("[ClaimKit] Skipped — not initialized (run `claimkit ingest` to populate stores)");
   } else {
+    onProgress?.("Extracting knowledge claims...");
     const seedStart = Date.now();
     const seedPromise = ingestScoredDocumentsForQuery(docs, query, env.CLAIMKIT_QUERY_SEED_LIMIT)
       .catch((err) => { console.warn("[ClaimKit] Query seed failed:", err); });
@@ -234,6 +237,7 @@ export async function assembleContextPacket(
       await seedPromise;
     }
     stageTimings.claimkitSeedMs = Date.now() - seedStart;
+    onProgress?.("Querying knowledge graph...");
     const ckStart = Date.now();
     try {
       claimKitResult = await withTimeout(
@@ -327,6 +331,7 @@ export async function assembleContextPacket(
     });
   }
 
+  onProgress?.("Building context packet...");
   // Await parallel work started before ClaimKit query
   const healthStart = Date.now();
   const [graphContext, sessionResults, healthText] = await Promise.all([

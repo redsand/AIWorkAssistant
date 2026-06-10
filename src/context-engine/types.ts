@@ -114,6 +114,7 @@ export interface AssembleContextParams {
   providerMaxTokens: number;
   toolTokens: number;
   userId: string;
+  onProgress?: (message: string) => void;
 }
 
 export interface RerankOptions {

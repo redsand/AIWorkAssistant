@@ -20,6 +20,10 @@ const envSchema = z.object({
   OPENCODE_API_URL: z.string().url().default("https://opencode.ai/zen/go/v1"),
   OPENCODE_API_KEY: z.string().default(""),
   OPENCODE_MODEL: z.string().default(""),
+  OPENCODE_MAX_CONTEXT_TOKENS: z.coerce.number().default(128000),
+  // Per-model context limit overrides for OpenCode models (JSON map of model name -> max tokens)
+  // Example: {"glm-5.1": 200000, "kimi-k2.6": 262144}
+  OPENCODE_MODEL_CONTEXT_LIMITS: z.string().default('{"glm-5.1": 200000, "kimi-k2.6": 262144}'),
 
   // AI Provider Selection
   AI_PROVIDER: z.enum(["opencode", "zai", "ollama", "openai"]).default("opencode"),
@@ -40,7 +44,7 @@ const envSchema = z.object({
   ZAI_MODEL: z.string().default("GLM-5"),
   ZAI_TEMPERATURE: z.string().transform(Number).default("0.95"),
   ZAI_TOP_P: z.string().transform(Number).default("0.9"),
-  ZAI_MAX_CONTEXT_TOKENS: z.coerce.number().default(64000),
+  ZAI_MAX_CONTEXT_TOKENS: z.coerce.number().default(200000),
 
   // Ollama (local and cloud models)
   OLLAMA_API_URL: z.string().url().default("http://localhost:11434"),

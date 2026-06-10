@@ -203,6 +203,30 @@ export class ConversationManager {
   }
 
   /**
+   * Returns the current message count for a session — use as a rollback handle
+   * before starting a run so a crash can undo partial conversation state.
+   */
+  checkpointSession(sessionId: string): number {
+    const session = this.sessions.get(sessionId);
+    return session ? session.messages.length : 0;
+  }
+
+  /**
+   * Truncates the session's message list back to the checkpoint count.
+   * Call on run failure to remove assistant/tool messages added by a crashed run,
+   * preventing orphaned state from poisoning the next request.
+   */
+  rollbackToCheckpoint(sessionId: string, checkpoint: number): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.messages.length <= checkpoint) return;
+    const removed = session.messages.length - checkpoint;
+    session.messages.splice(checkpoint);
+    session.updatedAt = new Date();
+    this.saveActiveSession(session);
+    console.warn(`[MemoryManager] Rolled back session ${sessionId} by ${removed} message(s) to checkpoint (${checkpoint} messages)`);
+  }
+
+  /**
    * Add a message to a session
    */
   addMessage(sessionId: string, message: Omit<Message, "timestamp">): void {

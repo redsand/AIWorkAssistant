@@ -330,53 +330,22 @@ function compactToolResultForContext(result: unknown): unknown {
   return result;
 }
 
-function stripInternalParams(params: unknown): unknown {
-  if (!params || typeof params !== "object" || Array.isArray(params)) return params;
-  const cleaned: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(params as Record<string, unknown>)) {
-    if (!key.startsWith("_")) cleaned[key] = value;
-  }
-  return cleaned;
-}
-
-function summarizeFetchedResult(result: unknown): string {
-  if (!result || typeof result !== "object") return String(result ?? "null").substring(0, 200);
-  const obj = result as Record<string, unknown>;
-  if (obj.success === false) return `ERROR: ${String(obj.error ?? "unknown").substring(0, 160)}`;
-  const data = obj.data;
-  if (Array.isArray(data)) return `array of ${data.length} items`;
-  if (data && typeof data === "object") {
-    const dataObj = data as Record<string, unknown>;
-    if (typeof dataObj.path === "string") return `file ${dataObj.path}`;
-    if (typeof dataObj.name === "string") return `object ${dataObj.name}`;
-    if (Array.isArray(dataObj.items)) return `${dataObj.items.length} items`;
-    if (Array.isArray(dataObj.results)) return `${dataObj.results.length} results`;
-    if (typeof dataObj.summary === "string") return dataObj.summary.substring(0, 200);
-    return `object {${Object.keys(dataObj).slice(0, 6).join(",")}}`;
-  }
-  return String(data ?? "ok").substring(0, 200);
-}
-
-function compactToolResultForMemory(toolName: string, result: unknown): unknown {
-  if (toolName !== "tools.fetch_cached" || !result || typeof result !== "object") {
-    return compactToolResultForContext(result);
-  }
-
-  const obj = result as Record<string, unknown>;
-  const data = obj.data as Record<string, unknown> | undefined;
-  if (!data || typeof data !== "object") return compactToolResultForContext(result);
-
-  return {
-    success: obj.success ?? true,
-    data: {
-      ref: data.ref,
-      tool: data.tool,
-      params: stripInternalParams(data.params),
-      called_at: data.called_at,
-      result_summary: summarizeFetchedResult(data.result),
-      _note: "Full cached result was fetched in this turn but compacted in session memory. Use the ref only if exact full content is still needed.",
-    },
-  };
+function compactToolResultForMemory(_toolName: string, result: unknown): unknown {
+  // Previously this stripped `data.result` from tools.fetch_cached responses
+  // before persistence, replacing it with a short `result_summary` string. The
+  // intent was to avoid storing the same blob twice (cache + session). The
+  // unintended effect: on the next user turn, session reload showed only the
+  // summary, so the agent (correctly) concluded its data was gone and re-
+  // fetched in a loop ("context window is fighting me").
+  //
+  // Now we keep the actual fetched data and rely on:
+  //   1. The 4K cap in stringifyToolResultForMemory (truncates large results)
+  //   2. rehydrateCachedToolResults on load (restores full data from cache
+  //      when still available — see the helper near repairConversationState)
+  //
+  // This way: cache hits give full fidelity, cache misses still preserve
+  // ~4K of actual data instead of just a one-line summary.
+  return compactToolResultForContext(result);
 }
 
 function stringifyToolResultForContext(result: unknown): string {
@@ -473,6 +442,146 @@ function repairOrphanedToolCalls(messages: ChatMessage[]): ChatMessage[] {
     }
   }
   return repaired;
+}
+
+/**
+ * Repairs conversation state left orphaned by a crashed run:
+ *
+ * 1. Consecutive user messages — when a run crashes before producing an assistant
+ *    response, the next user message appends directly after the prior one. Merge
+ *    them so the sequence stays valid for all providers.
+ *
+ * 2. Dangling tool results at end — when a run crashes after executing tools but
+ *    before the model responded, the conversation ends with role=tool messages
+ *    that have no following assistant. Strip them so the next request starts clean.
+ */
+function repairConversationState(messages: ChatMessage[]): ChatMessage[] {
+  // Pass 1: merge consecutive non-system same-role messages (handles user+user).
+  // System messages are allowed to stack and are left alone.
+  const merged: ChatMessage[] = [];
+  for (const msg of messages) {
+    const last = merged[merged.length - 1];
+    if (
+      last &&
+      last.role === msg.role &&
+      msg.role !== "system" &&
+      msg.role !== "tool" &&
+      typeof last.content === "string" &&
+      typeof msg.content === "string"
+    ) {
+      console.warn(`[Chat] Merging consecutive ${msg.role} messages (orphaned run state)`);
+      merged[merged.length - 1] = { ...last, content: `${last.content}\n\n${msg.content}` };
+    } else {
+      merged.push(msg);
+    }
+  }
+
+  // Pass 2: trim trailing tool messages that have no following assistant.
+  // These are tool results from a prior run that crashed before the model turn.
+  let end = merged.length;
+  while (end > 0 && merged[end - 1].role === "tool") {
+    end--;
+  }
+  if (end < merged.length) {
+    console.warn(`[Chat] Trimming ${merged.length - end} dangling tool result(s) at end of conversation (orphaned run state)`);
+    return merged.slice(0, end);
+  }
+
+  return merged;
+}
+
+/**
+ * Re-inline cached tool results when loading session messages for the LLM.
+ *
+ * Two compaction patterns persist stubs to session storage to save disk space:
+ *
+ * 1. Original large tool calls store a stub in the LLM-facing response with
+ *    `_cached_ref` + `_cached_size` + `_cached_summary` so the agent sees a
+ *    pointer instead of 100KB inline. The agent can call tools.fetch_cached
+ *    to retrieve.
+ *
+ * 2. tools.fetch_cached results are stripped by compactToolResultForMemory
+ *    before persistence — `data.result` is replaced with a short summary so
+ *    we don't store the same blob twice (cache + session).
+ *
+ * On the live turn the agent sees the full data. On the NEXT user turn the
+ * session reloads with only the stubs/summaries, and the agent (correctly)
+ * concludes its data is gone, re-queries, gets stubbed again, and loops.
+ *
+ * This pass walks the loaded session and, for each tool message that contains
+ * a ref pointing to a still-valid cache entry, swaps in the actual cached
+ * result. If the cache has expired, the stub stays put.
+ */
+async function rehydrateCachedToolResults(
+  messages: ChatMessage[],
+  sessionId: string,
+): Promise<ChatMessage[]> {
+  // Ensure Redis-backed entries are loaded into memory before lookup. Cheap
+  // no-op on already-warmed sessions.
+  await toolCallCache.warmSession(sessionId);
+
+  let rehydratedCount = 0;
+  let missingCount = 0;
+
+  const result = messages.map((msg) => {
+    if (msg.role !== "tool" || typeof msg.content !== "string") return msg;
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(msg.content);
+    } catch {
+      return msg;
+    }
+    if (!parsed || typeof parsed !== "object") return msg;
+
+    // tools.fetch_cached compacted-for-memory shape — identified by data.ref +
+    // data._note mentioning "compacted in session memory". This is the result
+    // the agent explicitly asked for via fetch_cached. Without rehydration, the
+    // agent reloads the session, sees only a result_summary stub, and (correctly)
+    // concludes its data is gone — leading to the "context is fighting me" loop.
+    //
+    // We deliberately do NOT rehydrate the original large-call stubs
+    // (`_cached_ref` + `_instructions`) because those represent results the
+    // agent chose NOT to fetch — inlining them could be hundreds of KB and
+    // blow the budget. The agent can still call fetch_cached if it needs them.
+    const data = parsed.data;
+    if (
+      data &&
+      typeof data === "object" &&
+      typeof data.ref === "string" &&
+      typeof data._note === "string" &&
+      data._note.includes("compacted in session memory")
+    ) {
+      const entry = toolCallCache.getByRef(data.ref);
+      if (entry) {
+        rehydratedCount++;
+        return {
+          ...msg,
+          content: JSON.stringify({
+            success: true,
+            data: {
+              ref: data.ref,
+              tool: data.tool,
+              params: data.params,
+              called_at: data.called_at,
+              result: entry.result,
+            },
+          }),
+        };
+      }
+      missingCount++;
+    }
+
+    return msg;
+  });
+
+  if (rehydratedCount > 0 || missingCount > 0) {
+    console.log(
+      `[Chat] Rehydrated ${rehydratedCount} fetch_cached result(s)` +
+        (missingCount > 0 ? `; ${missingCount} cache miss(es) — entries may have expired` : ""),
+    );
+  }
+  return result;
 }
 
 /**
@@ -696,6 +805,8 @@ async function runChatJob(
     } catch (e) { console.error("[AgentRuns]", e); }
   }
 
+  const conversationCheckpoint = conversationManager.checkpointSession(sessionId);
+
   try {
     let stepOrder = 0;
     let loopCount = 0;
@@ -715,6 +826,8 @@ async function runChatJob(
     let modelStart = Date.now();
     try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery, zaiQueueDepth: zaiStats.queued, zaiActive: zaiStats.active }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
+    messages = repairConversationState(messages);
+    messages = repairOrphanedToolCalls(messages);
     messages = injectManifest(messages, sessionId);
     warnIfInvalidModelMessages(messages, "stream_initial");
     if (Date.now() - jobStartTime > JOB_TIMEOUT_MS) {
@@ -840,6 +953,7 @@ async function runChatJob(
         })),
       ];
       messages = aiClient.pruneMessages(messages, expandedTools.length > 0 ? expandedTools : tools || undefined) as ChatMessage[];
+      messages = repairConversationState(messages);
       messages = repairOrphanedToolCalls(messages);
       messages = injectManifest(messages, sessionId);
       warnIfInvalidModelMessages(messages, "stream_tool_loop");
@@ -882,6 +996,11 @@ async function runChatJob(
         runId,
         context: { mode, requestedModel: model },
       });
+      // Roll back any assistant/tool messages written during this failed run so
+      // the next request doesn't inherit orphaned conversation state.
+      try {
+        conversationManager.rollbackToCheckpoint(sessionId, conversationCheckpoint);
+      } catch (e) { console.error("[Chat/Job] Rollback failed:", e); }
     }
 
     // When cancelled (superseded by a new request), don't emit cleanup events.
@@ -916,6 +1035,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
    */
   fastify.post("/chat", async (request, reply) => {
     let runId: string | null = null;
+    let sessionId: string | undefined;
+    let conversationCheckpoint = 0;
     try {
       const body = chatRequestSchema.parse(request.body);
       const requestModel = resolveRequestModel(body.model);
@@ -949,7 +1070,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         };
       }
 
-      let sessionId = body.sessionId;
+      sessionId = body.sessionId ?? undefined;
       let messages: ChatMessage[];
 
       const existingSession = sessionId
@@ -1008,11 +1129,12 @@ export async function chatRoutes(fastify: FastifyInstance) {
       }
 
       if (body.includeMemory && shouldUseContextEngine()) {
-        const sessionMessages = await conversationManager.getSessionMessages(
+        const rawSessionMessages = await conversationManager.getSessionMessages(
           sessionId!,
           body.includeMemory,
           "engine",
         );
+        const sessionMessages = await rehydrateCachedToolResults(rawSessionMessages, sessionId!);
         const estimatedToolTokens = body.includeTools
           ? Math.min(aiClient.estimateTokens([], getToolsForRequest(body.mode, body.message) as any) || 12000, 12000)
           : 0;
@@ -1041,10 +1163,11 @@ export async function chatRoutes(fastify: FastifyInstance) {
           `[ContextEngine] Packet assembled: ${packet.diagnostics.finalMessageCount} messages, ${packet.totalTokens} tokens, compression=${packet.diagnostics.compressionRatio.toFixed(2)}, budget=${JSON.stringify(packet.diagnostics.budgetUtilization)}, timings=${JSON.stringify(packet.diagnostics.stageTimings)}`,
         );
       } else {
-        const sessionMessages = await conversationManager.getSessionMessages(
+        const rawSessionMessages = await conversationManager.getSessionMessages(
           sessionId!,
           body.includeMemory,
         );
+        const sessionMessages = await rehydrateCachedToolResults(rawSessionMessages, sessionId!);
         messages = [
           { role: "system", content: memoryContext ? `${memoryContext}${systemPrompt}` : systemPrompt },
           ...sessionMessages,
@@ -1079,8 +1202,11 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       // Preserve the original user query for logging (survives message pruning)
       const originalUserQuery = body.message;
+      conversationCheckpoint = sessionId ? conversationManager.checkpointSession(sessionId) : 0;
       let stepOrder = 0;
       try { if (runId) agentRunDatabase.addStep({ runId, stepType: "model_request", content: { user_message: originalUserQuery }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
+      messages = repairConversationState(messages);
+      messages = repairOrphanedToolCalls(messages);
       messages = injectManifest(messages, sessionId);
       warnIfInvalidModelMessages(messages, "chat_initial");
       let response = await aiClient.chat({
@@ -1225,6 +1351,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
         const currentTools =
           expandedTools.length > 0 ? expandedTools : tools || undefined;
         messages = aiClient.pruneMessages(messages, currentTools) as ChatMessage[];
+        messages = repairConversationState(messages);
+        messages = repairOrphanedToolCalls(messages);
         messages = injectManifest(messages, sessionId);
         warnIfInvalidModelMessages(messages, "chat_tool_loop");
 
@@ -1276,6 +1404,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
         runId,
       });
       try { if (runId) agentRunDatabase.failRun(runId, error instanceof Error ? error.message : "Unknown error"); } catch (e) { console.error("[AgentRuns]", e); }
+      // Roll back any assistant/tool messages written during this failed request.
+      try {
+        if (sessionId) conversationManager.rollbackToCheckpoint(sessionId, conversationCheckpoint);
+      } catch (e) { console.error("[Chat] Rollback failed:", e); }
       return {
         error: "Failed to process chat request",
         message: error instanceof Error ? error.message : "Unknown error",
@@ -1468,11 +1600,12 @@ export async function chatRoutes(fastify: FastifyInstance) {
         const contextStart = Date.now();
         try {
           try { if (earlyRunId) agentRunDatabase.addStep({ runId: earlyRunId, stepType: "note", content: { stage: "context_start", message: body.message }, stepOrder: -4 }); } catch (e) { console.error("[AgentRuns]", e); }
-          const sessionMessages = await conversationManager.getSessionMessages(
+          const rawSessionMessages = await conversationManager.getSessionMessages(
             sessionId!,
             body.includeMemory,
             "engine",
           );
+          const sessionMessages = await rehydrateCachedToolResults(rawSessionMessages, sessionId!);
           try { if (earlyRunId) agentRunDatabase.addStep({ runId: earlyRunId, stepType: "note", content: { stage: "context_session_messages", count: sessionMessages.length }, stepOrder: -3 }); } catch (e) { console.error("[AgentRuns]", e); }
           const estimatedToolTokens = body.includeTools
             ? Math.min(aiClient.estimateTokens([], getToolsForRequest(body.mode, body.message) as any) || 12000, 12000)
@@ -1488,6 +1621,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
             providerMaxTokens: aiClient.getMaxContextTokens(),
             toolTokens: estimatedToolTokens,
             userId: body.userId,
+            onProgress: (message) => sendEvent("processing", { message }),
           });
           messages = packet.messages;
           console.log(
@@ -1518,10 +1652,11 @@ export async function chatRoutes(fastify: FastifyInstance) {
           return;
         }
       } else {
-        const sessionMessages = await conversationManager.getSessionMessages(
+        const rawSessionMessages = await conversationManager.getSessionMessages(
           sessionId!,
           body.includeMemory,
         );
+        const sessionMessages = await rehydrateCachedToolResults(rawSessionMessages, sessionId!);
         messages = [
           { role: "system", content: systemPrompt },
           ...sessionMessages,
@@ -1552,6 +1687,17 @@ export async function chatRoutes(fastify: FastifyInstance) {
             },
           };
         });
+      }
+
+      // After context assembly (especially ClaimKit seeding), ZAI may be rate-limited.
+      // Wait for the cooldown to expire before starting the chat so the first streaming
+      // attempt doesn't immediately hit 429.
+      const preStartCooldown = zaiRateLimiter.stats.cooldownRemainingMs;
+      if (preStartCooldown > 0) {
+        const waitMs = Math.min(preStartCooldown + 500, 30_000);
+        console.warn(`[Chat/Stream] ZAI cooldown active after context assembly (${preStartCooldown}ms) — waiting ${waitMs}ms before chat`);
+        sendEvent("processing", { message: "API rate limit settling..." });
+        await new Promise((r) => setTimeout(r, waitMs));
       }
 
       console.log("[Chat/Stream] Starting runChatJob for", sessionId);

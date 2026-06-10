@@ -12,13 +12,12 @@ import { OpenAIProvider } from "./openai-provider";
 export function getEffectiveContextLimit(
   model: string,
   defaultLimit: number,
+  limitsJson?: string,
 ): number {
-  if (!env.OLLAMA_MODEL_CONTEXT_LIMITS) return defaultLimit;
+  const json = limitsJson ?? env.OLLAMA_MODEL_CONTEXT_LIMITS;
+  if (!json) return defaultLimit;
   try {
-    const limits = JSON.parse(env.OLLAMA_MODEL_CONTEXT_LIMITS) as Record<
-      string,
-      number
-    >;
+    const limits = JSON.parse(json) as Record<string, number>;
     return limits[model] ?? defaultLimit;
   } catch {
     return defaultLimit;
@@ -80,7 +79,11 @@ export function createProvider(): AIProvider {
         topP: 0.95,
         maxRetries: 3,
         timeout: 120000,
-        maxContextTokens: 64000,
+        maxContextTokens: getEffectiveContextLimit(
+          process.env.OPENCODE_MODEL || env.OPENCODE_MODEL || "glm-5",
+          env.OPENCODE_MAX_CONTEXT_TOKENS,
+          env.OPENCODE_MODEL_CONTEXT_LIMITS,
+        ),
       });
   }
 }
