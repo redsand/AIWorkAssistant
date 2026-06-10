@@ -290,6 +290,152 @@ function extractTenableVulnClaims(data: unknown): ExtractedClaim[] {
   return out;
 }
 
+function extractWorkItemClaims(data: unknown): ExtractedClaim[] {
+  if (!data || typeof data !== "object") return [];
+  const w = data as Record<string, unknown>;
+  const id = toStringValue(w.id);
+  if (!id) return [];
+  const summary = toStringValue(w.title) ?? "";
+  const url = toStringValue(w.sourceUrl) ?? undefined;
+  const out: ExtractedClaim[] = [];
+  const push = (attr: string, raw: unknown) => {
+    const v = toStringValue(raw);
+    if (v) {
+      out.push({
+        entityType: "work_item",
+        entityName: id,
+        entityUrl: url,
+        entitySummary: summary || undefined,
+        attribute: attr,
+        value: v,
+      });
+    }
+  };
+  push("title", w.title);
+  push("status", w.status);
+  push("priority", w.priority);
+  push("owner", w.owner);
+  push("type", w.type);
+  return out;
+}
+
+function extractJitbitTicketClaims(data: unknown): ExtractedClaim[] {
+  if (!data || typeof data !== "object") return [];
+  const t = data as Record<string, unknown>;
+  // Jitbit returns Pascal-cased keys; tolerate both shapes.
+  const id = t.IssueID ?? t.TicketID ?? t.id;
+  if (id === undefined) return [];
+  const entityName = `jitbit-${id}`;
+  const summary = toStringValue(t.Subject) ?? toStringValue(t.subject) ?? "";
+  const out: ExtractedClaim[] = [];
+  const push = (attr: string, raw: unknown) => {
+    const v = toStringValue(raw);
+    if (v) {
+      out.push({
+        entityType: "ticket",
+        entityName,
+        entitySummary: summary || undefined,
+        attribute: attr,
+        value: v,
+      });
+    }
+  };
+  push("title", t.Subject ?? t.subject);
+  push("status", t.Status ?? t.status);
+  push("priority", t.PriorityName ?? t.priority);
+  push("assignee", t.AssignedUserName ?? t.assignedTo);
+  push("owner", t.UserName ?? t.Username);
+  push("type", t.CategoryName ?? t.Category);
+  return out;
+}
+
+function extractCalendarEventClaims(data: unknown): ExtractedClaim[] {
+  if (!data || typeof data !== "object") return [];
+  const e = data as Record<string, unknown>;
+  const id = toStringValue(e.id) ?? toStringValue(e.eventId);
+  if (!id) return [];
+  const summary = toStringValue(e.summary) ?? toStringValue(e.title) ?? "";
+  const url = toStringValue(e.htmlLink) ?? toStringValue(e.url) ?? undefined;
+  const out: ExtractedClaim[] = [];
+  const push = (attr: string, raw: unknown) => {
+    const v = toStringValue(raw);
+    if (v) {
+      out.push({
+        entityType: "meeting",
+        entityName: id,
+        entityUrl: url,
+        entitySummary: summary || undefined,
+        attribute: attr,
+        value: v,
+      });
+    }
+  };
+  push("title", e.summary ?? e.title);
+  push("status", e.status);
+  // start / end are typically {dateTime, timeZone} objects; toStringValue
+  // picks up the inner string via the displayName fallback chain.
+  push("name", e.organizer);
+  push("description", e.description);
+  return out;
+}
+
+function extractGitlabPipelineClaims(data: unknown): ExtractedClaim[] {
+  if (!data || typeof data !== "object") return [];
+  const p = data as Record<string, unknown>;
+  const id = p.id;
+  if (id === undefined) return [];
+  const project = p.project_id ?? p.projectId;
+  const entityName = project !== undefined ? `gl-pipeline-${project}-${id}` : `gl-pipeline-${id}`;
+  const url = toStringValue(p.web_url) ?? toStringValue(p.url) ?? undefined;
+  const out: ExtractedClaim[] = [];
+  const push = (attr: string, raw: unknown) => {
+    const v = toStringValue(raw);
+    if (v) {
+      out.push({
+        entityType: "pipeline",
+        entityName,
+        entityUrl: url,
+        entitySummary: toStringValue(p.ref) ?? undefined,
+        attribute: attr,
+        value: v,
+      });
+    }
+  };
+  push("status", p.status);
+  push("name", p.ref);
+  push("score", p.duration);
+  return out;
+}
+
+function extractGithubWorkflowRunClaims(data: unknown): ExtractedClaim[] {
+  if (!data || typeof data !== "object") return [];
+  const r = data as Record<string, unknown>;
+  const id = r.id;
+  if (id === undefined) return [];
+  const repo = (r.repository as { full_name?: string } | undefined)?.full_name;
+  const entityName = repo ? `${repo}-run-${id}` : `gh-run-${id}`;
+  const url = toStringValue(r.html_url) ?? undefined;
+  const out: ExtractedClaim[] = [];
+  const push = (attr: string, raw: unknown) => {
+    const v = toStringValue(raw);
+    if (v) {
+      out.push({
+        entityType: "pipeline",
+        entityName,
+        entityUrl: url,
+        entitySummary: toStringValue(r.name) ?? undefined,
+        attribute: attr,
+        value: v,
+      });
+    }
+  };
+  push("name", r.name);
+  push("status", r.status);
+  push("state", r.conclusion);
+  push("branch", r.head_branch);
+  return out;
+}
+
 function extractHawkIrCaseClaims(data: unknown): ExtractedClaim[] {
   if (!data || typeof data !== "object") return [];
   const c = data as Record<string, unknown>;
@@ -391,6 +537,21 @@ function extractClaimsForTool(toolName: string, result: unknown): ExtractedClaim
   if (lower === "hawk_ir.get_case" || lower === "hawk_ir.get_case_summary") {
     return extractHawkIrCaseClaims(data);
   }
+  if (lower === "work_items.get" || lower === "work_items.create") {
+    return extractWorkItemClaims(data);
+  }
+  if (lower === "jitbit.get_ticket") {
+    return extractJitbitTicketClaims(data);
+  }
+  if (lower === "calendar.get_event") {
+    return extractCalendarEventClaims(data);
+  }
+  if (lower === "gitlab.get_pipeline") {
+    return extractGitlabPipelineClaims(data);
+  }
+  if (lower === "github.get_workflow_run") {
+    return extractGithubWorkflowRunClaims(data);
+  }
 
   // Plural-result tools — iterate over array.
   const list = Array.isArray(data)
@@ -422,6 +583,15 @@ function extractClaimsForTool(toolName: string, result: unknown): ExtractedClaim
       )
         out.push(...extractTenableVulnClaims(item));
       else if (lower.startsWith("hawk_ir.")) out.push(...extractHawkIrCaseClaims(item));
+      else if (lower.startsWith("work_items.")) out.push(...extractWorkItemClaims(item));
+      else if (lower.startsWith("jitbit.") && lower.includes("ticket"))
+        out.push(...extractJitbitTicketClaims(item));
+      else if (lower.startsWith("calendar.") && lower.includes("event"))
+        out.push(...extractCalendarEventClaims(item));
+      else if (lower.startsWith("gitlab.") && lower.includes("pipeline"))
+        out.push(...extractGitlabPipelineClaims(item));
+      else if (lower.startsWith("github.") && lower.includes("workflow"))
+        out.push(...extractGithubWorkflowRunClaims(item));
     }
     return out;
   }

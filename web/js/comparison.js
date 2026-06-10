@@ -246,6 +246,71 @@
    * (higher is better) and RAG hallucination rate (lower is better).
    * Reads from /api/comparison/truthfulness which returns per-day averages.
    */
+  /**
+   * Collaboration trend (E): four-series line chart showing daily counts of
+   * citation boost / gap-fill / entity-claims-injected / contradictions-
+   * flagged events. Each series is a different collaborative feature.
+   */
+  function renderCollaborationTrend(trends) {
+    var canvas = document.getElementById("collabTrendChart");
+    if (!canvas) return;
+    destroyChart("collabTrendChart");
+    if (!trends || trends.length === 0) {
+      showEmpty("collab-trend-empty");
+      return;
+    }
+    charts.collabTrendChart = new Chart(canvas, {
+      type: "line",
+      data: {
+        labels: trends.map(function (t) { return t.date; }),
+        datasets: [
+          {
+            label: "Citation Boost",
+            data: trends.map(function (t) { return t.citationBoostApplied; }),
+            borderColor: COLORS.ck,
+            backgroundColor: COLORS.ckLight + "20",
+            tension: 0.3,
+            pointRadius: 3,
+          },
+          {
+            label: "Gap-Fill Cascade",
+            data: trends.map(function (t) { return t.gapFillTriggered; }),
+            borderColor: COLORS.rag,
+            backgroundColor: COLORS.ragLight + "20",
+            tension: 0.3,
+            pointRadius: 3,
+          },
+          {
+            label: "Entity Claims Injected",
+            data: trends.map(function (t) { return t.entityClaimsInjected; }),
+            borderColor: "#8b5cf6",
+            backgroundColor: "#c4b5fd33",
+            tension: 0.3,
+            pointRadius: 3,
+          },
+          {
+            label: "Contradictions Flagged",
+            data: trends.map(function (t) { return t.contradictionsFlagged; }),
+            borderColor: "#f97316",
+            backgroundColor: "#fed7aa33",
+            tension: 0.3,
+            pointRadius: 3,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { position: "bottom", labels: { padding: 16, usePointStyle: true } },
+        },
+        scales: {
+          x: { grid: { color: "#f3f4f6" } },
+          y: { beginAtZero: true, ticks: { precision: 0 } },
+        },
+      },
+    });
+  }
+
   function renderTruthfulnessTrend(trends) {
     var canvas = document.getElementById("truthfulnessTrendChart");
     if (!canvas) return;
@@ -599,6 +664,15 @@
       })
       .catch(function () {
         showEmpty("truthfulness-trend-empty");
+      });
+
+    // Collaboration trend (E): uptake of CK+RAG features over time
+    fetchJSON(sourceJoin("/api/comparison/collaboration-trend", "days=30"))
+      .then(function (trends) {
+        renderCollaborationTrend(trends);
+      })
+      .catch(function () {
+        showEmpty("collab-trend-empty");
       });
 
     // Structured claim memory stats (Idea 2: tool results as claims).

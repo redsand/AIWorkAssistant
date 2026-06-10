@@ -225,6 +225,111 @@ describe("tool-claim-extractor", () => {
     expect(claims.find((c) => c.attribute === "severity")?.value).toBe("high");
   });
 
+  it("extracts work_item claims with status/priority/owner", async () => {
+    const { ingestStructuredClaims } = await import("../tool-claim-extractor.js");
+    const result = ingestStructuredClaims("work_items.get", {
+      id: "wi-42",
+      type: "task",
+      title: "Wire up shadow grounding",
+      status: "in_progress",
+      priority: "high",
+      owner: "tim",
+      sourceUrl: "https://example/wi/42",
+    });
+    expect(result.entitiesTouched).toBe(1);
+    expect(result.claimsWritten).toBeGreaterThan(0);
+    const entity = mem.getEntityByName("work_item", "wi-42");
+    expect(entity).not.toBeNull();
+    const claims = mem.getCurrentClaims(entity!.id);
+    expect(claims.find((c) => c.attribute === "status")?.value).toBe("in_progress");
+    expect(claims.find((c) => c.attribute === "priority")?.value).toBe("high");
+  });
+
+  it("extracts jitbit ticket claims using Pascal-cased keys", async () => {
+    const { ingestStructuredClaims } = await import("../tool-claim-extractor.js");
+    const result = ingestStructuredClaims("jitbit.get_ticket", {
+      IssueID: 12345,
+      Subject: "Email outage on acme.com tenant",
+      Status: "Open",
+      PriorityName: "High",
+      AssignedUserName: "support-engineer-1",
+      CategoryName: "Email",
+    });
+    expect(result.entitiesTouched).toBe(1);
+    const entity = mem.getEntityByName("ticket", "jitbit-12345");
+    expect(entity).not.toBeNull();
+    const claims = mem.getCurrentClaims(entity!.id);
+    expect(claims.find((c) => c.attribute === "status")?.value).toBe("Open");
+    expect(claims.find((c) => c.attribute === "assignee")?.value).toBe("support-engineer-1");
+  });
+
+  it("extracts calendar meeting claims", async () => {
+    const { ingestStructuredClaims } = await import("../tool-claim-extractor.js");
+    const result = ingestStructuredClaims("calendar.get_event", {
+      id: "evt-2026-06-10-1400",
+      summary: "Weekly architecture sync",
+      status: "confirmed",
+      description: "Review the ClaimKit roadmap progress.",
+    });
+    expect(result.entitiesTouched).toBe(1);
+    const entity = mem.getEntityByName("meeting", "evt-2026-06-10-1400");
+    expect(entity).not.toBeNull();
+    const claims = mem.getCurrentClaims(entity!.id);
+    expect(claims.find((c) => c.attribute === "status")?.value).toBe("confirmed");
+  });
+
+  it("extracts gitlab pipeline claims and supersedes on status change", async () => {
+    const { ingestStructuredClaims } = await import("../tool-claim-extractor.js");
+    ingestStructuredClaims("gitlab.get_pipeline", {
+      id: 9876,
+      project_id: 42,
+      status: "running",
+      ref: "main",
+      web_url: "https://gitlab/foo/bar/pipelines/9876",
+    });
+    const second = ingestStructuredClaims("gitlab.get_pipeline", {
+      id: 9876,
+      project_id: 42,
+      status: "success",
+      ref: "main",
+    });
+    expect(second.supersessions).toBe(1);
+
+    const entity = mem.getEntityByName("pipeline", "gl-pipeline-42-9876");
+    expect(entity).not.toBeNull();
+    const current = mem.getCurrentClaims(entity!.id);
+    expect(current.find((c) => c.attribute === "status")?.value).toBe("success");
+  });
+
+  it("extracts github workflow_run claims keyed by repo+id", async () => {
+    const { ingestStructuredClaims } = await import("../tool-claim-extractor.js");
+    const result = ingestStructuredClaims("github.get_workflow_run", {
+      id: 555,
+      name: "ci",
+      status: "completed",
+      conclusion: "success",
+      head_branch: "feature/foo",
+      repository: { full_name: "acme/widgets" },
+    });
+    expect(result.entitiesTouched).toBe(1);
+    const entity = mem.getEntityByName("pipeline", "acme/widgets-run-555");
+    expect(entity).not.toBeNull();
+    const claims = mem.getCurrentClaims(entity!.id);
+    expect(claims.find((c) => c.attribute === "status")?.value).toBe("completed");
+    expect(claims.find((c) => c.attribute === "state")?.value).toBe("success");
+    expect(claims.find((c) => c.attribute === "branch")?.value).toBe("feature/foo");
+  });
+
+  it("handles work_items.list with multiple items in a single call", async () => {
+    const { ingestStructuredClaims } = await import("../tool-claim-extractor.js");
+    const result = ingestStructuredClaims("work_items.list", [
+      { id: "wi-1", title: "First", status: "todo", priority: "low" },
+      { id: "wi-2", title: "Second", status: "done", priority: "high" },
+    ]);
+    expect(result.entitiesTouched).toBe(2);
+    expect(result.claimsWritten).toBeGreaterThanOrEqual(4);
+  });
+
   it("tracks supersession across multiple Tenable scans of the same asset", async () => {
     const { ingestStructuredClaims } = await import("../tool-claim-extractor.js");
 

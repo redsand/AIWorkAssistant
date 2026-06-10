@@ -52,6 +52,14 @@ export async function comparisonRoutes(
     return db.getTruthfulnessOverTime(days, { source: safeSource(query.source) });
   });
 
+  // ── Collaboration trend (E: uptake of CK+RAG features over time) ──
+
+  fastify.get("/collaboration-trend", async (request, _reply) => {
+    const query = request.query as { days?: string; source?: string };
+    const days = safeParseInt(query.days, 1, 365, 30);
+    return db.getCollaborationOverTime(days, { source: safeSource(query.source) });
+  });
+
   // ── Structured-claim memory stats (Idea 2) ────────────────────────
   // Surfaces entity-memory health on the comparison dashboard so the
   // "ClaimKit + RAG" story includes the structured-memory contribution

@@ -19,6 +19,13 @@ export const ENTITY_TYPES = [
   "asset",
   "vulnerability",
   "incident",
+  // Second-wave additions (D): support / calendar / CI entities.
+  // tickets: jitbit / similar helpdesk; meetings: calendar events;
+  // pipelines: gitlab pipelines + github workflow_runs share enough
+  // structure to share an entity type.
+  "ticket",
+  "meeting",
+  "pipeline",
 ] as const;
 
 export type EntityType = (typeof ENTITY_TYPES)[number];

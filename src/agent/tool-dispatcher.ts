@@ -52,6 +52,7 @@ import { codebaseIndexer } from "./codebase-indexer";
 import { knowledgeGraph } from "./knowledge-graph";
 import { entityMemory } from "../memory/entity-memory";
 import { ingestStructuredClaims } from "../memory/tool-claim-extractor";
+import { createMemoryGetEntityClaimsHandler } from "./handlers/memory-get-entity-claims";
 import { agentMemory } from "../memory/agent-memory";
 import { createMemoryManageHandler } from "./handlers/memory-manage";
 import { skillManager } from "../skills/skill-manager";
@@ -2289,93 +2290,9 @@ async function handleMemoryGetEntityContext(
   }
 }
 
-/**
- * memory.get_entity_claims — Idea 2 outcome surfaced as a first-class
- * agent tool. Returns the current (non-superseded) structured claims for
- * an entity, optionally including the supersession chain for each attribute.
- *
- * This is the lookup path the agent should use when it needs the LATEST
- * known state of a property without doing a fresh tool call to the upstream
- * system. Returns time-stamped attributes the agent can cite back with full
- * provenance.
- */
-async function handleMemoryGetEntityClaims(
-  params: Record<string, unknown>,
-): Promise<ToolCallResult> {
-  try {
-    const type = params.type as EntityType;
-    const name = params.name as string;
-    if (!type || !name) {
-      return { success: false, error: "type and name are required" };
-    }
-    const entity = entityMemory.getEntityByName(type, name);
-    if (!entity) {
-      return {
-        success: true,
-        data: {
-          found: false,
-          message:
-            `No entity of type '${type}' named '${name}' has been observed yet. ` +
-            `Call the upstream tool (e.g. jira.get_issue) to populate it.`,
-        },
-      };
-    }
-    const includeHistory = params.includeHistory === true;
-    const current = entityMemory.getCurrentClaims(entity.id);
-    if (current.length === 0) {
-      return {
-        success: true,
-        data: {
-          found: true,
-          entity: { id: entity.id, type: entity.type, name: entity.name, summary: entity.summary },
-          claims: [],
-          note:
-            "Entity is known but has no structured claims yet. Call the upstream " +
-            "tool to record current state.",
-        },
-      };
-    }
-
-    const claims = current.map((c) => {
-      const base: Record<string, unknown> = {
-        attribute: c.attribute,
-        value: c.value,
-        source: c.source,
-        observedAt: c.updatedAt,
-        confidence: c.confidence,
-      };
-      if (includeHistory) {
-        const history = entityMemory.getClaimHistory(entity.id, c.attribute!);
-        base.history = history.map((h) => ({
-          value: h.value,
-          source: h.source,
-          observedAt: h.createdAt,
-          supersededAt: h.supersededAt,
-          supersededBy: h.supersededBy,
-        }));
-      }
-      return base;
-    });
-
-    return {
-      success: true,
-      data: {
-        found: true,
-        entity: {
-          id: entity.id,
-          type: entity.type,
-          name: entity.name,
-          summary: entity.summary,
-          sourceUrl: entity.sourceUrl,
-        },
-        claims,
-        claimCount: claims.length,
-      },
-    };
-  } catch (error) {
-    return { success: false, error: String(error) };
-  }
-}
+// memory.get_entity_claims handler — extracted to ./handlers for testability.
+// See src/agent/handlers/memory-get-entity-claims.ts for the implementation.
+const handleMemoryGetEntityClaims = createMemoryGetEntityClaimsHandler(entityMemory);
 
 async function handleMemoryAddEntityFact(
   params: Record<string, unknown>,

@@ -104,6 +104,18 @@
         </div>
       </div>
 
+      <!-- Collaboration Trend Chart (E: uptake over time) -->
+      <div class="section" id="collab-trend-section">
+        <div class="section-title">Collaboration Trend — feature uptake over time</div>
+        <p class="section-blurb">
+          Daily count of cases where each collaborative feature fired. Rising lines mean the integration
+          is doing more work as your structured memory grows. A flat zero line is the signal to check
+          whether ingestion is producing claims at all.
+        </p>
+        <div class="chart-wrap"><canvas id="collabTrendChart"></canvas></div>
+        <div class="state-msg" id="collab-trend-empty" style="display:none"><p>No collaboration data yet — features start firing after a few live chats.</p></div>
+      </div>
+
       <!-- Structured Memory Panel (Idea 2 + 3: tool results as claims) -->
       <div class="section" id="memory-section">
         <div class="section-title">Structured Memory — what RAG fundamentally cannot do</div>

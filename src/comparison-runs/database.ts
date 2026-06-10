@@ -622,6 +622,63 @@ class ComparisonRunDatabase {
   }
 
   /**
+   * Daily counts of each RAG+ClaimKit collaboration feature firing.
+   * Renders the "Collaboration trend" line chart so uptake (or decline)
+   * of each feature is visible over time. Each value is the number of
+   * cases on that day where the corresponding column was > 0.
+   */
+  getCollaborationOverTime(
+    days: number = 30,
+    options?: { source?: ComparisonSource },
+  ): Array<{
+    date: string;
+    citationBoostApplied: number;
+    gapFillTriggered: number;
+    entityClaimsInjected: number;
+    contradictionsFlagged: number;
+    caseCount: number;
+  }> {
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const conditions = ["cc.created_at >= ?"];
+    const params: unknown[] = [cutoff];
+    if (options?.source) {
+      conditions.push("cr.source = ?");
+      params.push(options.source);
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT
+           date(cc.created_at) as date,
+           SUM(CASE WHEN citation_boost_applied > 0 THEN 1 ELSE 0 END) as citation_boost_n,
+           SUM(CASE WHEN gap_fill_docs_added > 0 THEN 1 ELSE 0 END) as gap_fill_n,
+           SUM(CASE WHEN entity_claims_injected > 0 THEN 1 ELSE 0 END) as entity_claims_n,
+           SUM(CASE WHEN contradictions_flagged > 0 THEN 1 ELSE 0 END) as contradictions_n,
+           COUNT(*) as case_count
+         FROM comparison_cases cc
+         JOIN comparison_runs cr ON cr.id = cc.run_id
+         WHERE ${conditions.join(" AND ")}
+         GROUP BY date(cc.created_at)
+         ORDER BY date(cc.created_at)`,
+      )
+      .all(...params) as Array<{
+        date: string;
+        citation_boost_n: number | null;
+        gap_fill_n: number | null;
+        entity_claims_n: number | null;
+        contradictions_n: number | null;
+        case_count: number;
+      }>;
+    return rows.map((r) => ({
+      date: r.date,
+      citationBoostApplied: r.citation_boost_n ?? 0,
+      gapFillTriggered: r.gap_fill_n ?? 0,
+      entityClaimsInjected: r.entity_claims_n ?? 0,
+      contradictionsFlagged: r.contradictions_n ?? 0,
+      caseCount: r.case_count,
+    }));
+  }
+
+  /**
    * Classify each ck_confidence ≤ 0.1 case by the most likely root cause.
    * Mirrors the [ClaimKit:lowconf] reason heuristic added in ClaimKit's
    * query() method. Derived entirely from existing columns — no schema
