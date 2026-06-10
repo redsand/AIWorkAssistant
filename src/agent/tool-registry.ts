@@ -857,7 +857,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "gitlab.list_tree",
     description:
-      "List files and directories in a GitLab repository. Use this to explore the repository structure before fetching specific files. Returns items with type 'tree' (directory) or 'blob' (file). Set recursive=true to get all files at once. All pages are fetched automatically.",
+      "List files and directories in a GitLab repository. Use this to explore the repository structure before fetching specific files. Returns items with type 'tree' (directory) or 'blob' (file). IMPORTANT: Prefer recursive=true to get the full tree in one call rather than making multiple calls on progressively deeper paths. All pages are fetched automatically.",
     params: {
       projectId: {
         type: "string",

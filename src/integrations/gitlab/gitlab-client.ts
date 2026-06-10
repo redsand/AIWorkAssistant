@@ -834,8 +834,18 @@ export class GitlabClient {
     } catch (error) {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
+        const detail = error.response?.data
+          ? typeof error.response.data === "string"
+            ? error.response.data.substring(0, 200)
+            : JSON.stringify(error.response.data).substring(0, 200)
+          : "";
+        if (status === 400) {
+          throw new Error(
+            `Failed to get file "${filePath}" (400 Bad Request)${ref ? ` on ref "${ref}"` : ""}${detail ? `: ${detail}` : ""}. The ref or file path may be invalid.`,
+          );
+        }
         if (status === 404) {
-          throw new Error(`File ${filePath} not found in project ${resolvedId}`);
+          throw new Error(`File ${filePath} not found in project ${resolvedId}${ref ? ` on ref "${ref}"` : ""}`);
         }
       }
       throw new Error(

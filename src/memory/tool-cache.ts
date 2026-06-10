@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
 import { createClient } from "redis";
+import { env } from "../config/env";
 
 export interface CachedToolCall {
   ref: string;
@@ -69,13 +70,58 @@ export function stableStringify(obj: unknown): string {
     .join(",") + "}";
 }
 
-// Hash a tool call to a 12-char ref key. Internal params (prefixed with `_`)
-// like `_mode` and `_loadedTools` are stripped — they don't affect the result.
-export function hashCall(toolName: string, params: Record<string, unknown>): string {
+// Normalize tool call params so semantically equivalent calls produce the
+// same cache key. Without this, gitlab.search_code({query:"KPI"}) and
+// gitlab.search_code({query:"KPI", projectId:"hawkio/siem"}) hash differently
+// even though they resolve to the same project, and
+// gitlab.search_code({query:"KPI", ref:"master"}) vs
+// gitlab.search_code({query:"KPI"}) hash differently even though omitting ref
+// defaults to the same branch.
+function normalizeCacheParams(toolName: string, params: Record<string, unknown>): Record<string, unknown> {
   const cleaned: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(params)) {
-    if (!k.startsWith("_")) cleaned[k] = v;
+    if (k.startsWith("_")) continue;
+
+    // Normalize projectId for gitlab tools — resolve empty/undefined to the
+    // canonical default so all equivalent calls hash identically.
+    if (k === "projectId" && toolName.startsWith("gitlab.")) {
+      if (v === undefined || v === null || v === "") {
+        const defaultProject = env.GITLAB_DEFAULT_PROJECT || "";
+        if (defaultProject) {
+          cleaned[k] = defaultProject.includes("/") ? encodeURIComponent(defaultProject) : defaultProject;
+          continue;
+        }
+      }
+      if (typeof v === "string" && v.includes("/")) {
+        cleaned[k] = encodeURIComponent(v);
+        continue;
+      }
+    }
+
+    // Normalize ref for gitlab tools — strip it when it matches the default
+    // branch so queries with explicit ref and without ref hash identically.
+    if (k === "ref" && toolName.startsWith("gitlab.")) {
+      if (v === undefined || v === null || v === "") {
+        // Omit — same as default branch
+        continue;
+      }
+      if (typeof v === "string" && (v === "main" || v === "master")) {
+        // Both "main" and "master" are common default branches — normalize to
+        // omitted so the cache doesn't split on default-branch name differences.
+        continue;
+      }
+    }
+
+    cleaned[k] = v;
   }
+  return cleaned;
+}
+
+// Hash a tool call to a 12-char ref key. Internal params (prefixed with `_`)
+// like `_mode` and `_loadedTools` are stripped — they don't affect the result.
+// projectId and ref are normalized so semantically equivalent calls hash identically.
+export function hashCall(toolName: string, params: Record<string, unknown>): string {
+  const cleaned = normalizeCacheParams(toolName, params);
   return createHash("sha1")
     .update(toolName + ":" + stableStringify(cleaned))
     .digest("hex")

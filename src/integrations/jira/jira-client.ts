@@ -69,6 +69,7 @@ export interface JiraProject {
   id: string;
   projectTypeKey: string;
   style: string;
+  issueTypes?: Array<{ name: string; subtask: boolean }>;
 }
 
 export class JiraClient {
@@ -810,6 +811,10 @@ export class JiraClient {
         id: data.id,
         projectTypeKey: data.projectTypeKey,
         style: data.style,
+        issueTypes: (data.issueTypes || []).map((it: any) => ({
+          name: it.name,
+          subtask: it.subtask === true,
+        })),
       };
     } catch (error) {
       if (axios.isAxiosError(error)) {

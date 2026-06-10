@@ -369,6 +369,21 @@ async function handleJiraCreateIssue(
 
   const issueType = (params.issueType as string) || "Task";
 
+  // Validate issue type against the project's available types to avoid a 400
+  // error from Jira. Fetch the project metadata and check the type is valid.
+  try {
+    const projectInfo = await jiraClient.getProject(project);
+    const validTypes = (projectInfo.issueTypes || []).map((it: any) => it.name);
+    if (validTypes.length > 0 && !validTypes.includes(issueType)) {
+      return {
+        success: false,
+        error: `Invalid issue type "${issueType}" for project ${project}. Available types: ${validTypes.join(", ")}. Use one of these types.`,
+      };
+    }
+  } catch {
+    // If project lookup fails, let Jira's own validation handle it
+  }
+
   const labels = params.labels
     ? (params.labels as string)
         .split(",")
@@ -1075,11 +1090,36 @@ async function handleGitlabGetFile(
   if (!filePath) {
     return { success: false, error: "filePath is required" };
   }
-  const file = await gitlabClient.getFile(
-    (params.projectId as string) || undefined,
-    filePath,
-    params.ref as string | undefined,
-  );
+  const projectId = (params.projectId as string) || undefined;
+  const ref = params.ref as string | undefined;
+
+  let file: Awaited<ReturnType<typeof gitlabClient.getFile>> | null = null;
+  try {
+    file = await gitlabClient.getFile(projectId, filePath, ref);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // If the request failed with what looks like a bad ref (400 or 404 with a
+    // ref specified), retry without the ref so GitLab uses the default branch.
+    if (ref) {
+      const isBadRequest = message.includes("400") || message.includes("Bad Request");
+      const isNotFound = message.includes("404") || message.includes("not found");
+      if (isBadRequest || isNotFound) {
+        try {
+          file = await gitlabClient.getFile(projectId, filePath);
+        } catch (fallbackError) {
+          return {
+            success: false,
+            error: `Failed to get file "${filePath}" on ref "${ref}" and default branch: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}. Original error: ${message}`,
+          };
+        }
+      } else {
+        return { success: false, error: message };
+      }
+    } else {
+      return { success: false, error: message };
+    }
+  }
+
   // Decode base64 content so the AI can read the file
   if (file && file.content) {
     try {
@@ -5168,10 +5208,36 @@ async function handleCodebaseSearch(
   if (!query) return { success: false, error: "query is required" };
 
   if (!codebaseIndexer.isIndexed()) {
+    // Automatic fallback: use local regex search when the index is unavailable.
+    // This avoids forcing the model to make a separate tool call and waste a
+    // turn on what should have been a single-step operation.
+    const fallbackResult = await handleLocalSearchCode({
+      pattern: query,
+      path: params.path || ".",
+      include: params.language ? `*.${params.language}` : undefined,
+    });
+    if (fallbackResult.success) {
+      return {
+        success: true,
+        data: {
+          query,
+          fallback: true,
+          fallbackReason: "Codebase not indexed yet — used local regex search instead.",
+          count: (fallbackResult.data as any)?.matches || 0,
+          results: ((fallbackResult.data as any)?.results || []).map((r: any) => ({
+            filePath: r.file,
+            lines: `${r.line}`,
+            content: r.content,
+            score: 0.5,
+            matchType: "regex_fallback",
+          })),
+        },
+      };
+    }
     return {
       success: false,
       error:
-        "Codebase not indexed yet. Indexing runs on startup. Use local.search_code as a fallback.",
+        "Codebase not indexed yet and local search also failed. Indexing runs on startup.",
     };
   }
 

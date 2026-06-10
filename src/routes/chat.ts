@@ -331,6 +331,34 @@ function compactToolResultForContext(result: unknown): unknown {
       },
     };
   }
+
+  // Compact search results (gitlab.search_code, local.search_code, etc.) by
+  // truncating the code snippet in later hits. The first few results keep
+  // their full data so the model can understand the code, while later hits
+  // are reduced to metadata + a preview. This dramatically reduces context
+  // bloat from repeated search_code calls (each can be 3-15KB of snippets).
+  if (Array.isArray(data)) {
+    const FULL_HITS = 3; // Keep full data for the first N results
+    const PREVIEW_LINES = 5; // How many lines to keep for truncated hits
+    const needsCompaction = data.length > FULL_HITS &&
+      data.some((item: any) => typeof item?.data === "string" && item.data.length > 200);
+    if (needsCompaction) {
+      return {
+        success: obj.success,
+        data: data.map((item: any, i: number) => {
+          if (i < FULL_HITS) return item;
+          if (typeof item?.data !== "string") return item;
+          const lines = item.data.split("\n");
+          if (lines.length <= PREVIEW_LINES + 1) return item;
+          return {
+            ...item,
+            data: lines.slice(0, PREVIEW_LINES).join("\n") + `\n...[${lines.length - PREVIEW_LINES} more lines — use gitlab.get_file to read the full file]`,
+          };
+        }),
+      };
+    }
+  }
+
   return result;
 }
 
