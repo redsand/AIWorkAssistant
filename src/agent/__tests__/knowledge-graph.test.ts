@@ -223,7 +223,8 @@ describe("KnowledgeGraph multi-level community detection", () => {
     ];
 
     const spy = vi.spyOn(kg as any, "generateCommunitySummary").mockResolvedValue("Level-1 summary");
-    await (kg as any).detectHigherLevelCommunities(communities, 1, 2);
+    const edges = kg.getAllEdges();
+    await (kg as any).detectHigherLevelCommunities(communities, 1, 2, edges);
     spy.mockRestore();
 
     const db = (kg as any).db;
@@ -307,5 +308,51 @@ describe("KnowledgeGraph multi-level community detection", () => {
     // Should only return level-0 summaries (1 row), not the level-1 row
     expect(summaries.length).toBe(1);
     expect(summaries[0]).toBe("Level-0 summary");
+  });
+
+  it("generateCommunitySummary returns fallback when AI provider throws", async () => {
+    const { getProvider } = await import("../providers/factory.js");
+    vi.mocked(getProvider).mockImplementationOnce(() => {
+      throw new Error("Provider not configured");
+    });
+
+    const nodes = [
+      { ...makeNode({ title: "Node-A", type: "component" }), id: "err-1", createdAt: new Date(), updatedAt: new Date() },
+      { ...makeNode({ title: "Node-B", type: "risk" }), id: "err-2", createdAt: new Date(), updatedAt: new Date() },
+    ];
+
+    const summary = await kg.generateCommunitySummary(nodes as any);
+    expect(summary.length).toBeGreaterThan(0);
+    expect(summary).toContain("2 nodes");
+    expect(summary).toContain("component");
+  });
+
+  it("detectCommunities splits a connected graph via modularity clustering", async () => {
+    // Two dense clusters connected by a single bridge edge.
+    // Modularity should find 2 communities despite the graph being connected.
+    const leftA = kg.addNode(makeNode({ title: "LA1", type: "component" }));
+    const leftB = kg.addNode(makeNode({ title: "LA2", type: "component" }));
+    const leftC = kg.addNode(makeNode({ title: "LA3", type: "component" }));
+    kg.addEdge(leftA, leftB, "depends_on");
+    kg.addEdge(leftB, leftC, "depends_on");
+    kg.addEdge(leftA, leftC, "related_to");
+
+    const rightA = kg.addNode(makeNode({ title: "RA1", type: "decision" }));
+    const rightB = kg.addNode(makeNode({ title: "RA2", type: "decision" }));
+    const rightC = kg.addNode(makeNode({ title: "RA3", type: "decision" }));
+    kg.addEdge(rightA, rightB, "related_to");
+    kg.addEdge(rightB, rightC, "related_to");
+    kg.addEdge(rightA, rightC, "related_to");
+
+    // Single bridge edge — modularity should still split into 2 communities
+    kg.addEdge(leftA, rightA, "constrains");
+
+    const spy = vi.spyOn(kg as any, "generateCommunitySummary").mockResolvedValue("Cluster summary");
+    const communities = await kg.detectCommunities();
+    spy.mockRestore();
+
+    // Modularity clustering should produce 2 communities (left cluster + right cluster)
+    expect(communities.length).toBe(2);
+    expect(communities.every(c => c.nodeIds.length >= 3)).toBe(true);
   });
 });
