@@ -113,6 +113,12 @@ vi.mock("../../src/memory/conversation-manager", () => ({
       },
     ),
     getSessionMessages: vi.fn(async () => mocks.sessionMessages),
+    getRawSessionMessages: vi.fn(async () => mocks.sessionMessages),
+    checkpointSession: vi.fn(() => mocks.sessionMessages.length),
+    rollbackToCheckpoint: vi.fn((_sessionId: string, checkpoint: number) => {
+      mocks.sessionMessages = mocks.sessionMessages.slice(0, checkpoint);
+    }),
+    getRelevantMemories: vi.fn(() => []),
   },
 }));
 

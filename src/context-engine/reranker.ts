@@ -13,10 +13,23 @@ export function computeImportance(doc: ScoredDocument): number {
   if (/```[\s\S]*?```/.test(doc.content)) score += 0.15;
   if (/^\s*\d+\.\s/m.test(doc.content)) score += 0.1;
 
-  if (doc.source === "graph") score += 0.1;
+  if (doc.source === "graph") score += 0.25;
   if (doc.source === "knowledge") score += 0.05;
 
   return Math.min(score, 1.0);
+}
+
+const STRUCTURAL_QUERY_PATTERNS = [
+  /how\s+does\s+.*\s+relate\s+to/i,
+  /what\s+depends\s+on/i,
+  /what\s+(?:.*\s+)?blocks/i,
+  /what\s+(?:.*\s+)?implements/i,
+  /relationship\s+between/i,
+  /connection\s+between/i,
+];
+
+export function isStructuralQuery(query: string): boolean {
+  return STRUCTURAL_QUERY_PATTERNS.some((pattern) => pattern.test(query));
 }
 
 export function computeQueryRelevance(doc: ScoredDocument, query: string): number {
@@ -116,6 +129,9 @@ export function blendScores(
   if (options.claimKitBoostWeight && options.claimKitBoostWeight > 0) {
     const ckBoost = doc.claimKitBoost ?? 0;
     score += ckBoost * options.claimKitBoostWeight;
+  }
+  if (doc.source === "graph" && isStructuralQuery(query)) {
+    score *= 1.3; // 30% boost for graph on structural queries
   }
 
   return score;

@@ -196,7 +196,7 @@ describe("ZaiProvider", () => {
 
       post.mockRejectedValueOnce({
         isAxiosError: true,
-        response: { status: 429, headers: {} },
+        response: { status: 429, headers: { "retry-after": "0.001" } },
       });
 
       post.mockResolvedValueOnce({
