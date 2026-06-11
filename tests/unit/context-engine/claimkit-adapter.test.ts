@@ -17,6 +17,13 @@ class MockMemoryEmbeddingAdapter {}
 
 const mockClaimKitConstructor = vi.fn();
 const mockCreateMemoryStores = vi.fn(() => ({}));
+const mockQueryNodes = vi.fn();
+const mockGetEdgesForNode = vi.fn();
+
+const mockKnowledgeGraph = {
+  queryNodes: mockQueryNodes,
+  getEdgesForNode: mockGetEdgesForNode,
+};
 
 vi.doMock("@redsand/claimkit", () => ({
   ClaimKit: MockClaimKit,
@@ -45,6 +52,10 @@ vi.doMock("../../../src/agent/embedding-service", () => ({
       available: true,
     }),
   },
+}));
+
+vi.doMock("../../../src/agent/knowledge-graph", () => ({
+  knowledgeGraph: mockKnowledgeGraph,
 }));
 
 vi.doMock("../../../src/config/env", () => ({
@@ -78,6 +89,17 @@ describe("ClaimKitAdapter", () => {
         retrievalScore: number;
       };
     }>;
+    verifyRelationship: (
+      source: string,
+      target: string,
+      edgeType?: string,
+    ) => Promise<{
+      verified: boolean;
+      confidence: number;
+      trustTier: "curated" | "observed" | "inferred";
+      evidence?: string;
+      source?: string;
+    }>;
   };
   let claimKitAdapter: { claimKitAdapter: typeof adapter };
 
@@ -94,6 +116,9 @@ describe("ClaimKitAdapter", () => {
       },
     }));
     vi.resetModules();
+    vi.doMock("../../../src/agent/knowledge-graph", () => ({
+      knowledgeGraph: mockKnowledgeGraph,
+    }));
     claimKitAdapter = await import("../../../src/context-engine/adapters/claimkit-adapter");
     adapter = claimKitAdapter.claimKitAdapter as unknown as typeof adapter;
   });
@@ -326,6 +351,59 @@ describe("ClaimKitAdapter", () => {
 
       const result = await adapter.query("question");
       expect(result.answerability).toBe("answerable");
+    });
+  });
+
+  describe("verifyRelationship", () => {
+    it("should return verified true when a graph edge exists", async () => {
+      mockQueryNodes
+        .mockReturnValueOnce([{ id: "source-1", title: "API Gateway" }])
+        .mockReturnValueOnce([{ id: "target-1", title: "Auth Service" }]);
+      mockGetEdgesForNode.mockReturnValueOnce([
+        {
+          id: "edge-1",
+          sourceId: "source-1",
+          targetId: "target-1",
+          type: "depends_on",
+          createdAt: new Date(),
+        },
+      ]);
+
+      const result = await adapter.verifyRelationship("API Gateway", "Auth Service", "depends_on");
+
+      expect(result).toEqual({
+        verified: true,
+        confidence: 1,
+        trustTier: "curated",
+        evidence: "Graph edge: API Gateway -[depends_on]-> Auth Service",
+        source: "knowledge-graph",
+      });
+      expect(mockQueryNodes).toHaveBeenNthCalledWith(1, { search: "API Gateway", limit: 5 });
+      expect(mockQueryNodes).toHaveBeenNthCalledWith(2, { search: "Auth Service", limit: 5 });
+      expect(mockGetEdgesForNode).toHaveBeenCalledWith("source-1", "outgoing");
+    });
+
+    it("should return verified false when no graph edge matches", async () => {
+      mockQueryNodes
+        .mockReturnValueOnce([{ id: "source-1", title: "API Gateway" }])
+        .mockReturnValueOnce([{ id: "target-1", title: "Billing Service" }]);
+      mockGetEdgesForNode.mockReturnValueOnce([
+        {
+          id: "edge-1",
+          sourceId: "source-1",
+          targetId: "other-target",
+          type: "depends_on",
+          createdAt: new Date(),
+        },
+      ]);
+
+      const result = await adapter.verifyRelationship("API Gateway", "Billing Service", "depends_on");
+
+      expect(result).toEqual({
+        verified: false,
+        confidence: 0,
+        trustTier: "inferred",
+      });
     });
   });
 });

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 const mockIngest = vi.fn();
 const mockIsAvailable = vi.fn();
+const mockGetNode = vi.fn();
 
 const mockClaimKitAdapter = {
   ingest: mockIngest,
@@ -21,7 +22,11 @@ vi.doMock("../../../src/agent/codebase-indexer", () => ({
 }));
 
 vi.doMock("../../../src/agent/knowledge-graph", () => ({
-  knowledgeGraph: { getAllNodes: vi.fn().mockReturnValue([]), getAllEdges: vi.fn().mockReturnValue([]) },
+  knowledgeGraph: {
+    getAllNodes: vi.fn().mockReturnValue([]),
+    getAllEdges: vi.fn().mockReturnValue([]),
+    getNode: mockGetNode,
+  },
 }));
 
 async function importIngestion() {
@@ -43,7 +48,11 @@ describe("incremental ingestion", () => {
       codebaseIndexer: { getIndexedFiles: vi.fn().mockReturnValue([]) },
     }));
     vi.doMock("../../../src/agent/knowledge-graph", () => ({
-      knowledgeGraph: { getAllNodes: vi.fn().mockReturnValue([]), getAllEdges: vi.fn().mockReturnValue([]) },
+      knowledgeGraph: {
+        getAllNodes: vi.fn().mockReturnValue([]),
+        getAllEdges: vi.fn().mockReturnValue([]),
+        getNode: mockGetNode,
+      },
     }));
   });
 
@@ -337,6 +346,35 @@ describe("incremental ingestion", () => {
     it("should ingest a single graph edge", async () => {
       mockIsAvailable.mockReturnValue(true);
       mockIngest.mockResolvedValue({ sourceId: "src-e" });
+      mockGetNode.mockImplementation((id: string) => {
+        if (id === "a") {
+          return {
+            id: "a",
+            type: "component",
+            title: "API Gateway",
+            content: "Handles ingress",
+            status: "accepted",
+            tags: [],
+            metadata: {},
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+        }
+        if (id === "b") {
+          return {
+            id: "b",
+            type: "component",
+            title: "Auth Service",
+            content: "Handles auth",
+            status: "accepted",
+            tags: [],
+            metadata: {},
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+        }
+        return null;
+      });
 
       const { ingestSingleGraphEdge } = await importIngestion();
       await ingestSingleGraphEdge({
@@ -349,10 +387,19 @@ describe("incremental ingestion", () => {
       });
 
       expect(mockIngest).toHaveBeenCalledWith(
-        expect.stringContaining("Relationship: a --[depends_on]--> b"),
+        expect.stringContaining("Relationship claim: API Gateway relationship [depends_on] -> Auth Service"),
         {
           relationshipId: "edge-1",
           relationshipType: "depends_on",
+          relationshipClaim: {
+            entity: "API Gateway",
+            attribute: "relationship",
+            value: "[depends_on] -> Auth Service",
+            sourceNodeId: "a",
+            targetNodeId: "b",
+            edgeType: "depends_on",
+            trustTier: "curated",
+          },
           source: "graph",
           trustTier: "curated",
         },
