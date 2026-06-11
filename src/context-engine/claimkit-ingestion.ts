@@ -5,7 +5,7 @@ import { codebaseIndexer } from "../agent/codebase-indexer";
 import type { IndexedFile } from "../agent/codebase-indexer";
 import { knowledgeGraph } from "../agent/knowledge-graph";
 import type { KGNode, KGEdge } from "../agent/knowledge-graph";
-import type { ScoredDocument } from "./types";
+import type { RelationshipClaim, ScoredDocument } from "./types";
 import { env } from "../config/env";
 
 export interface IngestionStats {
@@ -18,6 +18,31 @@ export interface IngestionStats {
 }
 
 const ingestedIds = new Set<string>();
+
+function buildRelationshipClaim(
+  edge: KGEdge,
+  sourceNode: KGNode | null,
+  targetNode: KGNode | null,
+): RelationshipClaim {
+  const sourceTitle = sourceNode?.title ?? edge.sourceId;
+  const targetTitle = targetNode?.title ?? edge.targetId;
+  return {
+    entity: sourceTitle,
+    attribute: "relationship",
+    value: `[${edge.type}] -> ${targetTitle}`,
+    sourceNodeId: edge.sourceId,
+    targetNodeId: edge.targetId,
+    edgeType: edge.type,
+    trustTier: "curated",
+  };
+}
+
+function formatRelationshipClaim(claim: RelationshipClaim, description?: string): string {
+  return [
+    `Relationship claim: ${claim.entity} ${claim.attribute} ${claim.value}`,
+    description ?? "",
+  ].join("\n");
+}
 
 async function ingestDocument(
   doc: ScoredDocument,
@@ -218,10 +243,14 @@ export async function ingestSingleGraphEdge(edge: KGEdge): Promise<void> {
   if (ingestedIds.has(`graph-edge:${edge.id}`)) return;
 
   try {
-    const text = `Relationship: ${edge.sourceId} --[${edge.type}]--> ${edge.targetId}\n${edge.description ?? ""}`;
+    const sourceNode = knowledgeGraph.getNode(edge.sourceId);
+    const targetNode = knowledgeGraph.getNode(edge.targetId);
+    const relationshipClaim = buildRelationshipClaim(edge, sourceNode, targetNode);
+    const text = formatRelationshipClaim(relationshipClaim, edge.description);
     await claimKitAdapter.ingest(text, {
       relationshipId: edge.id,
       relationshipType: edge.type,
+      relationshipClaim,
       source: "graph",
       trustTier: "curated",
     });
@@ -327,10 +356,14 @@ export async function ingestGraphStore(): Promise<IngestionStats> {
         stats.skipped++;
         continue;
       }
-      const text = `Relationship: ${edge.sourceId} --[${edge.type}]--> ${edge.targetId}\n${edge.description ?? ""}`;
+      const sourceNode = knowledgeGraph.getNode(edge.sourceId);
+      const targetNode = knowledgeGraph.getNode(edge.targetId);
+      const relationshipClaim = buildRelationshipClaim(edge, sourceNode, targetNode);
+      const text = formatRelationshipClaim(relationshipClaim, edge.description);
       const { sourceId } = await claimKitAdapter.ingest(text, {
         relationshipId: edge.id,
         relationshipType: edge.type,
+        relationshipClaim,
         source: "graph",
         trustTier: "curated",
       });

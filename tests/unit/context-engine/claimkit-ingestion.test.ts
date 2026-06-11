@@ -349,10 +349,12 @@ describe("ingestScoredDocumentsForQuery", () => {
 
 const mockGetAllNodes = vi.fn();
 const mockGetAllEdges = vi.fn();
+const mockGetNode = vi.fn();
 
 const mockKnowledgeGraph = {
   getAllNodes: mockGetAllNodes,
   getAllEdges: mockGetAllEdges,
+  getNode: mockGetNode,
 };
 
 vi.doMock("../../../src/agent/knowledge-graph", () => ({
@@ -439,6 +441,35 @@ describe("ingestGraphStore", () => {
         updatedAt: new Date("2026-01-02"),
       },
     ]);
+    mockGetNode.mockImplementation((id: string) => {
+      if (id === "kg-component-1") {
+        return {
+          id: "kg-component-1",
+          type: "component",
+          title: "Auth Service",
+          content: "Handles user authentication and authorization",
+          status: "accepted",
+          tags: [],
+          metadata: {},
+          createdAt: new Date("2026-01-01"),
+          updatedAt: new Date("2026-01-15"),
+        };
+      }
+      if (id === "kg-decision-1") {
+        return {
+          id: "kg-decision-1",
+          type: "decision",
+          title: "Use JWT for API auth",
+          content: "Decided to use JWT tokens for API authentication",
+          status: "accepted",
+          tags: [],
+          metadata: {},
+          createdAt: new Date("2026-01-02"),
+          updatedAt: new Date("2026-01-02"),
+        };
+      }
+      return null;
+    });
     mockGetAllEdges.mockReturnValue([
       {
         id: "edge-1",
@@ -492,10 +523,19 @@ describe("ingestGraphStore", () => {
     // Third call: the edge
     expect(mockIngest).toHaveBeenNthCalledWith(
       3,
-      expect.stringContaining("Relationship: kg-component-1 --[implements]--> kg-decision-1"),
+      expect.stringContaining("Relationship claim: Auth Service relationship [implements] -> Use JWT for API auth"),
       {
         relationshipId: "edge-1",
         relationshipType: "implements",
+        relationshipClaim: {
+          entity: "Auth Service",
+          attribute: "relationship",
+          value: "[implements] -> Use JWT for API auth",
+          sourceNodeId: "kg-component-1",
+          targetNodeId: "kg-decision-1",
+          edgeType: "implements",
+          trustTier: "curated",
+        },
         source: "graph",
         trustTier: "curated",
       },
