@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import {
   computeImportance,
   computeQueryRelevance,
+  isStructuralQuery,
   blendScores,
   applyDiversityPenalty,
   rerank,
@@ -82,10 +83,10 @@ describe("computeImportance (reranker)", () => {
     expect(result).toBe(0);
   });
 
-  it("adds 0.1 for graph source", () => {
+  it("adds 0.25 for graph source", () => {
     const doc = makeDoc({ source: "graph" });
     const result = computeImportance(doc);
-    expect(result).toBeGreaterThanOrEqual(0.1);
+    expect(result).toBeGreaterThanOrEqual(0.25);
   });
 
   it("adds 0.05 for knowledge source", () => {
@@ -149,6 +150,25 @@ describe("computeQueryRelevance", () => {
     const doc = makeDoc({ content: text, title: "" });
     const result = computeQueryRelevance(doc, text);
     expect(result).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isStructuralQuery
+// ---------------------------------------------------------------------------
+
+describe("isStructuralQuery", () => {
+  it("detects relation, dependency, blocker, implementation, and connection queries", () => {
+    expect(isStructuralQuery("how does auth relate to notifications?")).toBe(true);
+    expect(isStructuralQuery("what depends on auth?")).toBe(true);
+    expect(isStructuralQuery("what blocks release?")).toBe(true);
+    expect(isStructuralQuery("what service implements notifications?")).toBe(true);
+    expect(isStructuralQuery("relationship between auth and notifications")).toBe(true);
+    expect(isStructuralQuery("connection between auth and notifications")).toBe(true);
+  });
+
+  it("does not classify status lookup as structural", () => {
+    expect(isStructuralQuery("what is the status of IR-82?")).toBe(false);
   });
 });
 
@@ -228,6 +248,52 @@ describe("blendScores", () => {
     };
     const result = blendScores(doc, "irrelevant query", customOpts);
     expect(result).toBeCloseTo(1.0, 10);
+  });
+
+  it("boosts graph documents above knowledge documents for structural queries", () => {
+    const opts: RerankOptions = {
+      baseScoreWeight: 1,
+      importanceWeight: 0,
+      queryRelevanceWeight: 0,
+      diversityPenalty: 0,
+    };
+    const graphDoc = makeDoc({ id: "graph", source: "graph", baseScore: 0.78, score: 0.78 });
+    const knowledgeDoc = makeDoc({
+      id: "knowledge",
+      source: "knowledge",
+      baseScore: 1,
+      score: 1,
+    });
+
+    const graphScore = blendScores(graphDoc, "how does auth relate to notifications?", opts);
+    const knowledgeScore = blendScores(
+      knowledgeDoc,
+      "how does auth relate to notifications?",
+      opts,
+    );
+
+    expect(graphScore).toBeGreaterThan(knowledgeScore);
+  });
+
+  it("does not apply graph structural boost for non-structural queries", () => {
+    const opts: RerankOptions = {
+      baseScoreWeight: 1,
+      importanceWeight: 0,
+      queryRelevanceWeight: 0,
+      diversityPenalty: 0,
+    };
+    const graphDoc = makeDoc({ id: "graph", source: "graph", baseScore: 0.78, score: 0.78 });
+    const knowledgeDoc = makeDoc({
+      id: "knowledge",
+      source: "knowledge",
+      baseScore: 1,
+      score: 1,
+    });
+
+    const graphScore = blendScores(graphDoc, "what is the status of IR-82?", opts);
+    const knowledgeScore = blendScores(knowledgeDoc, "what is the status of IR-82?", opts);
+
+    expect(graphScore).toBeLessThan(knowledgeScore);
   });
 });
 
