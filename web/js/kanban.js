@@ -638,10 +638,13 @@
       if (edge.fromGhost) {
         fromEl = ghostAnchorMap[edge.fromKey];
       } else {
-        fromEl = cardIndex.get(edge.fromKey) || safeFindByDataKey(container, edge.fromKey);
+        // Prefer elements inside the visible container — cardIndex may point
+        // to elements in the hidden view (board vs swimlane) whose
+        // getBoundingClientRect() returns all zeros.
+        fromEl = safeFindByDataKey(container, edge.fromKey) || cardIndex.get(edge.fromKey);
       }
 
-      toEl = cardIndex.get(edge.toKey) || safeFindByDataKey(container, edge.toKey);
+      toEl = safeFindByDataKey(container, edge.toKey) || cardIndex.get(edge.toKey);
 
       if (!fromEl && !toEl) return;
       if (!fromEl || !toEl) return;
@@ -804,6 +807,20 @@
       if (state.el.parentNode) state.el.parentNode.removeChild(state.el);
       delete tileMap[agentRunId];
     }, 5000);
+  }
+
+  /** Update agent tile labels now that cardTitleMap has board data. */
+  function refreshTileTitles() {
+    Object.keys(tileMap).forEach(function (runId) {
+      var state = tileMap[runId];
+      var link = state.el.querySelector(".krun-card");
+      if (!link) return;
+      var cardKey = link.getAttribute("href").replace("#card-", "");
+      var title = cardTitleMap[cardKey];
+      if (title && link.textContent !== title) {
+        link.textContent = title;
+      }
+    });
   }
 
   function stopAgent(agent) {
@@ -1162,6 +1179,9 @@
 
     applyViewToContainers();
     drawDepArrows();
+
+    // Agent tiles may have been created before cardTitleMap was populated
+    refreshTileTitles();
   }
 
   // ─── Swimlane rendering ────────────────────────────────────────────────────

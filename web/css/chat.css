@@ -185,6 +185,12 @@
   background: white;
   border: 1px solid #e5e7eb;
   border-bottom-left-radius: 4px;
+  /* Floor the bubble width so a short thinking-only message (arrives
+     before any content tokens) doesn't render as a squished little box.
+     The thinking-section width:100% then expands to fill this floor.
+     When real markdown content arrives the bubble grows up to its 80%
+     max-width as before. */
+  min-width: min(60%, 520px);
 }
 
 .message.assistant .message-bubble h1,
@@ -315,6 +321,19 @@
   margin: 0.5em 0;
   font-size: 0.9em;
   color: #555;
+  /* Always fill the bubble width — without this, a thinking section that
+     arrives BEFORE the longer markdown response sizes the bubble to its
+     own text width, leaving it squished if the thinking is short.
+     A later .thinking-section with markdown headers/lists expands the
+     bubble (since its children are block elements), which is why "the
+     one below with markdown extends just fine". */
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.message.assistant .message-bubble .thinking-body {
+  /* Match the section's width-filling so wrapping behaves consistently. */
+  box-sizing: border-box;
 }
 
 .message.assistant .message-bubble .thinking-header {

@@ -572,8 +572,9 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
     const { runs } = agentRunDatabase.listRuns({ status: "running", limit: 50 });
     // Only surface runs tied to a kanban card — autonomous-loop runs have no
     // issue linkage and would show as "Unknown" in the agents rail.
+    // Legacy aicoder runs may lack issuePlatform; infer "github" as default.
     const kanbanRuns = runs.filter(
-      (run) => run.issuePlatform && run.issueRepo && run.issueId,
+      (run) => (run.issuePlatform || run.issueRepo) && run.issueRepo && run.issueId,
     );
     return kanbanRuns.map((run) => {
       let lastTool: string | null = null;
@@ -592,8 +593,8 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
         agent: (run.agentType || "claude") as KanbanAgent["agent"],
         model: run.model,
         status: "running" as const,
-        cardKey: run.issuePlatform && run.issueRepo && run.issueId
-          ? `${run.issuePlatform}:${run.issueRepo}:${run.issueId}`
+        cardKey: (run.issuePlatform || "github") && run.issueRepo && run.issueId
+          ? `${run.issuePlatform || "github"}:${run.issueRepo}:${run.issueId}`
           : null,
         startedAt: run.startedAt,
         lastActivityAt: run.lastActivityAt,
@@ -633,8 +634,8 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
       dbByPath.set(path.resolve(run.worktreePath!), {
         runId: run.id,
         branch: run.branch ?? "",
-        cardKey: run.issuePlatform && run.issueRepo && run.issueId
-          ? `${run.issuePlatform}:${run.issueRepo}:${run.issueId}`
+        cardKey: (run.issuePlatform || "github") && run.issueRepo && run.issueId
+          ? `${run.issuePlatform || "github"}:${run.issueRepo}:${run.issueId}`
           : null,
       });
     }
@@ -1216,8 +1217,12 @@ export async function kanbanRoutes(fastify: FastifyInstance) {
     let agentRun: import("../agent-runs/types").AgentRunWithSteps | null = null;
     try {
       const runs = agentRunDatabase.listRuns({ status: undefined, limit: 1000 });
+      // Try exact match first (platform + repo + id), then fall back to
+      // repo + id only for legacy runs missing issuePlatform (e.g. aicoder).
       const match = runs.runs.find(
         (r) => r.issuePlatform === platform && r.issueRepo === sanitizedRepo && r.issueId === id,
+      ) ?? runs.runs.find(
+        (r) => !r.issuePlatform && r.issueRepo === sanitizedRepo && r.issueId === id,
       );
       if (match) {
         const withSteps = agentRunDatabase.getRunWithSteps(match.id);

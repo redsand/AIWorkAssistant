@@ -1,5 +1,8 @@
 .tool-progress {
-  margin-bottom: 8px;
+  /* Top + bottom margin so the panel sits visually separated from the
+     user prompt above and the assistant response below — previously the
+     small bottom-only margin made it bleed into adjacent messages. */
+  margin: 12px 0 12px;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   overflow: hidden;

@@ -511,17 +511,13 @@ async function executeSend(message, { resend = false } = {}) {
   enableAutoScroll();
   showTyping(true);
   const progressElRef = { progressEl: null };
-  const immediateProgress = createToolProgress();
-  progressElRef.progressEl = immediateProgress.progressEl;
-  document.getElementById("chatMessages").appendChild(immediateProgress.progressEl);
-  document.getElementById("processingIndicator").classList.add("active");
-  const statusEl = document.getElementById("processingStatusText");
-  if (statusEl) statusEl.textContent = "Processing your request...";
-  scrollChatToBottom();
 
   const { disconnectLive } = await import("./live.js");
   disconnectLive();
 
+  // Append user prompt FIRST so the tool-progress panel renders BELOW
+  // it. Previously the tool-progress was appended before the user message
+  // was added, putting the tools view above the prompt in the chat log.
   if (resend) {
     const messagesDiv = document.getElementById("chatMessages");
     const userMessages = messagesDiv.querySelectorAll(".message.user");
@@ -536,6 +532,16 @@ async function executeSend(message, { resend = false } = {}) {
   } else {
     addMessage(message, "user");
   }
+
+  // Now that the user message is in the DOM, append the tool-progress
+  // panel beneath it.
+  const immediateProgress = createToolProgress();
+  progressElRef.progressEl = immediateProgress.progressEl;
+  document.getElementById("chatMessages").appendChild(immediateProgress.progressEl);
+  document.getElementById("processingIndicator").classList.add("active");
+  const statusEl = document.getElementById("processingStatusText");
+  if (statusEl) statusEl.textContent = "Processing your request...";
+  scrollChatToBottom();
 
   if (activeStreamController) {
     markStreamingMessageInterrupted();

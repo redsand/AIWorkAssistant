@@ -203,6 +203,25 @@ const envSchema = z.object({
     .string()
     .transform((s) => s === "true")
     .default("false"),
+  // Master safeguard: when false, RAG/ClaimKit DO NOT retrieve or ingest
+  // anything derived from local files on disk in this folder. Specifically:
+  //   - codebaseIndexer.search() is skipped during chat retrieval
+  //   - KnowledgeEntry rows with source="file_read" are filtered out of
+  //     knowledge retrieval results
+  //   - ingestSingleKnowledgeEntry() refuses file_read entries so the
+  //     content never reaches ClaimKit's claim store
+  //   - ingestKnowledgeStore() at startup filters out file_read entries
+  // Use case: running this assistant in its own source folder, where the
+  // user does NOT want their own code or local docs (hermes references,
+  // architecture notes, etc.) to be part of RAG/CK context. Only data
+  // received through chat tool calls (Jira issues, calendar events, web
+  // searches, etc.) becomes retrieval material. Default false for that
+  // safety; set to true when running against a project folder you DO
+  // want indexed.
+  RAG_INCLUDE_LOCAL_SOURCES: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
   RAG_EMBEDDING_MODEL: z.string().default(""),
   EMBEDDING_PROVIDER: z.enum(["auto","opencode","zai","ollama","openai"]).default("auto"),
   EMBEDDING_MODEL: z.string().default("nomic-embed-text"),

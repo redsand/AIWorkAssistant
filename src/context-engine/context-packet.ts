@@ -933,15 +933,28 @@ export async function assembleContextPacket(
 async function retrieveAllStores(query: string): Promise<ScoredDocument[]> {
   const docs: ScoredDocument[] = [];
 
+  // Safeguard against indexing this assistant's own source folder when
+  // running locally. See RAG_INCLUDE_LOCAL_SOURCES in env.ts.
+  const includeLocal = env.RAG_INCLUDE_LOCAL_SOURCES;
+
   const [
-    knowledgeResults = [],
+    knowledgeResultsRaw = [],
     codebaseResults = [],
     graphResults = [],
   ] = await Promise.all([
     Promise.resolve().then(() => knowledgeStore.search(query, { limit: 10 })).catch(() => [] as ReturnType<typeof knowledgeStore.search>),
-    Promise.resolve().then(() => codebaseIndexer.search(query, { limit: 10 })).catch(() => [] as ReturnType<typeof codebaseIndexer.search>),
+    includeLocal
+      ? Promise.resolve().then(() => codebaseIndexer.search(query, { limit: 10 })).catch(() => [] as ReturnType<typeof codebaseIndexer.search>)
+      : Promise.resolve([] as ReturnType<typeof codebaseIndexer.search>),
     Promise.resolve().then(() => knowledgeGraph.queryNodes({ search: query, limit: 10 })).catch(() => [] as ReturnType<typeof knowledgeGraph.queryNodes>),
   ]);
+
+  // Strip file_read knowledge entries when local sources are excluded.
+  // Other knowledge sources (web_search, web_page, conversation, manual,
+  // tool results) are user-data and remain available.
+  const knowledgeResults = includeLocal
+    ? knowledgeResultsRaw
+    : knowledgeResultsRaw.filter((r) => r.entry.source !== "file_read");
 
   for (const r of knowledgeResults) {
     docs.push({

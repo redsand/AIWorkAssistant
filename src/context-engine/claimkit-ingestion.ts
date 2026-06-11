@@ -86,6 +86,14 @@ export async function ingestSingleKnowledgeEntry(entry: KnowledgeEntry): Promise
   if (!claimKitAdapter.isAvailable()) return;
   if (ingestedIds.has(`knowledge:${entry.id}`)) return;
 
+  // Safeguard: when RAG_INCLUDE_LOCAL_SOURCES is off, never push
+  // file_read content (the agent calling local.read_file in chat) into
+  // ClaimKit's claim store. Other knowledge sources (web_search, manual,
+  // conversation, etc.) remain ingestable. See env.ts for context.
+  if (!env.RAG_INCLUDE_LOCAL_SOURCES && entry.source === "file_read") {
+    return;
+  }
+
   try {
     const text = `${entry.title}\n\n${entry.content}`;
     await claimKitAdapter.ingest(text, {
@@ -232,8 +240,19 @@ export async function ingestKnowledgeStore(): Promise<IngestionStats> {
     return stats;
   }
 
-  const documents: KnowledgeEntry[] = knowledgeStore.getAllEntries();
+  const allDocuments: KnowledgeEntry[] = knowledgeStore.getAllEntries();
+  // Same safeguard as ingestSingleKnowledgeEntry: skip file_read entries
+  // when local sources are excluded. Keeps Jira / web / conversation /
+  // manual entries flowing.
+  const documents = env.RAG_INCLUDE_LOCAL_SOURCES
+    ? allDocuments
+    : allDocuments.filter((d) => d.source !== "file_read");
   stats.total = documents.length;
+  if (documents.length < allDocuments.length) {
+    console.log(
+      `[ClaimKit Ingestion] Skipping ${allDocuments.length - documents.length} file_read entries (RAG_INCLUDE_LOCAL_SOURCES=false)`,
+    );
+  }
 
   for (const doc of documents) {
     try {

@@ -2413,6 +2413,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     mode: `issue:${issueKey}`,
     model: MODEL || null,
     provider: API_PROVIDER || AGENT,
+    issuePlatform: (cfg.source === "gitlab" ? "gitlab" : cfg.source === "jira" ? "jira" : cfg.source === "work_items" ? "work_items" : "github"),
     issueId: issueKey,
     issueRepo: cfg.repo || item.repo || process.env.AICODER_REPO || "",
     worktreePath: WORKSPACE,
