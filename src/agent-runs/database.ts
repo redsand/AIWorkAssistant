@@ -218,6 +218,45 @@ class AgentRunDatabase {
       .run(errorMessage, now, now, id);
   }
 
+  /**
+   * Update tool_loop_count + last_activity_at without changing status.
+   * Called inside the model/tool loop so the counter is persisted even
+   * when the run later fails, is cancelled, or stalls. The completeRun
+   * path also writes the counter; this ensures the value is current at
+   * every step rather than only on clean completion.
+   */
+  updateToolLoopCount(id: string, toolLoopCount: number): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE agent_runs SET tool_loop_count = ?, last_activity_at = ? WHERE id = ?`,
+      )
+      .run(toolLoopCount, now, id);
+  }
+
+  /**
+   * Mark runs that have gone silent as failed. Catches the pattern from
+   * session 0a6a8d8d (2026-06-11) where runs entered the model loop and
+   * stopped responding without ever calling completeRun / failRun, so
+   * the dashboard showed them as "running" indefinitely.
+   *
+   * Returns the number of rows reaped.
+   */
+  reapStaleRunningRuns(staleAfterMs: number): number {
+    const cutoffIso = new Date(Date.now() - staleAfterMs).toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE agent_runs
+         SET status = 'failed',
+             error_message = COALESCE(error_message, 'Reaped: no activity for ' || ? || 's'),
+             completed_at = ?,
+             cancelled_at = COALESCE(cancelled_at, ?)
+         WHERE status = 'running' AND last_activity_at < ?`,
+      )
+      .run(Math.round(staleAfterMs / 1000), new Date().toISOString(), new Date().toISOString(), cutoffIso);
+    return result.changes;
+  }
+
   cancelRun(id: string, errorMessage = "Run cancelled by user"): void {
     const now = new Date().toISOString();
     this.db

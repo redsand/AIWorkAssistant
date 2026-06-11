@@ -56,6 +56,7 @@ import {
 import { startTunnel } from "./integrations/file/tunnel";
 import { startCalendarScheduler } from "./scheduler/calendar-midnight";
 import { startKanbanCleanupScheduler } from "./scheduler/kanban-worktree-cleanup";
+import { startStaleAgentRunReaper } from "./agent-runs/reaper";
 import { cronEngine } from "./scheduler/cron-engine";
 import { initializeMCP } from "./integrations/mcp";
 import { codebaseIndexer } from "./agent/codebase-indexer";
@@ -553,6 +554,7 @@ async function start() {
     const tunnelUrl = await startTunnel();
     startCalendarScheduler();
     startKanbanCleanupScheduler();
+    startStaleAgentRunReaper();
     if (env.CRON_ENABLED) {
       cronEngine.start();
     }

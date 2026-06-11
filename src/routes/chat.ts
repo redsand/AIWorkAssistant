@@ -16,7 +16,7 @@ import { todoManager } from "../agent/todo-manager";
 import { knowledgeStore } from "../agent/knowledge-store";
 import { knowledgeGraph } from "../agent/knowledge-graph";
 import { codebaseIndexer } from "../agent/codebase-indexer";
-import { dispatchToolCall, resolveToolName } from "../agent/tool-dispatcher";
+import { dispatchToolCall, resolveToolName, recordAndCheckIdenticalCall } from "../agent/tool-dispatcher";
 import { toolCallCache } from "../memory/tool-cache";
 import { AGENT_MODES } from "../config/constants";
 import type { Tool, ChatMessage } from "../agent/opencode-client";
@@ -711,6 +711,20 @@ async function dispatchToolCallCached(
 ): Promise<{ result: any; contextValue: any; cached: boolean }> {
   const canonical = resolveToolName(toolName);
 
+  // Guardrail must fire BEFORE the cache lookup. The 0a6a8d8d incident
+  // was 14 identical cached calls in 5 minutes — without this check, the
+  // cache served instantly and the model loop ran free.
+  if (sessionId) {
+    const guard = recordAndCheckIdenticalCall(sessionId, canonical, params);
+    if (guard.blocked) {
+      console.warn(
+        `[Chat] identical-call guardrail blocked '${canonical}' (count=${guard.count}) on session ${sessionId}`,
+      );
+      const blocked = { success: false, error: guard.error };
+      return { result: blocked, contextValue: blocked, cached: false };
+    }
+  }
+
   if (sessionId) {
     await toolCallCache.warmSession(sessionId);
     const hit = toolCallCache.get(sessionId, canonical, params);
@@ -1080,6 +1094,10 @@ async function runChatJob(
     while (toolCalls && toolCalls.length > 0) {
       assertJobActive(job);
       loopCount++;
+      // Persist counter on every iteration so stalled/failed runs still
+      // record how deep the loop went. completeRun also writes it, but
+      // that path is skipped on uncatchable failures.
+      try { if (runId) agentRunDatabase.updateToolLoopCount(runId, loopCount); } catch (e) { console.error("[AgentRuns]", e); }
       if (loopCount > MAX_TOOL_LOOPS) {
         console.warn(`[Chat/Job] Tool loop limit (${MAX_TOOL_LOOPS}) reached for ${sessionId}`);
         throw new ToolLoopLimitError(MAX_TOOL_LOOPS);
@@ -1483,6 +1501,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       while (response.toolCalls && response.toolCalls.length > 0) {
         loopCount++;
+        try { if (runId) agentRunDatabase.updateToolLoopCount(runId, loopCount); } catch (e) { console.error("[AgentRuns]", e); }
 
         if (loopCount > MAX_TOOL_LOOPS) {
           console.warn(
