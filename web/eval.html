@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Calibration Eval — AI Work Assistant</title>
+    <link rel="stylesheet" href="/css/base.css" />
+    <link rel="stylesheet" href="/css/eval.css" />
+    <script src="/js/eval.js?v=1" defer></script>
+  </head>
+  <body>
+    <div class="eval-page">
+      <header class="eval-header">
+        <div class="eval-header-left">
+          <a href="/" class="back-link">&larr; Back</a>
+          <div>
+            <div class="eval-title">Calibration Eval Set</div>
+            <div class="eval-subtitle">
+              Phase 2 — RAG vs ClaimKit on curated queries, rated 0–4
+            </div>
+          </div>
+        </div>
+        <div class="eval-header-right">
+          <button id="add-case-btn" class="primary-btn">+ Add case</button>
+          <button id="run-all-btn" class="secondary-btn" title="Run RAG + ClaimKit on every unrun case">
+            Run all unrun
+          </button>
+        </div>
+      </header>
+
+      <div id="error-banner" class="error-banner" hidden></div>
+
+      <!-- Stats row -->
+      <section class="stats-row">
+        <div class="stat-chip">
+          <div class="stat-value" id="stat-cases">—</div>
+          <div class="stat-label">Cases</div>
+        </div>
+        <div class="stat-chip">
+          <div class="stat-value" id="stat-runs">—</div>
+          <div class="stat-label">Runs</div>
+        </div>
+        <div class="stat-chip">
+          <div class="stat-value" id="stat-ratings">—</div>
+          <div class="stat-label">Ratings</div>
+        </div>
+        <div class="stat-chip">
+          <div class="stat-value" id="stat-pairs-ck">—</div>
+          <div class="stat-label">CK pairs (conf, rating)</div>
+        </div>
+      </section>
+
+      <!-- Filter -->
+      <section class="filter-row">
+        <label for="segment-filter">Filter segment:</label>
+        <select id="segment-filter">
+          <option value="">All</option>
+        </select>
+      </section>
+
+      <!-- Cases list -->
+      <section class="cases-section">
+        <h2 class="section-title">Cases</h2>
+        <div id="cases-list" class="cases-list">
+          <div class="empty-state">No cases yet — click "Add case" to start.</div>
+        </div>
+      </section>
+
+      <!-- Detail panel -->
+      <section id="detail-panel" class="detail-panel" hidden>
+        <h2 class="section-title">Case detail</h2>
+        <div id="detail-body"></div>
+      </section>
+    </div>
+
+    <!-- Add-case modal -->
+    <div id="add-case-modal" class="modal" hidden>
+      <div class="modal-backdrop"></div>
+      <div class="modal-body">
+        <h3>Add eval case</h3>
+        <label>
+          Query
+          <textarea id="new-case-query" rows="3" placeholder="The exact query you want to test"></textarea>
+        </label>
+        <label>
+          Segment
+          <select id="new-case-segment"></select>
+        </label>
+        <label>
+          Expected answer (optional)
+          <textarea id="new-case-expected" rows="2" placeholder="What the right answer looks like — used as reference during rating"></textarea>
+        </label>
+        <label>
+          Notes (optional)
+          <textarea id="new-case-notes" rows="2"></textarea>
+        </label>
+        <div class="modal-actions">
+          <button id="add-case-cancel" class="secondary-btn">Cancel</button>
+          <button id="add-case-save" class="primary-btn">Save case</button>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

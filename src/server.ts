@@ -45,6 +45,7 @@ import { kanbanRoutes } from "./routes/kanban";
 import { errorsRoutes } from "./routes/errors";
 import { claimKitAdapter } from "./context-engine/adapters/claimkit-adapter";
 import { comparisonRoutes } from "./comparison-runs/api";
+import { evalCalibrationRoutes } from "./eval/calibration/api";
 import { ingestKnowledgeStore, ingestGraphStore } from "./context-engine/claimkit-ingestion";
 import { errorLog } from "./observability/error-log";
 import {
@@ -131,6 +132,7 @@ export async function buildServer() {
   await server.register(musicianRoutes, { prefix: "/api/musician" });
   await server.register(recipeRoutes);
   await server.register(comparisonRoutes, { prefix: "/api/comparison" });
+  await server.register(evalCalibrationRoutes, { prefix: "/api/eval-calibration" });
   await server.register(repoDashboardRoutes, { prefix: "/api/repo-dashboard" });
   await server.register(kanbanRoutes, { prefix: "/api/kanban" });
   await server.register(errorsRoutes, { prefix: "/api" });
@@ -159,6 +161,11 @@ export async function buildServer() {
   // Serve the comparison dashboard at /comparison (no .html extension)
   server.get("/comparison", async (_request, reply) => {
     return reply.sendFile("comparison.html");
+  });
+
+  // Serve the calibration eval set at /eval (no .html extension)
+  server.get("/eval", async (_request, reply) => {
+    return reply.sendFile("eval.html");
   });
 
   // Serve the repository issue dashboard at /dashboard (no .html extension)
