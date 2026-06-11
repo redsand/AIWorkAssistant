@@ -226,6 +226,7 @@ const envSchema = z.object({
   EMBEDDING_PROVIDER: z.enum(["auto","opencode","zai","ollama","openai"]).default("auto"),
   EMBEDDING_MODEL: z.string().default("nomic-embed-text"),
   EMBEDDING_OLLAMA_FALLBACK_MODEL: z.string().default("nomic-embed-text"),
+  EMBEDDING_ALLOW_PROVIDER_SWITCH: z.coerce.boolean().default(false),
   RAG_MAX_FILE_SIZE_KB: z.coerce.number().default(256),
   RAG_CHUNK_SIZE: z.coerce.number().default(500),
   RAG_CHUNK_OVERLAP: z.coerce.number().default(50),

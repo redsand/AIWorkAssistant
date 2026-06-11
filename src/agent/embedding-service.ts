@@ -20,6 +20,12 @@ class EmbeddingService {
   private lastCheck = 0;
   private checkIntervalMs = 5 * 60 * 1000;
   private pullAttempted = false;
+  // Locked on first successful embed. Subsequent results with a different
+  // dimension are refused — silent provider switches (e.g. Ollama 768d →
+  // OpenAI 1536d) otherwise corrupt every vector store that was built
+  // against the locked dim. Reset only by restarting the process, or
+  // opted around with EMBEDDING_ALLOW_PROVIDER_SWITCH=true.
+  private lockedDimension: number | null = null;
 
   constructor() {
     // Resolve embedding provider: explicit EMBEDDING_PROVIDER overrides everything;
@@ -89,12 +95,11 @@ class EmbeddingService {
     }
 
     try {
-      switch (this.provider) {
-        case "ollama":
-          return await this.ollamaEmbed(text);
-        default:
-          return await this.openAICompatibleEmbed(text);
-      }
+      const result =
+        this.provider === "ollama"
+          ? await this.ollamaEmbed(text)
+          : await this.openAICompatibleEmbed(text);
+      return this.enforceLockedDimension(result);
     } catch (error) {
       console.error(
         `[Embedding] ${this.provider} embed failed:`,
@@ -104,18 +109,38 @@ class EmbeddingService {
     }
   }
 
+  private enforceLockedDimension(
+    result: EmbeddingResult,
+  ): EmbeddingResult | null {
+    const dim = result.embedding.length;
+    if (this.lockedDimension === null) {
+      this.lockedDimension = dim;
+      return result;
+    }
+    if (dim !== this.lockedDimension) {
+      console.error(
+        `[Embedding] Dimension mismatch: locked=${this.lockedDimension} got=${dim} ` +
+          `provider=${this.provider} model=${this.model}. Returning null to protect ` +
+          `vector stores. If you intentionally changed the embedding model, restart ` +
+          `the server (or set EMBEDDING_ALLOW_PROVIDER_SWITCH=true and rebuild your ` +
+          `indexes).`,
+      );
+      return null;
+    }
+    return result;
+  }
+
   async embedBatch(texts: string[]): Promise<(EmbeddingResult | null)[]> {
     if (!(await this.isAvailable())) {
       return texts.map(() => null);
     }
 
     try {
-      switch (this.provider) {
-        case "ollama":
-          return await this.ollamaEmbedBatch(texts);
-        default:
-          return await this.openAICompatibleEmbedBatch(texts);
-      }
+      const results =
+        this.provider === "ollama"
+          ? await this.ollamaEmbedBatch(texts)
+          : await this.openAICompatibleEmbedBatch(texts);
+      return results.map((r) => (r === null ? null : this.enforceLockedDimension(r)));
     } catch (error) {
       console.error(
         `[Embedding] ${this.provider} batch embed failed:`,
@@ -152,7 +177,9 @@ class EmbeddingService {
       this.available = false;
     }
 
-    // If primary provider failed, try fallback (OpenAI-compatible endpoint)
+    // If primary provider failed, try fallback (OpenAI-compatible endpoint).
+    // Blocked once a dimension is locked, because swapping providers under a
+    // populated vector store guarantees dim-mismatch errors at query time.
     if (!this.available && this.fallbackBaseUrl !== this.baseUrl && this.fallbackApiKey) {
       try {
         this.available = await this.checkOpenAICompatible(
@@ -161,13 +188,24 @@ class EmbeddingService {
           this.fallbackModel,
         );
         if (this.available) {
-          console.log(
-            `[Embedding] Primary provider ${this.provider} unavailable — using OpenAI-compatible fallback (${this.fallbackModel})`,
-          );
-          this.baseUrl = this.fallbackBaseUrl;
-          this.apiKey = this.fallbackApiKey;
-          this.model = this.fallbackModel;
-          this.provider = "opencode";
+          if (this.lockedDimension === null || env.EMBEDDING_ALLOW_PROVIDER_SWITCH) {
+            console.log(
+              `[Embedding] Primary provider ${this.provider} unavailable — using OpenAI-compatible fallback (${this.fallbackModel})`,
+            );
+            this.baseUrl = this.fallbackBaseUrl;
+            this.apiKey = this.fallbackApiKey;
+            this.model = this.fallbackModel;
+            this.provider = "opencode";
+          } else {
+            console.warn(
+              `[Embedding] Primary provider ${this.provider} unavailable; fallback ` +
+                `(${this.fallbackModel}) is reachable but provider switch is blocked ` +
+                `because dimension is locked at ${this.lockedDimension}. Set ` +
+                `EMBEDDING_ALLOW_PROVIDER_SWITCH=true and rebuild your vector indexes ` +
+                `to opt in.`,
+            );
+            this.available = false;
+          }
         }
       } catch {
         // fallback also failed
@@ -175,8 +213,8 @@ class EmbeddingService {
     }
 
     // Last-resort: local Ollama. Always reachable and any loaded model can
-    // produce embeddings via /api/embed. Keeps ClaimKit working even when all
-    // cloud providers are down. checkOllamaEmbed auto-pulls if the model is missing.
+    // produce embeddings via /api/embed. Same dimension-lock guard as above —
+    // a silent swap to a different-dim model would corrupt populated stores.
     if (!this.available && env.OLLAMA_API_URL && this.provider !== "ollama") {
       try {
         const ollamaAvailable = await this.checkOllamaEmbed(
@@ -184,14 +222,24 @@ class EmbeddingService {
           this.ollamaFallbackModel,
         );
         if (ollamaAvailable) {
-          console.log(
-            `[Embedding] Cloud providers unavailable — falling back to Ollama (${this.ollamaFallbackModel})`,
-          );
-          this.baseUrl = env.OLLAMA_API_URL;
-          this.apiKey = env.OLLAMA_API_KEY;
-          this.model = this.ollamaFallbackModel;
-          this.provider = "ollama";
-          this.available = true;
+          if (this.lockedDimension === null || env.EMBEDDING_ALLOW_PROVIDER_SWITCH) {
+            console.log(
+              `[Embedding] Cloud providers unavailable — falling back to Ollama (${this.ollamaFallbackModel})`,
+            );
+            this.baseUrl = env.OLLAMA_API_URL;
+            this.apiKey = env.OLLAMA_API_KEY;
+            this.model = this.ollamaFallbackModel;
+            this.provider = "ollama";
+            this.available = true;
+          } else {
+            console.warn(
+              `[Embedding] All cloud providers unavailable; Ollama fallback ` +
+                `(${this.ollamaFallbackModel}) is reachable but provider switch is ` +
+                `blocked because dimension is locked at ${this.lockedDimension}. ` +
+                `Set EMBEDDING_ALLOW_PROVIDER_SWITCH=true and rebuild vector indexes ` +
+                `to opt in.`,
+            );
+          }
         }
       } catch {
         // Ollama also unavailable

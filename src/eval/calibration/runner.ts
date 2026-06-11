@@ -97,13 +97,19 @@ async function runClaimKit(c: EvalCase): Promise<{
 }> {
   const start = Date.now();
   try {
+    // Explicit init — don't rely on a side effect of the RAG path. When
+    // RAG runs are reused from a prior batch, runRagOnly() is skipped
+    // and ClaimKit otherwise stays uninitialized.
+    if (!claimKitAdapter.isAvailable()) {
+      await claimKitAdapter.initialize();
+    }
     if (!claimKitAdapter.isAvailable()) {
       return {
         answer: null,
         confidence: null,
         confidenceTrace: null,
         processingTimeMs: Date.now() - start,
-        errorMessage: "ClaimKit adapter not available",
+        errorMessage: "ClaimKit adapter not available after init",
       };
     }
     const ck = await claimKitAdapter.query(c.query);
@@ -136,9 +142,9 @@ async function groundRagAnswer(
   ragAnswer: string,
 ): Promise<{ hallucinationRate: number | null; grounded: boolean | null }> {
   try {
-    if (!claimKitAdapter.isAvailable() || !ragAnswer.trim()) {
-      return { hallucinationRate: null, grounded: null };
-    }
+    if (!ragAnswer.trim()) return { hallucinationRate: null, grounded: null };
+    if (!claimKitAdapter.isAvailable()) await claimKitAdapter.initialize();
+    if (!claimKitAdapter.isAvailable()) return { hallucinationRate: null, grounded: null };
     const packet = await assembleContextPacket({
       mode: "engineering",
       query,
