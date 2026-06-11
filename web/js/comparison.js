@@ -496,19 +496,54 @@
           if (c.winner_reason) {
             diagHtml += "<div class='diag-row'><span class='diag-label'>Winner reason:</span> <span class='diag-value'>" + c.winner_reason + "</span></div>";
           }
-          if (c.ck_confidence !== null && c.overall_winner === "rag") {
+
+          // CK retrieval signals — shown for every case so users can audit
+          // both wins and losses, not just RAG wins.
+          if (c.ck_confidence !== null) {
             if (c.ck_retrieval_score !== null) {
               diagHtml += "<div class='diag-row'><span class='diag-label'>CK retrieval score:</span> <span class='diag-value'>" + c.ck_retrieval_score.toFixed(3) + "</span></div>";
             }
             if (c.ck_source_count !== null) {
-              diagHtml += "<div class='diag-row'><span class='diag-label'>CK sources:</span> <span class='diag-value'>" + c.ck_source_count + "</span></div>";
+              diagHtml += "<div class='diag-row'><span class='diag-label'>CK sources used:</span> <span class='diag-value'>" + c.ck_source_count + "</span></div>";
+            }
+            if (c.ck_claim_count !== null) {
+              diagHtml += "<div class='diag-row'><span class='diag-label'>Claims compiled:</span> <span class='diag-value'>" + c.ck_claim_count + "</span></div>";
             }
             if (c.ck_answer) {
-              diagHtml += "<div class='diag-row'><span class='diag-label'>CK answer:</span> <span class='diag-value diag-answer'>" + c.ck_answer.substring(0, 300) + "</span></div>";
+              diagHtml += "<div class='diag-row'><span class='diag-label'>CK answer:</span> <span class='diag-value diag-answer'>" + escapeHtml(c.ck_answer) + "</span></div>";
             }
             if (c.ck_missing_evidence) {
-              diagHtml += "<div class='diag-row'><span class='diag-label'>Missing evidence:</span> <span class='diag-value'>" + c.ck_missing_evidence + "</span></div>";
+              diagHtml += "<div class='diag-row'><span class='diag-label'>Missing evidence:</span> <span class='diag-value'>" + escapeHtml(c.ck_missing_evidence) + "</span></div>";
             }
+          }
+
+          // Token-cost story per case (H: makes the savings auditable per query).
+          var savingsBits = [];
+          savingsBits.push("RAG <strong>" + formatTokens(c.rag_tokens) + "</strong>");
+          if (c.ck_section_tokens !== null && c.ck_section_tokens !== undefined) {
+            savingsBits.push("CK <strong>" + formatTokens(c.ck_section_tokens) + "</strong>");
+            var delta = c.rag_tokens - c.ck_section_tokens;
+            var color = delta > 0 ? "diag-savings-good" : "diag-savings-bad";
+            savingsBits.push("<span class='" + color + "'>Δ " + formatTokens(delta) + "</span>");
+          }
+          diagHtml += "<div class='diag-row'><span class='diag-label'>Tokens:</span> <span class='diag-value'>" + savingsBits.join(" · ") + "</span></div>";
+
+          // Collaboration features that fired on this case (Ideas 2-5).
+          var collabBits = [];
+          if (c.citation_boost_applied > 0) collabBits.push("citation-boost ×" + c.citation_boost_applied);
+          if (c.gap_fill_docs_added > 0) collabBits.push("gap-fill +" + c.gap_fill_docs_added + " docs");
+          if (c.entity_claims_injected > 0) collabBits.push("entity-claims " + c.entity_claims_injected);
+          if (c.contradictions_flagged > 0) collabBits.push("⚠️ contradictions " + c.contradictions_flagged);
+          if (collabBits.length > 0) {
+            diagHtml += "<div class='diag-row'><span class='diag-label'>Collaboration:</span> <span class='diag-value'>" + collabBits.join(" · ") + "</span></div>";
+          }
+
+          // Grounding result (Idea 1: live shadow grounding).
+          if (c.rag_hallucination_rate !== null) {
+            var groundBadge = c.rag_grounded
+              ? "<span class='diag-savings-good'>grounded</span>"
+              : "<span class='diag-savings-bad'>" + (c.rag_hallucination_rate * 100).toFixed(0) + "% unsupported</span>";
+            diagHtml += "<div class='diag-row'><span class='diag-label'>Grounding:</span> <span class='diag-value'>" + groundBadge + "</span></div>";
           }
 
           var issueBtn = "";
@@ -558,6 +593,27 @@
     renderStat("stat-gap-fill", c.gapFillTriggered || 0);
     renderStat("stat-entity-inject", c.entityClaimsInjected || 0);
     renderStat("stat-contradictions", c.contradictionsFlagged || 0);
+  }
+
+  function formatTokens(n) {
+    if (!n || !Number.isFinite(n)) return "—";
+    if (Math.abs(n) >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
+    if (Math.abs(n) >= 1_000) return (n / 1_000).toFixed(1) + "k";
+    return Math.round(n).toString();
+  }
+
+  /**
+   * Token savings panel — the headline cost story. Compares average RAG
+   * context size against the ClaimKit evidence-packet size and surfaces
+   * the cumulative wins.
+   */
+  function renderTokenSavingsPanel(stats) {
+    var ts = stats.tokenSavings || {};
+    renderStat("stat-avg-rag-tokens", formatTokens(ts.avgRagTokens));
+    renderStat("stat-avg-ck-tokens", formatTokens(ts.avgCkTokens));
+    renderStat("stat-avg-savings", formatTokens(ts.avgSavingsPerQuery));
+    renderStat("stat-total-saved", formatTokens(ts.totalTokensSaved));
+    renderStat("stat-tokens-measured", ts.measuredCases || 0);
   }
 
   function renderTruthfulnessPanel(stats) {
@@ -610,6 +666,9 @@
         renderStat("stat-rag-wins", stats.overallWins.rag);
         renderStat("stat-ck-conf", Math.round(stats.avgCkConfidence * 100) + "%");
         renderStat("stat-answerability", Math.round(stats.avgAnswerabilityRate * 100) + "%");
+
+        // Token savings panel — the cost story
+        renderTokenSavingsPanel(stats);
 
         // Truthfulness panel (Idea 1)
         renderTruthfulnessPanel(stats);

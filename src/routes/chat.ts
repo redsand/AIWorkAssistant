@@ -1892,6 +1892,13 @@ export async function chatRoutes(fastify: FastifyInstance) {
           });
           messages = packet.messages;
           groundingHandle = packet.groundingHandle;
+          // Idea 3 + I: surface cross-source contradictions to the UI so the
+          // user can resolve the conflict before relying on the agent's
+          // answer. The agent already gets this in its system prompt; the
+          // event gives the frontend a chance to render a banner.
+          if (packet.contradictions && packet.contradictions.length > 0) {
+            sendEvent("contradictions", { items: packet.contradictions });
+          }
           console.log(
             `[ContextEngine] Packet assembled: ${packet.diagnostics.finalMessageCount} messages, ${packet.totalTokens} tokens, compression=${packet.diagnostics.compressionRatio.toFixed(2)}, budget=${JSON.stringify(packet.diagnostics.budgetUtilization)}, timings=${JSON.stringify(packet.diagnostics.stageTimings)}`,
           );

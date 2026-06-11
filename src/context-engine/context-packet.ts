@@ -232,6 +232,7 @@ export async function assembleContextPacket(
   let gapFillDocsAdded = 0;
   let entityClaimsInjectedCount = 0;
   let contradictionsFlaggedCount = 0;
+  let contradictionDetails: string[] = [];
   if (!env.CLAIMKIT_ENABLED) {
     ckStatus = "disabled";
   } else if (!claimKitAvailable) {
@@ -308,6 +309,7 @@ export async function assembleContextPacket(
       };
       entityClaimsInjectedCount = ecResult.claimCount;
       contradictionsFlaggedCount = ecResult.contradictionCount;
+      contradictionDetails = ecResult.contradictions;
       console.log(
         `[EntityClaims] injected ${ecResult.claimCount} claim(s) across ${ecResult.entityCount} entit${ecResult.entityCount === 1 ? "y" : "ies"}` +
         (ecResult.entitiesWithHistory > 0
@@ -466,6 +468,24 @@ export async function assembleContextPacket(
     const comparisonRouting = determineRoutingTier(claimKitResult, unavailableReason);
     const ragMs = Date.now() - ragStart;
     const ckIncludedInContext = claimKitResult != null;
+
+    // Estimate the tokens the claimkit_evidence section will consume in
+    // the prompt. The section is built later (see claimKitSection
+    // assembly below), but the cost-savings story requires this number on
+    // the comparison_cases row at save time. We approximate from the
+    // answer + citations text, which is what actually gets rendered.
+    let ckSectionTokensEstimate: number | null = null;
+    if (claimKitResult && ckIncludedInContext) {
+      let evidenceChars = claimKitResult.answer.length;
+      for (const cite of claimKitResult.citations.slice(0, 10)) {
+        evidenceChars += cite.text.substring(0, 200).length + 20;
+      }
+      // ~80 chars of framing (headers, dividers, answerability summary).
+      ckSectionTokensEstimate = estimateTokens(
+        " ".repeat(Math.min(evidenceChars + 80, 50_000)),
+      );
+    }
+
     const saved = saveLiveComparison({
       query,
       ragTokens,
@@ -486,6 +506,7 @@ export async function assembleContextPacket(
       winnerReason: comparisonRouting.routingReason,
       ckStatus,
       ckIncludedInContext,
+      ckSectionTokens: ckSectionTokensEstimate,
       citationBoostApplied: citationBoostCount,
       gapFillDocsAdded,
       entityClaimsInjected: entityClaimsInjectedCount,
@@ -785,6 +806,7 @@ export async function assembleContextPacket(
     routingReason: routing.routingReason,
     budgetBreakdown: budget.slots,
     groundingHandle,
+    contradictions: contradictionDetails.length > 0 ? contradictionDetails : undefined,
     diagnostics: {
       mode: "engine",
       originalMessageCount: sessionMessages.length,

@@ -44,6 +44,7 @@ export interface ComparisonCaseRow {
   ck_included_in_context: boolean | null;
   rag_hallucination_rate: number | null;
   rag_grounded: boolean | null;
+  ck_section_tokens: number | null;
   created_at: string;
 }
 
@@ -144,6 +145,24 @@ export interface ComparisonDashboardStats {
     contradictionsFlagged: number;
   };
   /**
+   * Token-savings story: ClaimKit's structured-claim packet replaces broad
+   * RAG context in many queries, driving prompt size — and therefore
+   * cost — down. These aggregates show the cumulative win.
+   *   - avgRagTokens / avgCkTokens: per-query averages (apples-to-apples).
+   *   - totalTokensSaved: sum of (rag - ck) across all cases where CK was
+   *     included AND smaller than RAG. Negative deltas (CK was larger) are
+   *     excluded so we don't artificially inflate the savings number.
+   *   - measuredCases: denominator for the rates (cases that had both
+   *     rag_tokens and ck_section_tokens recorded).
+   */
+  tokenSavings: {
+    avgRagTokens: number;
+    avgCkTokens: number;
+    totalTokensSaved: number;
+    avgSavingsPerQuery: number;
+    measuredCases: number;
+  };
+  /**
    * Why ClaimKit reported low confidence. Classifies each ck_confidence ≤ 0.1
    * case by the most likely root cause, derived from existing columns. Lets
    * the dashboard answer "is CK failing because retrieval finds nothing, or
@@ -212,6 +231,13 @@ export interface SaveCaseInput {
   entityClaimsInjected?: number | null;
   /** Number of cross-source contradictions flagged (Idea 3). */
   contradictionsFlagged?: number | null;
+  /**
+   * Tokens consumed by the claimkit_evidence section when it was included
+   * in the prompt. Compared against rag.contextTokens, this quantifies the
+   * cost savings story — structured claims replacing broad RAG context.
+   * NULL when CK was disabled or had nothing to contribute.
+   */
+  ckSectionTokens?: number | null;
   rag: {
     contextTokens: number;
     sections: number;

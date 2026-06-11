@@ -110,6 +110,13 @@ export interface ContextPacket {
   budgetBreakdown: BudgetSlot[];
   /** Set when live shadow grounding should run on the agent's response. */
   groundingHandle?: GroundingHandle;
+  /**
+   * Cross-source contradictions surfaced during entity-claims injection
+   * (Idea 3). Pre-formatted markdown lines suitable for direct display in
+   * a UI banner so the user can resolve the conflict before relying on
+   * the agent's answer. Empty/undefined when none detected.
+   */
+  contradictions?: string[];
   diagnostics: {
     mode: ContextMode;
     originalMessageCount: number;

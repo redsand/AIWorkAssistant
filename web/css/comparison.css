@@ -300,7 +300,19 @@ body {
 }
 .detail-panel .diag-label { font-weight: 600; color: #555; }
 .detail-panel .diag-value { color: #777; word-break: break-word; }
-.detail-panel .diag-answer { font-style: italic; }
+.detail-panel .diag-answer {
+  font-style: italic;
+  display: block;
+  margin-top: 4px;
+  padding: 6px 8px;
+  background: #f9fafb;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.detail-panel .diag-savings-good { color: #16a34a; font-weight: 600; }
+.detail-panel .diag-savings-bad { color: #dc2626; font-weight: 600; }
 .create-issue-btn {
   display: inline-flex;
   align-items: center;

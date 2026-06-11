@@ -91,7 +91,9 @@ Rules:
 - Keep labels short (< 25 chars) to prevent overflow
 - For xychart-beta, ensure bar/line data arrays match the x-axis count exactly
 - Don't use diagrams for simple 2-3 row tables — those are fine as markdown tables
-- Diagrams render after streaming ends, so don't reference "the diagram above" while still emitting content`;
+- Diagrams render after streaming ends, so don't reference "the diagram above" while still emitting content
+- ASCII ONLY in mermaid blocks: no em dashes (use --), smart quotes (use ' and "), ellipsis (use ...), or other Unicode characters. Mermaid's parser cannot handle non-ASCII text and will produce "Syntax error in text"
+- In gantt charts, avoid colons in section titles and task names (use - instead)`;
 
 const PLATFORM_RESPECT_RULES = `
 

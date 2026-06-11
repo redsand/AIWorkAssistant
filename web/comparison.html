@@ -55,6 +55,23 @@
         <div class="stat-chip"><div class="stat-value" id="stat-answerability">—</div><div class="stat-label">Answerability Rate</div></div>
       </div>
 
+      <!-- Token Savings Panel: the cost story -->
+      <div class="section" id="tokens-section">
+        <div class="section-title">Token Savings — cost driver</div>
+        <p class="section-blurb">
+          The structured-claim evidence packet replaces broad RAG context with a focused, answer-oriented summary.
+          Smaller prompts = lower per-query cost. These numbers compare RAG context size against the ClaimKit evidence
+          section size on the same query.
+        </p>
+        <div class="stats-bar">
+          <div class="stat-chip"><div class="stat-value blue" id="stat-avg-rag-tokens">—</div><div class="stat-label">Avg RAG Tokens</div></div>
+          <div class="stat-chip"><div class="stat-value green" id="stat-avg-ck-tokens">—</div><div class="stat-label">Avg ClaimKit Tokens</div></div>
+          <div class="stat-chip"><div class="stat-value green" id="stat-avg-savings">—</div><div class="stat-label">Avg Savings / Query</div></div>
+          <div class="stat-chip"><div class="stat-value green" id="stat-total-saved">—</div><div class="stat-label">Total Tokens Saved</div></div>
+          <div class="stat-chip"><div class="stat-value" id="stat-tokens-measured">—</div><div class="stat-label">Measured Cases</div></div>
+        </div>
+      </div>
+
       <!-- Truthfulness Panel (Idea 1: live grounding) -->
       <div class="section" id="truthfulness-section">
         <div class="section-title">Truthfulness — what RAG-alone gets wrong, ClaimKit catches</div>

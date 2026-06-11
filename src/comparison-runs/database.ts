@@ -98,6 +98,12 @@ class ComparisonRunDatabase {
       { col: "gap_fill_docs_added", def: "INTEGER" },
       { col: "entity_claims_injected", def: "INTEGER" },
       { col: "contradictions_flagged", def: "INTEGER" },
+      // Token-savings story: ck_section_tokens captures the tokens used by
+      // the claimkit_evidence section. Compared against rag_tokens, this
+      // quantifies the cost savings when ClaimKit replaces broad RAG context
+      // with a structured-claim packet. NULL when CK was disabled or had
+      // no evidence to contribute.
+      { col: "ck_section_tokens", def: "INTEGER" },
     ];
     for (const { col, def } of migrations) {
       try {
@@ -142,6 +148,7 @@ class ComparisonRunDatabase {
           gap_fill_docs_added INTEGER,
           entity_claims_injected INTEGER,
           contradictions_flagged INTEGER,
+          ck_section_tokens INTEGER,
           created_at TEXT NOT NULL,
           FOREIGN KEY (run_id) REFERENCES comparison_runs(id) ON DELETE CASCADE
         );
@@ -153,6 +160,7 @@ class ComparisonRunDatabase {
                  ck_status, ck_included_in_context,
                  rag_hallucination_rate, rag_grounded,
                  NULL, NULL, NULL, NULL,
+                 NULL,
                  created_at
           FROM comparison_cases_old;
         DROP TABLE comparison_cases_old;
@@ -182,8 +190,9 @@ class ComparisonRunDatabase {
           rag_hallucination_rate, rag_grounded,
           citation_boost_applied, gap_fill_docs_added,
           entity_claims_injected, contradictions_flagged,
+          ck_section_tokens,
           created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     const txn = this.db.transaction(() => {
@@ -216,6 +225,7 @@ class ComparisonRunDatabase {
           c.gapFillDocsAdded ?? null,
           c.entityClaimsInjected ?? null,
           c.contradictionsFlagged ?? null,
+          c.ckSectionTokens ?? null,
           now,
         );
       }
@@ -459,7 +469,12 @@ class ComparisonRunDatabase {
            SUM(CASE WHEN citation_boost_applied > 0 THEN 1 ELSE 0 END) as citation_boost_n,
            SUM(CASE WHEN gap_fill_docs_added > 0 THEN 1 ELSE 0 END) as gap_fill_n,
            SUM(CASE WHEN entity_claims_injected > 0 THEN 1 ELSE 0 END) as entity_claims_n,
-           SUM(CASE WHEN contradictions_flagged > 0 THEN 1 ELSE 0 END) as contradictions_n
+           SUM(CASE WHEN contradictions_flagged > 0 THEN 1 ELSE 0 END) as contradictions_n,
+           AVG(CASE WHEN ck_section_tokens IS NOT NULL THEN rag_tokens END) as avg_rag_tokens_measured,
+           AVG(CASE WHEN ck_section_tokens IS NOT NULL THEN ck_section_tokens END) as avg_ck_tokens,
+           SUM(CASE WHEN ck_section_tokens IS NOT NULL AND ck_section_tokens < rag_tokens
+                     THEN (rag_tokens - ck_section_tokens) ELSE 0 END) as total_tokens_saved,
+           SUM(CASE WHEN ck_section_tokens IS NOT NULL THEN 1 ELSE 0 END) as token_measured_n
          FROM comparison_cases cc
          JOIN comparison_runs cr ON cr.id = cc.run_id
          ${whereClause}`,
@@ -483,6 +498,10 @@ class ComparisonRunDatabase {
         gap_fill_n: number | null;
         entity_claims_n: number | null;
         contradictions_n: number | null;
+        avg_rag_tokens_measured: number | null;
+        avg_ck_tokens: number | null;
+        total_tokens_saved: number | null;
+        token_measured_n: number | null;
       };
 
     const totalRunsRow = this.db
@@ -537,6 +556,16 @@ class ComparisonRunDatabase {
         gapFillTriggered: winRow.gap_fill_n ?? 0,
         entityClaimsInjected: winRow.entity_claims_n ?? 0,
         contradictionsFlagged: winRow.contradictions_n ?? 0,
+      },
+      tokenSavings: {
+        avgRagTokens: winRow.avg_rag_tokens_measured ?? 0,
+        avgCkTokens: winRow.avg_ck_tokens ?? 0,
+        totalTokensSaved: winRow.total_tokens_saved ?? 0,
+        avgSavingsPerQuery:
+          winRow.token_measured_n && winRow.token_measured_n > 0
+            ? (winRow.total_tokens_saved ?? 0) / winRow.token_measured_n
+            : 0,
+        measuredCases: winRow.token_measured_n ?? 0,
       },
       lowConfidenceBreakdown: this.computeLowConfidenceBreakdown(options),
       byCategory: catRows.map((r) => ({
@@ -768,6 +797,7 @@ class ComparisonRunDatabase {
       ck_included_in_context: row.ck_included_in_context != null ? Boolean(row.ck_included_in_context) : null,
       rag_hallucination_rate: row.rag_hallucination_rate as number | null,
       rag_grounded: row.rag_grounded != null ? Boolean(row.rag_grounded) : null,
+      ck_section_tokens: row.ck_section_tokens as number | null,
       created_at: row.created_at as string,
     };
   }

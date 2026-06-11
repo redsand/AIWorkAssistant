@@ -141,7 +141,123 @@ function renderMermaidIn(el) {
   if (!window.mermaid) return;
   const nodes = Array.from(el.querySelectorAll(".mermaid:not([data-processed])"));
   if (nodes.length === 0) return;
-  window.mermaid.run({ nodes }).catch(() => {});
+
+  // Sanitize mermaid content: replace non-ASCII characters that cause parse
+  // errors in Mermaid's Jison parser. Em dashes (U+2014), smart quotes, and
+  // other Unicode punctuation are common LLM output that Mermaid can't handle.
+  for (const node of nodes) {
+    const text = node.textContent;
+    if (text) {
+      node.textContent = text
+        .replace(/[—–]/g, "--")  // em dash / en dash → --
+        .replace(/[‘’]/g, "'")    // smart single quotes → '
+        .replace(/[“”]/g, '"')    // smart double quotes → "
+        .replace(/[…]/g, "...")         // ellipsis → ...
+        .replace(/[^\x00-\x7F\n]/g, m => {  // any remaining non-ASCII → HTML entity
+          return `&#${m.charCodeAt(0)};`;
+        });
+    }
+  }
+
+  // Track wrapper elements before mermaid.run() replaces .mermaid nodes with SVG
+  const wrappers = nodes.map(n => n.parentElement).filter(Boolean);
+
+  window.mermaid.run({ nodes }).then(() => {
+    // Post-process: rotate gantt chart axis labels via SVG attributes.
+    // CSS transforms on SVG elements are unreliable across browsers;
+    // SVG-native transform attributes always work.
+    for (const wrapper of wrappers) {
+      const svg = wrapper.querySelector("svg");
+      if (!svg) continue;
+      rotateGanttAxisLabels(svg);
+    }
+  }).catch((err) => {
+    // On render failure, show the raw diagram text so the user can see what
+    // was attempted instead of just Mermaid's "Syntax error in text" image.
+    console.warn("[Mermaid] Render failed:", err);
+    for (const node of nodes) {
+      if (node.getAttribute("data-processed")) continue;
+      const raw = node.textContent;
+      if (raw) {
+        const pre = document.createElement("pre");
+        pre.className = "mermaid-fallback";
+        pre.style.cssText = "background:#1e1e2e;color:#cdd6f4;padding:12px;border-radius:8px;overflow-x:auto;font-size:0.85em;text-align:left;white-space:pre-wrap;";
+        pre.textContent = raw;
+        const wrapper = node.parentElement;
+        if (wrapper) {
+          wrapper.replaceChild(pre, node);
+        }
+      }
+    }
+  });
+}
+
+// Rotate gantt chart axis tick labels for readability using SVG-native
+// transform attributes. CSS transforms on SVG elements don't work reliably
+// (rotation origin defaults to SVG viewport origin, not the element).
+function rotateGanttAxisLabels(svg) {
+  // Mermaid gantt charts put date labels in <text> inside groups with
+  // class "tick". Try class-based selectors first, then position fallback.
+  let rotated = 0;
+  const selectors = [
+    "g.tick text",           // standard Mermaid structure
+    "g[class*='tick'] text", // partial class match
+    "g.grid text",           // some Mermaid versions
+  ];
+  for (const sel of selectors) {
+    const texts = svg.querySelectorAll(sel);
+    for (const text of texts) {
+      applyAxisRotation(text);
+      rotated++;
+    }
+    if (rotated > 0) break;
+  }
+
+  // Fallback: if no class-based matches, find text elements in the bottom
+  // portion of the SVG (axis labels live there in gantt charts).
+  if (rotated === 0) {
+    const allTexts = svg.querySelectorAll("text");
+    const svgH = parseFloat(svg.getAttribute("height") || svg.getAttribute("viewBox")?.split(" ")[3] || "0");
+    if (svgH > 0) {
+      for (const text of allTexts) {
+        const y = parseFloat(text.getAttribute("y") || "0");
+        if (y > svgH * 0.7) {
+          applyAxisRotation(text);
+          rotated++;
+        }
+      }
+    }
+  }
+
+  // Ensure all SVG text is visible on dark background
+  svg.querySelectorAll("text").forEach(t => {
+    if (!t.getAttribute("fill")) t.setAttribute("fill", "#cdd6f4");
+  });
+
+  // Rotated labels extend below the SVG boundary — expand viewBox/height
+  // to prevent overlap with chart data below the axis.
+  if (rotated > 0) {
+    const extraPadding = 50; // px for rotated text at -45deg
+    const h = parseFloat(svg.getAttribute("height") || "0");
+    const vb = svg.getAttribute("viewBox");
+    if (h > 0) svg.setAttribute("height", String(h + extraPadding));
+    if (vb) {
+      const parts = vb.split(/[\s,]+/);
+      if (parts.length === 4) {
+        parts[3] = String(parseFloat(parts[3]) + extraPadding);
+        svg.setAttribute("viewBox", parts.join(" "));
+      }
+    }
+  }
+}
+
+function applyAxisRotation(textEl) {
+  const x = parseFloat(textEl.getAttribute("x") || "0");
+  const y = parseFloat(textEl.getAttribute("y") || "0");
+  textEl.setAttribute("transform", `rotate(-45, ${x}, ${y})`);
+  textEl.setAttribute("text-anchor", "end");
+  textEl.setAttribute("font-size", "11");
+  textEl.setAttribute("fill", "#cdd6f4");
 }
 
 export function finalizeStreamingMessage(messageId) {

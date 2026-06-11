@@ -59,6 +59,12 @@ export interface EntityClaimsSection {
    * agent to surface to the user. Idea 3.
    */
   contradictionCount: number;
+  /**
+   * Per-contradiction details for UI display (Idea 3 + I). Each item is
+   * already markdown-formatted so the frontend can render it directly in
+   * a banner without further processing.
+   */
+  contradictions: string[];
   /** Rendered text for the context section, or null if no matches. */
   content: string | null;
 }
@@ -71,12 +77,12 @@ export interface EntityClaimsSection {
 export function buildEntityClaimsSection(query: string): EntityClaimsSection {
   const ids = extractEntityIds(query);
   if (ids.length === 0) {
-    return { entityCount: 0, claimCount: 0, entitiesWithHistory: 0, contradictionCount: 0, content: null };
+    return { entityCount: 0, claimCount: 0, entitiesWithHistory: 0, contradictionCount: 0, contradictions: [], content: null };
   }
 
   const entities = entityMemory.getEntitiesByNormalizedNames(ids);
   if (entities.length === 0) {
-    return { entityCount: 0, claimCount: 0, entitiesWithHistory: 0, contradictionCount: 0, content: null };
+    return { entityCount: 0, claimCount: 0, entitiesWithHistory: 0, contradictionCount: 0, contradictions: [], content: null };
   }
 
   const lines: string[] = ["=== STRUCTURED CLAIMS (current, time-stamped, from prior tool results) ==="];
@@ -137,7 +143,7 @@ export function buildEntityClaimsSection(query: string): EntityClaimsSection {
   }
 
   if (totalClaims === 0) {
-    return { entityCount: 0, claimCount: 0, entitiesWithHistory: 0, contradictionCount: 0, content: null };
+    return { entityCount: 0, claimCount: 0, entitiesWithHistory: 0, contradictionCount: 0, contradictions: [], content: null };
   }
 
   lines.push("");
@@ -179,6 +185,7 @@ export function buildEntityClaimsSection(query: string): EntityClaimsSection {
     claimCount: totalClaims,
     entitiesWithHistory: withHistory,
     contradictionCount: contradictionLines.length,
+    contradictions: contradictionLines.slice(),
     content: lines.join("\n"),
   };
 }

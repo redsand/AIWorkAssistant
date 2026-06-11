@@ -39,6 +39,50 @@ import { loadRoadmaps } from "./sidebar.js";
 import { loadConversations } from "./conversations.js";
 import { showLoginOverlay } from "./ui.js";
 
+/**
+ * Idea 3 + I: render a banner above the messages list when ClaimKit
+ * detected cross-source contradictions on entities the user is asking
+ * about. The agent gets the same signal in its system prompt; the banner
+ * gives the human a visible chance to resolve the conflict before
+ * trusting the answer.
+ *
+ * Each item is a pre-formatted markdown line from the entity-claims
+ * injector ("- **IR-82.status**: jira.get_issue says `Done` (2h ago); ...").
+ * We strip the leading dash and bold-render the first segment.
+ */
+function renderContradictionBanner(items) {
+  let host = document.getElementById("contradictionBanner");
+  const messagesContainer = document.getElementById("messagesContainer")
+    || document.querySelector(".messages")
+    || document.body;
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "contradictionBanner";
+    host.className = "contradiction-banner";
+    messagesContainer.parentElement?.insertBefore(host, messagesContainer);
+  }
+  host.innerHTML =
+    '<div class="contradiction-banner-header">' +
+    '<span class="contradiction-banner-icon">⚠️</span>' +
+    '<span class="contradiction-banner-title">Cross-source contradiction detected</span>' +
+    '<button type="button" class="contradiction-banner-close" aria-label="Dismiss">×</button>' +
+    '</div>' +
+    '<div class="contradiction-banner-body">' +
+    items.map((line) => {
+      const stripped = line.replace(/^[\s\-*]+/, "").trim();
+      return '<div class="contradiction-banner-item">' +
+        stripped
+          .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+          .replace(/`([^`]+)`/g, "<code>$1</code>") +
+        '</div>';
+    }).join("") +
+    '</div>';
+  host.style.display = "block";
+  host.querySelector(".contradiction-banner-close")?.addEventListener("click", () => {
+    host.style.display = "none";
+  });
+}
+
 async function handleStreamResponse(response, progressElRef, onError) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -113,6 +157,13 @@ async function handleStreamResponse(response, progressElRef, onError) {
             const statusEl = document.getElementById("processingStatusText");
             if (statusEl) statusEl.textContent = data.message || "Processing your request...";
             showTyping(true);
+          }
+          if (eventType === "contradictions" && Array.isArray(data.items) && data.items.length > 0) {
+            // Idea 3 + I: render a banner above the response when ClaimKit
+            // detected cross-source contradictions. The agent gets this same
+            // signal in its prompt; the banner gives the human a visible
+            // chance to resolve the conflict before trusting the answer.
+            renderContradictionBanner(data.items);
           }
           if (eventType === "thinking" && data.thinking) {
             currentThinking += data.thinking;

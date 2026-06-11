@@ -100,6 +100,8 @@ export function saveLiveComparison(params: {
   entityClaimsInjected?: number | null;
   /** Set per case when cross-source contradictions were flagged. */
   contradictionsFlagged?: number | null;
+  /** Token count of the claimkit_evidence section when included in context. */
+  ckSectionTokens?: number | null;
   db?: ComparisonRunDatabase;
 }): { caseId: string } | null {
   try {
@@ -122,6 +124,7 @@ export function saveLiveComparison(params: {
           gapFillDocsAdded: params.gapFillDocsAdded,
           entityClaimsInjected: params.entityClaimsInjected,
           contradictionsFlagged: params.contradictionsFlagged,
+          ckSectionTokens: params.ckSectionTokens,
           rag: {
             contextTokens: params.ragTokens,
             sections: params.ragSections,
