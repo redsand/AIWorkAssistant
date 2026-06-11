@@ -2,6 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { _resetGatewayRateLimits, _getGatewayRateLimits, dispatchToolCall } from "../tool-dispatcher";
 import type { DeliveryResult } from "../../integrations/gateway/platform-adapter";
 
+vi.mock("../../config/env", () => ({
+  env: new Proxy({}, { get: (_: object, prop: string | symbol) => {
+    if (prop === "GATEWAY_ENABLED") return true;
+    return "";
+  }}),
+}));
+
 vi.mock("../../integrations/gateway/gateway-engine.js", () => {
   const send = vi.fn<() => Promise<DeliveryResult>>();
   return {
@@ -177,5 +184,39 @@ describe("gateway rate limit Map management", () => {
     expect(successes.length).toBeGreaterThan(0);
     expect(rateLimited.length).toBeGreaterThan(0);
     expect(successes.length + rateLimited.length).toBe(25);
+  });
+
+  it("does not consume rate limit for unauthorized callers", async () => {
+    const { gatewayEngine } = await import("../../integrations/gateway/gateway-engine.js");
+    const mockedSend = gatewayEngine.send as ReturnType<typeof vi.fn>;
+    mockedSend.mockResolvedValue({
+      success: true,
+      messageId: "msg-1",
+      platform: "telegram",
+      timestamp: new Date().toISOString(),
+      suppressed: false,
+    });
+
+    const targetUid = "auth-target-user";
+
+    // Flood with 25 unauthorized requests from a different caller
+    for (let i = 0; i < 25; i++) {
+      await dispatchToolCall("gateway.deliver", {
+        platform: "telegram",
+        user_id: targetUid,
+        message: `unauth-${i}`,
+      }, "attacker-user");
+    }
+
+    // All unauthorized, so rate limit map should have NO entry for the target
+    expect(_getGatewayRateLimits().has(`telegram:${targetUid}`)).toBe(false);
+
+    // The target user should still be able to send (not rate-limited by the attack)
+    const result = await dispatchToolCall("gateway.deliver", {
+      platform: "telegram",
+      user_id: targetUid,
+      message: "legitimate",
+    }, targetUid);
+    expect(result.success).toBe(true);
   });
 });

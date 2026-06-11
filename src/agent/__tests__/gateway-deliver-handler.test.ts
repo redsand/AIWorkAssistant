@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+vi.mock("../../config/env", () => ({
+  env: new Proxy({}, { get: (_: object, prop: string | symbol) => {
+    if (prop === "GATEWAY_ENABLED") return true;
+    return "";
+  }}),
+}));
+
 vi.mock("../../integrations/gateway/gateway-engine", () => {
   const send = vi.fn();
   return {
@@ -171,5 +178,36 @@ describe("handleGatewayDeliver via dispatchToolCall", () => {
       message: "allowed",
     }, uidB);
     expect(resultB.success).toBe(true);
+  });
+
+  it("rejects non-string platform param", async () => {
+    const result = await dispatchToolCall("gateway.deliver", {
+      platform: 123,
+      user_id: "user-1",
+      message: "Hello",
+    }, "user-1");
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("platform is required");
+  });
+
+  it("rejects non-string user_id param", async () => {
+    const result = await dispatchToolCall("gateway.deliver", {
+      platform: "telegram",
+      user_id: 999,
+      message: "Hello",
+    }, "user-1");
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("user_id is required");
+  });
+
+  it("passes silent param through to engine", async () => {
+    const result = await dispatchToolCall("gateway.deliver", {
+      platform: "telegram",
+      user_id: "silent-param-user",
+      message: "Hello",
+      silent: true,
+    }, "silent-param-user");
+    expect(result.success).toBe(true);
+    expect(mockedSend).toHaveBeenCalledWith("telegram", "silent-param-user", "Hello", { silent: true });
   });
 });

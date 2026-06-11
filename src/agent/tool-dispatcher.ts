@@ -5494,14 +5494,27 @@ function pruneStaleRateLimitEntries(): void {
   }
 }
 
-const RATE_LIMIT_PRUNE_INTERVAL = setInterval(pruneStaleRateLimitEntries, GATEWAY_RATE_LIMIT_WINDOW_MS);
-if (typeof RATE_LIMIT_PRUNE_INTERVAL !== "undefined" && RATE_LIMIT_PRUNE_INTERVAL.unref) {
-  RATE_LIMIT_PRUNE_INTERVAL.unref();
+let rateLimitPruneInterval: ReturnType<typeof setInterval> | undefined;
+
+function ensureRateLimitPrune(): void {
+  if (rateLimitPruneInterval !== undefined) return;
+  rateLimitPruneInterval = setInterval(pruneStaleRateLimitEntries, GATEWAY_RATE_LIMIT_WINDOW_MS);
+  if (rateLimitPruneInterval.unref) {
+    rateLimitPruneInterval.unref();
+  }
+}
+
+function stopRateLimitPrune(): void {
+  if (rateLimitPruneInterval !== undefined) {
+    clearInterval(rateLimitPruneInterval);
+    rateLimitPruneInterval = undefined;
+  }
 }
 
 // Exported for testing only
 export function _resetGatewayRateLimits(): void {
   gatewayRateLimits.clear();
+  stopRateLimitPrune();
 }
 
 export function _getGatewayRateLimits(): ReadonlyMap<string, number[]> {
@@ -5532,10 +5545,16 @@ async function handleGatewayDeliver(
   params: Record<string, unknown>,
   callerUserId: string,
 ): Promise<ToolCallResult> {
-  const platform = params.platform as string;
-  const targetUserId = params.user_id as string;
-  const message = params.message as string;
-  const silent = params.silent as boolean | undefined;
+  if (!env.GATEWAY_ENABLED) {
+    return { success: false, error: "Gateway is not enabled. Set GATEWAY_ENABLED=true to enable." };
+  }
+
+  ensureRateLimitPrune();
+
+  const platform = typeof params.platform === "string" ? params.platform : "";
+  const targetUserId = typeof params.user_id === "string" ? params.user_id : "";
+  const message = typeof params.message === "string" ? params.message : "";
+  const silent = typeof params.silent === "boolean" ? params.silent : undefined;
 
   if (!platform) return { success: false, error: "platform is required (telegram, discord, slack, whatsapp)" };
   if (!targetUserId) return { success: false, error: "user_id is required" };
@@ -5546,16 +5565,16 @@ async function handleGatewayDeliver(
     return { success: false, error: `Invalid platform '${platform}'. Valid: ${validPlatforms.join(", ")}` };
   }
 
+  // Authorization: caller must be the target user (checked BEFORE rate limit to prevent DoS)
+  if (callerUserId !== targetUserId) {
+    return { success: false, error: `Unauthorized: cannot send messages to user '${targetUserId}'` };
+  }
+
   const rateLimitKey = `${platform}:${targetUserId}`;
   const rateCheck = checkGatewayRateLimit(rateLimitKey);
   if (!rateCheck.allowed) {
     console.warn(`[Gateway] Rate limit exceeded for ${rateLimitKey} (${rateCheck.currentCount}/${GATEWAY_RATE_LIMIT_MAX})`);
     return { success: false, error: `Rate limit exceeded for ${platform}:${targetUserId}. Max ${GATEWAY_RATE_LIMIT_MAX} messages per minute.` };
-  }
-
-  // Authorization: caller must be the target user
-  if (callerUserId !== targetUserId) {
-    return { success: false, error: `Unauthorized: cannot send messages to user '${targetUserId}'` };
   }
 
   try {
