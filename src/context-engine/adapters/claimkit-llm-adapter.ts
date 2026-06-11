@@ -19,34 +19,123 @@ import type { AIProvider, ChatMessage } from "../../agent/providers/types";
 import { getProvider } from "../../agent/providers/factory";
 import { env } from "../../config/env";
 
+/**
+ * Errors that won't ever succeed on retry — bad input, auth, schema
+ * violations. Retrying these wastes the entire backoff budget. Cases we
+ * detect heuristically because the LLM SDK can throw a wide range of
+ * error shapes (axios errors, OpenAI SDK errors, generic Errors).
+ *
+ * Conservative defaults: a tagged `status` < 500 (but not 429) is treated
+ * as terminal, and known phrases like "invalid_request_error" /
+ * "validation" / "unauthorized" / "bad request" short-circuit the loop.
+ */
+function isNonRetryableError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const obj = err as Record<string, unknown>;
+  const status = typeof obj.status === "number" ? obj.status : undefined;
+  if (status !== undefined && status >= 400 && status < 500 && status !== 429) {
+    return true;
+  }
+  const code = typeof obj.code === "string" ? obj.code : "";
+  const message = err instanceof Error ? err.message.toLowerCase() : "";
+  const haystack = `${code} ${message}`;
+  if (
+    haystack.includes("invalid_request") ||
+    haystack.includes("invalid api key") ||
+    haystack.includes("unauthorized") ||
+    haystack.includes("bad request") ||
+    haystack.includes("validation") ||
+    haystack.includes("schema") ||
+    haystack.includes("model_not_found")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Sleep with small jitter (±20%) to spread out concurrent retries across
+ * parallel ClaimKit stages — prevents thundering-herd on the same provider.
+ */
+function sleepWithJitter(baseMs: number): Promise<void> {
+  const jitter = baseMs * (0.8 + Math.random() * 0.4);
+  return new Promise((resolve) => setTimeout(resolve, Math.floor(jitter)));
+}
+
+/**
+ * Calls the LLM with bounded retries and a hard total-time budget.
+ *
+ * Policy changes vs. the original exponential-backoff version:
+ *   1. Linear backoff (baseMs per attempt) instead of doubling — avoids
+ *      degenerate worst cases like 15+30+60+120+240=465s per stage.
+ *   2. Total elapsed time across all attempts is capped at baseMs × 4 or
+ *      90s, whichever is smaller. Cleanly aborts a stuck stage instead of
+ *      stretching the user's chat indefinitely.
+ *   3. Non-retryable errors (4xx other than 429, schema errors, auth)
+ *      short-circuit the loop — no point spending retries on these.
+ *   4. Inter-attempt sleeps with ±20% jitter to spread out parallel retries.
+ *   5. Falls back to MemoryLLMAdapter on exhaustion (unchanged).
+ */
 async function withLlmTimeout<T>(
   makeCall: (signal: AbortSignal) => Promise<T>,
   fallback: () => Promise<T>,
 ): Promise<T> {
   const maxAttempts = env.CLAIMKIT_LLM_MAX_ATTEMPTS;
   const baseMs = env.CLAIMKIT_LLM_TIMEOUT_MS;
+  const totalBudgetMs = Math.min(baseMs * 4, 90_000);
+  const startedAt = Date.now();
+  let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const timeoutMs = Math.min(baseMs * Math.pow(2, attempt - 1), baseMs * 16);
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= totalBudgetMs) {
+      console.warn(
+        `[ClaimKit LLM] Total time budget exhausted (${elapsed}ms ≥ ${totalBudgetMs}ms) before attempt ${attempt}/${maxAttempts}`,
+      );
+      break;
+    }
+
+    // Linear, not exponential. Caps each attempt at the remaining total
+    // budget so a slow attempt can't push us past the ceiling.
+    const remaining = totalBudgetMs - elapsed;
+    const timeoutMs = Math.min(baseMs, remaining);
+    if (timeoutMs < 1000) break; // Not enough time for a meaningful attempt.
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const result = await makeCall(controller.signal);
-      if (attempt > 1) console.log(`[ClaimKit LLM] Succeeded on attempt ${attempt}/${maxAttempts}`);
+      if (attempt > 1) {
+        console.log(`[ClaimKit LLM] Succeeded on attempt ${attempt}/${maxAttempts} after ${Date.now() - startedAt}ms`);
+      }
       return result;
     } catch (err) {
+      lastError = err;
       if (controller.signal.aborted) {
-        console.warn(`[ClaimKit LLM] Attempt ${attempt}/${maxAttempts} timed out after ${timeoutMs}ms`);
-        continue;
+        console.warn(`[ClaimKit LLM] Attempt ${attempt}/${maxAttempts} timed out after ${timeoutMs}ms (total elapsed: ${Date.now() - startedAt}ms)`);
+      } else if (isNonRetryableError(err)) {
+        console.warn(
+          `[ClaimKit LLM] Attempt ${attempt}/${maxAttempts} got non-retryable error — skipping remaining retries:`,
+          err instanceof Error ? err.message : err,
+        );
+        throw err;
+      } else {
+        console.warn(`[ClaimKit LLM] Attempt ${attempt}/${maxAttempts} failed:`, err instanceof Error ? err.message : err);
       }
-      console.warn(`[ClaimKit LLM] Attempt ${attempt}/${maxAttempts} failed:`, err instanceof Error ? err.message : err);
-      if (attempt >= maxAttempts) throw err;
+      if (attempt >= maxAttempts) break;
+      // Small sleep with jitter before the next attempt — give the provider
+      // a moment to recover and avoid synchronized retry storms.
+      await sleepWithJitter(500);
     } finally {
       clearTimeout(timer);
     }
   }
 
-  console.warn(`[ClaimKit LLM] All ${maxAttempts} attempts exhausted — falling back to MemoryLLMAdapter`);
+  const elapsed = Date.now() - startedAt;
+  console.warn(
+    `[ClaimKit LLM] Exhausted after ${elapsed}ms (max ${maxAttempts} attempts, budget ${totalBudgetMs}ms) — falling back to MemoryLLMAdapter. Last error:`,
+    lastError instanceof Error ? lastError.message : lastError,
+  );
   return fallback();
 }
 
