@@ -1,11 +1,21 @@
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import path from "path";
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import {
   ConversationManager,
   type SessionSearchResult,
 } from "../../../src/memory/conversation-manager";
+
+vi.mock("../../../src/agent/opencode-client", () => ({
+  aiClient: {
+    chat: vi.fn(async (request: { messages?: Array<{ content: string }> }) => ({
+      content: `Unit test summary preserving conversation facts.\n${request.messages?.map((message) => message.content).join("\n").slice(-2000) ?? ""}`,
+      model: "test",
+      done: true,
+    })),
+  },
+}));
 
 function makeManager(): {
   manager: ConversationManager;

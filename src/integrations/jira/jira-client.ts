@@ -805,17 +805,20 @@ export class JiraClient {
       console.log(`[Jira] Fetching project: ${key}`);
       const response = await this.client.get(`/rest/api/3/project/${key}`);
       const data = response.data;
-      return {
+      const project: JiraProject = {
         key: data.key,
         name: data.name,
         id: data.id,
         projectTypeKey: data.projectTypeKey,
         style: data.style,
-        issueTypes: (data.issueTypes || []).map((it: any) => ({
+      };
+      if (Array.isArray(data.issueTypes)) {
+        project.issueTypes = data.issueTypes.map((it: any) => ({
           name: it.name,
           subtask: it.subtask === true,
-        })),
-      };
+        }));
+      }
+      return project;
     } catch (error) {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
