@@ -9764,6 +9764,105 @@ export interface DispatchContext {
   mode?: string;
   /** When true, the dispatch is happening inside a subagent session */
   isSubagent?: boolean;
+  /**
+   * Session-scoped key used by the identical-call guardrail. Typically
+   * the chat sessionId or agent runId. When omitted, the guardrail is
+   * disabled (callers that don't pass it forgo loop protection).
+   */
+  sessionKey?: string;
+}
+
+// ─── Identical-call guardrail ───────────────────────────────────────
+// Tracks repeated (tool, args) calls per session so that a model stuck
+// in a confusion loop fails after a small number of duplicates instead
+// of spamming hundreds of identical calls. See investigation of session
+// 0a6a8d8d (2026-06-11) where glm-5.1 called tenable.list_networks 14
+// times because the cache served instantly and gave no friction.
+
+const IDENTICAL_CALL_THRESHOLD = 4; // 5th identical call within window is blocked
+const IDENTICAL_CALL_WINDOW_MS = 60_000;
+const MAX_GUARDRAIL_SESSIONS = 1000;
+
+interface CallRecord {
+  hash: string;
+  timestamp: number;
+}
+
+const identicalCallLog = new Map<string, CallRecord[]>();
+
+function stableArgsHash(toolName: string, params: Record<string, unknown>): string {
+  // Strip dispatcher-private keys (prefixed _) so cache-control metadata
+  // doesn't desynchronize the hash from logically identical calls.
+  const cleaned: Record<string, unknown> = {};
+  for (const k of Object.keys(params).sort()) {
+    if (k.startsWith("_")) continue;
+    cleaned[k] = params[k];
+  }
+  return `${toolName}::${JSON.stringify(cleaned)}`;
+}
+
+function trimGuardrailMemory(): void {
+  if (identicalCallLog.size <= MAX_GUARDRAIL_SESSIONS) return;
+  // FIFO eviction by insertion order.
+  const oldest = identicalCallLog.keys().next().value;
+  if (oldest !== undefined) identicalCallLog.delete(oldest);
+}
+
+function checkIdenticalCallGuardrail(
+  sessionKey: string,
+  toolName: string,
+  params: Record<string, unknown>,
+): { blocked: false } | { blocked: true; count: number; error: string } {
+  const hash = stableArgsHash(toolName, params);
+  const now = Date.now();
+  const horizon = now - IDENTICAL_CALL_WINDOW_MS;
+
+  const log = identicalCallLog.get(sessionKey) ?? [];
+  // Drop entries outside the window. Keeps memory bounded per session.
+  const pruned = log.filter((r) => r.timestamp >= horizon);
+
+  const duplicates = pruned.filter((r) => r.hash === hash).length;
+  if (duplicates >= IDENTICAL_CALL_THRESHOLD) {
+    return {
+      blocked: true,
+      count: duplicates + 1,
+      error:
+        `Identical call guardrail: '${toolName}' has been called ${duplicates + 1} times with the same arguments ` +
+        `in the last ${IDENTICAL_CALL_WINDOW_MS / 1000}s. This usually means you're in a loop. ` +
+        `Try a different tool, change your arguments, or report that you cannot proceed. ` +
+        `If you genuinely need to call this tool again, wait and retry, or change one argument.`,
+    };
+  }
+
+  pruned.push({ hash, timestamp: now });
+  identicalCallLog.set(sessionKey, pruned);
+  trimGuardrailMemory();
+  return { blocked: false };
+}
+
+/**
+ * Test/maintenance hook — drops guardrail state for a session (or all
+ * sessions when no key is passed).
+ */
+export function resetIdenticalCallGuardrail(sessionKey?: string): void {
+  if (sessionKey) identicalCallLog.delete(sessionKey);
+  else identicalCallLog.clear();
+}
+
+/**
+ * Public entry point so the cached-dispatch wrapper can count calls
+ * before its cache lookup short-circuits — otherwise looping cache hits
+ * (the pattern observed in session 0a6a8d8d) slip past the guard.
+ * tools.discover is always allowed so the model can recover.
+ */
+export function recordAndCheckIdenticalCall(
+  sessionKey: string,
+  toolName: string,
+  params: Record<string, unknown>,
+): { blocked: false } | { blocked: true; count: number; error: string } {
+  const resolved = resolveToolName(toolName);
+  if (resolved === "tools.discover") return { blocked: false };
+  return checkIdenticalCallGuardrail(sessionKey, resolved, params);
 }
 
 const userToolCounters = new Map<string, number>();
@@ -9808,6 +9907,20 @@ export async function dispatchToolCall(
       success: false,
       error: `Tool '${resolvedToolName}' is blocked in subagent sessions. Subagents cannot spawn further subagents or schedule cron jobs.`,
     };
+  }
+
+  // Identical-call guardrail — when sessionKey is provided. The chat
+  // path also calls recordAndCheckIdenticalCall before its cache lookup
+  // (so cache hits count); this is the safety net for callers that bypass
+  // the cache layer (subagents, scripts).
+  if (context?.sessionKey) {
+    const guard = recordAndCheckIdenticalCall(context.sessionKey, resolvedToolName, params);
+    if (guard.blocked) {
+      console.warn(
+        `[ToolDispatcher] identical-call guardrail blocked '${resolvedToolName}' (count=${guard.count}) on session ${context.sessionKey}`,
+      );
+      return { success: false, error: guard.error };
+    }
   }
 
   if (!handler) {
