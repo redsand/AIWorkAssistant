@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import {
   computeImportance,
   computeQueryRelevance,
+  computeRecencyScore,
   isStructuralQuery,
   blendScores,
   applyDiversityPenalty,
@@ -150,6 +151,41 @@ describe("computeQueryRelevance", () => {
     const doc = makeDoc({ content: text, title: "" });
     const result = computeQueryRelevance(doc, text);
     expect(result).toBe(1);
+  });
+});
+
+describe("computeRecencyScore", () => {
+  const now = Date.parse("2026-06-11T12:00:00.000Z");
+
+  it("returns neutral score when createdAt is absent or invalid", () => {
+    expect(computeRecencyScore(makeDoc({ metadata: {} }), now)).toBe(0.5);
+    expect(
+      computeRecencyScore(makeDoc({ metadata: { createdAt: "not-a-date" } }), now),
+    ).toBe(0.5);
+  });
+
+  it("accepts Date, string, and numeric timestamps", () => {
+    const recent = Date.parse("2026-06-11T11:30:00.000Z");
+
+    expect(
+      computeRecencyScore(makeDoc({ metadata: { createdAt: new Date(recent) } }), now),
+    ).toBeCloseTo(1, 1);
+    expect(
+      computeRecencyScore(makeDoc({ metadata: { createdAt: new Date(recent).toISOString() } }), now),
+    ).toBeCloseTo(1, 1);
+    expect(computeRecencyScore(makeDoc({ metadata: { createdAt: recent } }), now)).toBeCloseTo(
+      1,
+      1,
+    );
+  });
+
+  it("floors old content and clamps future timestamps to fresh", () => {
+    expect(
+      computeRecencyScore(makeDoc({ metadata: { createdAt: "2025-01-01T00:00:00.000Z" } }), now),
+    ).toBe(0.2);
+    expect(
+      computeRecencyScore(makeDoc({ metadata: { createdAt: "2026-06-12T00:00:00.000Z" } }), now),
+    ).toBe(1);
   });
 });
 
