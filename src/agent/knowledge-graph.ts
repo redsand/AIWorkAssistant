@@ -53,13 +53,14 @@ export interface KGEdge {
 class KnowledgeGraph {
   private db: Database.Database;
 
-  constructor() {
-    const dataDir = path.resolve(process.cwd(), "data");
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
+  constructor(dbPath?: string) {
+    const dbFile = dbPath ?? path.join(path.resolve(process.cwd(), "data"), "knowledge_graph.db");
+    const dir = path.dirname(dbFile);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
     }
 
-    this.db = new Database(path.join(dataDir, "knowledge_graph.db"));
+    this.db = new Database(dbFile);
     this.db.pragma("journal_mode = WAL");
     this.initSchema();
   }
@@ -456,6 +457,11 @@ class KnowledgeGraph {
       createdAt: new Date(row.created_at),
     };
   }
+
+  close(): void {
+    this.db.close();
+  }
 }
 
+export { KnowledgeGraph };
 export const knowledgeGraph = new KnowledgeGraph();

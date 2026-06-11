@@ -117,4 +117,129 @@ describe("errors route", () => {
     expect(body.items).toHaveLength(1);
     expect(body.items[0].runId).toBe(included.id);
   });
+
+  it("classifies failed agent runs and applies query filters", async () => {
+    const messages = [
+      "model not found",
+      "request timed out while waiting",
+      "stale run detected",
+      "no fin signal before exit",
+      "output validation failed",
+      "unexpected crash",
+    ];
+    const runs = messages.map((message, index) => {
+      const run = db.startRun({
+        userId: "web-user",
+        mode: "engineering",
+        sessionId: index === 0 ? "keep" : "drop",
+      });
+      db.failRun(run.id, message);
+      return run;
+    });
+
+    await server.register(errorsRoutes, {
+      prefix: "/api",
+      database: db,
+      log: { query: async () => [] },
+    });
+
+    const all = await server.inject({
+      method: "GET",
+      url: "/api/errors?source=agent_runs&limit=20",
+      headers: { "x-user-id": "user-1" },
+    });
+    const categories = all.json().items.map((item: ErrorLogEntry) => item.category);
+
+    expect(categories).toEqual(
+      expect.arrayContaining([
+        "model_not_found",
+        "timeout",
+        "agent_exit",
+        "output_validation",
+        "agent_run_failed",
+      ]),
+    );
+
+    const filtered = await server.inject({
+      method: "GET",
+      url: `/api/errors?source=agent_runs&category=model_not_found&sessionId=keep&runId=${runs[0].id}&severity=error&since=2020-01-01T00:00:00.000Z&until=2999-01-01T00:00:00.000Z`,
+      headers: { "x-user-id": "user-1" },
+    });
+
+    expect(filtered.json().items).toHaveLength(1);
+    expect(filtered.json().items[0].runId).toBe(runs[0].id);
+  });
+
+  it("excludes failed agent runs when a non-agent source is requested", async () => {
+    const run = db.startRun({ userId: "web-user", mode: "productivity", sessionId: "session-1" });
+    db.failRun(run.id, "model not found");
+
+    await server.register(errorsRoutes, {
+      prefix: "/api",
+      database: db,
+      log: {
+        query: async () => [
+          createEntry({
+            id: "structured",
+            source: "server",
+            category: "request_error",
+            timestamp: "2026-06-11T10:00:00.000Z",
+          }),
+        ],
+      },
+    });
+
+    const res = await server.inject({
+      method: "GET",
+      url: "/api/errors?source=server",
+      headers: { "x-user-id": "user-1" },
+    });
+
+    expect(res.json().items.map((item: ErrorLogEntry) => item.id)).toEqual(["structured"]);
+  });
+
+  it("summarizes duplicate fingerprints with latest message and highest severity", async () => {
+    await server.register(errorsRoutes, {
+      prefix: "/api",
+      database: db,
+      log: {
+        query: async () => [
+          createEntry({
+            id: "old",
+            timestamp: "2026-06-11T09:00:00.000Z",
+            severity: "warn",
+            source: "server",
+            category: "request_error",
+            message: "old message",
+            fingerprint: "same",
+          }),
+          createEntry({
+            id: "new",
+            timestamp: "2026-06-11T10:00:00.000Z",
+            severity: "critical",
+            source: "server",
+            category: "request_error",
+            message: "new message",
+            fingerprint: "same",
+          }),
+        ],
+      },
+    });
+
+    const res = await server.inject({
+      method: "GET",
+      url: "/api/errors/summary?source=server",
+      headers: { "x-user-id": "user-1" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().summary).toMatchObject([
+      {
+        count: 2,
+        latestId: "new",
+        message: "new message",
+        severity: "critical",
+      },
+    ]);
+  });
 });

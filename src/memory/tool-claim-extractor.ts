@@ -1,4 +1,5 @@
 import { entityMemory } from "./entity-memory";
+import { autoPopulateFromEntity } from "./graph-auto-populator";
 import type { EntityType } from "./entity-types";
 
 /**
@@ -672,6 +673,22 @@ export function ingestStructuredClaims(
     });
     claimsWritten++;
     if (willSupersede) supersessions++;
+  }
+
+  // Auto-populate knowledge graph from the entities we just touched.
+  // Non-blocking: errors are logged but do not affect the result.
+  for (const entityId of entityIdByName.values()) {
+    try {
+      const entity = entityMemory.getEntity(entityId);
+      if (entity) {
+        autoPopulateFromEntity(entity);
+      }
+    } catch (err) {
+      console.warn(
+        `[tool-claim-extractor] Knowledge graph auto-populate failed for entity ${entityId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
   return {
