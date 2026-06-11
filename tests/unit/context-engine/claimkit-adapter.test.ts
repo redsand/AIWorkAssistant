@@ -19,10 +19,12 @@ const mockClaimKitConstructor = vi.fn();
 const mockCreateMemoryStores = vi.fn(() => ({}));
 const mockQueryNodes = vi.fn();
 const mockGetEdgesForNode = vi.fn();
+const mockGetNode = vi.fn();
 
 const mockKnowledgeGraph = {
   queryNodes: mockQueryNodes,
   getEdgesForNode: mockGetEdgesForNode,
+  getNode: mockGetNode,
 };
 
 vi.doMock("@redsand/claimkit", () => ({
@@ -99,6 +101,19 @@ describe("ClaimKitAdapter", () => {
       trustTier: "curated" | "observed" | "inferred";
       evidence?: string;
       source?: string;
+    }>;
+    ground: (input: {
+      text: string;
+      evidence: Array<{ title: string; content: string }>;
+      preExtractedClaims?: Array<{ text?: string; claimText?: string; subject?: string; predicate?: string; object?: string }>;
+      skipLLMVerification?: boolean;
+    }) => Promise<{
+      grounded: boolean;
+      hallucinationRate: number;
+      supportedAssertionCount: number;
+      unsupportedAssertionCount: number;
+      unsupportedPhrases: string[];
+      sentenceResults: Array<{ text: string; supported: boolean }>;
     }>;
   };
   let claimKitAdapter: { claimKitAdapter: typeof adapter };
@@ -352,6 +367,142 @@ describe("ClaimKitAdapter", () => {
       const result = await adapter.query("question");
       expect(result.answerability).toBe("answerable");
     });
+
+    it("should add graph evidence for a direct relationship query", async () => {
+      mockClaimKitInstance.query.mockResolvedValueOnce({
+        ...mockAnswerResult,
+        citations: [],
+        confidence: 0.4,
+        metadata: {
+          ...mockAnswerResult.metadata,
+          sourceIds: ["s1"],
+          claimCount: 2,
+        },
+        confidenceTrace: { source: "claimkit" },
+      });
+      mockQueryNodes
+        .mockReturnValueOnce([{ id: "source-1", title: "API Gateway" }])
+        .mockReturnValueOnce([{ id: "target-1", title: "Auth Service" }]);
+      mockGetEdgesForNode.mockReturnValueOnce([
+        {
+          id: "edge-1",
+          sourceId: "source-1",
+          targetId: "target-1",
+          type: "depends_on",
+          createdAt: new Date(),
+        },
+      ]);
+      await adapter.initialize();
+
+      const result = await adapter.query("Does the API Gateway depend on the Auth Service?");
+
+      expect(result.citations).toEqual([
+        {
+          claimId: "knowledge-graph:1",
+          sourceId: "knowledge-graph",
+          text: "Graph edge: API Gateway -[depends_on]-> Auth Service",
+        },
+      ]);
+      expect(result.confidence).toBe(1);
+      expect(result.metadata.sourceIds).toEqual(["s1", "knowledge-graph"]);
+      expect(result.metadata.claimCount).toBe(3);
+      expect(result.confidenceTrace).toEqual({ source: "claimkit" });
+      expect(mockQueryNodes).toHaveBeenNthCalledWith(1, { search: "API Gateway", limit: 5 });
+      expect(mockQueryNodes).toHaveBeenNthCalledWith(2, { search: "Auth Service", limit: 5 });
+    });
+
+    it("should add graph evidence for inbound relationship queries", async () => {
+      mockClaimKitInstance.query.mockResolvedValueOnce({
+        ...mockAnswerResult,
+        citations: [],
+        confidence: 0.2,
+        metadata: {
+          ...mockAnswerResult.metadata,
+          sourceIds: [],
+          claimCount: 0,
+        },
+      });
+      mockQueryNodes.mockReturnValueOnce([{ id: "target-1", title: "Auth Service" }]);
+      mockGetEdgesForNode.mockReturnValueOnce([
+        {
+          id: "edge-1",
+          sourceId: "source-1",
+          targetId: "target-1",
+          type: "depends_on",
+          createdAt: new Date(),
+        },
+        {
+          id: "edge-2",
+          sourceId: "source-2",
+          targetId: "target-1",
+          type: "blocks",
+          createdAt: new Date(),
+        },
+      ]);
+      mockGetNode.mockReturnValueOnce({ id: "source-1", title: "API Gateway" });
+      await adapter.initialize();
+
+      const result = await adapter.query("What depends on Auth Service?");
+
+      expect(result.citations).toEqual([
+        {
+          claimId: "knowledge-graph:1",
+          sourceId: "knowledge-graph",
+          text: "Graph edge: API Gateway -[depends_on]-> Auth Service",
+        },
+      ]);
+      expect(result.confidence).toBe(1);
+      expect(result.metadata.sourceIds).toEqual(["knowledge-graph"]);
+      expect(result.metadata.claimCount).toBe(1);
+      expect(mockGetEdgesForNode).toHaveBeenCalledWith("target-1", "incoming");
+    });
+
+    it("should ignore inbound relationship edges whose source node is missing", async () => {
+      mockClaimKitInstance.query.mockResolvedValueOnce({
+        ...mockAnswerResult,
+        citations: [],
+        confidence: 0.6,
+        metadata: {
+          ...mockAnswerResult.metadata,
+          sourceIds: ["s1"],
+          claimCount: 4,
+        },
+      });
+      mockQueryNodes.mockReturnValueOnce([{ id: "target-1", title: "Auth Service" }]);
+      mockGetEdgesForNode.mockReturnValueOnce([
+        {
+          id: "edge-1",
+          sourceId: "missing-source",
+          targetId: "target-1",
+          type: "depends_on",
+          createdAt: new Date(),
+        },
+      ]);
+      mockGetNode.mockReturnValueOnce(null);
+      await adapter.initialize();
+
+      const result = await adapter.query("What depends on Auth Service?");
+
+      expect(result.citations).toEqual([]);
+      expect(result.confidence).toBe(0.6);
+      expect(result.metadata.sourceIds).toEqual(["s1"]);
+      expect(result.metadata.claimCount).toBe(4);
+    });
+
+    it("should leave ClaimKit results unchanged for ambiguous relationship questions", async () => {
+      mockClaimKitInstance.query.mockResolvedValueOnce({
+        ...mockAnswerResult,
+        citations: [],
+      });
+      await adapter.initialize();
+
+      const result = await adapter.query("Can what depends on Auth Service?");
+
+      expect(result.citations).toEqual([]);
+      expect(result.confidence).toBe(0.95);
+      expect(result.metadata.sourceIds).toEqual(["s1"]);
+      expect(mockQueryNodes).not.toHaveBeenCalled();
+    });
   });
 
   describe("verifyRelationship", () => {
@@ -404,6 +555,95 @@ describe("ClaimKitAdapter", () => {
         confidence: 0,
         trustTier: "inferred",
       });
+    });
+
+    it("should verify any edge type when no edgeType filter is provided", async () => {
+      mockQueryNodes
+        .mockReturnValueOnce([{ id: "source-1", title: "API Gateway" }])
+        .mockReturnValueOnce([{ id: "target-1", title: "Auth Service" }]);
+      mockGetEdgesForNode.mockReturnValueOnce([
+        {
+          id: "edge-1",
+          sourceId: "source-1",
+          targetId: "target-1",
+          type: "blocks",
+          createdAt: new Date(),
+        },
+      ]);
+
+      const result = await adapter.verifyRelationship("API Gateway", "Auth Service");
+
+      expect(result.verified).toBe(true);
+      expect(result.evidence).toBe("Graph edge: API Gateway -[blocks]-> Auth Service");
+    });
+  });
+
+  describe("ground", () => {
+    it("should throw if not initialized", async () => {
+      await expect(adapter.ground({ text: "Some claim.", evidence: [] })).rejects.toThrow("ClaimKit not initialized");
+    });
+
+    it("should treat empty text as grounded with no assertions", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({ text: " \n ", evidence: [] });
+
+      expect(result).toEqual({
+        grounded: true,
+        hallucinationRate: 0,
+        supportedAssertionCount: 0,
+        unsupportedAssertionCount: 0,
+        unsupportedPhrases: [],
+        sentenceResults: [],
+      });
+    });
+
+    it("should support assertions from evidence and pre-extracted claims", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({
+        text: "API Gateway depends on Auth Service. Billing Service blocks Deployments. Go.",
+        evidence: [
+          {
+            title: "Architecture",
+            content: "The API Gateway depends on the Auth Service. Go.",
+          },
+        ],
+        preExtractedClaims: [
+          { claimText: "Billing Service blocks Deployments" },
+          { subject: "Unused", predicate: "relates_to", object: "Unused Target" },
+        ],
+      });
+
+      expect(result.grounded).toBe(true);
+      expect(result.hallucinationRate).toBe(0);
+      expect(result.supportedAssertionCount).toBe(3);
+      expect(result.unsupportedAssertionCount).toBe(0);
+      expect(result.sentenceResults).toEqual([
+        { text: "API Gateway depends on Auth Service.", supported: true },
+        { text: "Billing Service blocks Deployments.", supported: true },
+        { text: "Go.", supported: true },
+      ]);
+    });
+
+    it("should report unsupported assertions and hallucination rate", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({
+        text: "API Gateway depends on Auth Service. Billing Service owns Deployments.",
+        evidence: [
+          {
+            title: "Architecture",
+            content: "API Gateway depends on Auth Service.",
+          },
+        ],
+      });
+
+      expect(result.grounded).toBe(false);
+      expect(result.hallucinationRate).toBe(0.5);
+      expect(result.supportedAssertionCount).toBe(1);
+      expect(result.unsupportedAssertionCount).toBe(1);
+      expect(result.unsupportedPhrases).toEqual(["Billing Service owns Deployments."]);
     });
   });
 });

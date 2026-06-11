@@ -163,6 +163,68 @@ describe("ingestKnowledgeStore", () => {
       tags: [],
     });
   });
+
+  it("should filter file_read entries when local sources are disabled", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockGetAllEntries.mockReturnValue([
+      { id: "kn-file", source: "file_read", title: "Local File", content: "local", tags: [], createdAt: new Date() },
+      { id: "kn-manual-filter", source: "manual", title: "Manual", content: "manual", tags: [], createdAt: new Date() },
+    ]);
+    mockIngest.mockResolvedValueOnce({ sourceId: "src-manual-filter" });
+
+    const stats = await ingestKnowledgeStore();
+
+    expect(stats.total).toBe(1);
+    expect(stats.ingested).toBe(1);
+    expect(mockIngest).toHaveBeenCalledWith("Manual\n\nmanual", expect.objectContaining({
+      docId: "kn-manual-filter",
+    }));
+  });
+
+  it("should skip knowledge entries already ingested in a previous run", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockGetAllEntries.mockReturnValue([
+      { id: "kn-dedup", source: "manual", title: "Dedup", content: "content", tags: [], createdAt: new Date() },
+    ]);
+    mockIngest.mockResolvedValueOnce({ sourceId: "src-kn-dedup" });
+
+    const first = await ingestKnowledgeStore();
+    const second = await ingestKnowledgeStore();
+
+    expect(first.ingested).toBe(1);
+    expect(second.skipped).toBe(1);
+    expect(mockIngest).toHaveBeenCalledTimes(1);
+  });
+
+  it("should include file_read entries when local sources are enabled", async () => {
+    vi.resetModules();
+    vi.doMock("../../../src/context-engine/adapters/claimkit-adapter", () => ({
+      claimKitAdapter: mockClaimKitAdapter,
+    }));
+    vi.doMock("../../../src/agent/knowledge-store", () => ({
+      knowledgeStore: mockKnowledgeStore,
+    }));
+    vi.doMock("../../../src/config/env", () => ({
+      env: {
+        AI_MAX_CONCURRENT: 3,
+        RAG_INCLUDE_LOCAL_SOURCES: true,
+      },
+    }));
+    const mod = await import("../../../src/context-engine/claimkit-ingestion");
+    mockIsAvailable.mockReturnValue(true);
+    mockGetAllEntries.mockReturnValue([
+      { id: "kn-file-included", source: "file_read", title: "Included File", content: "included", tags: [], createdAt: new Date() },
+    ]);
+    mockIngest.mockResolvedValueOnce({ sourceId: "src-file-included" });
+
+    const stats = await mod.ingestKnowledgeStore();
+
+    expect(stats.total).toBe(1);
+    expect(stats.ingested).toBe(1);
+    expect(mockIngest).toHaveBeenCalledWith("Included File\n\nincluded", expect.objectContaining({
+      docId: "kn-file-included",
+    }));
+  });
 });
 
 // ── ingestCodebaseStore ───────────────────────────────────────────────
@@ -279,6 +341,21 @@ describe("ingestCodebaseStore", () => {
     expect(stats.errors).toBe(1);
     expect(stats.sourceIds).toEqual(["src-cb-1", "src-cb-3"]);
   });
+
+  it("should skip codebase files already ingested in a previous run", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockGetIndexedFiles.mockReturnValue([
+      { path: "dedup.ts", language: "typescript", content: "first" },
+    ]);
+    mockIngest.mockResolvedValueOnce({ sourceId: "src-dedup" });
+
+    const first = await ingestCodebaseStore();
+    const second = await ingestCodebaseStore();
+
+    expect(first.ingested).toBe(1);
+    expect(second.skipped).toBe(1);
+    expect(mockIngest).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("ingestScoredDocumentsForQuery", () => {
@@ -341,6 +418,242 @@ describe("ingestScoredDocumentsForQuery", () => {
         querySeed: true,
         score: 12,
       }),
+    );
+  });
+
+  it("deduplicates scored documents and formats non-codebase locations", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockIngest.mockResolvedValueOnce({ sourceId: "seed-knowledge" });
+
+    const doc = {
+      id: "knowledge-seed-dedup",
+      source: "knowledge" as const,
+      content: "Knowledge content",
+      title: "Knowledge Title",
+      score: 5,
+      baseScore: 5,
+      importanceScore: 0,
+      recencyScore: 0,
+      trustScore: 0.9,
+      claimKitBoost: 0,
+      tokens: 10,
+      metadata: {
+        tags: ["knowledge"],
+      },
+    };
+
+    const first = await ingestScoredDocumentsForQuery([doc], "knowledge query", 5);
+    const second = await ingestScoredDocumentsForQuery([doc], "knowledge query", 5);
+
+    expect(first.ingested).toBe(1);
+    expect(second.skipped).toBe(1);
+    expect(mockIngest).toHaveBeenCalledTimes(1);
+    expect(mockIngest).toHaveBeenCalledWith(
+      expect.stringContaining("Location: Knowledge Title"),
+      expect.objectContaining({
+        docId: "knowledge-seed-dedup",
+        source: "knowledge",
+      }),
+    );
+  });
+
+  it("uses codebase seed metadata fallbacks when location fields are missing", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockIngest.mockResolvedValueOnce({ sourceId: "seed-code-fallback" });
+
+    const stats = await ingestScoredDocumentsForQuery([
+      {
+        id: "code-fallback",
+        source: "codebase",
+        content: "fallback content",
+        title: "src/fallback.ts",
+        score: 3,
+        baseScore: 3,
+        importanceScore: 0,
+        recencyScore: 0,
+        trustScore: 0.9,
+        claimKitBoost: 0,
+        tokens: 10,
+        metadata: {},
+      },
+    ], "fallback query", 5);
+
+    expect(stats.ingested).toBe(1);
+    expect(mockIngest).toHaveBeenCalledWith(
+      expect.stringContaining("Location: src/fallback.ts:-"),
+      expect.objectContaining({
+        docId: "code-fallback",
+        source: "codebase",
+      }),
+    );
+  });
+});
+
+describe("single-item ClaimKit ingestion helpers", () => {
+  let mod: typeof import("../../../src/context-engine/claimkit-ingestion");
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    vi.doMock("../../../src/context-engine/adapters/claimkit-adapter", () => ({
+      claimKitAdapter: mockClaimKitAdapter,
+    }));
+    vi.doMock("../../../src/agent/knowledge-graph", () => ({
+      knowledgeGraph: mockKnowledgeGraph,
+    }));
+    vi.doMock("../../../src/config/env", () => ({
+      env: {
+        AI_MAX_CONCURRENT: 3,
+        RAG_INCLUDE_LOCAL_SOURCES: false,
+      },
+    }));
+    mod = await import("../../../src/context-engine/claimkit-ingestion");
+  });
+
+  it("ingests a single knowledge entry once and skips duplicates", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockIngest.mockResolvedValue({ sourceId: "single-knowledge" });
+    const entry = {
+      id: "single-knowledge-entry",
+      source: "manual" as const,
+      title: "Manual Note",
+      content: "Manual content",
+      tags: ["manual"],
+      createdAt: new Date(),
+    };
+
+    await mod.ingestSingleKnowledgeEntry(entry);
+    await mod.ingestSingleKnowledgeEntry(entry);
+
+    expect(mockIngest).toHaveBeenCalledTimes(1);
+    expect(mockIngest).toHaveBeenCalledWith("Manual Note\n\nManual content", {
+      docId: "single-knowledge-entry",
+      title: "Manual Note",
+      source: "knowledge",
+      trustTier: "curated",
+      tags: ["manual"],
+    });
+  });
+
+  it("skips file_read single knowledge entries when local sources are disabled", async () => {
+    mockIsAvailable.mockReturnValue(true);
+
+    await mod.ingestSingleKnowledgeEntry({
+      id: "single-file-read-entry",
+      source: "file_read" as const,
+      title: "Local File",
+      content: "Local content",
+      tags: [],
+      createdAt: new Date(),
+    });
+
+    expect(mockIngest).not.toHaveBeenCalled();
+  });
+
+  it("does not ingest single entries when ClaimKit is unavailable", async () => {
+    mockIsAvailable.mockReturnValue(false);
+
+    await mod.ingestSingleCodebaseFile({
+      path: "src/unavailable.ts",
+      language: "typescript",
+      content: "export const unavailable = true;",
+    });
+
+    expect(mockIngest).not.toHaveBeenCalled();
+  });
+
+  it("ingests a single codebase file and swallows ingest failures", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockIngest.mockResolvedValueOnce({ sourceId: "single-code" });
+
+    await mod.ingestSingleCodebaseFile({
+      path: "src/single.ts",
+      language: "typescript",
+      content: "export const single = true;",
+    });
+
+    expect(mockIngest).toHaveBeenCalledWith("File: src/single.ts\n\nexport const single = true;", {
+      path: "src/single.ts",
+      title: "src/single.ts",
+      source: "codebase",
+      language: "typescript",
+      trustTier: "curated",
+    });
+
+    mockIngest.mockRejectedValueOnce(new Error("codebase ingest failed"));
+    await expect(mod.ingestSingleCodebaseFile({
+      path: "src/failing-single.ts",
+      language: "typescript",
+      content: "throw new Error();",
+    })).resolves.toBeUndefined();
+  });
+
+  it("ingests a single graph node with default context", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockIngest.mockResolvedValue({ sourceId: "single-node" });
+
+    await mod.ingestSingleGraphNode({
+      id: "node-single",
+      type: "component",
+      title: "Auth Service",
+      content: "Handles auth",
+      status: "accepted",
+      tags: [],
+      metadata: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    expect(mockIngest).toHaveBeenCalledWith(
+      "Entity: Auth Service (component)\nHandles auth\nContext: N/A\nStatus: accepted",
+      {
+        entityId: "node-single",
+        entityType: "component",
+        source: "graph",
+        trustTier: "curated",
+      },
+    );
+  });
+
+  it("ingests a single graph edge with relationship claim metadata", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockIngest.mockResolvedValue({ sourceId: "single-edge" });
+    mockGetNode.mockImplementation((id: string) => {
+      if (id === "source-node") {
+        return { id, type: "component", title: "API Gateway", content: "", status: "accepted", tags: [], metadata: {}, createdAt: new Date(), updatedAt: new Date() };
+      }
+      if (id === "target-node") {
+        return { id, type: "component", title: "Auth Service", content: "", status: "accepted", tags: [], metadata: {}, createdAt: new Date(), updatedAt: new Date() };
+      }
+      return null;
+    });
+
+    await mod.ingestSingleGraphEdge({
+      id: "edge-single",
+      sourceId: "source-node",
+      targetId: "target-node",
+      type: "depends_on",
+      description: "API Gateway calls Auth Service",
+      createdAt: new Date(),
+    });
+
+    expect(mockIngest).toHaveBeenCalledWith(
+      "Relationship claim: API Gateway relationship [depends_on] -> Auth Service\nAPI Gateway calls Auth Service",
+      {
+        relationshipId: "edge-single",
+        relationshipType: "depends_on",
+        relationshipClaim: {
+          entity: "API Gateway",
+          attribute: "relationship",
+          value: "[depends_on] -> Auth Service",
+          sourceNodeId: "source-node",
+          targetNodeId: "target-node",
+          edgeType: "depends_on",
+          trustTier: "curated",
+        },
+        source: "graph",
+        trustTier: "curated",
+      },
     );
   });
 });
@@ -604,5 +917,42 @@ describe("ingestGraphStore", () => {
 
     expect(stats.ingested).toBe(1);
     expect(mockIngest).toHaveBeenCalledTimes(1);
+  });
+
+  it("should skip graph nodes and edges already ingested in a previous run", async () => {
+    mockIsAvailable.mockReturnValue(true);
+    mockGetAllNodes.mockReturnValue([
+      {
+        id: "node-dedup",
+        type: "component",
+        title: "Dedup Node",
+        content: "Node content",
+        status: "accepted",
+        tags: [],
+        metadata: {},
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    mockGetAllEdges.mockReturnValue([
+      {
+        id: "edge-dedup",
+        sourceId: "node-dedup",
+        targetId: "target-dedup",
+        type: "related_to",
+        createdAt: new Date(),
+      },
+    ]);
+    mockGetNode.mockReturnValue(null);
+    mockIngest
+      .mockResolvedValueOnce({ sourceId: "node-src" })
+      .mockResolvedValueOnce({ sourceId: "edge-src" });
+
+    const first = await ingestGraphStore();
+    const second = await ingestGraphStore();
+
+    expect(first.ingested).toBe(2);
+    expect(second.skipped).toBe(2);
+    expect(mockIngest).toHaveBeenCalledTimes(2);
   });
 });
