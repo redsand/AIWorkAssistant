@@ -6,7 +6,8 @@
     <title>Calibration Eval — AI Work Assistant</title>
     <link rel="stylesheet" href="/css/base.css" />
     <link rel="stylesheet" href="/css/eval.css" />
-    <script src="/js/eval.js?v=1" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="/js/eval.js?v=2" defer></script>
   </head>
   <body>
     <div class="eval-page">
@@ -70,6 +71,77 @@
       <section id="detail-panel" class="detail-panel" hidden>
         <h2 class="section-title">Case detail</h2>
         <div id="detail-body"></div>
+      </section>
+
+      <!-- Phase 3 analysis panel -->
+      <section class="analysis-panel">
+        <div class="analysis-header">
+          <h2 class="section-title">Calibration analysis</h2>
+          <button id="refresh-analysis-btn" class="secondary-btn">Refresh</button>
+        </div>
+        <div id="analysis-empty" class="empty-state">
+          No rated runs yet. Rate cases above to populate the calibration curve.
+        </div>
+        <div id="analysis-body" hidden>
+          <div class="analysis-metrics">
+            <div class="metric-chip">
+              <div class="metric-value" id="metric-sample">—</div>
+              <div class="metric-label">Rated runs</div>
+            </div>
+            <div class="metric-chip">
+              <div class="metric-value" id="metric-ece">—</div>
+              <div class="metric-label">Expected Calibration Error</div>
+              <div class="metric-hint">Lower is better. 0 means perfectly calibrated.</div>
+            </div>
+            <div class="metric-chip">
+              <div class="metric-value" id="metric-rmse">—</div>
+              <div class="metric-label">RMSE (confidence vs rating)</div>
+            </div>
+            <div class="metric-chip">
+              <div class="metric-value" id="metric-gap">—</div>
+              <div class="metric-label">Mean signed gap</div>
+              <div class="metric-hint">Negative = under-confident (over-penalized). Positive = over-confident.</div>
+            </div>
+          </div>
+
+          <div class="chart-wrap">
+            <canvas id="calibration-chart" height="300"></canvas>
+          </div>
+
+          <h3 class="subsection-title">Per-segment calibration</h3>
+          <table class="analysis-table" id="segment-table">
+            <thead>
+              <tr>
+                <th>Segment</th>
+                <th>n</th>
+                <th>Avg confidence</th>
+                <th>Avg rating (norm.)</th>
+                <th>Gap</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+
+          <h3 class="subsection-title">Penalty firing on rated cases</h3>
+          <p class="analysis-hint">
+            For each penalty category: how often it fired, and the average human rating when it
+            did vs. when it didn't. A penalty that fires often <em>and</em> correlates with high
+            human ratings is the over-penalizer.
+          </p>
+          <table class="analysis-table" id="penalty-table">
+            <thead>
+              <tr>
+                <th>Penalty</th>
+                <th>Fired</th>
+                <th>Avg rating when fired</th>
+                <th>Avg rating when not fired</th>
+                <th>Avg magnitude</th>
+                <th>Suspicion</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </section>
     </div>
 

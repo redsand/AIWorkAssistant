@@ -12,11 +12,14 @@ const state = {
   draftRatings: new Map(),
 };
 
+let calibrationChart = null;
+
 document.addEventListener("DOMContentLoaded", () => {
   bindEvents();
   loadSegments().then(() => {
     refreshCases();
     refreshStats();
+    refreshAnalysis();
   });
 });
 
@@ -28,6 +31,9 @@ function bindEvents() {
   document
     .getElementById("segment-filter")
     .addEventListener("change", refreshCases);
+  document
+    .getElementById("refresh-analysis-btn")
+    .addEventListener("click", refreshAnalysis);
 }
 
 // ── Loaders ─────────────────────────────────────────────────────────
@@ -392,6 +398,7 @@ async function submitRating(runId) {
     if (state.selectedCaseId) await selectCase(state.selectedCaseId);
     await refreshCases();
     refreshStats();
+    refreshAnalysis();
   } catch (err) {
     showError(`Rating failed: ${err.message}`);
   }
@@ -433,4 +440,192 @@ function escapeHtml(s) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+// ── Phase 3 calibration analysis ────────────────────────────────────
+
+async function refreshAnalysis() {
+  try {
+    const res = await fetch(`${API}/analysis?system=claimkit`);
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    const data = await res.json();
+    renderAnalysis(data);
+    // Refreshing analysis usually means ratings changed — re-derive
+    // top-of-page stats so the rated counter stays in sync.
+    refreshStats();
+  } catch (err) {
+    console.warn("analysis refresh failed", err);
+  }
+}
+
+function renderAnalysis(data) {
+  const empty = document.getElementById("analysis-empty");
+  const body = document.getElementById("analysis-body");
+
+  if (!data || data.sampleSize === 0) {
+    empty.hidden = false;
+    body.hidden = true;
+    if (calibrationChart) {
+      calibrationChart.destroy();
+      calibrationChart = null;
+    }
+    return;
+  }
+  empty.hidden = true;
+  body.hidden = false;
+
+  // Metrics row
+  document.getElementById("metric-sample").textContent = data.sampleSize;
+  document.getElementById("metric-ece").textContent = data.reliability.ece.toFixed(3);
+  document.getElementById("metric-rmse").textContent = data.reliability.rmse.toFixed(3);
+  // Mean signed gap: sum of (conf - rating) / n. Negative means the
+  // system is systematically under-confident (over-penalized).
+  const meanGap =
+    data.pairs.reduce((acc, p) => acc + (p.confidence - p.ratingNormalized), 0) /
+    data.pairs.length;
+  const gapEl = document.getElementById("metric-gap");
+  gapEl.textContent = (meanGap >= 0 ? "+" : "") + meanGap.toFixed(3);
+  gapEl.style.color = meanGap < -0.05 ? "#991b1b" : meanGap > 0.05 ? "#92400e" : "#065f46";
+
+  renderCalibrationChart(data);
+  renderSegmentTable(data.perSegment);
+  renderPenaltyTable(data.perPenalty);
+}
+
+function renderCalibrationChart(data) {
+  const canvas = document.getElementById("calibration-chart");
+  const ctx = canvas.getContext("2d");
+  if (calibrationChart) calibrationChart.destroy();
+
+  // Scatter: each rated run as (confidence, rating/4)
+  const scatter = data.pairs.map((p) => ({ x: p.confidence, y: p.ratingNormalized }));
+  // Reliability line: bin midpoint x bin avg rating
+  const reliabilityLine = data.reliability.bins
+    .filter((b) => b.count > 0)
+    .map((b) => ({ x: b.avgConfidence, y: b.avgRatingNormalized }));
+  // Diagonal y = x
+  const diagonal = [
+    { x: 0, y: 0 },
+    { x: 1, y: 1 },
+  ];
+
+  calibrationChart = new Chart(ctx, {
+    type: "scatter",
+    data: {
+      datasets: [
+        {
+          label: "Perfect calibration",
+          type: "line",
+          data: diagonal,
+          borderColor: "#9ca3af",
+          borderDash: [4, 4],
+          borderWidth: 1.5,
+          pointRadius: 0,
+          fill: false,
+          tension: 0,
+        },
+        {
+          label: "Reliability bins",
+          type: "line",
+          data: reliabilityLine,
+          borderColor: "#667eea",
+          backgroundColor: "#667eea",
+          pointRadius: 5,
+          pointHoverRadius: 7,
+          borderWidth: 2,
+          fill: false,
+          tension: 0,
+        },
+        {
+          label: "Per-run (raw)",
+          data: scatter,
+          backgroundColor: "rgba(245, 158, 11, 0.55)",
+          borderColor: "#f59e0b",
+          pointRadius: 4,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          type: "linear",
+          min: 0,
+          max: 1,
+          title: { display: true, text: "Predicted confidence" },
+        },
+        y: {
+          type: "linear",
+          min: 0,
+          max: 1,
+          title: { display: true, text: "Human rating (normalized to 0–1)" },
+        },
+      },
+      plugins: {
+        legend: { position: "bottom" },
+        tooltip: {
+          callbacks: {
+            label: (ctx) =>
+              `(${ctx.parsed.x.toFixed(2)}, ${ctx.parsed.y.toFixed(2)})`,
+          },
+        },
+      },
+    },
+  });
+}
+
+function renderSegmentTable(rows) {
+  const tbody = document.querySelector("#segment-table tbody");
+  if (!rows || !rows.length) {
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#888;">No data</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows
+    .sort((a, b) => Math.abs(b.gap) - Math.abs(a.gap))
+    .map(
+      (r) => `
+      <tr>
+        <td>${escapeHtml(r.segment)}</td>
+        <td>${r.sampleSize}</td>
+        <td>${r.avgConfidence.toFixed(3)}</td>
+        <td>${r.avgRatingNormalized.toFixed(3)}</td>
+        <td style="color:${r.gap < -0.05 ? "#991b1b" : r.gap > 0.05 ? "#92400e" : "#065f46"}">
+          ${r.gap >= 0 ? "+" : ""}${r.gap.toFixed(3)}
+        </td>
+      </tr>`,
+    )
+    .join("");
+}
+
+function renderPenaltyTable(rows) {
+  const tbody = document.querySelector("#penalty-table tbody");
+  if (!rows || !rows.length) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#888;">No confidence_trace data — runs predate Phase 1 telemetry, or no ratings yet</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows
+    .sort((a, b) => b.firedCount - a.firedCount)
+    .map((r) => {
+      // Suspicion heuristic: penalty fires often AND average rating
+      // when it fires is high (≥3 out of 4). That's the over-penalizer
+      // signature: the human says the answer was right, but the system
+      // still hit it with a penalty.
+      let suspicion = "low";
+      if (r.firedCount >= 3 && r.avgRatingWhenFired >= 3) {
+        suspicion = "high";
+      } else if (r.firedCount >= 3 && r.avgRatingWhenFired >= 2) {
+        suspicion = "med";
+      }
+      return `
+        <tr>
+          <td>${escapeHtml(r.penalty)}</td>
+          <td>${r.firedCount} / ${r.firedCount + r.notFiredCount}</td>
+          <td>${r.avgRatingWhenFired.toFixed(2)}</td>
+          <td>${r.avgRatingWhenNotFired.toFixed(2)}</td>
+          <td>${r.avgMagnitudeWhenFired.toFixed(3)}</td>
+          <td><span class="suspicion-pill ${suspicion}">${suspicion}</span></td>
+        </tr>`;
+    })
+    .join("");
 }
