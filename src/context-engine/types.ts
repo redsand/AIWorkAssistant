@@ -209,4 +209,12 @@ export const DEFAULT_SLOT_DEFINITIONS: BudgetSlotDefinition[] = [
   { name: "health", priority: 20, fraction: 0.05, overflowTarget: null },
 ];
 
+export interface Community {
+  id: string;
+  nodeIds: string[];
+  summary: string;
+  level: number;
+  createdAt: Date;
+}
+
 export const CHARS_PER_TOKEN = 1.8;

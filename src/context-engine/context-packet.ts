@@ -1026,11 +1026,24 @@ async function retrieveAllStores(query: string): Promise<ScoredDocument[]> {
 
 function retrieveGraphContext(query: string): string {
   try {
-    const nodes = knowledgeGraph.queryNodes({ search: query, limit: 5 });
-    if (nodes.length === 0) return "";
+    const parts: string[] = [];
 
-    const nodeIds = nodes.map((n) => n.id);
-    return knowledgeGraph.exportForContext(nodeIds);
+    const nodes = knowledgeGraph.queryNodes({ search: query, limit: 5 });
+    if (nodes.length > 0) {
+      const nodeIds = nodes.map((n) => n.id);
+      parts.push(knowledgeGraph.exportForContext(nodeIds));
+    }
+
+    // For broad/thematic queries, include community summaries
+    const communitySummaries = knowledgeGraph.retrieveCommunitySummaries(query);
+    if (communitySummaries.length > 0) {
+      parts.push("\n=== COMMUNITY SUMMARIES ===");
+      for (const summary of communitySummaries) {
+        parts.push(`- ${summary}`);
+      }
+    }
+
+    return parts.join("\n");
   } catch {
     return "";
   }
