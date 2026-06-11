@@ -813,6 +813,59 @@ export async function assembleContextPacket(
     messages.push(sm.message);
   }
 
+  // ── Final chain validity sweep ────────────────────────────────────────
+  // selectMessages selects high-scoring messages independently, so it can
+  // pick an assistant + tool_calls + tool results group AND a later
+  // standalone assistant while dropping the user message that started the
+  // later turn. The result is two adjacent assistant messages — which
+  // Z.ai's payload validator rejects with "consecutive assistant
+  // messages at index N and N+1".
+  //
+  // This sweep walks the final chain and surgically drops the earlier of
+  // any consecutive same-role pair (other than system/tool, where stacks
+  // are legal). The later message is the higher-scored one and represents
+  // more recent context; dropping the earlier one preserves conversation
+  // flow and lets the validator pass.
+  //
+  // Also drops orphaned tool messages that follow a dropped assistant —
+  // a tool result with no parent assistant is also invalid.
+  const cleaned: ChatMessage[] = [];
+  const droppedToolCallIds = new Set<string>();
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    const prev = cleaned[cleaned.length - 1];
+
+    // Drop orphaned tool results whose parent assistant we dropped.
+    if (msg.role === "tool" && msg.tool_call_id && droppedToolCallIds.has(msg.tool_call_id)) {
+      continue;
+    }
+
+    // Detect consecutive same-role pair (assistant->assistant or user->user).
+    // System and tool messages legitimately stack and are allowed.
+    if (
+      prev &&
+      prev.role === msg.role &&
+      msg.role !== "system" &&
+      msg.role !== "tool"
+    ) {
+      // Drop the EARLIER message. Track its tool_call_ids so the orphan
+      // sweep above can remove now-unparented tool results.
+      if (prev.role === "assistant" && prev.tool_calls?.length) {
+        for (const tc of prev.tool_calls) {
+          if (tc.id) droppedToolCallIds.add(tc.id);
+        }
+      }
+      console.warn(
+        `[ContextPacket] Dropped consecutive ${msg.role} message at packet position ${cleaned.length - 1} to keep chain valid`,
+      );
+      cleaned.pop();
+    }
+
+    cleaned.push(msg);
+  }
+  messages.length = 0;
+  messages.push(...cleaned);
+
   const totalTokens = messages.reduce(
     (sum, m) => sum + estimateTokens(m.content || ""),
     0,

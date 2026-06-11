@@ -500,16 +500,18 @@ export function completeToolCall(id, result) {
 
   const resultObj = typeof result === "object" ? result : null;
   const summaryText = summarizeResult(resultObj || result);
+  // Show the FULL JSON when raw is expanded — earlier versions truncated
+  // at 2000 chars and capped the box at 1200px scrollable, which made
+  // long tool results unreadable. Now the block grows with content; the
+  // page's own scrollbar carries the user through it.
   const fullJson = resultObj ? JSON.stringify(result, null, 2) : String(result);
-  const truncJson =
-    fullJson.length > 2000 ? fullJson.slice(0, 2000) + "..." : fullJson;
 
   const resultDiv = document.createElement("div");
   resultDiv.className = "tool-call-result";
   if (resultObj && fullJson.length > 200) {
     const resultId =
       "result-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
-    resultDiv.innerHTML = `<span>${escapeHtml(summaryText)}</span> <span class="result-toggle" data-result-id="${resultId}" style="color:#667eea;cursor:pointer;font-size:11px;margin-left:4px;">[show raw]</span><pre id="${resultId}" style="display:none;margin:4px 0 0;padding:6px;background:#1e1e2e;color:#cdd6f4;border-radius:4px;font-size:11px;max-height:1200px;overflow:auto;white-space:pre-wrap;word-break:break-all;">${escapeHtml(truncJson)}</pre>`;
+    resultDiv.innerHTML = `<span>${escapeHtml(summaryText)}</span> <span class="result-toggle" data-result-id="${resultId}" style="color:#667eea;cursor:pointer;font-size:11px;margin-left:4px;">[show raw]</span><pre id="${resultId}" style="display:none;margin:4px 0 0;padding:8px;background:#1e1e2e;color:#cdd6f4;border-radius:4px;font-size:11px;line-height:1.4;white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere;">${escapeHtml(fullJson)}</pre>`;
   } else {
     resultDiv.textContent = summaryText;
   }
