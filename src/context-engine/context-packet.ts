@@ -1044,7 +1044,8 @@ function retrieveGraphContext(query: string): string {
     }
 
     return parts.join("\n");
-  } catch {
+  } catch (err) {
+    console.warn("[ContextPacket] Graph context retrieval failed:", err instanceof Error ? err.message : err);
     return "";
   }
 }
