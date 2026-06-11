@@ -2,6 +2,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { _resetGatewayRateLimits, _getGatewayRateLimits, dispatchToolCall } from "../../../src/agent/tool-dispatcher";
 import type { DeliveryResult } from "../../../src/integrations/gateway/platform-adapter";
 
+vi.mock("../../../src/config/env", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/config/env")>();
+  return {
+    env: {
+      ...actual.env,
+      GATEWAY_ENABLED: true,
+    },
+  };
+});
+
 vi.mock("../../../src/integrations/gateway/gateway-engine", () => {
   const send = vi.fn<() => Promise<DeliveryResult>>();
   return {
