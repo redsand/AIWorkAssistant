@@ -53,6 +53,7 @@ const PLATFORM_PREFIX_MAP: Record<string, Platform> = {
   musician: "cross-platform",
   audio: "cross-platform",
   tools: "cross-platform",
+  gateway: "cross-platform",
 };
 
 export function getPlatformForToolName(toolName: string): Platform {
@@ -7570,6 +7571,41 @@ const CRON_TOOLS: Tool[] = [
 ];
 
 /**
+ * Gateway tools — deliver messages to messaging platforms
+ */
+const GATEWAY_TOOLS: Tool[] = [
+  {
+    name: "gateway.deliver",
+    description:
+      "Deliver a message to a user on a specific messaging platform (Telegram, Discord, Slack, or WhatsApp). Messages containing [SILENT] are suppressed and not sent.",
+    params: {
+      platform: {
+        type: "string",
+        description: "Target platform: telegram, discord, slack, or whatsapp",
+        required: true,
+      },
+      user_id: {
+        type: "string",
+        description: "Platform-specific user ID to send the message to",
+        required: true,
+      },
+      message: {
+        type: "string",
+        description: "Message content to deliver",
+        required: true,
+      },
+      silent: {
+        type: "boolean",
+        description: "If true, suppress delivery (same as [SILENT] in message)",
+        required: false,
+      },
+    },
+    actionType: "gateway.deliver",
+    riskLevel: "medium",
+  },
+];
+
+/**
  * Agent run tools — query and inspect agent run history
  */
 const AGENT_RUN_TOOLS: Tool[] = [
@@ -8318,6 +8354,7 @@ export function getTools(mode: string): Tool[] {
       return [
         ...AGENT_RUN_TOOLS,
         ...CRON_TOOLS,
+        ...GATEWAY_TOOLS,
         ...APPROVAL_TOOLS,
         ...CORE_PRODUCTIVITY_TOOLS,
         DISCOVER_TOOL_META,
@@ -8328,6 +8365,7 @@ export function getTools(mode: string): Tool[] {
         ...AGENT_RUN_TOOLS,
         ...ENGINEERING_TOOLS,
         ...CRON_TOOLS,
+        ...GATEWAY_TOOLS,
         ...APPROVAL_TOOLS,
         ...CORE_PRODUCTIVITY_TOOLS,
         DISCOVER_TOOL_META,
@@ -8336,6 +8374,7 @@ export function getTools(mode: string): Tool[] {
     case AGENT_MODES.MUSICIAN:
       return [
         ...AGENT_RUN_TOOLS,
+        ...GATEWAY_TOOLS,
         ...MUSICIAN_TOOLS,
         DISCOVER_TOOL_META,
         FETCH_CACHED_TOOL_META,
@@ -8528,11 +8567,11 @@ IMPORTANT: You MUST use these tools to take actions. Do NOT say "I don't have ac
 export function getAllToolsForMode(mode: string): Tool[] {
   switch (mode) {
     case AGENT_MODES.PRODUCTIVITY:
-      return [...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
+      return [...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...GATEWAY_TOOLS, ...PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
     case AGENT_MODES.ENGINEERING:
-      return [...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...ENGINEERING_TOOLS, ...PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
+      return [...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...GATEWAY_TOOLS, ...ENGINEERING_TOOLS, ...PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
     case AGENT_MODES.MUSICIAN:
-      return [...AGENT_RUN_TOOLS, ...MUSICIAN_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
+      return [...AGENT_RUN_TOOLS, ...GATEWAY_TOOLS, ...MUSICIAN_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
     default:
       return [];
   }

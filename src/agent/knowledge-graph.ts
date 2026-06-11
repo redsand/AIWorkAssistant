@@ -1,7 +1,9 @@
 import Database from "better-sqlite3";
+import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { ingestSingleGraphNode, ingestSingleGraphEdge } from "../context-engine/claimkit-ingestion";
+import type { Community } from "../context-engine/types";
 
 export type KGNodeType =
   | "decision"
@@ -96,6 +98,15 @@ class KnowledgeGraph {
       CREATE INDEX IF NOT EXISTS idx_edges_source ON kg_edges(source_id);
       CREATE INDEX IF NOT EXISTS idx_edges_target ON kg_edges(target_id);
       CREATE INDEX IF NOT EXISTS idx_edges_type ON kg_edges(type);
+
+      CREATE TABLE IF NOT EXISTS kg_communities (
+        id TEXT PRIMARY KEY,
+        node_ids TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        level INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_communities_level ON kg_communities(level);
     `);
   }
 
@@ -432,6 +443,324 @@ class KnowledgeGraph {
     return parts.join("\n");
   }
 
+  async detectCommunities(maxLevels: number = 2): Promise<Community[]> {
+    const nodes = this.getAllNodes();
+    const edges = this.getAllEdges();
+
+    if (nodes.length < 3) {
+      this.db.prepare(`DELETE FROM kg_communities`).run();
+      return [];
+    }
+
+    // Clear stale communities before re-detecting
+    this.db.prepare(`DELETE FROM kg_communities`).run();
+
+    const adj = this.buildAdjacencyList(nodes, edges);
+    const clusters = this.greedyModularityCluster(nodes.map(n => n.id), adj);
+    const validClusters = clusters.filter(c => c.length >= 3);
+
+    if (validClusters.length === 0) {
+      console.log(
+        `[KnowledgeGraph] Community detection: 0 communities from ${nodes.length} nodes, ${edges.length} edges (no clusters with >= 3 nodes)`,
+      );
+      return [];
+    }
+
+    // Generate summaries in parallel
+    const summaryPromises = validClusters.map(nodeIds => {
+      const communityNodes = nodeIds
+        .map(id => this.getNode(id))
+        .filter((n): n is KGNode => n !== null);
+      return this.generateCommunitySummary(communityNodes);
+    });
+    const summaries = await Promise.all(summaryPromises);
+
+    const now = new Date().toISOString();
+    const insertStmt = this.db.prepare(
+      `INSERT INTO kg_communities (id, node_ids, summary, level, created_at) VALUES (?, ?, ?, ?, ?)`,
+    );
+    const result: Community[] = [];
+
+    for (let i = 0; i < validClusters.length; i++) {
+      const nodeIds = validClusters[i];
+      const summary = summaries[i];
+      const id = randomUUID();
+
+      insertStmt.run(id, JSON.stringify(nodeIds), summary, 0, now);
+
+      result.push({ id, nodeIds, summary, level: 0, createdAt: new Date(now) });
+    }
+
+    console.log(
+      `[KnowledgeGraph] Community detection: ${result.length} level-0 communities from ${nodes.length} nodes, ${edges.length} edges`,
+    );
+
+    // Multi-level: recursively detect communities of communities
+    if (maxLevels > 1 && result.length >= 3) {
+      await this.detectHigherLevelCommunities(result, 1, maxLevels, edges);
+    }
+
+    return result;
+  }
+
+  private buildAdjacencyList(nodes: KGNode[], edges: KGEdge[]): Map<string, Set<string>> {
+    const adj = new Map<string, Set<string>>();
+    for (const node of nodes) {
+      adj.set(node.id, new Set());
+    }
+    for (const edge of edges) {
+      adj.get(edge.sourceId)?.add(edge.targetId);
+      adj.get(edge.targetId)?.add(edge.sourceId);
+    }
+    return adj;
+  }
+
+  /**
+   * Greedy modularity clustering: start with each node in its own community,
+   * repeatedly merge the pair with the highest positive ΔQ until no merge
+   * improves modularity.
+   */
+  private greedyModularityCluster(
+    nodeIds: string[],
+    adj: Map<string, Set<string>>,
+  ): string[][] {
+    // Count total undirected edges
+    let m = 0;
+    for (const [, neighbors] of adj) {
+      m += neighbors.size;
+    }
+    m = Math.floor(m / 2);
+
+    if (m === 0) return nodeIds.map(id => [id]);
+
+    // Each node starts as its own community
+    const nodeToComm = new Map<string, string>();
+    const communities = new Map<string, Set<string>>();
+    for (const id of nodeIds) {
+      nodeToComm.set(id, id);
+      communities.set(id, new Set([id]));
+    }
+
+    // Precompute degrees
+    const degrees = new Map<string, number>();
+    for (const id of nodeIds) {
+      degrees.set(id, adj.get(id)?.size ?? 0);
+    }
+
+    // Greedy merging: repeatedly merge the pair with highest ΔQ > 0
+    let improved = true;
+    while (improved) {
+      improved = false;
+      let bestDeltaQ = 0;
+      let bestPair: [string, string] | null = null;
+      const checkedPairs = new Set<string>();
+
+      for (const [commA, nodesA] of communities) {
+        if (nodesA.size === 0) continue;
+
+        const neighborComms = new Set<string>();
+        for (const nodeId of nodesA) {
+          for (const neighbor of adj.get(nodeId) ?? []) {
+            const neighborComm = nodeToComm.get(neighbor);
+            if (neighborComm !== undefined && neighborComm !== commA) {
+              neighborComms.add(neighborComm);
+            }
+          }
+        }
+
+        for (const commB of neighborComms) {
+          const pairKey = commA < commB ? `${commA}|${commB}` : `${commB}|${commA}`;
+          if (checkedPairs.has(pairKey)) continue;
+          checkedPairs.add(pairKey);
+
+          const nodesB = communities.get(commB);
+          if (!nodesB || nodesB.size === 0) continue;
+
+          // Count edges between A and B
+          let edgesBetween = 0;
+          for (const nodeId of nodesA) {
+            for (const neighbor of adj.get(nodeId) ?? []) {
+              if (nodesB.has(neighbor)) edgesBetween++;
+            }
+          }
+
+          // Sum of degrees
+          let degA = 0;
+          for (const nodeId of nodesA) degA += degrees.get(nodeId) ?? 0;
+          let degB = 0;
+          for (const nodeId of nodesB) degB += degrees.get(nodeId) ?? 0;
+
+          // ΔQ = (e_AB / m) - (degA * degB) / (2m²)
+          const deltaQ = (edgesBetween / m) - (degA * degB) / (2 * m * m);
+
+          if (deltaQ > bestDeltaQ) {
+            bestDeltaQ = deltaQ;
+            bestPair = [commA, commB];
+          }
+        }
+      }
+
+      if (bestPair && bestDeltaQ > 0) {
+        improved = true;
+        const [commA, commB] = bestPair;
+        const nodesA = communities.get(commA)!;
+        const nodesB = communities.get(commB)!;
+
+        for (const nodeId of nodesB) {
+          nodesA.add(nodeId);
+          nodeToComm.set(nodeId, commA);
+        }
+        nodesB.clear();
+      }
+    }
+
+    const result: string[][] = [];
+    for (const [, nodeSet] of communities) {
+      if (nodeSet.size > 0) result.push([...nodeSet]);
+    }
+    return result;
+  }
+
+  private async detectHigherLevelCommunities(
+    lowerCommunities: Community[],
+    currentLevel: number,
+    maxLevels: number,
+    edges: KGEdge[],
+  ): Promise<void> {
+    if (currentLevel >= maxLevels || lowerCommunities.length < 3) return;
+
+    // Build super-node adjacency from cross-community edges
+    const nodeToCommId = new Map<string, string>();
+    for (const comm of lowerCommunities) {
+      for (const nodeId of comm.nodeIds) {
+        nodeToCommId.set(nodeId, comm.id);
+      }
+    }
+
+    const superAdj = new Map<string, Set<string>>();
+    for (const comm of lowerCommunities) {
+      superAdj.set(comm.id, new Set());
+    }
+    for (const edge of edges) {
+      const sourceComm = nodeToCommId.get(edge.sourceId);
+      const targetComm = nodeToCommId.get(edge.targetId);
+      if (sourceComm && targetComm && sourceComm !== targetComm) {
+        superAdj.get(sourceComm)?.add(targetComm);
+        superAdj.get(targetComm)?.add(sourceComm);
+      }
+    }
+
+    // Run greedy modularity on super-graph
+    const commIds = lowerCommunities.map(c => c.id);
+    const superClusters = this.greedyModularityCluster(commIds, superAdj);
+    const validSuperClusters = superClusters.filter(c => c.length >= 2);
+
+    if (validSuperClusters.length === 0) return;
+
+    // Build node-id lookup for each community
+    const commNodeMap = new Map<string, string[]>();
+    for (const comm of lowerCommunities) {
+      commNodeMap.set(comm.id, comm.nodeIds);
+    }
+
+    // Generate summaries in parallel
+    const summaryPromises = validSuperClusters.map(cluster => {
+      const allNodeIds = cluster.flatMap(commId => commNodeMap.get(commId) ?? []);
+      const communityNodes = allNodeIds
+        .map(id => this.getNode(id))
+        .filter((n): n is KGNode => n !== null);
+      return this.generateCommunitySummary(communityNodes);
+    });
+    const summaries = await Promise.all(summaryPromises);
+
+    const now = new Date().toISOString();
+    const insertStmt = this.db.prepare(
+      `INSERT INTO kg_communities (id, node_ids, summary, level, created_at) VALUES (?, ?, ?, ?, ?)`,
+    );
+    const higherCommunities: Community[] = [];
+
+    for (let i = 0; i < validSuperClusters.length; i++) {
+      const cluster = validSuperClusters[i];
+      const allNodeIds = cluster.flatMap(commId => commNodeMap.get(commId) ?? []);
+      const summary = summaries[i];
+      const id = randomUUID();
+
+      insertStmt.run(id, JSON.stringify(allNodeIds), summary, currentLevel, now);
+
+      higherCommunities.push({
+        id,
+        nodeIds: allNodeIds,
+        summary,
+        level: currentLevel,
+        createdAt: new Date(now),
+      });
+    }
+
+    console.log(
+      `[KnowledgeGraph] Level-${currentLevel} community detection: ${higherCommunities.length} communities`,
+    );
+
+    // Recurse with ALL higher-level communities at once
+    if (currentLevel + 1 < maxLevels && higherCommunities.length >= 3) {
+      await this.detectHigherLevelCommunities(
+        higherCommunities,
+        currentLevel + 1,
+        maxLevels,
+        edges,
+      );
+    }
+  }
+
+  async generateCommunitySummary(nodes: KGNode[]): Promise<string> {
+    if (nodes.length === 0) return "Empty community.";
+
+    const nodeList = nodes
+      .map(n => `- [${n.type}] ${n.title}`)
+      .join("\n");
+
+    try {
+      const { getProvider } = await import("./providers/factory.js");
+      const provider = getProvider();
+      const response = await provider.chat({
+        messages: [
+          {
+            role: "system",
+            content: "Summarize the following group of related knowledge graph nodes in 2-3 sentences. Focus on the theme that connects them.",
+          },
+          {
+            role: "user",
+            content: `Nodes:\n${nodeList}`,
+          },
+        ],
+        temperature: 0.3,
+        maxTokens: 256,
+      });
+      const aiSummary = response.content.trim();
+      if (aiSummary) return aiSummary;
+    } catch (err) {
+      console.warn("[KnowledgeGraph] AI community summary failed, using fallback:", err instanceof Error ? err.message : err);
+    }
+
+    // Local fallback when AI is unavailable or returns empty
+    const types = [...new Set(nodes.map(n => n.type))];
+    const titles = nodes.map(n => n.title).slice(0, 5);
+    return `Community of ${nodes.length} nodes spanning types: ${types.join(", ")}. Includes: ${titles.join(", ")}.`;
+  }
+
+  retrieveCommunitySummaries(query: string): string[] {
+    if (!isBroadQuery(query)) return [];
+
+    try {
+      const rows = this.db
+        .prepare(`SELECT summary FROM kg_communities WHERE level = 0 ORDER BY created_at DESC`)
+        .all() as any[];
+
+      return rows.map(r => r.summary as string);
+    } catch {
+      return [];
+    }
+  }
+
   private rowToNode(row: any): KGNode {
     return {
       id: row.id,
@@ -465,3 +794,15 @@ class KnowledgeGraph {
 
 export { KnowledgeGraph };
 export const knowledgeGraph = new KnowledgeGraph();
+
+const BROAD_QUERY_PATTERNS = [
+  /what\s+are\s+the\s+main/i,
+  /overview\s+of/i,
+  /how\s+does\s+.*\s+work/i,
+  /describe\s+the\s+architecture/i,
+  /what\s+components/i,
+];
+
+export function isBroadQuery(query: string): boolean {
+  return BROAD_QUERY_PATTERNS.some(p => p.test(query));
+}

@@ -62,6 +62,11 @@ import { initializeMCP } from "./integrations/mcp";
 import { codebaseIndexer } from "./agent/codebase-indexer";
 import { providerSettings } from "./agent/provider-settings";
 import { toolCallCache } from "./memory/tool-cache";
+import { gatewayEngine } from "./integrations/gateway/gateway-engine";
+import { TelegramAdapter } from "./integrations/gateway/telegram-adapter";
+import { SlackAdapter } from "./integrations/gateway/slack-adapter";
+import { DiscordGatewayAdapter } from "./integrations/discord/discord-gateway-adapter";
+import { WhatsAppAdapter } from "./integrations/gateway/whatsapp-adapter";
 import path from "path";
 
 export async function buildServer() {
@@ -541,11 +546,13 @@ async function start() {
     process.on("SIGTERM", async () => {
       stopPollingEngine();
       await cronEngine.stop();
+      await gatewayEngine.stop();
       process.exit(0);
     });
     process.on("SIGINT", async () => {
       stopPollingEngine();
       await cronEngine.stop();
+      await gatewayEngine.stop();
       process.exit(0);
     });
 
@@ -557,6 +564,47 @@ async function start() {
     startStaleAgentRunReaper();
     if (env.CRON_ENABLED) {
       cronEngine.start();
+    }
+    if (env.GATEWAY_ENABLED) {
+      const gwDataPath = env.GATEWAY_DATA_PATH;
+
+      if (env.TELEGRAM_BOT_TOKEN) {
+        gatewayEngine.registerAdapter(new TelegramAdapter({ token: env.TELEGRAM_BOT_TOKEN }));
+      }
+      if (env.SLACK_BOT_TOKEN && env.SLACK_APP_TOKEN) {
+        gatewayEngine.registerAdapter(new SlackAdapter({ botToken: env.SLACK_BOT_TOKEN, appToken: env.SLACK_APP_TOKEN }));
+      }
+      if (env.DISCORD_BOT_TOKEN) {
+        gatewayEngine.registerAdapter(new DiscordGatewayAdapter({
+          token: env.DISCORD_BOT_TOKEN,
+          clientId: env.DISCORD_CLIENT_ID,
+          guildId: env.DISCORD_GUILD_ID || undefined,
+          allowedUserId: env.DISCORD_ALLOWED_USER_ID || undefined,
+        }));
+      }
+      if (env.SIGNAL_PHONE_NUMBER) {
+        gatewayEngine.registerAdapter(new WhatsAppAdapter({
+          signalPhoneNumber: env.SIGNAL_PHONE_NUMBER,
+          signalDataPath: env.SIGNAL_DATA_PATH,
+        }));
+      }
+
+      // Override data dir if configured
+      if (gwDataPath) {
+        (gatewayEngine as any).dataDir = path.resolve(gwDataPath);
+      }
+
+      if (gatewayEngine.getRegisteredPlatforms().length > 0) {
+        gatewayEngine.start().then(() => {
+          console.log(
+            `[Gateway] Started with platforms: ${gatewayEngine.getRegisteredPlatforms().join(", ")}`,
+          );
+        }).catch((err) => {
+          console.error("[Gateway] Startup failed:", err);
+        });
+      } else {
+        console.warn("[Gateway] Enabled but no platform adapters configured");
+      }
     }
     if (tunnelUrl) {
       const webcalUrl = tunnelUrl.replace(/^https?/, "webcal");
