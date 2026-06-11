@@ -7545,9 +7545,15 @@ async function handleTenableListWorkbenchAssets(params: Record<string, unknown>)
   if (err) return { success: false, error: err };
   const opts = tenableOpts(params);
 
-  // Start async asset export — returns every asset, not just the 5,000 workbench limit
+  // Tenable's /assets/export requires chunk_size (100–10000) in the
+  // request body — passing it as undefined produces a 400. Default to
+  // 1000 when the caller doesn't specify, which is what other Tenable
+  // SDKs default to. (Discovered 2026-06-11 from session 74e66284.)
+  const chunkSize = typeof params.chunk_size === "number" && params.chunk_size > 0
+    ? params.chunk_size
+    : 1000;
   const { export_uuid } = await tenableCloudService.exportAssets(
-    { chunk_size: params.chunk_size as number | undefined },
+    { chunk_size: chunkSize },
     opts,
   );
 
@@ -7623,8 +7629,12 @@ async function handleTenableImportAssets(params: Record<string, unknown>): Promi
 async function handleTenableExportAssets(params: Record<string, unknown>): Promise<ToolCallResult> {
   const err = tenableConfigCheck(params);
   if (err) return { success: false, error: err };
+  // chunk_size is required by Tenable's /assets/export — default to 1000.
+  const chunkSize = typeof params.chunk_size === "number" && params.chunk_size > 0
+    ? params.chunk_size
+    : 1000;
   const data = await tenableCloudService.exportAssets({
-    chunk_size: params.chunk_size as number | undefined,
+    chunk_size: chunkSize,
     filters: {
       has_plugin_results: params.has_plugin_results as boolean | undefined,
       tag: params.tag as any,
