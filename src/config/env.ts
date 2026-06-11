@@ -227,6 +227,13 @@ const envSchema = z.object({
   CLAIMKIT_QUERY_SEED_LIMIT: z.coerce.number().default(5),
   CLAIMKIT_QUERY_TIMEOUT_MS: z.coerce.number().default(120000),
   CLAIMKIT_AWAIT_SEED: z.string().transform((s) => s === "true").default("false"),
+  // Hard cap on the time the query path will wait for seed ingestion when
+  // CLAIMKIT_AWAIT_SEED=true. Without this, a slow LLM-backed extractor on
+  // CLAIMKIT_QUERY_SEED_LIMIT documents can take tens of minutes per
+  // query before the outer query timeout fires. 12s is enough for a fast
+  // provider on a small seed; slower providers should set CLAIMKIT_AWAIT_SEED=false
+  // and let seeding run in the background. Set to 0 to disable the cap.
+  CLAIMKIT_SEED_TIMEOUT_MS: z.coerce.number().default(12_000),
   CLAIMKIT_DISABLE_PLANNER_LLM: z.string().transform((s) => s === "true").default("false"),
   CLAIMKIT_DISABLE_VERIFIER_LLM: z.string().transform((s) => s === "true").default("false"),
   CLAIMKIT_DISABLE_CONTRADICTION_LLM: z.string().transform((s) => s === "true").default("false"),

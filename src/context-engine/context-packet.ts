@@ -244,7 +244,27 @@ export async function assembleContextPacket(
     const seedPromise = ingestScoredDocumentsForQuery(docs, query, env.CLAIMKIT_QUERY_SEED_LIMIT)
       .catch((err) => { console.warn("[ClaimKit] Query seed failed:", err); });
     if (env.CLAIMKIT_AWAIT_SEED) {
-      await seedPromise;
+      // Hard cap the seed wait. Without this, a slow LLM extractor on 15
+      // seeded docs could take 56+ minutes (real production observation,
+      // run 8b58e79d) before the outer 500s query timeout even fires.
+      // Cap is intentionally smaller than CLAIMKIT_QUERY_TIMEOUT_MS so a
+      // slow seed degrades gracefully into "continue without these claims"
+      // rather than poisoning the whole context assembly.
+      const seedTimeoutMs = env.CLAIMKIT_SEED_TIMEOUT_MS;
+      const timedSeedPromise = withTimeout(
+        seedPromise.then(() => true as const),
+        seedTimeoutMs,
+        false as const,
+      );
+      const seedFinished = await timedSeedPromise;
+      if (!seedFinished) {
+        console.warn(
+          `[ClaimKit] Seed wait timed out after ${seedTimeoutMs}ms — ` +
+          `continuing query without freshly seeded claims. Reduce ` +
+          `CLAIMKIT_QUERY_SEED_LIMIT or set CLAIMKIT_AWAIT_SEED=false if this recurs.`,
+        );
+        stageTimings.claimkitSeedTimedOutMs = seedTimeoutMs;
+      }
     }
     stageTimings.claimkitSeedMs = Date.now() - seedStart;
     onProgress?.("Querying knowledge graph...");
