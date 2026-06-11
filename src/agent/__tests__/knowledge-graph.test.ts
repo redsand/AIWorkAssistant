@@ -185,3 +185,127 @@ describe("isBroadQuery", () => {
     expect(isBroadQuery("OVERVIEW OF SYSTEM")).toBe(true);
   });
 });
+
+describe("KnowledgeGraph multi-level community detection", () => {
+  it("creates level-1 communities when detectHigherLevelCommunities receives communities with cross-edges", async () => {
+    // Build 3 groups of nodes with internal edges, plus cross-group edges.
+    // Then call detectHigherLevelCommunities directly with mock level-0 communities
+    // whose node sets are connected by those cross-group edges.
+    const g1 = [
+      kg.addNode(makeNode({ title: "HA1" })),
+      kg.addNode(makeNode({ title: "HA2" })),
+      kg.addNode(makeNode({ title: "HA3" })),
+    ];
+    const g2 = [
+      kg.addNode(makeNode({ title: "HB1" })),
+      kg.addNode(makeNode({ title: "HB2" })),
+      kg.addNode(makeNode({ title: "HB3" })),
+    ];
+    const g3 = [
+      kg.addNode(makeNode({ title: "HC1" })),
+      kg.addNode(makeNode({ title: "HC2" })),
+      kg.addNode(makeNode({ title: "HC3" })),
+    ];
+
+    // Internal edges
+    kg.addEdge(g1[0], g1[1], "related_to");
+    kg.addEdge(g2[0], g2[1], "related_to");
+    kg.addEdge(g3[0], g3[1], "related_to");
+
+    // Cross-group edges — these let super-node adjacency connect the communities
+    kg.addEdge(g1[2], g2[0], "related_to");
+    kg.addEdge(g2[2], g3[0], "related_to");
+
+    const communities = [
+      { id: "c0", nodeIds: g1, summary: "Group 1", level: 0, createdAt: new Date() },
+      { id: "c1", nodeIds: g2, summary: "Group 2", level: 0, createdAt: new Date() },
+      { id: "c2", nodeIds: g3, summary: "Group 3", level: 0, createdAt: new Date() },
+    ];
+
+    const spy = vi.spyOn(kg as any, "generateCommunitySummary").mockResolvedValue("Level-1 summary");
+    await (kg as any).detectHigherLevelCommunities(communities, 1, 2);
+    spy.mockRestore();
+
+    const db = (kg as any).db;
+    const level1Count = (db.prepare(`SELECT COUNT(*) as c FROM kg_communities WHERE level = 1`).get() as any).c;
+    expect(level1Count).toBeGreaterThanOrEqual(1);
+  });
+
+  it("detectCommunities called twice does not accumulate stale community rows", async () => {
+    const cluster = [
+      kg.addNode(makeNode({ title: "R1" })),
+      kg.addNode(makeNode({ title: "R2" })),
+      kg.addNode(makeNode({ title: "R3" })),
+    ];
+    kg.addEdge(cluster[0], cluster[1], "related_to");
+    kg.addEdge(cluster[1], cluster[2], "related_to");
+
+    const spy = vi.spyOn(kg as any, "generateCommunitySummary").mockResolvedValue("Rerun summary");
+
+    await kg.detectCommunities();
+    await kg.detectCommunities();
+
+    spy.mockRestore();
+
+    const db = (kg as any).db;
+    const count = (db.prepare(`SELECT COUNT(*) as c FROM kg_communities`).get() as any).c;
+    expect(count).toBe(1);
+  });
+
+  it("retrieveCommunitySummaries returns both level-0 summaries for disconnected clusters", async () => {
+    const c1 = [
+      kg.addNode(makeNode({ title: "Z1" })),
+      kg.addNode(makeNode({ title: "Z2" })),
+      kg.addNode(makeNode({ title: "Z3" })),
+    ];
+    kg.addEdge(c1[0], c1[1], "related_to");
+    kg.addEdge(c1[1], c1[2], "related_to");
+
+    const c2 = [
+      kg.addNode(makeNode({ title: "Y1" })),
+      kg.addNode(makeNode({ title: "Y2" })),
+      kg.addNode(makeNode({ title: "Y3" })),
+    ];
+    kg.addEdge(c2[0], c2[1], "related_to");
+    kg.addEdge(c2[1], c2[2], "related_to");
+
+    const spy = vi.spyOn(kg as any, "generateCommunitySummary")
+      .mockResolvedValueOnce("First cluster summary")
+      .mockResolvedValueOnce("Second cluster summary");
+
+    await kg.detectCommunities();
+    spy.mockRestore();
+
+    const summaries = kg.retrieveCommunitySummaries("overview of the system");
+    expect(summaries.length).toBe(2);
+    // Both summaries present (order depends on created_at within same timestamp)
+    expect(summaries).toContain("First cluster summary");
+    expect(summaries).toContain("Second cluster summary");
+  });
+
+  it("retrieveCommunitySummaries only returns level-0 summaries, not higher-level ones", async () => {
+    // Create a graph, detect communities, then manually insert a level-1 row
+    const c1 = [
+      kg.addNode(makeNode({ title: "X1" })),
+      kg.addNode(makeNode({ title: "X2" })),
+      kg.addNode(makeNode({ title: "X3" })),
+    ];
+    kg.addEdge(c1[0], c1[1], "related_to");
+    kg.addEdge(c1[1], c1[2], "related_to");
+
+    const spy = vi.spyOn(kg as any, "generateCommunitySummary").mockResolvedValue("Level-0 summary");
+    await kg.detectCommunities();
+    spy.mockRestore();
+
+    // Manually insert a level-1 community row
+    const db = (kg as any).db;
+    db.prepare(
+      `INSERT INTO kg_communities (id, node_ids, summary, level, created_at) VALUES (?, ?, ?, ?, ?)`,
+    ).run("comm-manual-L1", JSON.stringify(c1), "Level-1 summary", 1, new Date().toISOString());
+
+    const summaries = kg.retrieveCommunitySummaries("describe the architecture");
+    // Should only return level-0 summaries (1 row), not the level-1 row
+    expect(summaries.length).toBe(1);
+    expect(summaries[0]).toBe("Level-0 summary");
+  });
+});

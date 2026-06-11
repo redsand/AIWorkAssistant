@@ -446,7 +446,13 @@ class KnowledgeGraph {
     const nodes = this.getAllNodes();
     const edges = this.getAllEdges();
 
-    if (nodes.length < 3) return [];
+    if (nodes.length < 3) {
+      this.db.prepare(`DELETE FROM kg_communities`).run();
+      return [];
+    }
+
+    // Clear stale communities before re-detecting
+    this.db.prepare(`DELETE FROM kg_communities`).run();
 
     // Build adjacency list (undirected)
     const adj = new Map<string, Set<string>>();
@@ -575,6 +581,8 @@ class KnowledgeGraph {
     }
 
     const now = new Date().toISOString();
+    const higherCommunities: Community[] = [];
+
     for (const component of components) {
       const allNodeIds = component.flatMap(c => c.nodeIds);
       const communityNodes = allNodeIds
@@ -591,21 +599,22 @@ class KnowledgeGraph {
         )
         .run(id, JSON.stringify(allNodeIds), summary, currentLevel, now);
 
-      // Recurse if we have enough higher-level groups
-      if (currentLevel + 1 < maxLevels && components.length >= 3) {
-        const higherComm: Community = {
-          id,
-          nodeIds: allNodeIds,
-          summary,
-          level: currentLevel,
-          createdAt: new Date(now),
-        };
-        await this.detectHigherLevelCommunities(
-          [higherComm],
-          currentLevel + 1,
-          maxLevels,
-        );
-      }
+      higherCommunities.push({
+        id,
+        nodeIds: allNodeIds,
+        summary,
+        level: currentLevel,
+        createdAt: new Date(now),
+      });
+    }
+
+    // Recurse with ALL higher-level communities at once
+    if (currentLevel + 1 < maxLevels && higherCommunities.length >= 3) {
+      await this.detectHigherLevelCommunities(
+        higherCommunities,
+        currentLevel + 1,
+        maxLevels,
+      );
     }
   }
 
