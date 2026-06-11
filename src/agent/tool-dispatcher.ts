@@ -66,6 +66,7 @@ import { reflectionEngine } from "./reflection-engine";
 import { subagentSpawner } from "./subagent-spawner";
 import type { SubagentResult } from "./subagent-spawner";
 import { cronEngine } from "../scheduler/cron-engine";
+import { gatewayEngine } from "../integrations/gateway/gateway-engine";
 import type { EntityType, FindEntitiesQuery } from "../memory/entity-types";
 import { lspManager } from "../integrations/lsp/index.js";
 import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
@@ -5474,6 +5475,139 @@ async function handleGraphSummary(): Promise<ToolCallResult> {
   return { success: true, data: knowledgeGraph.getGraphSummary() };
 }
 
+// ── Gateway Handlers ──────────────────────────────────────────────
+
+const gatewayRateLimits = new Map<string, number[]>();
+const GATEWAY_RATE_LIMIT_WINDOW_MS = 60_000;
+const GATEWAY_RATE_LIMIT_MAX = 20;
+
+function pruneStaleRateLimitEntries(): void {
+  const now = Date.now();
+  const windowStart = now - GATEWAY_RATE_LIMIT_WINDOW_MS;
+  for (const [key, timestamps] of gatewayRateLimits) {
+    const filtered = timestamps.filter((t) => t > windowStart);
+    if (filtered.length === 0) {
+      gatewayRateLimits.delete(key);
+    } else {
+      gatewayRateLimits.set(key, filtered);
+    }
+  }
+}
+
+let rateLimitPruneInterval: ReturnType<typeof setInterval> | undefined;
+
+function ensureRateLimitPrune(): void {
+  if (rateLimitPruneInterval !== undefined) return;
+  rateLimitPruneInterval = setInterval(pruneStaleRateLimitEntries, GATEWAY_RATE_LIMIT_WINDOW_MS);
+  if (rateLimitPruneInterval.unref) {
+    rateLimitPruneInterval.unref();
+  }
+}
+
+function stopRateLimitPrune(): void {
+  if (rateLimitPruneInterval !== undefined) {
+    clearInterval(rateLimitPruneInterval);
+    rateLimitPruneInterval = undefined;
+  }
+}
+
+// Exported for testing only
+export function _resetGatewayRateLimits(): void {
+  gatewayRateLimits.clear();
+  stopRateLimitPrune();
+}
+
+export function _getGatewayRateLimits(): ReadonlyMap<string, number[]> {
+  return gatewayRateLimits;
+}
+
+function checkGatewayRateLimit(rateLimitKey: string): { allowed: boolean; currentCount: number } {
+  const now = Date.now();
+  const windowStart = now - GATEWAY_RATE_LIMIT_WINDOW_MS;
+  let timestamps = gatewayRateLimits.get(rateLimitKey) || [];
+  timestamps = timestamps.filter((t) => t > windowStart);
+
+  if (timestamps.length === 0) {
+    gatewayRateLimits.delete(rateLimitKey);
+  } else {
+    gatewayRateLimits.set(rateLimitKey, timestamps);
+  }
+
+  if (timestamps.length >= GATEWAY_RATE_LIMIT_MAX) {
+    return { allowed: false, currentCount: timestamps.length };
+  }
+  timestamps.push(now);
+  gatewayRateLimits.set(rateLimitKey, timestamps);
+  return { allowed: true, currentCount: timestamps.length };
+}
+
+async function handleGatewayDeliver(
+  params: Record<string, unknown>,
+  callerUserId: string,
+): Promise<ToolCallResult> {
+  if (!env.GATEWAY_ENABLED) {
+    return { success: false, error: "Gateway is not enabled. Set GATEWAY_ENABLED=true to enable." };
+  }
+
+  ensureRateLimitPrune();
+
+  const platform = typeof params.platform === "string" ? params.platform : "";
+  const targetUserId = typeof params.user_id === "string" ? params.user_id : "";
+  const message = typeof params.message === "string" ? params.message : "";
+  const silent = typeof params.silent === "boolean" ? params.silent : undefined;
+
+  if (!platform) return { success: false, error: "platform is required (telegram, discord, slack, whatsapp)" };
+  if (!targetUserId) return { success: false, error: "user_id is required" };
+  if (!message) return { success: false, error: "message is required" };
+
+  const validPlatforms = ["telegram", "discord", "slack", "whatsapp"];
+  if (!validPlatforms.includes(platform)) {
+    return { success: false, error: `Invalid platform '${platform}'. Valid: ${validPlatforms.join(", ")}` };
+  }
+
+  // Authorization: caller must be the target user (checked BEFORE rate limit to prevent DoS)
+  if (callerUserId !== targetUserId) {
+    return { success: false, error: `Unauthorized: cannot send messages to user '${targetUserId}'` };
+  }
+
+  const rateLimitKey = `${platform}:${targetUserId}`;
+  const rateCheck = checkGatewayRateLimit(rateLimitKey);
+  if (!rateCheck.allowed) {
+    console.warn(`[Gateway] Rate limit exceeded for ${rateLimitKey} (${rateCheck.currentCount}/${GATEWAY_RATE_LIMIT_MAX})`);
+    return { success: false, error: `Rate limit exceeded for ${platform}:${targetUserId}. Max ${GATEWAY_RATE_LIMIT_MAX} messages per minute.` };
+  }
+
+  try {
+    const result = await gatewayEngine.send(platform, targetUserId, message, { silent });
+    if (result.suppressed) {
+      console.log(`[Gateway] Message suppressed for ${platform}:${targetUserId}`);
+      return {
+        success: true,
+        data: result,
+        message: `Message suppressed (contained [SILENT]) for ${platform}:${targetUserId}`,
+      };
+    }
+    if (!result.success) {
+      console.error(`[Gateway] Delivery failed for ${platform}:${targetUserId}`);
+      return {
+        success: false,
+        error: `Failed to deliver message to ${platform}:${targetUserId}`,
+        data: result,
+      };
+    }
+    console.log(`[Gateway] Delivered to ${platform}:${targetUserId} (id: ${result.messageId})`);
+    return {
+      success: true,
+      data: result,
+      message: `Message delivered to ${platform}:${targetUserId} (id: ${result.messageId})`,
+    };
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    console.error(`[Gateway] Delivery exception for ${platform}:${targetUserId}:`, errMsg);
+    return { success: false, error: `Gateway delivery failed: ${errMsg}` };
+  }
+}
+
 async function handleWorkflowCreate(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -9387,6 +9521,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "skill.manage": handleSkillManage,
   "soul.manage": handleSoulManage,
   "cron.manage": handleCronManage,
+  "gateway.deliver": handleGatewayDeliver,
 
   "workflow.create": handleWorkflowCreate,
   "workflow.advance": handleWorkflowAdvance,
