@@ -579,6 +579,60 @@
 
   // ── Main load ────────────────────────────────────────────────────
 
+  /**
+   * Phase 1 calibration telemetry — render per-stage breakdown and
+   * penalty firing frequency. Empty-state when no traces exist yet.
+   * No selling: show the raw numbers the data gives us.
+   */
+  function renderConfidenceBreakdownPanel(data) {
+    var measured = data.measuredCases || 0;
+    var pending = "<span class='stat-pending' title='No confidence traces yet'>—</span>";
+    if (measured === 0) {
+      document.getElementById("stat-cbd-measured").innerHTML = pending;
+      document.getElementById("stat-cbd-gen-conf").innerHTML = pending;
+      document.getElementById("stat-cbd-claim-conf").innerHTML = pending;
+      document.getElementById("stat-cbd-adj").innerHTML = pending;
+      document.getElementById("stat-cbd-final").innerHTML = pending;
+      var t = document.getElementById("penalty-breakdown-table");
+      if (t) t.innerHTML = "<div class='muted'>Awaiting first measured query.</div>";
+      return;
+    }
+    renderStat("stat-cbd-measured", measured);
+    renderStat("stat-cbd-gen-conf", (data.avgGeneratorConfidence * 100).toFixed(1) + "%");
+    renderStat("stat-cbd-claim-conf", (data.avgAvgClaimConfidence * 100).toFixed(1) + "%");
+    renderStat("stat-cbd-adj", data.avgClampedAdjustment.toFixed(3));
+    renderStat("stat-cbd-final", (data.avgFinalConfidence * 100).toFixed(1) + "%");
+
+    // Penalty table: sorted by firePct descending so the most-active
+    // category is first. Two columns: how often it fired, and how much
+    // it cost on average when it did fire.
+    var penalties = (data.penalties || []).slice().sort(function (a, b) {
+      return b.firePct - a.firePct;
+    });
+    var table = document.getElementById("penalty-breakdown-table");
+    if (!table) return;
+    var rows = penalties.map(function (p) {
+      var fire = (p.firePct * 100).toFixed(0) + "%";
+      var avg = p.avgWhenFired > 0 ? "-" + p.avgWhenFired.toFixed(3) : "—";
+      var sign = p.name === "heuristicOverrideReversal" ? "+" : "-";
+      var avgVal = p.avgWhenFired > 0 ? (sign + p.avgWhenFired.toFixed(3)) : "—";
+      return "<tr>" +
+        "<td><code>" + escapeHtml(p.name) + "</code></td>" +
+        "<td style='text-align:right'>" + fire + "</td>" +
+        "<td style='text-align:right'>" + avgVal + "</td>" +
+        "</tr>";
+    }).join("");
+    table.innerHTML =
+      "<table class='runs-table' style='margin-top:0'>" +
+      "<thead><tr>" +
+      "<th>Penalty category</th>" +
+      "<th style='text-align:right'>Fires</th>" +
+      "<th style='text-align:right'>Avg cost when fired</th>" +
+      "</tr></thead>" +
+      "<tbody>" + rows + "</tbody>" +
+      "</table>";
+  }
+
   function renderLowConfidencePanel(stats) {
     var lc = stats.lowConfidenceBreakdown || {};
     renderStat("stat-lowconf-total", lc.total || 0);
@@ -747,6 +801,15 @@
       })
       .catch(function () {
         showEmpty("collab-trend-empty");
+      });
+
+    // Phase 1: ClaimKit confidence breakdown (per-stage calibration data)
+    fetchJSON("/api/comparison/confidence-breakdown" + sourceQuery())
+      .then(function (data) {
+        renderConfidenceBreakdownPanel(data);
+      })
+      .catch(function () {
+        renderConfidenceBreakdownPanel({ measuredCases: 0, penalties: [] });
       });
 
     // Structured claim memory stats (Idea 2: tool results as claims).

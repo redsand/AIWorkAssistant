@@ -104,6 +104,12 @@ class ComparisonRunDatabase {
       // with a structured-claim packet. NULL when CK was disabled or had
       // no evidence to contribute.
       { col: "ck_section_tokens", def: "INTEGER" },
+      // Phase 1 calibration telemetry: per-stage confidence trace from
+      // ClaimKit. JSON-encoded ConfidenceTrace with claim count, generator
+      // confidence, per-penalty breakdown, raw/clamped adjustments, stage
+      // timings. Lets the dashboard show "why did this query score 0.05?"
+      // with a real breakdown instead of a final number.
+      { col: "confidence_trace", def: "TEXT" },
     ];
     for (const { col, def } of migrations) {
       try {
@@ -149,6 +155,7 @@ class ComparisonRunDatabase {
           entity_claims_injected INTEGER,
           contradictions_flagged INTEGER,
           ck_section_tokens INTEGER,
+          confidence_trace TEXT,
           created_at TEXT NOT NULL,
           FOREIGN KEY (run_id) REFERENCES comparison_runs(id) ON DELETE CASCADE
         );
@@ -160,6 +167,7 @@ class ComparisonRunDatabase {
                  ck_status, ck_included_in_context,
                  rag_hallucination_rate, rag_grounded,
                  NULL, NULL, NULL, NULL,
+                 NULL,
                  NULL,
                  created_at
           FROM comparison_cases_old;
@@ -191,8 +199,9 @@ class ComparisonRunDatabase {
           citation_boost_applied, gap_fill_docs_added,
           entity_claims_injected, contradictions_flagged,
           ck_section_tokens,
+          confidence_trace,
           created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     const txn = this.db.transaction(() => {
@@ -226,6 +235,7 @@ class ComparisonRunDatabase {
           c.entityClaimsInjected ?? null,
           c.contradictionsFlagged ?? null,
           c.ckSectionTokens ?? null,
+          c.confidenceTrace ? JSON.stringify(c.confidenceTrace) : null,
           now,
         );
       }
@@ -708,6 +718,130 @@ class ComparisonRunDatabase {
   }
 
   /**
+   * Aggregate Phase 1 calibration telemetry across all cases that recorded
+   * a confidence_trace. Returns per-stage averages and per-penalty firing
+   * frequency — the data you need to answer:
+   *   - At which stage is confidence dropping?
+   *   - Which penalty fires most often?
+   *   - Which penalty costs the most confidence on average when it fires?
+   *
+   * Penalty fields are returned as POSITIVE numbers representing average
+   * confidence cost. firePct is the share of measured cases in which the
+   * penalty was non-zero.
+   */
+  getConfidenceBreakdown(options?: { source?: ComparisonSource }): {
+    measuredCases: number;
+    avgClaimCount: number;
+    avgAvgClaimConfidence: number;
+    avgGeneratorConfidence: number;
+    avgClampedAdjustment: number;
+    avgFinalConfidence: number;
+    penalties: Array<{
+      name: string;
+      firePct: number;
+      avgWhenFired: number;
+    }>;
+  } {
+    const conditions: string[] = ["cc.confidence_trace IS NOT NULL"];
+    const params: unknown[] = [];
+    if (options?.source) {
+      conditions.push("cr.source = ?");
+      params.push(options.source);
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT cc.confidence_trace
+         FROM comparison_cases cc
+         JOIN comparison_runs cr ON cr.id = cc.run_id
+         WHERE ${conditions.join(" AND ")}`,
+      )
+      .all(...params) as Array<{ confidence_trace: string }>;
+
+    const empty = {
+      measuredCases: 0,
+      avgClaimCount: 0,
+      avgAvgClaimConfidence: 0,
+      avgGeneratorConfidence: 0,
+      avgClampedAdjustment: 0,
+      avgFinalConfidence: 0,
+      penalties: [] as Array<{ name: string; firePct: number; avgWhenFired: number }>,
+    };
+    if (rows.length === 0) return empty;
+
+    interface PenaltyAccumulator {
+      total: number;
+      fireCount: number;
+      sumWhenFired: number;
+    }
+    const penaltyAccs: Record<string, PenaltyAccumulator> = {
+      badCitations: { total: 0, fireCount: 0, sumWhenFired: 0 },
+      badAssertions: { total: 0, fireCount: 0, sumWhenFired: 0 },
+      answerabilityObedience: { total: 0, fireCount: 0, sumWhenFired: 0 },
+      overstatedConfidence: { total: 0, fireCount: 0, sumWhenFired: 0 },
+      ignoredContradictions: { total: 0, fireCount: 0, sumWhenFired: 0 },
+      heuristicUnsupported: { total: 0, fireCount: 0, sumWhenFired: 0 },
+      heuristicOverrideReversal: { total: 0, fireCount: 0, sumWhenFired: 0 },
+    };
+    let claimCountSum = 0;
+    let avgClaimConfSum = 0;
+    let avgClaimConfN = 0;
+    let generatorConfSum = 0;
+    let clampedAdjSum = 0;
+    let finalConfSum = 0;
+    let parsedCount = 0;
+
+    for (const r of rows) {
+      let trace: any;
+      try {
+        trace = JSON.parse(r.confidence_trace);
+      } catch {
+        continue;
+      }
+      if (!trace || typeof trace !== "object") continue;
+      parsedCount++;
+      claimCountSum += Number(trace.claimCount ?? 0);
+      if (Number.isFinite(trace.avgClaimConfidence)) {
+        avgClaimConfSum += trace.avgClaimConfidence;
+        avgClaimConfN++;
+      }
+      generatorConfSum += Number(trace.generatorConfidence ?? 0);
+      clampedAdjSum += Number(trace.clampedAdjustment ?? 0);
+      finalConfSum += Number(trace.finalConfidence ?? 0);
+      const pen = trace.penalties ?? {};
+      for (const key of Object.keys(penaltyAccs)) {
+        const value = Number(pen[key] ?? 0);
+        penaltyAccs[key].total += value;
+        if (value !== 0) {
+          penaltyAccs[key].fireCount += 1;
+          penaltyAccs[key].sumWhenFired += value;
+        }
+      }
+    }
+
+    if (parsedCount === 0) return empty;
+
+    const penalties = Object.entries(penaltyAccs).map(([name, acc]) => ({
+      name,
+      firePct: acc.fireCount / parsedCount,
+      // Average penalty value when it fired. Penalty fields are negative
+      // except heuristicOverrideReversal — we return Math.abs() so the UI
+      // can render "average cost" without sign confusion. The name carries
+      // the direction.
+      avgWhenFired: acc.fireCount > 0 ? Math.abs(acc.sumWhenFired / acc.fireCount) : 0,
+    }));
+
+    return {
+      measuredCases: parsedCount,
+      avgClaimCount: claimCountSum / parsedCount,
+      avgAvgClaimConfidence: avgClaimConfN > 0 ? avgClaimConfSum / avgClaimConfN : 0,
+      avgGeneratorConfidence: generatorConfSum / parsedCount,
+      avgClampedAdjustment: clampedAdjSum / parsedCount,
+      avgFinalConfidence: finalConfSum / parsedCount,
+      penalties,
+    };
+  }
+
+  /**
    * Classify each ck_confidence ≤ 0.1 case by the most likely root cause.
    * Mirrors the [ClaimKit:lowconf] reason heuristic added in ClaimKit's
    * query() method. Derived entirely from existing columns — no schema
@@ -798,6 +932,7 @@ class ComparisonRunDatabase {
       rag_hallucination_rate: row.rag_hallucination_rate as number | null,
       rag_grounded: row.rag_grounded != null ? Boolean(row.rag_grounded) : null,
       ck_section_tokens: row.ck_section_tokens as number | null,
+      confidence_trace: (row.confidence_trace as string | null) ?? null,
       created_at: row.created_at as string,
     };
   }

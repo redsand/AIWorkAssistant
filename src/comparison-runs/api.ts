@@ -60,6 +60,13 @@ export async function comparisonRoutes(
     return db.getCollaborationOverTime(days, { source: safeSource(query.source) });
   });
 
+  // ── Confidence breakdown (Phase 1 calibration telemetry) ──────────
+
+  fastify.get("/confidence-breakdown", async (request, _reply) => {
+    const query = request.query as { source?: string };
+    return db.getConfidenceBreakdown({ source: safeSource(query.source) });
+  });
+
   // ── Structured-claim memory stats (Idea 2) ────────────────────────
   // Surfaces entity-memory health on the comparison dashboard so the
   // "ClaimKit + RAG" story includes the structured-memory contribution

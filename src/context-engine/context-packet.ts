@@ -546,6 +546,9 @@ export async function assembleContextPacket(
       ckStatus,
       ckIncludedInContext,
       ckSectionTokens: ckSectionTokensEstimate,
+      // Phase 1: persist the per-stage confidence trace so the dashboard
+      // can show which stage drove the score, not just the final number.
+      confidenceTrace: claimKitResult?.confidenceTrace,
       citationBoostApplied: citationBoostCount,
       gapFillDocsAdded,
       entityClaimsInjected: entityClaimsInjectedCount,

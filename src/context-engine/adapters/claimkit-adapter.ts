@@ -41,6 +41,12 @@ export interface ClaimKitQueryResult {
     processingTimeMs: number;
     retrievalScore: number;
   };
+  /**
+   * Per-stage confidence trace from ClaimKit (Phase 1 telemetry).
+   * Optional only because older code paths may not yet propagate it; in
+   * practice ClaimKit always returns this on the standard query path.
+   */
+  confidenceTrace?: import("@redsand/claimkit").ConfidenceTrace;
 }
 
 export class ClaimKitAdapter {
@@ -264,6 +270,9 @@ export class ClaimKitAdapter {
         processingTimeMs: result.metadata.processingTimeMs,
         retrievalScore: result.metadata.retrievalScore,
       },
+      // Surface the per-stage confidence trace for downstream persistence
+      // in comparison_cases. Phase 1 calibration telemetry.
+      confidenceTrace: result.confidenceTrace,
     };
   }
 

@@ -102,6 +102,8 @@ export function saveLiveComparison(params: {
   contradictionsFlagged?: number | null;
   /** Token count of the claimkit_evidence section when included in context. */
   ckSectionTokens?: number | null;
+  /** Phase 1: per-stage confidence trace from ClaimKit (any JSON-serializable shape). */
+  confidenceTrace?: unknown;
   db?: ComparisonRunDatabase;
 }): { caseId: string } | null {
   try {
@@ -125,6 +127,7 @@ export function saveLiveComparison(params: {
           entityClaimsInjected: params.entityClaimsInjected,
           contradictionsFlagged: params.contradictionsFlagged,
           ckSectionTokens: params.ckSectionTokens,
+          confidenceTrace: params.confidenceTrace,
           rag: {
             contextTokens: params.ragTokens,
             sections: params.ragSections,

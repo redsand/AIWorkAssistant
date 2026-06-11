@@ -45,6 +45,8 @@ export interface ComparisonCaseRow {
   rag_hallucination_rate: number | null;
   rag_grounded: boolean | null;
   ck_section_tokens: number | null;
+  /** JSON-encoded ConfidenceTrace (Phase 1 calibration telemetry). */
+  confidence_trace: string | null;
   created_at: string;
 }
 
@@ -238,6 +240,13 @@ export interface SaveCaseInput {
    * NULL when CK was disabled or had nothing to contribute.
    */
   ckSectionTokens?: number | null;
+  /**
+   * Phase 1 calibration telemetry: per-stage confidence trace from
+   * ClaimKit's query(). Persisted as JSON in confidence_trace column.
+   * Lets the dashboard answer "which stage drove this score?" with
+   * stage-level data instead of a final number.
+   */
+  confidenceTrace?: unknown;
   rag: {
     contextTokens: number;
     sections: number;

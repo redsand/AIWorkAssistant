@@ -88,6 +88,24 @@
         </div>
       </div>
 
+      <!-- Phase 1: ClaimKit confidence breakdown — calibration telemetry -->
+      <div class="section" id="confidence-breakdown-section">
+        <div class="section-title">ClaimKit confidence — what each stage contributes</div>
+        <p class="section-blurb">
+          Per-stage data captured for every query that runs ClaimKit. No selling — this is the raw breakdown.
+          Use it to see which stage drives the score and which penalties fire most often.
+          Empty until live queries with confidence_trace start flowing.
+        </p>
+        <div class="stats-bar">
+          <div class="stat-chip"><div class="stat-value" id="stat-cbd-measured">—</div><div class="stat-label">Measured Cases</div></div>
+          <div class="stat-chip"><div class="stat-value" id="stat-cbd-gen-conf">—</div><div class="stat-label">Avg Generator Confidence</div></div>
+          <div class="stat-chip"><div class="stat-value" id="stat-cbd-claim-conf">—</div><div class="stat-label">Avg Claim Confidence</div></div>
+          <div class="stat-chip"><div class="stat-value warn" id="stat-cbd-adj">—</div><div class="stat-label">Avg Clamped Adjustment</div></div>
+          <div class="stat-chip"><div class="stat-value" id="stat-cbd-final">—</div><div class="stat-label">Avg Final Confidence</div></div>
+        </div>
+        <div id="penalty-breakdown-table" style="margin-top: 16px;"></div>
+      </div>
+
       <!-- Low-Confidence Diagnosis Panel: when CK gave up, why? -->
       <div class="section" id="lowconf-section">
         <div class="section-title">When ClaimKit gave up — root cause</div>
