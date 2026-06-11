@@ -126,6 +126,10 @@ const envSchema = z.object({
   // Agent Skills (SKILL.md)
   SKILLS_PATH: z.string().default(""),
 
+  // Agent Profiles
+  DEFAULT_PROFILE: z.string().default("default"),
+  PROFILES_PATH: z.string().default("data/profiles"),
+
   // Audit
   AUDIT_LOG_FILE: z.string().default("./logs/audit.log"),
   AUDIT_LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),

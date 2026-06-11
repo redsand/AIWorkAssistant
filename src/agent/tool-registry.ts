@@ -54,6 +54,7 @@ const PLATFORM_PREFIX_MAP: Record<string, Platform> = {
   audio: "cross-platform",
   tools: "cross-platform",
   gateway: "cross-platform",
+  profile: "cross-platform",
 };
 
 export function getPlatformForToolName(toolName: string): Platform {
@@ -7606,6 +7607,34 @@ const GATEWAY_TOOLS: Tool[] = [
 ];
 
 /**
+ * Profile tools — switch and list agent profiles
+ */
+const PROFILE_TOOLS: Tool[] = [
+  {
+    name: "profile.switch",
+    description:
+      "Switch to a different agent profile. Each profile has its own personality (SOUL.md), memory, and tool set. The switch takes effect immediately without a server restart.",
+    params: {
+      profile_id: {
+        type: "string",
+        description: "Profile ID to switch to (use profile.list to see available IDs)",
+        required: true,
+      },
+    },
+    actionType: "profile.switch",
+    riskLevel: "low",
+  },
+  {
+    name: "profile.list",
+    description:
+      "List all available agent profiles with their names, descriptions, and the currently active profile.",
+    params: {},
+    actionType: "profile.list",
+    riskLevel: "low",
+  },
+];
+
+/**
  * Agent run tools — query and inspect agent run history
  */
 const AGENT_RUN_TOOLS: Tool[] = [
@@ -8567,11 +8596,11 @@ IMPORTANT: You MUST use these tools to take actions. Do NOT say "I don't have ac
 export function getAllToolsForMode(mode: string): Tool[] {
   switch (mode) {
     case AGENT_MODES.PRODUCTIVITY:
-      return [...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...GATEWAY_TOOLS, ...PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
+      return [...PROFILE_TOOLS, ...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...GATEWAY_TOOLS, ...PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
     case AGENT_MODES.ENGINEERING:
-      return [...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...GATEWAY_TOOLS, ...ENGINEERING_TOOLS, ...PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
+      return [...PROFILE_TOOLS, ...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...GATEWAY_TOOLS, ...ENGINEERING_TOOLS, ...PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
     case AGENT_MODES.MUSICIAN:
-      return [...AGENT_RUN_TOOLS, ...GATEWAY_TOOLS, ...MUSICIAN_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
+      return [...PROFILE_TOOLS, ...AGENT_RUN_TOOLS, ...GATEWAY_TOOLS, ...MUSICIAN_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
     default:
       return [];
   }

@@ -6,6 +6,7 @@ import { AGENT_NAME, AGENT_VERSION } from "../config/constants";
 import { getToolInventorySummary } from "./tool-registry";
 import { knowledgeStore } from "./knowledge-store";
 import { codebaseIndexer } from "./codebase-indexer";
+import { getProfileManager } from "../profiles/profile-manager";
 
 const TASK_COMPLETION_RULES = `
 
@@ -652,16 +653,31 @@ export function getSystemPrompt(
 ): string {
   const toolSummary = getToolInventorySummary(mode, contextQuery);
 
+  // Load profile-specific SOUL.md if available
+  let profileSection = "";
+  try {
+    const pm = getProfileManager();
+    const activeProfile = pm.getActiveProfile();
+    if (activeProfile.id !== "default") {
+      const soulContent = pm.getSystemPrompt();
+      if (soulContent) {
+        profileSection = `\n\nPROFILE PERSONALITY (${activeProfile.name}):\n${soulContent}`;
+      }
+    }
+  } catch {
+    // ProfileManager not initialized — skip profile section
+  }
+
   // In engine mode, the context engine handles knowledge injection separately.
   // Return only the base prompt + minimal tool reference.
   if (contextMode === "engine") {
     switch (mode) {
       case "productivity":
-        return `${PRODUCTIVITY_SYSTEM_PROMPT}\n\n${toolSummary}`;
+        return `${PRODUCTIVITY_SYSTEM_PROMPT}${profileSection}\n\n${toolSummary}`;
       case "engineering":
-        return `${ENGINEERING_SYSTEM_PROMPT}\n\n${toolSummary}`;
+        return `${ENGINEERING_SYSTEM_PROMPT}${profileSection}\n\n${toolSummary}`;
       default:
-        return `${PRODUCTIVITY_SYSTEM_PROMPT}\n\n${toolSummary}`;
+        return `${PRODUCTIVITY_SYSTEM_PROMPT}${profileSection}\n\n${toolSummary}`;
     }
   }
 
@@ -674,6 +690,21 @@ function getSystemPromptRAG(
   contextQuery?: string,
 ): string {
   const toolSummary = getToolInventorySummary(mode, contextQuery);
+
+  // Load profile-specific SOUL.md if available
+  let profileSection = "";
+  try {
+    const pm = getProfileManager();
+    const activeProfile = pm.getActiveProfile();
+    if (activeProfile.id !== "default") {
+      const soulContent = pm.getSystemPrompt();
+      if (soulContent) {
+        profileSection = `\n\nPROFILE PERSONALITY (${activeProfile.name}):\n${soulContent}`;
+      }
+    }
+  } catch {
+    // ProfileManager not initialized — skip profile section
+  }
 
   let knowledgeSection = "";
   if (contextQuery) {
@@ -712,10 +743,10 @@ function getSystemPromptRAG(
 
   switch (mode) {
     case "productivity":
-      return `${PRODUCTIVITY_SYSTEM_PROMPT}\n\n${toolSummary}${knowledgeSection}`;
+      return `${PRODUCTIVITY_SYSTEM_PROMPT}${profileSection}\n\n${toolSummary}${knowledgeSection}`;
     case "engineering":
-      return `${ENGINEERING_SYSTEM_PROMPT}\n\n${toolSummary}${knowledgeSection}`;
+      return `${ENGINEERING_SYSTEM_PROMPT}${profileSection}\n\n${toolSummary}${knowledgeSection}`;
     default:
-      return `${PRODUCTIVITY_SYSTEM_PROMPT}\n\n${toolSummary}${knowledgeSection}`;
+      return `${PRODUCTIVITY_SYSTEM_PROMPT}${profileSection}\n\n${toolSummary}${knowledgeSection}`;
   }
 }

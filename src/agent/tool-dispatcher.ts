@@ -68,6 +68,7 @@ import type { SubagentResult } from "./subagent-spawner";
 import { cronEngine } from "../scheduler/cron-engine";
 import { gatewayEngine } from "../integrations/gateway/gateway-engine";
 import type { EntityType, FindEntitiesQuery } from "../memory/entity-types";
+import { getProfileManager } from "../profiles/profile-manager";
 import { lspManager } from "../integrations/lsp/index.js";
 import type { DiagnosticItem } from "../integrations/lsp/lsp-client.js";
 import { reviewAssistant } from "../code-review/review-assistant";
@@ -9520,6 +9521,8 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "memory.manage": handleMemoryManage,
   "skill.manage": handleSkillManage,
   "soul.manage": handleSoulManage,
+  "profile.switch": handleProfileSwitch,
+  "profile.list": handleProfileList,
   "cron.manage": handleCronManage,
   "gateway.deliver": handleGatewayDeliver,
 
@@ -9582,6 +9585,8 @@ const SYSTEM_TOOLS = new Set([
   "agent.get_aicoder_status",
   "memory.manage",
   "skill.manage",
+  "profile.switch",
+  "profile.list",
   "cron.manage",
   "engineering.workflow_brief",
   "engineering.architecture_proposal",
@@ -9701,6 +9706,55 @@ function ingestToolResult(toolName: string, result: unknown, userId: string): vo
     .catch(() => {
       // Non-blocking: indexing failures must not break the tool flow
     });
+}
+
+async function handleProfileSwitch(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const profileId = String(params.profile_id || "").trim();
+  if (!profileId) {
+    return { success: false, error: "profile_id is required" };
+  }
+
+  try {
+    const pm = getProfileManager();
+    const profile = pm.switchProfile(profileId);
+    return {
+      success: true,
+      data: {
+        id: profile.id,
+        name: profile.name,
+        description: profile.description,
+      },
+      message: `Switched to profile '${profile.name}' (${profile.id})`,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "Failed to switch profile",
+    };
+  }
+}
+
+async function handleProfileList(
+  _params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  const pm = getProfileManager();
+  const profiles = pm.listProfiles();
+  const activeId = pm.getActiveProfileId();
+
+  return {
+    success: true,
+    data: {
+      activeProfileId: activeId,
+      profiles: profiles.map((p) => ({
+        id: p.id,
+        name: p.name,
+        description: p.description,
+        isActive: p.id === activeId,
+      })),
+    },
+  };
 }
 
 export interface DispatchContext {
