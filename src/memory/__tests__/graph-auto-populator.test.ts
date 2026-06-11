@@ -235,6 +235,250 @@ describe("graph-auto-populator", () => {
       const nodes = kg.queryNodes({ search: "IR-82", limit: 5 });
       expect(nodes.find((n) => n.metadata?.entityName === "IR-82")).toBeDefined();
     });
+
+    it("creates reversed edge for blocked_by: target blocks current entity", async () => {
+      // Entity A is blocked_by B → semantic: B blocks A.
+      // Edge should be: B → blocks → A (sourceId=B, targetId=A).
+      const entityA = mem.upsertEntity({
+        type: "jira_issue",
+        name: "IR-82",
+        summary: "Blocked issue",
+        source: "jira",
+      });
+      mem.upsertEntity({
+        type: "jira_issue",
+        name: "IR-99",
+        summary: "Blocker issue",
+        source: "jira",
+      });
+
+      // A is blocked_by B.
+      mem.setStructuredFact(entityA.id, "blocked_by", "IR-99");
+
+      // Pre-create KG node for B (the blocker) so edge target lookup succeeds.
+      const bNodeId = kg.addNode({
+        type: "requirement",
+        title: "IR-99",
+        content: "",
+        status: "accepted",
+        tags: ["jira_issue", "auto-populated"],
+        metadata: { entityName: "IR-99", autoPopulated: true },
+      });
+
+      const { autoPopulateFromEntity } = await import("../graph-auto-populator.js");
+      autoPopulateFromEntity(entityA);
+
+      const edges = kg.getAllEdges();
+      expect(edges).toHaveLength(1);
+
+      const edge = edges[0];
+      expect(edge.type).toBe("blocks");
+
+      // Find the created node for A.
+      const aNode = kg.queryNodes({ search: "IR-82", limit: 5 }).find(
+        (n) => n.metadata?.entityName === "IR-82",
+      );
+      expect(aNode).toBeDefined();
+
+      // Edge must read "IR-99 blocks IR-82": source=B (IR-99), target=A (IR-82).
+      expect(edge.sourceId).toBe(bNodeId);
+      expect(edge.targetId).toBe(aNode!.id);
+
+      // Must NOT be the other way around (the original bug).
+      expect(edge.sourceId).not.toBe(aNode!.id);
+    });
+
+    it("creates reversed edge for blocked_by with surrounding text in value", async () => {
+      const entityA = mem.upsertEntity({
+        type: "jira_issue",
+        name: "IR-10",
+        summary: "Blocked ticket",
+        source: "jira",
+      });
+      mem.upsertEntity({
+        type: "jira_issue",
+        name: "IR-20",
+        summary: "Blocker ticket",
+        source: "jira",
+      });
+
+      // Claim value has surrounding text; entity ID extraction should still work.
+      mem.setStructuredFact(entityA.id, "blocked_by", "currently waiting on IR-20");
+
+      const bNodeId = kg.addNode({
+        type: "requirement",
+        title: "IR-20",
+        content: "",
+        status: "accepted",
+        tags: [],
+        metadata: { entityName: "IR-20", autoPopulated: true },
+      });
+
+      const { autoPopulateFromEntity } = await import("../graph-auto-populator.js");
+      autoPopulateFromEntity(entityA);
+
+      const edges = kg.getAllEdges();
+      expect(edges).toHaveLength(1);
+      expect(edges[0].type).toBe("blocks");
+
+      const aNode = kg.queryNodes({ search: "IR-10", limit: 5 }).find(
+        (n) => n.metadata?.entityName === "IR-10",
+      );
+      expect(aNode).toBeDefined();
+
+      // B blocks A: sourceId = B, targetId = A.
+      expect(edges[0].sourceId).toBe(bNodeId);
+      expect(edges[0].targetId).toBe(aNode!.id);
+    });
+
+    it("does not create duplicate edges when autoPopulateFromEntity is called twice", async () => {
+      const entity = mem.upsertEntity({
+        type: "jira_issue",
+        name: "IR-82",
+        summary: "Issue with relationship",
+        source: "jira",
+      });
+      mem.upsertEntity({
+        type: "jira_issue",
+        name: "IR-99",
+        summary: "Related issue",
+        source: "jira",
+      });
+      mem.setStructuredFact(entity.id, "blocks", "IR-99");
+
+      kg.addNode({
+        type: "requirement",
+        title: "IR-99",
+        content: "",
+        status: "accepted",
+        tags: ["jira_issue", "auto-populated"],
+        metadata: { entityName: "IR-99", autoPopulated: true },
+      });
+
+      const { autoPopulateFromEntity } = await import("../graph-auto-populator.js");
+
+      // Call twice — first call creates node + edge, second should be a no-op.
+      autoPopulateFromEntity(entity);
+      autoPopulateFromEntity(entity);
+
+      const edges = kg.getAllEdges();
+      const blocksEdges = edges.filter((e) => e.type === "blocks");
+      expect(blocksEdges).toHaveLength(1);
+    });
+
+    it("does not create duplicate edges when edge already exists from manual creation", async () => {
+      const entity = mem.upsertEntity({
+        type: "jira_issue",
+        name: "IR-55",
+        summary: "Issue with pre-existing edge",
+        source: "jira",
+      });
+      mem.upsertEntity({
+        type: "jira_issue",
+        name: "IR-60",
+        summary: "Target issue",
+        source: "jira",
+      });
+      mem.setStructuredFact(entity.id, "depends_on", "IR-60");
+
+      const targetNodeId = kg.addNode({
+        type: "requirement",
+        title: "IR-60",
+        content: "",
+        status: "accepted",
+        tags: [],
+        metadata: { entityName: "IR-60", autoPopulated: true },
+      });
+
+      const { autoPopulateFromEntity } = await import("../graph-auto-populator.js");
+
+      // First call creates the node and edge.
+      autoPopulateFromEntity(entity);
+
+      const edgesAfterFirst = kg.getAllEdges();
+      expect(edgesAfterFirst.filter((e) => e.type === "depends_on")).toHaveLength(1);
+
+      // Get the created node ID so we can manually add a duplicate edge.
+      const nodeForEntity = kg.queryNodes({ search: "IR-55", limit: 5 }).find(
+        (n) => n.metadata?.entityName === "IR-55",
+      );
+      expect(nodeForEntity).toBeDefined();
+
+      // Manually insert the same edge to simulate an externally-created duplicate.
+      kg.addEdge(nodeForEntity!.id, targetNodeId, "depends_on", "manual edge");
+
+      const edgesAfterManual = kg.getAllEdges();
+      expect(edgesAfterManual.filter((e) => e.type === "depends_on")).toHaveLength(2);
+
+      // Delete the node to force re-creation path (simulate a fresh run).
+      kg.deleteNode(nodeForEntity!.id);
+
+      // Re-run auto-populate: creates a new node, but should NOT duplicate the edge
+      // that now points to a dangling reference (deleted node). After delete, edges
+      // from that node are also cleaned up, so we expect exactly 0 depends_on edges
+      // on the new node (the manual edge was cleaned up with the node deletion).
+      autoPopulateFromEntity(entity);
+
+      const finalEdges = kg.getAllEdges().filter((e) => e.type === "depends_on");
+      expect(finalEdges).toHaveLength(1);
+    });
+
+    it("creates edges for both blocks and blocked_by on the same entity without conflict", async () => {
+      const entityA = mem.upsertEntity({
+        type: "jira_issue",
+        name: "IR-1",
+        summary: "Multi-relationship issue",
+        source: "jira",
+      });
+      mem.upsertEntity({ type: "jira_issue", name: "IR-2", source: "jira" });
+      mem.upsertEntity({ type: "jira_issue", name: "IR-3", source: "jira" });
+
+      // A blocks IR-2 (A→blocks→IR-2) AND A is blocked_by IR-3 (IR-3→blocks→A).
+      mem.setStructuredFact(entityA.id, "blocks", "IR-2");
+      mem.setStructuredFact(entityA.id, "blocked_by", "IR-3");
+
+      const ir2NodeId = kg.addNode({
+        type: "requirement",
+        title: "IR-2",
+        content: "",
+        status: "accepted",
+        tags: [],
+        metadata: { entityName: "IR-2", autoPopulated: true },
+      });
+      const ir3NodeId = kg.addNode({
+        type: "requirement",
+        title: "IR-3",
+        content: "",
+        status: "accepted",
+        tags: [],
+        metadata: { entityName: "IR-3", autoPopulated: true },
+      });
+
+      const { autoPopulateFromEntity } = await import("../graph-auto-populator.js");
+      autoPopulateFromEntity(entityA);
+
+      const edges = kg.getAllEdges();
+      expect(edges).toHaveLength(2);
+
+      const aNode = kg.queryNodes({ search: "IR-1", limit: 5 }).find(
+        (n) => n.metadata?.entityName === "IR-1",
+      );
+      expect(aNode).toBeDefined();
+
+      // "blocks IR-2" → A is source, IR-2 is target.
+      const blocksEdge = edges.find(
+        (e) => e.sourceId === aNode!.id && e.targetId === ir2NodeId,
+      );
+      expect(blocksEdge).toBeDefined();
+      expect(blocksEdge!.type).toBe("blocks");
+
+      // "blocked_by IR-3" → IR-3 is source, A is target (reversed).
+      const blockedByEdge = edges.find(
+        (e) => e.sourceId === ir3NodeId && e.targetId === aNode!.id,
+      );
+      expect(blockedByEdge).toBeDefined();
+      expect(blockedByEdge!.type).toBe("blocks");
+    });
   });
 
   describe("mapEntityType", () => {

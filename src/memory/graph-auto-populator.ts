@@ -49,6 +49,16 @@ const RELATIONSHIP_ATTRIBUTES: Record<string, KGEdgeType> = {
 };
 
 /**
+ * Relationship attributes whose edge direction must be reversed.
+ * For these, the claim means the *target* acts on the *current entity*,
+ * not the other way around.
+ *
+ * Example: A has claim `blocked_by: B` → B blocks A, so edge is B → A.
+ * Without reversal, the edge would incorrectly read "A blocks B."
+ */
+const REVERSE_DIRECTION_ATTRIBUTES = new Set(["blocked_by"]);
+
+/**
  * Ensure a knowledge graph node exists for the given entity-memory entity.
  * If a matching node already exists (by title or entityName metadata),
  * this is a no-op (deduplication).
@@ -103,9 +113,26 @@ export function autoPopulateFromEntity(entity: MemoryEntity): void {
     );
     if (!target) continue; // Target not yet in graph — skip.
 
+    // Determine edge direction. For reverse-direction attributes like
+    // "blocked_by", the target entity acts on the current entity, so
+    // the edge goes from target → current (e.g., B blocks A).
+    const isReverse = REVERSE_DIRECTION_ATTRIBUTES.has(claim.attribute ?? "");
+    const edgeSourceId = isReverse ? target.id : nodeId;
+    const edgeTargetId = isReverse ? nodeId : target.id;
+
+    // Skip if an identical edge already exists (deduplication).
+    const existingEdges = knowledgeGraph.getEdgesForNode(edgeSourceId, "both");
+    const duplicate = existingEdges.some(
+      (e) =>
+        e.type === edgeType &&
+        ((e.sourceId === edgeSourceId && e.targetId === edgeTargetId) ||
+         (e.sourceId === edgeTargetId && e.targetId === edgeSourceId)),
+    );
+    if (duplicate) continue;
+
     knowledgeGraph.addEdge(
-      nodeId,
-      target.id,
+      edgeSourceId,
+      edgeTargetId,
       edgeType,
       `${claim.attribute}: ${claim.value}`,
     );
