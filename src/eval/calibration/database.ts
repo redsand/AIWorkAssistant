@@ -356,6 +356,186 @@ export class CalibrationDatabase {
     }));
   }
 
+  // ── Phase 3 calibration analysis ────────────────────────────────────
+
+  /**
+   * Reliability-bin breakdown for a calibration curve. Bins predicted
+   * confidence into N buckets, reports per-bin average predicted vs
+   * average actual (human rating / 4). The gap is the calibration error
+   * per bin; the size-weighted absolute gap across bins is ECE.
+   *
+   * Only rated runs with a non-null confidence are included. RAG is
+   * excluded by default because RAG doesn't self-report a comparable
+   * confidence in this codebase.
+   */
+  getReliabilityBins(opts?: {
+    system?: EvalSystem;
+    bins?: number;
+  }): {
+    bins: Array<{
+      lo: number;
+      hi: number;
+      count: number;
+      avgConfidence: number;
+      avgRatingNormalized: number;
+      gap: number;
+    }>;
+    ece: number;
+    sampleSize: number;
+    rmse: number;
+  } {
+    const system = opts?.system ?? "claimkit";
+    const binCount = Math.max(2, Math.min(20, opts?.bins ?? 10));
+    const pairs = this.getCalibrationPairs(system);
+    if (pairs.length === 0) {
+      return { bins: [], ece: 0, sampleSize: 0, rmse: 0 };
+    }
+    const bins: Array<{
+      lo: number;
+      hi: number;
+      sumConf: number;
+      sumRating: number;
+      count: number;
+    }> = [];
+    for (let i = 0; i < binCount; i++) {
+      bins.push({ lo: i / binCount, hi: (i + 1) / binCount, sumConf: 0, sumRating: 0, count: 0 });
+    }
+    let sqError = 0;
+    for (const p of pairs) {
+      const idx = Math.min(binCount - 1, Math.floor(p.confidence * binCount));
+      bins[idx].sumConf += p.confidence;
+      bins[idx].sumRating += p.ratingNormalized;
+      bins[idx].count++;
+      const diff = p.confidence - p.ratingNormalized;
+      sqError += diff * diff;
+    }
+    const total = pairs.length;
+    let ece = 0;
+    const out = bins.map((b) => {
+      const avgConf = b.count > 0 ? b.sumConf / b.count : 0;
+      const avgRating = b.count > 0 ? b.sumRating / b.count : 0;
+      const gap = b.count > 0 ? avgConf - avgRating : 0;
+      ece += (b.count / total) * Math.abs(gap);
+      return {
+        lo: b.lo,
+        hi: b.hi,
+        count: b.count,
+        avgConfidence: avgConf,
+        avgRatingNormalized: avgRating,
+        gap,
+      };
+    });
+    return {
+      bins: out,
+      ece,
+      sampleSize: total,
+      rmse: Math.sqrt(sqError / total),
+    };
+  }
+
+  /**
+   * Per-segment calibration summary. Lets you see whether certain
+   * segments (direct_fact, streaming, conflict, etc.) are calibrated
+   * better than others.
+   */
+  getPerSegmentCalibration(system: EvalSystem = "claimkit"): Array<{
+    segment: EvalSegment;
+    sampleSize: number;
+    avgConfidence: number;
+    avgRatingNormalized: number;
+    gap: number;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT c.segment, r.confidence, rt.rating
+         FROM eval_cases c
+         JOIN eval_runs r ON r.case_id = c.id
+         JOIN eval_ratings rt ON rt.run_id = r.id
+         WHERE r.system = ? AND r.confidence IS NOT NULL`,
+      )
+      .all(system) as Array<{ segment: string; confidence: number; rating: number }>;
+    const acc: Record<string, { sumConf: number; sumRating: number; count: number }> = {};
+    for (const r of rows) {
+      const a = acc[r.segment] ?? (acc[r.segment] = { sumConf: 0, sumRating: 0, count: 0 });
+      a.sumConf += r.confidence;
+      a.sumRating += r.rating / 4;
+      a.count++;
+    }
+    return Object.entries(acc).map(([segment, a]) => ({
+      segment: segment as EvalSegment,
+      sampleSize: a.count,
+      avgConfidence: a.sumConf / a.count,
+      avgRatingNormalized: a.sumRating / a.count,
+      gap: a.sumConf / a.count - a.sumRating / a.count,
+    }));
+  }
+
+  /**
+   * Per-penalty firing analysis on rated cases. For each penalty
+   * category in the ConfidenceTrace, reports: (a) how often it fires,
+   * (b) average human rating when it fires vs. when it doesn't, and
+   * (c) the average penalty magnitude when fired.
+   *
+   * This is the core diagnostic that answers "which penalties are
+   * over-eager?" — if a penalty fires often AND the rating is high when
+   * it fires, the penalty is unfair.
+   */
+  getPenaltyFiringOnRated(): Array<{
+    penalty: string;
+    firedCount: number;
+    notFiredCount: number;
+    avgRatingWhenFired: number;
+    avgRatingWhenNotFired: number;
+    avgMagnitudeWhenFired: number;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT r.confidence_trace, rt.rating
+         FROM eval_runs r
+         JOIN eval_ratings rt ON rt.run_id = r.id
+         WHERE r.system = 'claimkit' AND r.confidence_trace IS NOT NULL`,
+      )
+      .all() as Array<{ confidence_trace: string; rating: number }>;
+
+    const stats: Record<
+      string,
+      { firedSum: number; firedCount: number; magSum: number; notFiredSum: number; notFiredCount: number }
+    > = {};
+
+    for (const row of rows) {
+      let trace: { penalties?: Record<string, number> } | null = null;
+      try {
+        trace = JSON.parse(row.confidence_trace);
+      } catch {
+        continue;
+      }
+      const penalties = trace?.penalties ?? {};
+      const rating = row.rating;
+      for (const [name, magnitude] of Object.entries(penalties)) {
+        const s = stats[name] ?? (stats[name] = {
+          firedSum: 0, firedCount: 0, magSum: 0, notFiredSum: 0, notFiredCount: 0,
+        });
+        if (magnitude !== 0 && magnitude != null) {
+          s.firedSum += rating;
+          s.firedCount++;
+          s.magSum += Math.abs(magnitude);
+        } else {
+          s.notFiredSum += rating;
+          s.notFiredCount++;
+        }
+      }
+    }
+
+    return Object.entries(stats).map(([penalty, s]) => ({
+      penalty,
+      firedCount: s.firedCount,
+      notFiredCount: s.notFiredCount,
+      avgRatingWhenFired: s.firedCount > 0 ? s.firedSum / s.firedCount : 0,
+      avgRatingWhenNotFired: s.notFiredCount > 0 ? s.notFiredSum / s.notFiredCount : 0,
+      avgMagnitudeWhenFired: s.firedCount > 0 ? s.magSum / s.firedCount : 0,
+    }));
+  }
+
   // ── Mappers ─────────────────────────────────────────────────────────
 
   private mapCaseRow(row: Record<string, unknown>): EvalCase {

@@ -466,3 +466,125 @@
   gap: 8px;
   margin-top: 4px;
 }
+
+.analysis-panel {
+  background: rgba(255, 255, 255, 0.95);
+  padding: 18px;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.analysis-panel .section-title {
+  color: #1a1a2e;
+}
+
+.analysis-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.analysis-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.metric-chip {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.metric-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: #1a1a2e;
+}
+
+.metric-label {
+  font-size: 11px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.metric-hint {
+  font-size: 11px;
+  color: #888;
+  margin-top: 4px;
+}
+
+.chart-wrap {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 14px;
+  height: 360px;
+}
+
+.subsection-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #374151;
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.analysis-hint {
+  font-size: 12px;
+  color: #666;
+  margin-top: -4px;
+}
+
+.analysis-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.analysis-table th,
+.analysis-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.analysis-table th {
+  font-size: 11px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: #f9fafb;
+}
+
+.suspicion-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.suspicion-pill.high {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.suspicion-pill.med {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.suspicion-pill.low {
+  background: #d1fae5;
+  color: #065f46;
+}

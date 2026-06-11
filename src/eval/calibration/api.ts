@@ -170,4 +170,32 @@ export async function evalCalibrationRoutes(
     const pairs = db.getCalibrationPairs(isSystem(q.system) ? q.system : undefined);
     return { pairs };
   });
+
+  // ── Phase 3 analysis surface ───────────────────────────────────────
+  // One endpoint returns everything the /eval analysis tab needs so the
+  // UI can render in a single fetch.
+
+  fastify.get("/analysis", async (request) => {
+    const q = request.query as { system?: string; bins?: string };
+    const system = isSystem(q.system) ? q.system : "claimkit";
+    const binCount = (() => {
+      const n = parseInt(q.bins ?? "", 10);
+      if (!Number.isFinite(n) || n < 2 || n > 20) return 10;
+      return n;
+    })();
+
+    const pairs = db.getCalibrationPairs(system);
+    const reliability = db.getReliabilityBins({ system, bins: binCount });
+    const perSegment = db.getPerSegmentCalibration(system);
+    const perPenalty = db.getPenaltyFiringOnRated();
+
+    return {
+      system,
+      sampleSize: pairs.length,
+      pairs, // raw (x=confidence, y=rating/4) — UI plots scatter
+      reliability, // bin means + ECE + RMSE
+      perSegment, // per-segment calibration
+      perPenalty, // per-penalty firing freq + avg rating
+    };
+  });
 }
