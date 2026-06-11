@@ -135,6 +135,16 @@ DATA INTEGRITY RULES:
 - DO NOT summarize, report on, or make decisions from a truncated result — partial data produces incorrect outputs.
 - If you cannot narrow the query further, explicitly tell the user which data was incomplete and why you could not retrieve it.`;
 
+const SAFETY_GATE_RULES = `
+
+SAFETY GATE RULES:
+When a tool result reports a policy block — language like "review gate blocked", "safety check failed", "blocked by policy", "approval required", "guardrail", "review required", "not allowed without [flag/override]" — you MUST stop and surface the block to the user.
+- DO NOT call a different tool that accomplishes the same end goal as a workaround. If close_issue is blocked, do not call transition_issue with "Done" to bypass. If a write is gated, do not retry it with a different namespace or category.
+- DO NOT respond with "Let me force this", "Let me try another way", or any phrasing that suggests circumventing the block.
+- Report the block clearly: which tool, which gate fired, what the gate's stated remediation is (e.g. "pass force_done=true (audited)" or "request human approval"), and what the user can do to legitimately unblock.
+- Only after the user explicitly authorizes the override should you retry with the appropriate force/override flag exposed by the SAME tool. Switching tools to bypass is a policy violation.
+- These gates exist for a reason. Examples: review gates protect ticket integrity, approval gates prevent destructive mutations, rate-limit gates protect shared infrastructure. Treat every gate block as a real signal, not a transient error.`;
+
 const REPORT_COMPILATION_RULES = `
 
 REPORT COMPILATION RULES:

@@ -299,9 +299,45 @@ async function handleJiraTransitionIssue(
   if (!env.ENABLE_JIRA_TRANSITIONS) {
     return { success: false, error: "Jira transition operations are disabled" };
   }
+  const key = params.key as string;
+  const transition = params.transition as string;
+
+  // Review gate parity with jira.close_issue (option B): when the requested
+  // transition targets a Done-class state, enforce the same review gate.
+  // Without this check, an agent that hit a gate block on close_issue could
+  // (and in run 64075109 did) walk around it by calling transition_issue
+  // directly to the same target state. Both paths now refuse equally and
+  // require force_done=true for an audited override.
+  const transitionLower = (transition ?? "").toLowerCase();
+  const isDoneLike = ["done", "closed", "resolved", "complete"].some((n) =>
+    transitionLower.includes(n),
+  );
+  const forceDone = params.force_done === true || params.forceDone === true;
+
+  if (isDoneLike && !forceDone && key) {
+    const gateState = loadReviewGateState(key);
+    const gate = reviewGate(gateState.lastFindings, false, gateState.reviewOccurred);
+    if (!gate.canMarkDone) {
+      return {
+        success: false,
+        error:
+          `Review gate blocked: ${gate.criticalCount} critical and ${gate.highCount} ` +
+          `high findings unresolved (or no review has occurred). ` +
+          `Surface this block to the user — do NOT silently retry via another tool. ` +
+          `Pass force_done=true to override (audited).`,
+        data: {
+          key,
+          blockedBy: gate.blockedBy,
+          criticalCount: gate.criticalCount,
+          highCount: gate.highCount,
+        },
+      };
+    }
+  }
+
   const result = await jiraService.transitionIssue(
-    params.key as string,
-    params.transition as string,
+    key,
+    transition,
     userId,
     params.comment as string | undefined,
   );
