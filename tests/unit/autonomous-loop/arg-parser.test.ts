@@ -11,6 +11,7 @@ async function loadArgParser(argv: string[]) {
 describe("aicoder arg parser provider aliases", () => {
   afterEach(() => {
     process.argv = originalArgv;
+    vi.restoreAllMocks();
     vi.resetModules();
   });
 
@@ -59,5 +60,101 @@ describe("aicoder arg parser provider aliases", () => {
       expect.stringContaining("unknown-provider"),
     );
     warnSpy.mockRestore();
+  });
+
+  it("parses boolean flags, shorthands, and value options", async () => {
+    const parser = await loadArgParser([
+      "--ollama",
+      "--poll",
+      "--claude",
+      "--debug",
+      "--skip-baseline",
+      "--skip-agent",
+      "--skip-tests",
+      "--skip-prompt-check",
+      "--skip-poll",
+      "--dry-run-push",
+      "--force-done",
+      "--cleanup-merged",
+      "--resume-run",
+      "--discard-run",
+      "-f",
+      "--workspace",
+      "C:/work",
+      "--label",
+      "agent-ready",
+      "--sprint",
+      "sprint-1",
+      "--priority",
+      "auto",
+      "--source",
+      "github",
+      "--lookup",
+      "llm",
+      "--poll-ms",
+      "123",
+      "--max-cycles",
+      "2",
+      "--issue",
+      "206",
+      "--publish",
+      "ai/issue-206",
+      "--base",
+      "develop",
+      "--max-rework",
+      "3",
+      "--review-poll-ms",
+      "5",
+    ]);
+
+    expect(parser.USE_OLLAMA).toBe(true);
+    expect(parser.FOCUSED_MODE).toBe(false);
+    expect(parser.AGENT).toBe("claude");
+    expect(parser.DEBUG).toBe(true);
+    expect(parser.SKIP_BASELINE).toBe(true);
+    expect(parser.SKIP_AGENT).toBe(true);
+    expect(parser.SKIP_TESTS).toBe(true);
+    expect(parser.SKIP_PROMPT_CHECK).toBe(true);
+    expect(parser.SKIP_POLL).toBe(true);
+    expect(parser.DRY_RUN_PUSH).toBe(true);
+    expect(parser.FORCE_DONE).toBe(true);
+    expect(parser.CLEANUP_MERGED).toBe(true);
+    expect(parser.RESUME_RUN).toBe(true);
+    expect(parser.DISCARD_RUN).toBe(true);
+    expect(parser.FORCE_REPROCESS).toBe(true);
+    expect(parser.WORKSPACE).toBe("C:/work");
+    expect(parser.LABEL).toBe("agent-ready");
+    expect(parser.SPRINT).toBe("sprint-1");
+    expect(parser.PRIORITY).toBe("auto");
+    expect(parser.SOURCE).toBe("github");
+    expect(parser.LOOKUP).toBe("llm");
+    expect(parser.POLL_MS).toBe(123);
+    expect(parser.MAX_CYCLES).toBe(2);
+    expect(parser.TARGET_ISSUE_KEY).toBe("206");
+    expect(parser.PUBLISH_BRANCH).toBe("ai/issue-206");
+    expect(parser.BASE_BRANCH_CANDIDATES[0]).toBe("develop");
+    expect(parser.MAX_REWORK).toBe(3);
+    expect(parser.REVIEW_POLL_MS).toBe(5);
+  });
+
+  it("makes --watch a forced discard-run cycle", async () => {
+    const parser = await loadArgParser(["--codex", "--watch", "206"]);
+
+    expect(parser.AGENT).toBe("codex");
+    expect(parser.WATCH_ISSUE).toBe("206");
+    expect(parser.FORCE_REPROCESS).toBe(true);
+    expect(parser.DISCARD_RUN).toBe(true);
+  });
+
+  it("rejects unknown agent names", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+      throw new Error(`exit ${code}`);
+    }) as never);
+
+    await expect(loadArgParser(["--agent", "cursor"])).rejects.toThrow("exit 2");
+    expect(console.error).toHaveBeenCalledWith(
+      'Unknown agent "cursor". Valid: codex, opencode, claude',
+    );
   });
 });

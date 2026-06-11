@@ -210,6 +210,149 @@ describe("CTO Daily Command Center", () => {
     expect(result.sources.workItems.available).toBe(true);
   });
 
+  it("renders fallback sections when optional sources are disabled", async () => {
+    mocks.conversationManager.getRelevantMemories.mockReturnValue([]);
+    const { ctoDailyCommandCenter } = await import("../../../src/cto/daily-command-center");
+
+    const result = await ctoDailyCommandCenter.generateDailyCommandCenter({
+      userId: "tim",
+      date: "not-a-date",
+      daysBack: 0,
+      includeCalendar: false,
+      includeJira: false,
+      includeGitLab: false,
+      includeGitHub: false,
+      includeRoadmap: false,
+      includeWorkItems: false,
+      includeJitbit: false,
+      includeHawkIr: false,
+    });
+
+    expect(result.sources.calendar).toEqual({ enabled: false, available: false });
+    expect(result.sources.jira).toEqual({ enabled: false, available: false });
+    expect(result.markdown).toContain("- No urgent blockers found in available sources.");
+    expect(result.markdown).toContain("- No Jitbit customer/support activity available.");
+    expect(result.markdown).toContain("- No active roadmaps found.");
+    expect(result.markdown).toContain("- No due, overdue, blocked, waiting, or suggested work items found.");
+    expect(result.markdown).toContain("Data window: last 7 day(s). All requested sources responded.");
+  });
+
+  it("renders waiting, due-today, failed-workflow, and HAWK IR signals", async () => {
+    mocks.githubClient.listWorkflowRuns.mockResolvedValue([
+      { id: 45, name: "Deploy", status: "failure", html_url: "https://github.test/actions/45" },
+    ]);
+    mocks.hawkIrService.isConfigured.mockReturnValue(true);
+    mocks.hawkIrService.getRiskyOpenCases.mockResolvedValue([
+      {
+        "@rid": "case-1",
+        name: "Endpoint alert",
+        riskLevel: "critical",
+        progressStatus: "open",
+        ownerName: "Analyst",
+        escalated: true,
+      },
+    ]);
+    mocks.hawkIrService.getCaseCount.mockResolvedValue(4);
+    mocks.hawkIrService.getRecentCases.mockResolvedValue([
+      { rid: "case-2", name: "Recent alert", risk_level: "medium", progress_status: "triage" },
+    ]);
+    mocks.hawkIrService.getActiveNodes.mockResolvedValue([
+      { hostname: "host-1", platform: "windows", lastSeen: "2026-05-05T08:00:00.000Z" },
+    ]);
+    mocks.jitbitService.findHighPriorityOpenTickets.mockResolvedValue([
+      {
+        IssueID: 201,
+        Title: "Alternate ticket shape",
+        StatusName: "Waiting",
+        UserName: "Customer",
+      },
+    ]);
+    mocks.workItemDatabase.listWorkItems.mockReturnValue({
+      items: [
+        {
+          id: "due-today",
+          type: "task",
+          title: "Due today item",
+          description: "Ship",
+          status: "active",
+          priority: "critical",
+          owner: "Tim",
+          source: "manual",
+          sourceUrl: null,
+          sourceExternalId: null,
+          dueAt: "2026-05-05",
+          createdAt: "2026-05-01T00:00:00.000Z",
+          updatedAt: "2026-05-04T00:00:00.000Z",
+          completedAt: null,
+          tagsJson: null,
+          linkedResourcesJson: null,
+          notesJson: null,
+          metadataJson: null,
+        },
+        {
+          id: "waiting",
+          type: "task",
+          title: "Waiting item",
+          description: "Blocked externally",
+          status: "waiting",
+          priority: "low",
+          owner: "Tim",
+          source: "manual",
+          sourceUrl: null,
+          sourceExternalId: null,
+          dueAt: "2026-05-06",
+          createdAt: "2026-05-01T00:00:00.000Z",
+          updatedAt: "2026-05-04T00:00:00.000Z",
+          completedAt: null,
+          tagsJson: null,
+          linkedResourcesJson: null,
+          notesJson: null,
+          metadataJson: null,
+        },
+        {
+          id: "archived-overdue",
+          type: "task",
+          title: "Archived overdue",
+          description: "Ignore",
+          status: "active",
+          priority: "medium",
+          owner: "Tim",
+          source: "manual",
+          sourceUrl: null,
+          sourceExternalId: null,
+          dueAt: "2026-05-01",
+          createdAt: "2026-05-01T00:00:00.000Z",
+          updatedAt: "2026-05-04T00:00:00.000Z",
+          completedAt: null,
+          tagsJson: null,
+          linkedResourcesJson: null,
+          notesJson: null,
+          metadataJson: null,
+          archived: true,
+        },
+      ],
+      total: 3,
+    });
+
+    const { ctoDailyCommandCenter } = await import("../../../src/cto/daily-command-center");
+    const result = await ctoDailyCommandCenter.generateDailyCommandCenter({
+      userId: "tim",
+      date: "2026-05-05",
+      daysBack: 31,
+    });
+
+    expect(result.markdown).toContain("- Due today: Due today item");
+    expect(result.markdown).toContain("- Waiting: Waiting item");
+    expect(result.markdown).toContain("Failed GitHub workflow: https://github.test/actions/45");
+    expect(result.markdown).toContain("#case-1 Endpoint alert (critical risk, open, Analyst)");
+    expect(result.markdown).toContain("ESCALATED");
+    expect(result.markdown).toContain("Active nodes: 1");
+    expect(result.markdown).toContain("Data window: last 30 day(s). All requested sources responded.");
+    expect(result.suggestedWorkItems.some((item) => item.source === "hawk-ir")).toBe(true);
+    expect(result.suggestedWorkItems.some((item) => item.priority === "critical")).toBe(true);
+    expect(result.markdown).not.toContain("Archived overdue");
+  });
+
   it("creates suggested work items without sending customer-facing updates", async () => {
     const { ctoDailyCommandCenter } = await import("../../../src/cto/daily-command-center");
     const created = ctoDailyCommandCenter.createSuggestedWorkItems([
