@@ -470,20 +470,39 @@ export async function assembleContextPacket(
     const ckIncludedInContext = claimKitResult != null;
 
     // Estimate the tokens the claimkit_evidence section will consume in
-    // the prompt. The section is built later (see claimKitSection
-    // assembly below), but the cost-savings story requires this number on
-    // the comparison_cases row at save time. We approximate from the
-    // answer + citations text, which is what actually gets rendered.
+    // the prompt. The section is built further down, but the cost-savings
+    // story requires this number on the comparison_cases row at save
+    // time. We replicate the section build verbatim (same headers, same
+    // citation truncation) so the count matches what actually ends up in
+    // the prompt rather than relying on a synthetic-string approximation.
     let ckSectionTokensEstimate: number | null = null;
     if (claimKitResult && ckIncludedInContext) {
-      let evidenceChars = claimKitResult.answer.length;
-      for (const cite of claimKitResult.citations.slice(0, 10)) {
-        evidenceChars += cite.text.substring(0, 200).length + 20;
+      const previewLines: string[] = [];
+      // Header — one of three labels depending on routing tier. The
+      // comparison routing decision was already computed above as
+      // comparisonRouting; reuse it instead of recomputing.
+      if (comparisonRouting.preferredSource === "claimkit") {
+        previewLines.push("=== PRIMARY ANSWER (ClaimKit — high confidence) ===");
+      } else if (comparisonRouting.preferredSource === "rag") {
+        previewLines.push("=== SUPPLEMENTARY ANALYSIS (ClaimKit) ===");
+      } else {
+        previewLines.push("=== VERIFIED EVIDENCE (ClaimKit) ===");
       }
-      // ~80 chars of framing (headers, dividers, answerability summary).
-      ckSectionTokensEstimate = estimateTokens(
-        " ".repeat(Math.min(evidenceChars + 80, 50_000)),
-      );
+      previewLines.push(`Answerability: ${claimKitResult.answerability}`);
+      previewLines.push(`Confidence: ${(claimKitResult.confidence * 100).toFixed(1)}%`);
+      previewLines.push(`Claims found: ${claimKitResult.metadata.claimCount}`);
+      previewLines.push("");
+      previewLines.push("--- Evidence ---");
+      previewLines.push(claimKitResult.answer);
+      if (claimKitResult.citations.length > 0) {
+        previewLines.push("");
+        previewLines.push("--- Citations ---");
+        for (const cite of claimKitResult.citations.slice(0, 10)) {
+          previewLines.push(`[${cite.claimId}] ${cite.text.substring(0, 200)}`);
+        }
+      }
+      const previewContent = previewLines.join("\n");
+      ckSectionTokensEstimate = estimateTokens(previewContent);
     }
 
     const saved = saveLiveComparison({

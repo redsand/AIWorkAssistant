@@ -118,6 +118,14 @@ body {
 .stat-value.gray { color: #9ca3af; }
 .stat-value.warn { color: #f97316; }
 
+/* "Awaiting first measurement" placeholder — distinguishes empty state
+   from a real zero. Visually subdued so the panel reads as pending. */
+.stat-value .stat-pending {
+  color: #cbd5e1;
+  font-weight: 400;
+  cursor: help;
+}
+
 /* ── Section blurbs (added for the ClaimKit story panels) ─ */
 .section-blurb {
   font-size: 13px;

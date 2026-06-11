@@ -605,28 +605,43 @@
   /**
    * Token savings panel — the headline cost story. Compares average RAG
    * context size against the ClaimKit evidence-packet size and surfaces
-   * the cumulative wins.
+   * the cumulative wins. Differentiates "no data yet" from "0" so a fresh
+   * install doesn't look like ClaimKit produced no savings — it just
+   * hasn't been measured yet.
    */
   function renderTokenSavingsPanel(stats) {
     var ts = stats.tokenSavings || {};
+    var measured = ts.measuredCases || 0;
+    var pending = "<span class='stat-pending' title='No measured cases yet'>—</span>";
+    if (measured === 0) {
+      document.getElementById("stat-avg-rag-tokens").innerHTML = pending;
+      document.getElementById("stat-avg-ck-tokens").innerHTML = pending;
+      document.getElementById("stat-avg-savings").innerHTML = pending;
+      document.getElementById("stat-total-saved").innerHTML = pending;
+      renderStat("stat-tokens-measured", 0);
+      return;
+    }
     renderStat("stat-avg-rag-tokens", formatTokens(ts.avgRagTokens));
     renderStat("stat-avg-ck-tokens", formatTokens(ts.avgCkTokens));
     renderStat("stat-avg-savings", formatTokens(ts.avgSavingsPerQuery));
     renderStat("stat-total-saved", formatTokens(ts.totalTokensSaved));
-    renderStat("stat-tokens-measured", ts.measuredCases || 0);
+    renderStat("stat-tokens-measured", measured);
   }
 
   function renderTruthfulnessPanel(stats) {
-    var groundedPct = stats.groundedMeasurements > 0
-      ? Math.round(stats.avgRagGroundedRate * 100) + "%"
-      : "—";
-    var hallucPct = stats.groundedMeasurements > 0
-      ? Math.round(stats.avgRagHallucinationRate * 100) + "%"
-      : "—";
-    renderStat("stat-grounded-rate", groundedPct);
-    renderStat("stat-halluc-rate", hallucPct);
+    var measured = stats.groundedMeasurements || 0;
+    var pending = "<span class='stat-pending' title='No grounding measurements yet'>—</span>";
+    if (measured === 0) {
+      document.getElementById("stat-grounded-rate").innerHTML = pending;
+      document.getElementById("stat-halluc-rate").innerHTML = pending;
+      document.getElementById("stat-ck-rescues").innerHTML = pending;
+      renderStat("stat-grounded-n", 0);
+      return;
+    }
+    renderStat("stat-grounded-rate", Math.round(stats.avgRagGroundedRate * 100) + "%");
+    renderStat("stat-halluc-rate", Math.round(stats.avgRagHallucinationRate * 100) + "%");
     renderStat("stat-ck-rescues", stats.ckRescues || 0);
-    renderStat("stat-grounded-n", stats.groundedMeasurements || 0);
+    renderStat("stat-grounded-n", measured);
   }
 
   function renderClaimStatsPanel(claimStats) {
