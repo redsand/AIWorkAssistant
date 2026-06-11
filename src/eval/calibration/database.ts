@@ -78,9 +78,10 @@ export class CalibrationDatabase {
   private db: Database.Database;
 
   constructor(dbPath?: string) {
+    const isTest = process.env.NODE_ENV === "test";
     const dataDir = path.resolve(process.cwd(), "data");
-    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-    const file = dbPath ?? path.join(dataDir, "eval-calibration.db");
+    if (!isTest && !fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+    const file = dbPath ?? (isTest ? ":memory:" : path.join(dataDir, "eval-calibration.db"));
     this.db = new Database(file);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
