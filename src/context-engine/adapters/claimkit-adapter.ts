@@ -71,12 +71,13 @@ function assertionTokens(text: string): string[] {
 }
 
 function isAssertionSupported(assertion: string, evidenceText: string): boolean {
+  const lowered = evidenceText.toLowerCase();
   const tokens = assertionTokens(assertion);
   if (tokens.length < MIN_ASSERTION_TOKENS) {
-    return evidenceText.includes(assertion.toLowerCase());
+    return lowered.includes(assertion.toLowerCase());
   }
   const uniqueTokens = [...new Set(tokens)];
-  const matched = uniqueTokens.filter((token) => evidenceText.includes(token)).length;
+  const matched = uniqueTokens.filter((token) => lowered.includes(token)).length;
   return matched / uniqueTokens.length >= MIN_SUPPORT_TOKEN_OVERLAP;
 }
 

@@ -645,5 +645,210 @@ describe("ClaimKitAdapter", () => {
       expect(result.unsupportedAssertionCount).toBe(1);
       expect(result.unsupportedPhrases).toEqual(["Billing Service owns Deployments."]);
     });
+
+    it("should handle mixed-case evidence with case-insensitive matching", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({
+        text: "The API Gateway depends on the Auth Service. Billing Service blocks deployments.",
+        evidence: [
+          {
+            title: "ARCHITECTURE DOC",
+            content: "The api gateway DEPENDS ON the auth service. BILLING SERVICE BLOCKS DEPLOYMENTS.",
+          },
+        ],
+      });
+
+      expect(result.grounded).toBe(true);
+      expect(result.hallucinationRate).toBe(0);
+      expect(result.supportedAssertionCount).toBe(2);
+      expect(result.unsupportedAssertionCount).toBe(0);
+    });
+
+    it("should handle Title-Case evidence matching lowercase assertions", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({
+        text: "The Component Implements The Requirement.",
+        evidence: [
+          {
+            title: "Design",
+            content: "The Component Implements The Requirement for user authentication.",
+          },
+        ],
+      });
+
+      expect(result.grounded).toBe(true);
+      expect(result.supportedAssertionCount).toBe(1);
+    });
+  });
+
+  describe("isAssertionSupported edge cases", () => {
+    let groundFn: (input: {
+      text: string;
+      evidence: Array<{ title: string; content: string }>;
+      preExtractedClaims?: Array<{ text?: string; claimText?: string; subject?: string; predicate?: string; object?: string }>;
+      skipLLMVerification?: boolean;
+    }) => Promise<{
+      grounded: boolean;
+      hallucinationRate: number;
+      supportedAssertionCount: number;
+      unsupportedAssertionCount: number;
+      unsupportedPhrases: string[];
+      sentenceResults: Array<{ text: string; supported: boolean }>;
+    }>;
+
+    beforeEach(async () => {
+      await adapter.initialize();
+      groundFn = adapter.ground.bind(adapter);
+    });
+
+    it("should support short assertions (<3 tokens) when evidence contains them", async () => {
+      const result = await groundFn({
+        text: "It works.",
+        evidence: [{ title: "Test", content: "It works. Confirmed." }],
+      });
+
+      expect(result.sentenceResults[0].supported).toBe(true);
+    });
+
+    it("should NOT support short assertions when evidence lacks them", async () => {
+      const result = await groundFn({
+        text: "It fails.",
+        evidence: [{ title: "Test", content: "Everything passes." }],
+      });
+
+      expect(result.sentenceResults[0].supported).toBe(false);
+    });
+
+    it("should support assertion when >=60% of tokens overlap with evidence", async () => {
+      const result = await groundFn({
+        text: "The authentication gateway handles token validation and session management securely.",
+        evidence: [{
+          title: "Auth",
+          content: "The authentication gateway handles token validation, session management, and access control.",
+        }],
+      });
+
+      expect(result.sentenceResults[0].supported).toBe(true);
+    });
+
+    it("should NOT support assertion when <60% of tokens overlap with evidence", async () => {
+      const result = await groundFn({
+        text: "The authentication gateway handles token validation and session management securely.",
+        evidence: [{
+          title: "Unrelated",
+          content: "The database migration handles schema changes and data transformation automatically.",
+        }],
+      });
+
+      expect(result.sentenceResults[0].supported).toBe(false);
+    });
+
+    it("should handle partial token overlap at exactly 60% threshold", async () => {
+      // "authentication gateway handles validation securely" -> tokens: authentication, gateway, handles, validation, securely (5 unique >2)
+      // evidence has: authentication, gateway, handles (3/5 = 0.6 exactly)
+      const result = await groundFn({
+        text: "Authentication gateway handles validation securely.",
+        evidence: [{
+          title: "Partial",
+          content: "Authentication gateway handles various operations.",
+        }],
+      });
+
+      expect(result.sentenceResults[0].supported).toBe(true);
+    });
+  });
+
+  describe("verifyRelationship in isolation", () => {
+    it("should return verified true when edge exists between source and target", async () => {
+      mockQueryNodes
+        .mockReturnValueOnce([{ id: "node-a", title: "Service Alpha" }])
+        .mockReturnValueOnce([{ id: "node-b", title: "Service Beta" }]);
+      mockGetEdgesForNode.mockReturnValueOnce([
+        { id: "edge-1", sourceId: "node-a", targetId: "node-b", type: "depends_on", createdAt: new Date() },
+      ]);
+
+      const result = await adapter.verifyRelationship("Service Alpha", "Service Beta", "depends_on");
+
+      expect(result.verified).toBe(true);
+      expect(result.confidence).toBe(1);
+      expect(result.trustTier).toBe("curated");
+      expect(result.evidence).toBe("Graph edge: Service Alpha -[depends_on]-> Service Beta");
+      expect(result.source).toBe("knowledge-graph");
+    });
+
+    it("should return verified false when no matching edge exists", async () => {
+      mockQueryNodes
+        .mockReturnValueOnce([{ id: "node-a", title: "Service Alpha" }])
+        .mockReturnValueOnce([{ id: "node-b", title: "Service Beta" }]);
+      mockGetEdgesForNode.mockReturnValueOnce([]);
+
+      const result = await adapter.verifyRelationship("Service Alpha", "Service Beta");
+
+      expect(result.verified).toBe(false);
+      expect(result.confidence).toBe(0);
+      expect(result.trustTier).toBe("inferred");
+      expect(result.evidence).toBeUndefined();
+    });
+
+    it("should return verified false when source node not found in graph", async () => {
+      mockQueryNodes.mockReturnValueOnce([]).mockReturnValueOnce([]);
+
+      const result = await adapter.verifyRelationship("Unknown", "Also Unknown");
+
+      expect(result.verified).toBe(false);
+      expect(result.confidence).toBe(0);
+      expect(result.trustTier).toBe("inferred");
+    });
+
+    it("should filter by edgeType when provided", async () => {
+      mockQueryNodes
+        .mockReturnValueOnce([{ id: "node-a", title: "Service Alpha" }])
+        .mockReturnValueOnce([{ id: "node-b", title: "Service Beta" }]);
+      mockGetEdgesForNode.mockReturnValueOnce([
+        { id: "edge-1", sourceId: "node-a", targetId: "node-b", type: "related_to", createdAt: new Date() },
+      ]);
+
+      const result = await adapter.verifyRelationship("Service Alpha", "Service Beta", "depends_on");
+
+      expect(result.verified).toBe(false);
+      expect(result.trustTier).toBe("inferred");
+    });
+
+    it("should match any edge type when edgeType is omitted", async () => {
+      mockQueryNodes
+        .mockReturnValueOnce([{ id: "node-a", title: "Service Alpha" }])
+        .mockReturnValueOnce([{ id: "node-b", title: "Service Beta" }]);
+      mockGetEdgesForNode.mockReturnValueOnce([
+        { id: "edge-1", sourceId: "node-a", targetId: "node-b", type: "blocks", createdAt: new Date() },
+      ]);
+
+      const result = await adapter.verifyRelationship("Service Alpha", "Service Beta");
+
+      expect(result.verified).toBe(true);
+      expect(result.evidence).toContain("blocks");
+    });
+
+    it("should search multiple source and target node candidates", async () => {
+      mockQueryNodes
+        .mockReturnValueOnce([
+          { id: "alpha-v1", title: "Service Alpha v1" },
+          { id: "alpha-v2", title: "Service Alpha v2" },
+        ])
+        .mockReturnValueOnce([
+          { id: "beta-v1", title: "Service Beta v1" },
+        ]);
+      mockGetEdgesForNode
+        .mockReturnValueOnce([]) // alpha-v1 -> no edges to target
+        .mockReturnValueOnce([   // alpha-v2 -> has edge to beta-v1
+          { id: "edge-1", sourceId: "alpha-v2", targetId: "beta-v1", type: "implements", createdAt: new Date() },
+        ]);
+
+      const result = await adapter.verifyRelationship("Service Alpha", "Service Beta", "implements");
+
+      expect(result.verified).toBe(true);
+      expect(result.evidence).toBe("Graph edge: Service Alpha v2 -[implements]-> Service Beta v1");
+    });
   });
 });
