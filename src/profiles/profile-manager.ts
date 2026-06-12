@@ -4,14 +4,18 @@
  * Each profile has its own SOUL.md, MEMORY.md, and skill set stored under
  * data/profiles/{profileId}/. Profile switching hot-swaps the system prompt,
  * memory namespace, and tool set without a server restart.
+ *
+ * Profile selection is per-session, not global, so concurrent users can
+ * operate under different profiles without interfering with each other.
  */
 
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { env } from "../config/env";
+import { auditLogger } from "../audit/logger";
 import type { AgentProfile, ProfileConfig } from "./types";
 
-const DEFAULT_PROFILE_ID = "default";
 const DEFAULT_PROFILE_NAME = "Default";
 const DEFAULT_PROFILE_DESC = "Default profile using the existing system prompt and all tools";
 
@@ -19,14 +23,26 @@ const DEFAULT_SOUL_CONTENT = `# Default Profile
 You are a helpful AI assistant.
 `;
 
+const PROFILE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
+function validateProfileId(id: string): void {
+  if (!PROFILE_ID_PATTERN.test(id)) {
+    throw new Error(
+      `Invalid profile ID '${id}': must contain only letters, numbers, underscores, and hyphens`,
+    );
+  }
+}
+
 export class ProfileManager {
   private profilesPath: string;
   private profiles: Map<string, AgentProfile> = new Map();
-  private activeProfileId: string;
+  /** Per-session active profile. Key = sessionId, value = profileId */
+  private sessionProfiles: Map<string, string> = new Map();
+  private defaultProfileId: string;
 
   constructor(profilesPath?: string) {
     this.profilesPath = profilesPath ?? this.resolveProfilesPath();
-    this.activeProfileId = DEFAULT_PROFILE_ID;
+    this.defaultProfileId = env.DEFAULT_PROFILE;
 
     if (!fs.existsSync(this.profilesPath)) {
       fs.mkdirSync(this.profilesPath, { recursive: true });
@@ -34,16 +50,12 @@ export class ProfileManager {
 
     this.loadAllProfiles();
 
-    if (!this.profiles.has(DEFAULT_PROFILE_ID)) {
+    if (!this.profiles.has(this.defaultProfileId)) {
       this.createDefaultProfile();
     }
   }
 
   private resolveProfilesPath(): string {
-    if (process.env.PROFILES_PATH) {
-      return process.env.PROFILES_PATH;
-    }
-
     if (process.env.VITEST) {
       return path.join(
         os.tmpdir(),
@@ -52,7 +64,7 @@ export class ProfileManager {
       );
     }
 
-    return path.join(process.cwd(), "data", "profiles");
+    return env.PROFILES_PATH;
   }
 
   private loadAllProfiles(): void {
@@ -61,12 +73,22 @@ export class ProfileManager {
     const entries = fs.readdirSync(this.profilesPath, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
+      if (!PROFILE_ID_PATTERN.test(entry.name)) continue;
+
       const configPath = path.join(this.profilesPath, entry.name, "config.json");
       if (!fs.existsSync(configPath)) continue;
 
       try {
         const raw = fs.readFileSync(configPath, "utf-8");
         const profile: AgentProfile = JSON.parse(raw);
+
+        if (profile.id !== entry.name) {
+          console.warn(
+            `[ProfileManager] Skipping profile with mismatched ID: config has '${profile.id}' but directory is '${entry.name}'`,
+          );
+          continue;
+        }
+
         this.profiles.set(profile.id, profile);
       } catch {
         console.warn(`[ProfileManager] Skipping invalid profile config: ${configPath}`);
@@ -75,7 +97,7 @@ export class ProfileManager {
   }
 
   private createDefaultProfile(): void {
-    const profileDir = path.join(this.profilesPath, DEFAULT_PROFILE_ID);
+    const profileDir = path.join(this.profilesPath, this.defaultProfileId);
     if (!fs.existsSync(profileDir)) {
       fs.mkdirSync(profileDir, { recursive: true });
     }
@@ -87,7 +109,7 @@ export class ProfileManager {
 
     const now = new Date().toISOString();
     const profile: AgentProfile = {
-      id: DEFAULT_PROFILE_ID,
+      id: this.defaultProfileId,
       name: DEFAULT_PROFILE_NAME,
       description: DEFAULT_PROFILE_DESC,
       systemPromptPath: soulPath,
@@ -117,6 +139,8 @@ export class ProfileManager {
   }
 
   createProfile(config: ProfileConfig): AgentProfile {
+    validateProfileId(config.id);
+
     if (this.profiles.has(config.id)) {
       throw new Error(`Profile '${config.id}' already exists`);
     }
@@ -152,12 +176,22 @@ export class ProfileManager {
     this.saveProfile(profile);
     this.profiles.set(profile.id, profile);
 
-    console.log(`[ProfileManager] Created profile '${config.id}' (${config.name})`);
+    void auditLogger.log({
+      id: crypto.randomUUID(),
+      timestamp: new Date(),
+      action: "profile.create",
+      actor: "system",
+      details: { profileId: config.id, profileName: config.name },
+      severity: "info",
+    });
+
     return profile;
   }
 
   deleteProfile(id: string): boolean {
-    if (id === DEFAULT_PROFILE_ID) {
+    validateProfileId(id);
+
+    if (id === this.defaultProfileId) {
       throw new Error("Cannot delete the default profile");
     }
 
@@ -171,11 +205,22 @@ export class ProfileManager {
 
     this.profiles.delete(id);
 
-    if (this.activeProfileId === id) {
-      this.activeProfileId = DEFAULT_PROFILE_ID;
+    // Clear any sessions using this profile
+    for (const [sessionId, pId] of this.sessionProfiles) {
+      if (pId === id) {
+        this.sessionProfiles.set(sessionId, this.defaultProfileId);
+      }
     }
 
-    console.log(`[ProfileManager] Deleted profile '${id}'`);
+    void auditLogger.log({
+      id: crypto.randomUUID(),
+      timestamp: new Date(),
+      action: "profile.delete",
+      actor: "system",
+      details: { profileId: id },
+      severity: "info",
+    });
+
     return true;
   }
 
@@ -183,35 +228,69 @@ export class ProfileManager {
     return this.profiles.get(id);
   }
 
-  switchProfile(id: string): AgentProfile {
+  /**
+   * Switch profile for a specific session. Does not affect other sessions.
+   */
+  switchProfile(id: string, sessionId: string = "default"): AgentProfile {
+    validateProfileId(id);
+
     const profile = this.profiles.get(id);
     if (!profile) {
       throw new Error(`Profile '${id}' not found`);
     }
 
-    this.activeProfileId = id;
-    console.log(`[ProfileManager] Switched to profile '${id}' (${profile.name})`);
+    const previousId = this.sessionProfiles.get(sessionId) ?? this.defaultProfileId;
+    this.sessionProfiles.set(sessionId, id);
+
+    void auditLogger.log({
+      id: crypto.randomUUID(),
+      timestamp: new Date(),
+      action: "profile.switch",
+      actor: sessionId,
+      details: { from: previousId, to: id, profileName: profile.name },
+      severity: "info",
+    });
+
     return profile;
+  }
+
+  /**
+   * Get the active profile for a specific session.
+   * Falls back to the default profile if the session has no explicit profile.
+   */
+  getActiveProfile(sessionId: string = "default"): AgentProfile {
+    const profileId = this.sessionProfiles.get(sessionId) ?? this.defaultProfileId;
+    const profile = this.profiles.get(profileId);
+    if (!profile) {
+      // Fall back to whatever default exists
+      const fallback = this.profiles.get(this.defaultProfileId);
+      if (fallback) return fallback;
+      throw new Error(`No profiles available`);
+    }
+    return profile;
+  }
+
+  /**
+   * Get the active profile ID for a specific session.
+   */
+  getActiveProfileId(sessionId: string = "default"): string {
+    return this.sessionProfiles.get(sessionId) ?? this.defaultProfileId;
+  }
+
+  /**
+   * Legacy global active profile ID — returns default profile ID.
+   * Prefer getActiveProfileId(sessionId) for session-scoped lookups.
+   */
+  getGlobalActiveProfileId(): string {
+    return this.defaultProfileId;
   }
 
   listProfiles(): AgentProfile[] {
     return Array.from(this.profiles.values());
   }
 
-  getActiveProfile(): AgentProfile {
-    const profile = this.profiles.get(this.activeProfileId);
-    if (!profile) {
-      throw new Error(`Active profile '${this.activeProfileId}' not found`);
-    }
-    return profile;
-  }
-
-  getActiveProfileId(): string {
-    return this.activeProfileId;
-  }
-
-  getSystemPrompt(): string {
-    const profile = this.getActiveProfile();
+  getSystemPrompt(sessionId: string = "default"): string {
+    const profile = this.getActiveProfile(sessionId);
     if (!fs.existsSync(profile.systemPromptPath)) {
       return DEFAULT_SOUL_CONTENT;
     }
@@ -220,8 +299,8 @@ export class ProfileManager {
     return content || DEFAULT_SOUL_CONTENT;
   }
 
-  getAllowedTools(allRegisteredTools: string[]): string[] {
-    const profile = this.getActiveProfile();
+  getAllowedTools(allRegisteredTools: string[], sessionId: string = "default"): string[] {
+    const profile = this.getActiveProfile(sessionId);
     let tools = allRegisteredTools;
 
     if (profile.allowedTools.length > 0) {
@@ -235,8 +314,12 @@ export class ProfileManager {
     return tools;
   }
 
-  getMaxToolCalls(): number {
-    return this.getActiveProfile().maxToolCalls;
+  getMaxToolCalls(sessionId: string = "default"): number {
+    return this.getActiveProfile(sessionId).maxToolCalls;
+  }
+
+  getDefaultProfileId(): string {
+    return this.defaultProfileId;
   }
 }
 

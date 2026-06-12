@@ -130,26 +130,35 @@ describe("ProfileManager", () => {
     it("resets active profile to default if deleted profile was active", () => {
       const pm = new ProfileManager(testDir);
       pm.createProfile(makeConfig({ id: "active-del" }));
-      pm.switchProfile("active-del");
+      pm.switchProfile("active-del", "sess1");
 
       pm.deleteProfile("active-del");
-      expect(pm.getActiveProfileId()).toBe("default");
+      expect(pm.getActiveProfileId("sess1")).toBe("default");
     });
   });
 
   describe("switchProfile", () => {
-    it("switches to an existing profile", () => {
+    it("switches to an existing profile for a session", () => {
       const pm = new ProfileManager(testDir);
       pm.createProfile(makeConfig({ id: "work" }));
 
-      const profile = pm.switchProfile("work");
+      const profile = pm.switchProfile("work", "sess1");
       expect(profile.id).toBe("work");
-      expect(pm.getActiveProfileId()).toBe("work");
+      expect(pm.getActiveProfileId("sess1")).toBe("work");
+    });
+
+    it("does not affect other sessions", () => {
+      const pm = new ProfileManager(testDir);
+      pm.createProfile(makeConfig({ id: "work" }));
+
+      pm.switchProfile("work", "sess1");
+      expect(pm.getActiveProfileId("sess1")).toBe("work");
+      expect(pm.getActiveProfileId("sess2")).toBe("default");
     });
 
     it("throws if profile does not exist", () => {
       const pm = new ProfileManager(testDir);
-      expect(() => pm.switchProfile("nonexistent")).toThrow("not found");
+      expect(() => pm.switchProfile("nonexistent", "sess1")).toThrow("not found");
     });
   });
 
@@ -162,12 +171,12 @@ describe("ProfileManager", () => {
       expect(profile.name).toBe("Default");
     });
 
-    it("returns the switched-to profile", () => {
+    it("returns the switched-to profile for a session", () => {
       const pm = new ProfileManager(testDir);
       pm.createProfile(makeConfig({ id: "security" }));
-      pm.switchProfile("security");
+      pm.switchProfile("security", "sess1");
 
-      expect(pm.getActiveProfile().id).toBe("security");
+      expect(pm.getActiveProfile("sess1").id).toBe("security");
     });
   });
 
@@ -187,8 +196,8 @@ describe("ProfileManager", () => {
       const customSoul = "# Custom Personality\nBe very formal.\n";
       fs.writeFileSync(profile.systemPromptPath, customSoul, "utf-8");
 
-      pm.switchProfile("custom");
-      expect(pm.getSystemPrompt()).toBe(customSoul.trim());
+      pm.switchProfile("custom", "sess1");
+      expect(pm.getSystemPrompt("sess1")).toBe(customSoul.trim());
     });
 
     it("returns default content if SOUL.md is empty", () => {
@@ -198,8 +207,8 @@ describe("ProfileManager", () => {
       const profile = pm.loadProfile("empty-soul")!;
       fs.writeFileSync(profile.systemPromptPath, "", "utf-8");
 
-      pm.switchProfile("empty-soul");
-      const prompt = pm.getSystemPrompt();
+      pm.switchProfile("empty-soul", "sess1");
+      const prompt = pm.getSystemPrompt("sess1");
       expect(prompt.length).toBeGreaterThan(0);
     });
   });
@@ -220,10 +229,10 @@ describe("ProfileManager", () => {
           allowedTools: ["tool.a", "tool.b"],
         }),
       );
-      pm.switchProfile("restricted");
+      pm.switchProfile("restricted", "sess1");
 
       const allTools = ["tool.a", "tool.b", "tool.c"];
-      expect(pm.getAllowedTools(allTools)).toEqual(["tool.a", "tool.b"]);
+      expect(pm.getAllowedTools(allTools, "sess1")).toEqual(["tool.a", "tool.b"]);
     });
 
     it("removes blockedTools from the list", () => {
@@ -234,10 +243,10 @@ describe("ProfileManager", () => {
           blockedTools: ["tool.c"],
         }),
       );
-      pm.switchProfile("blocked");
+      pm.switchProfile("blocked", "sess1");
 
       const allTools = ["tool.a", "tool.b", "tool.c"];
-      expect(pm.getAllowedTools(allTools)).toEqual(["tool.a", "tool.b"]);
+      expect(pm.getAllowedTools(allTools, "sess1")).toEqual(["tool.a", "tool.b"]);
     });
 
     it("intersects allowed and removes blocked", () => {
@@ -249,10 +258,10 @@ describe("ProfileManager", () => {
           blockedTools: ["tool.b"],
         }),
       );
-      pm.switchProfile("both");
+      pm.switchProfile("both", "sess1");
 
       const allTools = ["tool.a", "tool.b", "tool.c", "tool.d"];
-      expect(pm.getAllowedTools(allTools)).toEqual(["tool.a", "tool.c"]);
+      expect(pm.getAllowedTools(allTools, "sess1")).toEqual(["tool.a", "tool.c"]);
     });
   });
 
@@ -275,11 +284,10 @@ describe("ProfileManager", () => {
     it("loads profiles from disk on reconstruction", () => {
       const pm1 = new ProfileManager(testDir);
       pm1.createProfile(makeConfig({ id: "persist" }));
-      pm1.switchProfile("persist");
 
       const pm2 = new ProfileManager(testDir);
       expect(pm2.loadProfile("persist")).toBeDefined();
-      // Active profile resets to default on new instance
+      // Active profile resets to default on new instance (per-session, no persisted state)
       expect(pm2.getActiveProfileId()).toBe("default");
     });
   });
@@ -295,9 +303,113 @@ describe("ProfileManager", () => {
       pm.createProfile(
         makeConfig({ id: "limited", maxToolCalls: 25 }),
       );
-      pm.switchProfile("limited");
+      pm.switchProfile("limited", "sess1");
 
-      expect(pm.getMaxToolCalls()).toBe(25);
+      expect(pm.getMaxToolCalls("sess1")).toBe(25);
+    });
+  });
+
+  describe("path traversal protection", () => {
+    it("rejects createProfile with path traversal in ID", () => {
+      const pm = new ProfileManager(testDir);
+      expect(() => pm.createProfile(makeConfig({ id: "../etc" }))).toThrow("Invalid profile ID");
+    });
+
+    it("rejects createProfile with path separator in ID", () => {
+      const pm = new ProfileManager(testDir);
+      expect(() => pm.createProfile(makeConfig({ id: "foo/bar" }))).toThrow("Invalid profile ID");
+    });
+
+    it("rejects createProfile with backslash in ID", () => {
+      const pm = new ProfileManager(testDir);
+      expect(() => pm.createProfile(makeConfig({ id: "foo\\bar" }))).toThrow("Invalid profile ID");
+    });
+
+    it("rejects createProfile with special characters in ID", () => {
+      const pm = new ProfileManager(testDir);
+      expect(() => pm.createProfile(makeConfig({ id: "test;rm -rf" }))).toThrow("Invalid profile ID");
+    });
+
+    it("rejects deleteProfile with path traversal in ID", () => {
+      const pm = new ProfileManager(testDir);
+      expect(() => pm.deleteProfile("../../../etc")).toThrow("Invalid profile ID");
+    });
+
+    it("rejects switchProfile with path traversal in ID", () => {
+      const pm = new ProfileManager(testDir);
+      expect(() => pm.switchProfile("../../etc", "sess1")).toThrow("Invalid profile ID");
+    });
+
+    it("rejects empty ID in createProfile", () => {
+      const pm = new ProfileManager(testDir);
+      expect(() => pm.createProfile(makeConfig({ id: "" }))).toThrow("Invalid profile ID");
+    });
+
+    it("accepts valid IDs with letters, numbers, underscores, hyphens", () => {
+      const pm = new ProfileManager(testDir);
+      expect(() => pm.createProfile(makeConfig({ id: "my-profile_123" }))).not.toThrow();
+    });
+  });
+
+  describe("per-session isolation", () => {
+    it("different sessions can have different active profiles", () => {
+      const pm = new ProfileManager(testDir);
+      pm.createProfile(makeConfig({ id: "work" }));
+      pm.createProfile(makeConfig({ id: "personal" }));
+
+      pm.switchProfile("work", "sess1");
+      pm.switchProfile("personal", "sess2");
+
+      expect(pm.getActiveProfileId("sess1")).toBe("work");
+      expect(pm.getActiveProfileId("sess2")).toBe("personal");
+      expect(pm.getActiveProfileId("sess3")).toBe("default");
+    });
+
+    it("getSystemPrompt returns different content per session", () => {
+      const pm = new ProfileManager(testDir);
+      pm.createProfile(makeConfig({ id: "alpha" }));
+      pm.createProfile(makeConfig({ id: "beta" }));
+
+      const alphaProfile = pm.loadProfile("alpha")!;
+      fs.writeFileSync(alphaProfile.systemPromptPath, "Alpha personality", "utf-8");
+
+      const betaProfile = pm.loadProfile("beta")!;
+      fs.writeFileSync(betaProfile.systemPromptPath, "Beta personality", "utf-8");
+
+      pm.switchProfile("alpha", "sess-a");
+      pm.switchProfile("beta", "sess-b");
+
+      expect(pm.getSystemPrompt("sess-a")).toBe("Alpha personality");
+      expect(pm.getSystemPrompt("sess-b")).toBe("Beta personality");
+    });
+
+    it("switching profile in one session does not affect another", () => {
+      const pm = new ProfileManager(testDir);
+      pm.createProfile(makeConfig({ id: "work" }));
+
+      pm.switchProfile("work", "sess1");
+      // sess2 was never switched, should still be default
+      expect(pm.getActiveProfileId("sess2")).toBe("default");
+
+      pm.switchProfile("default", "sess1");
+      expect(pm.getActiveProfileId("sess1")).toBe("default");
+    });
+  });
+
+  describe("loadAllProfiles ID validation", () => {
+    it("skips directories with non-matching profile IDs in config", () => {
+      // Create a profile directory with a mismatched config ID
+      const profileDir = path.join(testDir, "legit-id");
+      fs.mkdirSync(profileDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(profileDir, "config.json"),
+        JSON.stringify({ id: "different-id", name: "Bad", description: "Mismatched" }),
+        "utf-8",
+      );
+
+      const pm = new ProfileManager(testDir);
+      expect(pm.loadProfile("legit-id")).toBeUndefined();
+      expect(pm.loadProfile("different-id")).toBeUndefined();
     });
   });
 });

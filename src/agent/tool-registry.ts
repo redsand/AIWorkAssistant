@@ -7622,7 +7622,7 @@ const PROFILE_TOOLS: Tool[] = [
       },
     },
     actionType: "profile.switch",
-    riskLevel: "low",
+    riskLevel: "medium",
   },
   {
     name: "profile.list",
@@ -8593,17 +8593,35 @@ EXPANDABLE CATEGORIES (use tools.discover to load): ${catNames}
 IMPORTANT: You MUST use these tools to take actions. Do NOT say "I don't have access" or "I cannot do that" — if a tool exists for the action, USE IT. If you need a tool not listed above, call tools.discover to load it.`;
 }
 
-export function getAllToolsForMode(mode: string): Tool[] {
+export function getAllToolsForMode(mode: string, sessionId?: string): Tool[] {
+  let tools: Tool[];
   switch (mode) {
     case AGENT_MODES.PRODUCTIVITY:
-      return [...PROFILE_TOOLS, ...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...GATEWAY_TOOLS, ...PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
+      tools = [...PROFILE_TOOLS, ...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...GATEWAY_TOOLS, ...PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
+      break;
     case AGENT_MODES.ENGINEERING:
-      return [...PROFILE_TOOLS, ...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...GATEWAY_TOOLS, ...ENGINEERING_TOOLS, ...PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
+      tools = [...PROFILE_TOOLS, ...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...GATEWAY_TOOLS, ...ENGINEERING_TOOLS, ...PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
+      break;
     case AGENT_MODES.MUSICIAN:
-      return [...PROFILE_TOOLS, ...AGENT_RUN_TOOLS, ...GATEWAY_TOOLS, ...MUSICIAN_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
+      tools = [...PROFILE_TOOLS, ...AGENT_RUN_TOOLS, ...GATEWAY_TOOLS, ...MUSICIAN_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
+      break;
     default:
       return [];
   }
+
+  // Apply profile-based tool restrictions if a session is provided
+  if (sessionId) {
+    try {
+      const { getProfileManager } = require("../profiles/profile-manager");
+      const pm = getProfileManager();
+      const allowed = pm.getAllowedTools(tools.map((t) => t.name), sessionId);
+      tools = tools.filter((t) => allowed.includes(t.name));
+    } catch {
+      // ProfileManager not available — return unfiltered
+    }
+  }
+
+  return tools;
 }
 
 /**

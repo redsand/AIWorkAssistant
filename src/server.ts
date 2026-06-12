@@ -285,7 +285,7 @@ async function start() {
     try {
       const pm = getProfileManager();
       const profiles = pm.listProfiles();
-      console.log(`[Profiles] Initialized with ${profiles.length} profile(s) (active: ${pm.getActiveProfileId()})`);
+      console.log(`[Profiles] Initialized with ${profiles.length} profile(s) (default: ${pm.getDefaultProfileId()})`);
     } catch (err) {
       console.warn("[Profiles] Failed to initialize, using default:", err);
     }

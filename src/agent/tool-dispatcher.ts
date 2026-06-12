@@ -9726,9 +9726,14 @@ async function handleProfileSwitch(
     return { success: false, error: "profile_id is required" };
   }
 
+  if (!/^[a-zA-Z0-9_-]+$/.test(profileId)) {
+    return { success: false, error: "Invalid profile_id: must contain only letters, numbers, underscores, and hyphens" };
+  }
+
   try {
     const pm = getProfileManager();
-    const profile = pm.switchProfile(profileId);
+    const sessionId = String(params._sessionId || "default");
+    const profile = pm.switchProfile(profileId, sessionId);
     return {
       success: true,
       data: {
@@ -9747,11 +9752,12 @@ async function handleProfileSwitch(
 }
 
 async function handleProfileList(
-  _params: Record<string, unknown>,
+  params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
   const pm = getProfileManager();
+  const sessionId = String(params._sessionId || "default");
   const profiles = pm.listProfiles();
-  const activeId = pm.getActiveProfileId();
+  const activeId = pm.getActiveProfileId(sessionId);
 
   return {
     success: true,

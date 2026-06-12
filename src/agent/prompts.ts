@@ -644,29 +644,37 @@ HEALTH AND INTEGRATION STATUS:
 - Never guess about integration status — always use the system.check_health tool to verify.`;
 
 /**
+ * Build profile personality section from the active profile's SOUL.md.
+ * Shared between getSystemPrompt and getSystemPromptRAG to avoid duplication.
+ */
+function buildProfileSection(sessionId?: string): string {
+  try {
+    const pm = getProfileManager();
+    const activeProfile = pm.getActiveProfile(sessionId);
+    const defaultId = pm.getDefaultProfileId();
+    if (activeProfile.id !== defaultId) {
+      const soulContent = pm.getSystemPrompt(sessionId);
+      if (soulContent) {
+        return `\n\nPROFILE PERSONALITY (${activeProfile.name}):\n${soulContent}`;
+      }
+    }
+  } catch {
+    // ProfileManager not initialized — skip profile section
+  }
+  return "";
+}
+
+/**
  * Get system prompt for mode
  */
 export function getSystemPrompt(
   mode: "productivity" | "engineering",
   contextQuery?: string,
   contextMode?: "rag" | "engine",
+  sessionId?: string,
 ): string {
   const toolSummary = getToolInventorySummary(mode, contextQuery);
-
-  // Load profile-specific SOUL.md if available
-  let profileSection = "";
-  try {
-    const pm = getProfileManager();
-    const activeProfile = pm.getActiveProfile();
-    if (activeProfile.id !== "default") {
-      const soulContent = pm.getSystemPrompt();
-      if (soulContent) {
-        profileSection = `\n\nPROFILE PERSONALITY (${activeProfile.name}):\n${soulContent}`;
-      }
-    }
-  } catch {
-    // ProfileManager not initialized — skip profile section
-  }
+  const profileSection = buildProfileSection(sessionId);
 
   // In engine mode, the context engine handles knowledge injection separately.
   // Return only the base prompt + minimal tool reference.
@@ -682,29 +690,16 @@ export function getSystemPrompt(
   }
 
   // RAG mode: inject knowledge directly into the system prompt (original behavior)
-  return getSystemPromptRAG(mode, contextQuery);
+  return getSystemPromptRAG(mode, contextQuery, sessionId);
 }
 
 function getSystemPromptRAG(
   mode: "productivity" | "engineering",
   contextQuery?: string,
+  sessionId?: string,
 ): string {
   const toolSummary = getToolInventorySummary(mode, contextQuery);
-
-  // Load profile-specific SOUL.md if available
-  let profileSection = "";
-  try {
-    const pm = getProfileManager();
-    const activeProfile = pm.getActiveProfile();
-    if (activeProfile.id !== "default") {
-      const soulContent = pm.getSystemPrompt();
-      if (soulContent) {
-        profileSection = `\n\nPROFILE PERSONALITY (${activeProfile.name}):\n${soulContent}`;
-      }
-    }
-  } catch {
-    // ProfileManager not initialized — skip profile section
-  }
+  const profileSection = buildProfileSection(sessionId);
 
   let knowledgeSection = "";
   if (contextQuery) {
