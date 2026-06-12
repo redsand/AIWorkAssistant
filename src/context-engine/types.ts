@@ -225,6 +225,7 @@ export interface Community {
   nodeIds: string[];
   summary: string;
   level: number;
+  stale?: boolean;
   createdAt: Date;
 }
 

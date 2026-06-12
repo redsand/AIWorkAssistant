@@ -108,6 +108,12 @@ class KnowledgeGraph {
       );
       CREATE INDEX IF NOT EXISTS idx_communities_level ON kg_communities(level);
     `);
+
+    // Migration: add stale column if it doesn't exist
+    const columns = this.db.prepare(`PRAGMA table_info(kg_communities)`).all() as any[];
+    if (!columns.some((c: any) => c.name === "stale")) {
+      this.db.exec(`ALTER TABLE kg_communities ADD COLUMN stale INTEGER NOT NULL DEFAULT 0`);
+    }
   }
 
   addNode(node: Omit<KGNode, "id" | "createdAt" | "updatedAt">): string {
@@ -144,6 +150,8 @@ class KnowledgeGraph {
       createdAt: new Date(now),
       updatedAt: new Date(now),
     }).catch(err => console.warn(`[KnowledgeGraph] Incremental ClaimKit ingestion failed for node ${id}:`, err));
+
+    this.invalidateCommunities([id]);
 
     return id;
   }
@@ -205,6 +213,8 @@ class KnowledgeGraph {
       .prepare(`UPDATE kg_nodes SET ${setClauses.join(", ")} WHERE id = ?`)
       .run(...params);
 
+    this.invalidateCommunities([id]);
+
     return this.getNode(id);
   }
 
@@ -251,11 +261,17 @@ class KnowledgeGraph {
       createdAt: new Date(),
     }).catch(err => console.warn(`[KnowledgeGraph] Incremental ClaimKit ingestion failed for edge ${id}:`, err));
 
+    this.invalidateCommunities([sourceId, targetId]);
+
     return id;
   }
 
   removeEdge(id: string): boolean {
+    const edge = this.db.prepare(`SELECT source_id, target_id FROM kg_edges WHERE id = ?`).get(id) as any;
     const result = this.db.prepare(`DELETE FROM kg_edges WHERE id = ?`).run(id);
+    if (result.changes > 0 && edge) {
+      this.invalidateCommunities([edge.source_id, edge.target_id]);
+    }
     return result.changes > 0;
   }
 
@@ -752,13 +768,72 @@ class KnowledgeGraph {
 
     try {
       const rows = this.db
-        .prepare(`SELECT summary FROM kg_communities WHERE level = 0 ORDER BY created_at DESC`)
+        .prepare(`SELECT summary, stale FROM kg_communities WHERE level = 0 ORDER BY created_at DESC`)
         .all() as any[];
 
-      return rows.map(r => r.summary as string);
+      return rows.map(r => {
+        if (r.stale === 1) {
+          return `${r.summary} _(Note: this summary may be outdated — graph changed since last update)_`;
+        }
+        return r.summary as string;
+      });
     } catch {
       return [];
     }
+  }
+
+  invalidateCommunities(nodeIds: string[]): void {
+    if (nodeIds.length === 0) return;
+
+    const rows = this.db
+      .prepare(`SELECT id, node_ids FROM kg_communities WHERE stale = 0`)
+      .all() as any[];
+
+    const toInvalidate: string[] = [];
+    for (const row of rows) {
+      const communityNodeIds: string[] = JSON.parse(row.node_ids);
+      if (communityNodeIds.some(id => nodeIds.includes(id))) {
+        toInvalidate.push(row.id);
+      }
+    }
+
+    if (toInvalidate.length === 0) return;
+
+    const placeholders = toInvalidate.map(() => "?").join(",");
+    this.db
+      .prepare(`UPDATE kg_communities SET stale = 1 WHERE id IN (${placeholders})`)
+      .run(...toInvalidate);
+
+    console.log(
+      `[KnowledgeGraph] Invalidated ${toInvalidate.length} communities due to changes in ${nodeIds.length} nodes`,
+    );
+  }
+
+  getStaleCommunities(maxPerRun: number = 10): Community[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM kg_communities WHERE stale = 1 ORDER BY created_at ASC LIMIT ?`)
+      .all(maxPerRun) as any[];
+
+    return rows.map(r => ({
+      id: r.id,
+      nodeIds: JSON.parse(r.node_ids),
+      summary: r.summary,
+      level: r.level,
+      stale: true,
+      createdAt: new Date(r.created_at),
+    }));
+  }
+
+  updateCommunitySummary(id: string, summary: string): void {
+    this.db
+      .prepare(`UPDATE kg_communities SET summary = ?, stale = 0 WHERE id = ?`)
+      .run(summary, id);
+  }
+
+  getCommunityMetrics(): { totalCommunities: number; staleCommunities: number } {
+    const total = (this.db.prepare(`SELECT COUNT(*) as c FROM kg_communities`).get() as any).c;
+    const stale = (this.db.prepare(`SELECT COUNT(*) as c FROM kg_communities WHERE stale = 1`).get() as any).c;
+    return { totalCommunities: total, staleCommunities: stale };
   }
 
   private rowToNode(row: any): KGNode {
