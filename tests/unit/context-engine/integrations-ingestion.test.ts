@@ -109,6 +109,91 @@ describe("Integration Ingestion", () => {
       expect(stats.ingested).toBe(1);
       expect(stats.skipped).toBe(1);
     });
+
+    it("counts assets as skipped when ClaimKit is unavailable", async () => {
+      vi.mocked(claimKitAdapter.isAvailable).mockReturnValue(false);
+      vi.mocked(tenableCloudService.isConfigured).mockReturnValue(true);
+      vi.mocked(tenableCloudService.listWorkbenchAssets).mockResolvedValue([
+        { id: "asset-unavailable", hostname: ["web-unavailable"], device_type: [], operating_system: [], severities: [], fqdn: [], ipv4: [] },
+      ]);
+      vi.mocked(tenableCloudService.listScans).mockResolvedValue([]);
+      vi.mocked(tenableCloudService.listVulnerabilities).mockResolvedValue([]);
+
+      const stats = await ingestTenableData();
+
+      expect(stats.ingested).toBe(0);
+      expect(stats.skipped).toBe(1);
+      expect(claimKitAdapter.ingest).not.toHaveBeenCalled();
+    });
+
+    it("counts ingest failures as skipped without failing the Tenable run", async () => {
+      vi.mocked(tenableCloudService.isConfigured).mockReturnValue(true);
+      vi.mocked(tenableCloudService.listWorkbenchAssets).mockResolvedValue([
+        { id: "asset-ingest-fails", hostname: ["web-fail"], device_type: [], operating_system: [], severities: [], fqdn: [], ipv4: [] },
+      ]);
+      vi.mocked(tenableCloudService.listScans).mockResolvedValue([]);
+      vi.mocked(tenableCloudService.listVulnerabilities).mockResolvedValue([]);
+      vi.mocked(claimKitAdapter.ingest).mockRejectedValueOnce(new Error("claimkit down"));
+
+      const stats = await ingestTenableData();
+
+      expect(stats.ingested).toBe(0);
+      expect(stats.skipped).toBe(1);
+      expect(stats.errors).toBe(0);
+    });
+
+    it("ingests scans and vulnerabilities with default field fallbacks", async () => {
+      vi.mocked(tenableCloudService.isConfigured).mockReturnValue(true);
+      vi.mocked(tenableCloudService.listWorkbenchAssets).mockResolvedValue([]);
+      vi.mocked(tenableCloudService.listScans).mockResolvedValue([
+        { id: 101, enabled: false },
+      ]);
+      vi.mocked(tenableCloudService.listVulnerabilities).mockResolvedValue([
+        {
+          plugin: { id: 5001, name: "OpenSSH Finding" },
+          asset: { id: "asset-vuln-1" },
+        },
+      ]);
+
+      const stats = await ingestTenableData();
+
+      expect(stats.ingested).toBe(2);
+      expect(stats.skipped).toBe(0);
+      expect(stats.errors).toBe(0);
+      expect(claimKitAdapter.ingest).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining("Scan: unnamed"),
+        expect.objectContaining({
+          entityId: "101",
+          entityType: "scan",
+          source: "tenable",
+          scanStatus: undefined,
+        }),
+      );
+      expect(claimKitAdapter.ingest).toHaveBeenNthCalledWith(
+        2,
+        expect.stringContaining("Severity: unknown"),
+        expect.objectContaining({
+          entityId: "5001",
+          entityType: "vulnerability",
+          source: "tenable",
+          severity: undefined,
+        }),
+      );
+    });
+
+    it("continues when Tenable scans and vulnerabilities fail", async () => {
+      vi.mocked(tenableCloudService.isConfigured).mockReturnValue(true);
+      vi.mocked(tenableCloudService.listWorkbenchAssets).mockResolvedValue([]);
+      vi.mocked(tenableCloudService.listScans).mockRejectedValue(new Error("scan API down"));
+      vi.mocked(tenableCloudService.listVulnerabilities).mockRejectedValue(new Error("vuln API down"));
+
+      const stats = await ingestTenableData();
+
+      expect(stats.ingested).toBe(0);
+      expect(stats.skipped).toBe(0);
+      expect(stats.errors).toBe(2);
+    });
   });
 
   describe("ingestJiraData", () => {
@@ -152,6 +237,46 @@ describe("Integration Ingestion", () => {
       expect(stats.ingested).toBe(0);
       expect(stats.errors).toBe(1);
     });
+
+    it("ingests Jira issues with missing optional fields", async () => {
+      vi.mocked(jiraClient.isConfigured).mockReturnValue(true);
+      vi.mocked(jiraClient.searchIssues).mockResolvedValue([
+        {
+          key: "MISS-1",
+          fields: {},
+        },
+      ]);
+
+      const stats = await ingestJiraData();
+
+      expect(stats.ingested).toBe(1);
+      expect(stats.skipped).toBe(0);
+      expect(claimKitAdapter.ingest).toHaveBeenCalledWith(
+        expect.stringContaining("Issue: MISS-1 — No summary"),
+        expect.objectContaining({
+          assignee: "Unassigned",
+          issueType: "Issue",
+          labels: [],
+          priority: "Unknown",
+          project: "",
+          status: "Unknown",
+        }),
+      );
+    });
+
+    it("counts Jira issues as skipped when ClaimKit is unavailable", async () => {
+      vi.mocked(claimKitAdapter.isAvailable).mockReturnValue(false);
+      vi.mocked(jiraClient.isConfigured).mockReturnValue(true);
+      vi.mocked(jiraClient.searchIssues).mockResolvedValue([
+        { key: "SKIP-1", fields: { summary: "Skipped" } },
+      ]);
+
+      const stats = await ingestJiraData();
+
+      expect(stats.ingested).toBe(0);
+      expect(stats.skipped).toBe(1);
+      expect(claimKitAdapter.ingest).not.toHaveBeenCalled();
+    });
   });
 
   describe("ingestHawkIRData", () => {
@@ -182,6 +307,69 @@ describe("Integration Ingestion", () => {
       vi.mocked(hawkIrService.getRiskyOpenCases).mockResolvedValue([]);
       const stats = await ingestHawkIRData();
       expect(stats.ingested).toBe(0);
+      expect(stats.errors).toBe(1);
+    });
+
+    it("ingests HAWK IR cases with missing optional fields", async () => {
+      vi.mocked(hawkIrService.isConfigured).mockReturnValue(true);
+      vi.mocked(hawkIrService.getCases).mockResolvedValue([
+        { rid: "case-missing" },
+      ]);
+      vi.mocked(hawkIrService.getRiskyOpenCases).mockResolvedValue([]);
+
+      const stats = await ingestHawkIRData();
+
+      expect(stats.ingested).toBe(1);
+      expect(stats.skipped).toBe(0);
+      expect(claimKitAdapter.ingest).toHaveBeenCalledWith(
+        expect.stringContaining("Case: Case case-missing"),
+        expect.objectContaining({
+          entityId: "case-missing",
+          entityType: "incident",
+          riskLevel: "low",
+          status: "unknown",
+          escalated: false,
+        }),
+      );
+    });
+
+    it("skips empty risky open case summaries", async () => {
+      vi.mocked(hawkIrService.isConfigured).mockReturnValue(true);
+      vi.mocked(hawkIrService.getCases).mockResolvedValue([]);
+      vi.mocked(hawkIrService.getRiskyOpenCases).mockResolvedValue([]);
+
+      const stats = await ingestHawkIRData();
+
+      expect(stats.ingested).toBe(0);
+      expect(stats.skipped).toBe(0);
+      expect(claimKitAdapter.ingest).not.toHaveBeenCalled();
+    });
+
+    it("counts risky summary as skipped when ClaimKit is unavailable", async () => {
+      vi.mocked(claimKitAdapter.isAvailable).mockReturnValue(false);
+      vi.mocked(hawkIrService.isConfigured).mockReturnValue(true);
+      vi.mocked(hawkIrService.getCases).mockResolvedValue([]);
+      vi.mocked(hawkIrService.getRiskyOpenCases).mockResolvedValue([
+        { rid: "case-risky-skip", name: undefined, riskLevel: undefined },
+      ]);
+
+      const stats = await ingestHawkIRData();
+
+      expect(stats.ingested).toBe(0);
+      expect(stats.skipped).toBe(1);
+      expect(claimKitAdapter.ingest).not.toHaveBeenCalled();
+    });
+
+    it("continues when risky open cases fail after cases ingest", async () => {
+      vi.mocked(hawkIrService.isConfigured).mockReturnValue(true);
+      vi.mocked(hawkIrService.getCases).mockResolvedValue([
+        { rid: "case-before-risky-error", name: "Case before error" },
+      ]);
+      vi.mocked(hawkIrService.getRiskyOpenCases).mockRejectedValue(new Error("risky API down"));
+
+      const stats = await ingestHawkIRData();
+
+      expect(stats.ingested).toBe(1);
       expect(stats.errors).toBe(1);
     });
   });

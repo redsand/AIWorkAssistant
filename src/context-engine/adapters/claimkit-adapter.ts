@@ -10,8 +10,6 @@ import type {
   SourceInput,
   AnswerabilityStatus,
   Stores,
-  GroundInput,
-  GroundResult,
 } from "@redsand/claimkit";
 import {
   createRedisClient,
@@ -25,8 +23,69 @@ import { AIProviderLLMAdapter } from "./claimkit-llm-adapter";
 import { embeddingService } from "../../agent/embedding-service";
 import { OllamaProvider } from "../../agent/providers/ollama-provider";
 import { getEffectiveContextLimit } from "../../agent/providers/factory";
+import { knowledgeGraph } from "../../agent/knowledge-graph";
+import type { KGEdgeType, KGNode } from "../../agent/knowledge-graph";
 
 export type { AnswerabilityStatus };
+
+export interface VerificationResult {
+  verified: boolean;
+  confidence: number;
+  trustTier: "curated" | "observed" | "inferred";
+  evidence?: string;
+  source?: string;
+}
+
+export interface GroundInput {
+  text: string;
+  evidence: Array<{ title: string; content: string }>;
+  preExtractedClaims?: Array<{ text?: string; claimText?: string; subject?: string; predicate?: string; object?: string }>;
+  skipLLMVerification?: boolean;
+}
+
+export interface GroundResult {
+  grounded: boolean;
+  hallucinationRate: number;
+  supportedAssertionCount: number;
+  unsupportedAssertionCount: number;
+  unsupportedPhrases: string[];
+  sentenceResults: Array<{ text: string; supported: boolean }>;
+}
+
+const MIN_SUPPORT_TOKEN_OVERLAP = 0.6;
+const MIN_ASSERTION_TOKENS = 3;
+
+function splitAssertions(text: string): string[] {
+  return text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+function assertionTokens(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9_\s-]/g, " ")
+    .split(/\s+/)
+    .filter((token) => token.length > 2);
+}
+
+function isAssertionSupported(assertion: string, evidenceText: string): boolean {
+  const lowered = evidenceText.toLowerCase();
+  const tokens = assertionTokens(assertion);
+  if (tokens.length < MIN_ASSERTION_TOKENS) {
+    return lowered.includes(assertion.toLowerCase());
+  }
+  const uniqueTokens = [...new Set(tokens)];
+  const matched = uniqueTokens.filter((token) => lowered.includes(token)).length;
+  return matched / uniqueTokens.length >= MIN_SUPPORT_TOKEN_OVERLAP;
+}
+
+export interface ConfidenceTrace {
+  source: string;
+  stages?: Record<string, number>;
+  [key: string]: unknown;
+}
 
 export interface ClaimKitQueryResult {
   answer: string;
@@ -41,12 +100,7 @@ export interface ClaimKitQueryResult {
     processingTimeMs: number;
     retrievalScore: number;
   };
-  /**
-   * Per-stage confidence trace from ClaimKit (Phase 1 telemetry).
-   * Optional only because older code paths may not yet propagate it; in
-   * practice ClaimKit always returns this on the standard query path.
-   */
-  confidenceTrace?: import("@redsand/claimkit").ConfidenceTrace;
+  confidenceTrace?: ConfidenceTrace;
 }
 
 export class ClaimKitAdapter {
@@ -201,7 +255,7 @@ export class ClaimKitAdapter {
             useLLM: !env.CLAIMKIT_DISABLE_CONTRADICTION_LLM,
           },
         },
-      });
+      } as ConstructorParameters<typeof ClaimKit>[0]);
       this.initialized = true;
       console.log(
         `[ClaimKit] Initialized — embeddings: ${settledProvider.provider}/${settledProvider.model} (${actualDimensions}d)`,
@@ -246,17 +300,31 @@ export class ClaimKitAdapter {
     if (!this.claimKit) throw new Error("ClaimKit not initialized");
     const t0 = Date.now();
     const result = await this.claimKit.query(question, options);
+    const graphVerifications = await this.collectRelationshipVerifications(question);
+    const verifiedGraph = graphVerifications.filter(
+      (verification): verification is VerificationResult & { evidence: string } =>
+        verification.verified && typeof verification.evidence === "string",
+    );
     const total = Date.now() - t0;
     const ckMs = result.metadata.processingTimeMs;
     console.log(`[ClaimKit:timing] total=${total}ms internal=${ckMs}ms claims=${result.metadata.claimCount} sources=${result.metadata.sourceIds.length}`);
     return {
       answer: result.answer,
-      citations: result.citations.map((c) => ({
-        claimId: c.claimId,
-        sourceId: c.sourceId,
-        text: c.evidenceText,
-      })),
-      confidence: result.confidence,
+      citations: [
+        ...result.citations.map((c) => ({
+          claimId: c.claimId,
+          sourceId: c.sourceId,
+          text: c.evidenceText,
+        })),
+        ...verifiedGraph.map((verification, index) => ({
+          claimId: `knowledge-graph:${index + 1}`,
+          sourceId: "knowledge-graph",
+          text: verification.evidence,
+        })),
+      ],
+      confidence: verifiedGraph.length > 0
+        ? this.blendConfidence(result.confidence, verifiedGraph)
+        : result.confidence,
       contradictions: result.contradictions.map((c) => ({
         claimA: c.claimText1,
         claimB: c.claimText2,
@@ -265,20 +333,196 @@ export class ClaimKitAdapter {
       missingEvidence: [...result.missingEvidence],
       answerability: result.packet?.answerability?.status ?? "answerable",
       metadata: {
-        sourceIds: [...result.metadata.sourceIds],
-        claimCount: result.metadata.claimCount,
+        sourceIds: verifiedGraph.length > 0
+          ? [...new Set([...result.metadata.sourceIds, "knowledge-graph"])]
+          : [...result.metadata.sourceIds],
+        claimCount: result.metadata.claimCount + verifiedGraph.length,
         processingTimeMs: result.metadata.processingTimeMs,
         retrievalScore: result.metadata.retrievalScore,
       },
-      // Surface the per-stage confidence trace for downstream persistence
-      // in comparison_cases. Phase 1 calibration telemetry.
-      confidenceTrace: result.confidenceTrace,
+      confidenceTrace: "confidenceTrace" in result ? result.confidenceTrace : undefined,
     };
+  }
+
+  async verifyRelationship(
+    source: string,
+    target: string,
+    edgeType?: string,
+  ): Promise<VerificationResult> {
+    const sourceNodes = knowledgeGraph.queryNodes({ search: source, limit: 5 });
+    const targetNodes = knowledgeGraph.queryNodes({ search: target, limit: 5 });
+
+    for (const sourceNode of sourceNodes) {
+      for (const targetNode of targetNodes) {
+        const edges = knowledgeGraph.getEdgesForNode(sourceNode.id, "outgoing");
+        const match = edges.find(e =>
+          e.targetId === targetNode.id &&
+          (!edgeType || e.type === edgeType)
+        );
+        if (match) {
+          return {
+            verified: true,
+            confidence: 0.85,
+            trustTier: "curated",
+            evidence: `Graph edge: ${sourceNode.title} -[${match.type}]-> ${targetNode.title}`,
+            source: "knowledge-graph",
+          };
+        }
+      }
+    }
+    return { verified: false, confidence: 0, trustTier: "inferred" };
   }
 
   async ground(input: GroundInput): Promise<GroundResult> {
     if (!this.claimKit) throw new Error("ClaimKit not initialized");
-    return this.claimKit.ground(input);
+    const assertions = splitAssertions(input.text);
+    if (assertions.length === 0) {
+      return {
+        grounded: true,
+        hallucinationRate: 0,
+        supportedAssertionCount: 0,
+        unsupportedAssertionCount: 0,
+        unsupportedPhrases: [],
+        sentenceResults: [],
+      };
+    }
+
+    const evidenceText = [
+      ...input.evidence.map((item) => `${item.title}\n${item.content}`),
+      ...(input.preExtractedClaims ?? []).map((claim) =>
+        claim.text ??
+        claim.claimText ??
+        [claim.subject, claim.predicate, claim.object].filter(Boolean).join(" "),
+      ),
+    ].join("\n").toLowerCase();
+
+    const sentenceResults = assertions.map((assertion) => ({
+      text: assertion,
+      supported: isAssertionSupported(assertion, evidenceText),
+    }));
+    const unsupportedPhrases = sentenceResults
+      .filter((sentence) => !sentence.supported)
+      .map((sentence) => sentence.text);
+    const unsupportedAssertionCount = unsupportedPhrases.length;
+    const supportedAssertionCount = assertions.length - unsupportedAssertionCount;
+    return {
+      grounded: unsupportedAssertionCount === 0,
+      hallucinationRate: unsupportedAssertionCount / assertions.length,
+      supportedAssertionCount,
+      unsupportedAssertionCount,
+      unsupportedPhrases,
+      sentenceResults,
+    };
+  }
+
+  private async collectRelationshipVerifications(question: string): Promise<VerificationResult[]> {
+    if (!this.isRelationshipQuery(question)) return [];
+
+    const direct = this.extractDirectRelationship(question);
+    if (direct) {
+      return [await this.verifyRelationship(direct.source, direct.target, direct.edgeType)];
+    }
+
+    const inbound = this.extractInboundRelationship(question);
+    if (inbound) {
+      return this.verifyInboundRelationships(inbound.target, inbound.edgeType);
+    }
+
+    return [];
+  }
+
+  private isRelationshipQuery(question: string): boolean {
+    return /\b(depends?\s+on|blocks?|relates?\s+to|relationship\s+between)\b/i.test(question);
+  }
+
+  private extractDirectRelationship(question: string): { source: string; target: string; edgeType: KGEdgeType } | null {
+    const patterns: Array<{ pattern: RegExp; edgeType: KGEdgeType }> = [
+      { pattern: /^(?:does|do|did|can|will)?\s*(.+?)\s+depends?\s+on\s+(.+?)[?.!]?$/i, edgeType: "depends_on" },
+      { pattern: /^(?:does|do|did|can|will)?\s*(.+?)\s+blocks?\s+(.+?)[?.!]?$/i, edgeType: "blocks" },
+      { pattern: /^(?:how\s+does\s+)?(.+?)\s+relates?\s+to\s+(.+?)[?.!]?$/i, edgeType: "related_to" },
+      { pattern: /^relationship\s+between\s+(.+?)\s+and\s+(.+?)[?.!]?$/i, edgeType: "related_to" },
+    ];
+
+    for (const { pattern, edgeType } of patterns) {
+      const match = question.match(pattern);
+      if (!match) continue;
+      const source = this.cleanRelationshipTerm(match[1]);
+      const target = this.cleanRelationshipTerm(match[2]);
+      if (!source || !target || this.isQuestionWord(source)) continue;
+      return { source, target, edgeType };
+    }
+
+    return null;
+  }
+
+  private extractInboundRelationship(question: string): { target: string; edgeType: KGEdgeType } | null {
+    const patterns: Array<{ pattern: RegExp; edgeType: KGEdgeType }> = [
+      { pattern: /^what\s+depends?\s+on\s+(.+?)[?.!]?$/i, edgeType: "depends_on" },
+      { pattern: /^what\s+blocks?\s+(.+?)[?.!]?$/i, edgeType: "blocks" },
+      { pattern: /^what\s+relates?\s+to\s+(.+?)[?.!]?$/i, edgeType: "related_to" },
+    ];
+
+    for (const { pattern, edgeType } of patterns) {
+      const match = question.match(pattern);
+      if (!match) continue;
+      const target = this.cleanRelationshipTerm(match[1]);
+      if (!target) continue;
+      return { target, edgeType };
+    }
+
+    return null;
+  }
+
+  private verifyInboundRelationships(target: string, edgeType: KGEdgeType): VerificationResult[] {
+    const targetNodes = knowledgeGraph.queryNodes({ search: target, limit: 5 });
+    const results: VerificationResult[] = [];
+
+    for (const targetNode of targetNodes) {
+      const edges = knowledgeGraph
+        .getEdgesForNode(targetNode.id, "incoming")
+        .filter((edge) => edge.type === edgeType);
+
+      for (const edge of edges) {
+        const sourceNode = knowledgeGraph.getNode(edge.sourceId);
+        if (!sourceNode) continue;
+        results.push(this.relationshipResult(sourceNode, targetNode, edge.type));
+      }
+    }
+
+    if (results.length === 0) {
+      return [{ verified: false, confidence: 0, trustTier: "inferred" }];
+    }
+
+    return results;
+  }
+
+  private relationshipResult(sourceNode: KGNode, targetNode: KGNode, edgeType: KGEdgeType): VerificationResult {
+    return {
+      verified: true,
+      confidence: 0.85,
+      trustTier: "curated",
+      evidence: `Graph edge: ${sourceNode.title} -[${edgeType}]-> ${targetNode.title}`,
+      source: "knowledge-graph",
+    };
+  }
+
+  private blendConfidence(ckConfidence: number, verifications: Array<VerificationResult & { evidence: string }>): number {
+    const ckWeight = 0.7;
+    const graphWeight = 0.3;
+    const avgGraphConfidence = verifications.reduce((sum, v) => sum + v.confidence, 0) / verifications.length;
+    return Math.min(1, ckWeight * ckConfidence + graphWeight * avgGraphConfidence);
+  }
+
+  private cleanRelationshipTerm(value: string): string {
+    return value
+      .trim()
+      .replace(/^the\s+/i, "")
+      .replace(/[?.!]+$/g, "")
+      .trim();
+  }
+
+  private isQuestionWord(value: string): boolean {
+    return ["what", "who", "which", "where", "when", "why", "how"].includes(value.toLowerCase());
   }
 }
 
