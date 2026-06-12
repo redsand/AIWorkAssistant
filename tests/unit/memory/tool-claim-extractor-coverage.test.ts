@@ -12,7 +12,17 @@ const mockEntityMemory = {
     const withoutAttribute = claims.filter((claim) => claim.attribute !== attribute);
     currentClaims.set(entityId, [{ attribute, value }, ...withoutAttribute]);
   }),
+  getEntity: vi.fn(() => undefined),
 };
+
+vi.mock("../../../src/agent/knowledge-graph", () => ({
+  knowledgeGraph: {
+    queryNodes: vi.fn(() => []),
+    addNode: vi.fn(() => "node-1"),
+    getEdgesForNode: vi.fn(() => []),
+    addEdge: vi.fn(),
+  },
+}));
 
 async function loadExtractor() {
   vi.resetModules();

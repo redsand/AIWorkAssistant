@@ -1358,7 +1358,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       const systemPrompt = (body.systemPrompt && canOverrideSystemPrompt(body.userId))
         ? body.systemPrompt
-        : getSystemPrompt(body.mode, body.message);
+        : getSystemPrompt(body.mode, body.message, undefined, sessionId ?? undefined);
 
       // Inject cross-session memories into system prompt when memory is enabled
       let memoryContext = "";
@@ -1807,7 +1807,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       const systemPrompt = (body.systemPrompt && canOverrideSystemPrompt(body.userId))
         ? body.systemPrompt
-        : getSystemPrompt(body.mode, body.message);
+        : getSystemPrompt(body.mode, body.message, undefined, sessionId ?? undefined);
 
       const existingSession = sessionId
         ? conversationManager.getSession(sessionId)

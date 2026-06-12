@@ -67,6 +67,7 @@ import { TelegramAdapter } from "./integrations/gateway/telegram-adapter";
 import { SlackAdapter } from "./integrations/gateway/slack-adapter";
 import { DiscordGatewayAdapter } from "./integrations/discord/discord-gateway-adapter";
 import { WhatsAppAdapter } from "./integrations/gateway/whatsapp-adapter";
+import { getProfileManager } from "./profiles/profile-manager";
 import path from "path";
 
 export async function buildServer() {
@@ -278,6 +279,15 @@ async function start() {
     const redisUrl = process.env.CLAIMKIT_REDIS_URL || "";
     if (redisUrl) {
       void toolCallCache.connectRedis(redisUrl);
+    }
+
+    // ─── Profile Manager: initialize profiles ───
+    try {
+      const pm = getProfileManager();
+      const profiles = pm.listProfiles();
+      console.log(`[Profiles] Initialized with ${profiles.length} profile(s) (default: ${pm.getDefaultProfileId()})`);
+    } catch (err) {
+      console.warn("[Profiles] Failed to initialize, using default:", err);
     }
 
     // ─── ClaimKit init: block server.listen() until init resolves ───
