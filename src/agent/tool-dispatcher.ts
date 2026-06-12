@@ -7595,7 +7595,48 @@ async function handleTenableListAssets(params: Record<string, unknown>): Promise
   const err = tenableConfigCheck(params);
   if (err) return { success: false, error: err };
   const data = await tenableCloudService.listAssets(tenableOpts(params));
-  return { success: true, data: { summary: summarizeTenableAssets(data), total_assets: data.length } };
+
+  // Filter by hostname/IP/FQDN match when the model asks for a specific host.
+  // Discovered 2026-06-11 from session a149093c: model spent ~100s of LLM
+  // time looping because the summary contained no hostnames — it kept asking
+  // "where is host EPM?" and the response only had OS / device-type counts.
+  const search = typeof params.search === "string" ? params.search.trim().toLowerCase() : null;
+  const limit = typeof params.limit === "number" && params.limit > 0
+    ? Math.min(params.limit, 200)
+    : 25;
+
+  const flatten = (a: any) => {
+    const hostname = Array.isArray(a?.hostname) ? a.hostname[0] : a?.hostname;
+    const fqdn = Array.isArray(a?.fqdn) ? a.fqdn[0] : a?.fqdn;
+    const ip = Array.isArray(a?.ipv4) ? a.ipv4[0] : (a?.ipv4 ?? a?.ip);
+    const netbios = Array.isArray(a?.netbios_name) ? a.netbios_name[0] : a?.netbios_name;
+    return { id: a?.id, hostname: hostname ?? fqdn ?? netbios ?? null, fqdn: fqdn ?? null, ip: ip ?? null };
+  };
+
+  let filtered = data;
+  if (search) {
+    filtered = data.filter((a: any) => {
+      const f = flatten(a);
+      return [f.hostname, f.fqdn, f.ip].some(
+        (v) => typeof v === "string" && v.toLowerCase().includes(search),
+      );
+    });
+  }
+
+  const samples = (search ? filtered : data).slice(0, limit).map(flatten);
+
+  return {
+    success: true,
+    data: {
+      summary: summarizeTenableAssets(data),
+      total_assets: data.length,
+      matched_count: search ? filtered.length : data.length,
+      samples,
+      _guidance: search
+        ? `${filtered.length} asset(s) matched '${search}'. Showing first ${samples.length}. Use tenable.get_asset with one of the ids to load full details.`
+        : `Sample of ${samples.length} of ${data.length} assets. Pass {"search":"<hostname>"} to filter; pass {"limit":N} (max 200) to return more samples.`,
+    },
+  };
 }
 
 async function handleTenableGetAsset(params: Record<string, unknown>): Promise<ToolCallResult> {
@@ -9736,7 +9777,10 @@ export interface DispatchContext {
 // times because the cache served instantly and gave no friction.
 
 const IDENTICAL_CALL_THRESHOLD = 4; // 5th identical call within window is blocked
-const IDENTICAL_CALL_WINDOW_MS = 60_000;
+// Wide enough to catch slow-model loops — discovered 2026-06-11 in session
+// a149093c where glm-5.1 spent ~50s per response, so 10 identical calls
+// spread over 8 minutes never hit the original 60s window.
+const IDENTICAL_CALL_WINDOW_MS = 10 * 60_000;
 const MAX_GUARDRAIL_SESSIONS = 1000;
 
 interface CallRecord {

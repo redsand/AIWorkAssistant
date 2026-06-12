@@ -158,12 +158,16 @@ export class TenableCloudClient {
   }
 
   async getAssetExportStatus(exportUuid: string, opts?: TenableRequestOptions): Promise<TenableExportStatus> {
-    const r = await this.http.get(`/exports/assets/${exportUuid}/status`, { headers: this.headers(opts) });
+    // Legacy export namespace — must match the POST endpoint at /assets/export.
+    // Was previously /exports/assets/... which returned 404 because the
+    // export_uuid lives in the legacy namespace. Discovered 2026-06-11
+    // in session a149093c after the chunk_size fix unblocked the POST.
+    const r = await this.http.get(`/assets/export/${exportUuid}/status`, { headers: this.headers(opts) });
     return r.data;
   }
 
   async downloadAssetExportChunk(exportUuid: string, chunkId: number, opts?: TenableRequestOptions): Promise<TenableAsset[]> {
-    const r = await this.http.get(`/exports/assets/${exportUuid}/chunks/${chunkId}`, { headers: this.headers(opts) });
+    const r = await this.http.get(`/assets/export/${exportUuid}/chunks/${chunkId}`, { headers: this.headers(opts) });
     return r.data;
   }
 

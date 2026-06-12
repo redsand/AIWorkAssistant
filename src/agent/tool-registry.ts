@@ -6205,8 +6205,10 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   },
   {
     name: "tenable.list_assets",
-    description: "List all assets in the Tenable inventory.",
+    description: "List Tenable assets with a summary plus a sample of hostnames/IPs/FQDNs. Pass `search` to filter by hostname/IP/FQDN substring — that's how to locate a specific host (e.g. \"EPM\") without a full export. The samples list includes id + hostname so you can pass an id to tenable.get_asset for details.",
     params: {
+      search: { type: "string", description: "Substring matched against hostname, fqdn, or ipv4 (case-insensitive). When provided, samples are the matched assets.", required: false },
+      limit: { type: "number", description: "Max number of asset samples to return (default 25, max 200).", required: false },
       accessKey: { type: "string", description: "Tenable API access key override", required: false },
       secretKey: { type: "string", description: "Tenable API secret key override", required: false },
     },
