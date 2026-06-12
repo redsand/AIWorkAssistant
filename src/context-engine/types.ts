@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../agent/providers/types";
+import type { KGEdgeType } from "../agent/knowledge-graph";
 
 export type ContextMode = "rag" | "engine";
 
@@ -49,6 +50,16 @@ export interface ScoredDocument {
   claimKitBoost: number;
   tokens: number;
   metadata: Record<string, unknown>;
+}
+
+export interface RelationshipClaim {
+  entity: string;
+  attribute: "relationship";
+  value: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+  edgeType: KGEdgeType;
+  trustTier: "curated";
 }
 
 export interface ScoredMessage {
@@ -214,6 +225,7 @@ export interface Community {
   nodeIds: string[];
   summary: string;
   level: number;
+  stale?: boolean;
   createdAt: Date;
 }
 

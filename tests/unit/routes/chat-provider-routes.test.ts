@@ -144,6 +144,59 @@ vi.mock("../../../src/agent-runs/sanitizer", () => ({
   sanitizeValue: vi.fn((value) => value),
 }));
 
+vi.mock("../../../src/memory/tool-cache", () => ({
+  toolCallCache: {},
+}));
+
+vi.mock("../../../src/agent/providers/zai-rate-limiter", () => ({
+  zaiRateLimiter: {},
+}));
+
+vi.mock("../../../src/agent/provider-preflight", () => ({
+  runProviderPreflight: vi.fn(async (client, provider, model) => {
+    const scenarios = ["plain_chat", "json_mode", "tools_schema", "tool_history", "long_context"];
+    const results = [];
+    for (const name of scenarios) {
+      try {
+        await client.chat({ model, messages: [{ role: "user", content: "test" }] });
+        results.push({ name, success: true });
+      } catch (error) {
+        results.push({ name, success: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return { provider, model, success: results.every((r) => r.success), results };
+  }),
+}));
+
+vi.mock("../../../src/observability/error-log", () => ({
+  errorLog: {},
+}));
+
+vi.mock("../../../src/context-engine/adapters/claimkit-adapter", () => ({
+  claimKitAdapter: {
+    isAvailable: vi.fn(() => true),
+    getInitError: vi.fn(() => null),
+  },
+}));
+
+vi.mock("../../../src/agent/embedding-service", () => ({
+  embeddingService: {
+    isAvailable: vi.fn(() => Promise.resolve(true)),
+  },
+}));
+
+vi.mock("../../../src/comparison-runs/database", () => ({
+  comparisonRunDatabase: {},
+}));
+
+vi.mock("../../../src/memory/entity-memory", () => ({
+  entityMemory: {},
+}));
+
+vi.mock("../../../src/context-engine/entity-claims-injector", () => ({
+  extractEntityIds: vi.fn(() => []),
+}));
+
 async function buildApp() {
   const app = Fastify({ logger: false });
   const { chatRoutes } = await import("../../../src/routes/chat");

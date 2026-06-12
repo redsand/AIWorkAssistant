@@ -127,6 +127,26 @@ describe("createBudget", () => {
     // History slot should get the extra allocation
     expect(budget.remainingTokens).toBeGreaterThanOrEqual(0);
   });
+
+  it("should leave remaining tokens when no overflow slots exist", () => {
+    const budget = createBudget([
+      { name: "system", priority: 100, fraction: 0.1, overflowTarget: null },
+    ], 10000, 0);
+
+    expect(budget.remainingTokens).toBeGreaterThan(0);
+    expect(budget.slots[0].allocatedTokens).toBe(budget.slots[0].maxTokens);
+  });
+
+  it("should check document overflow when history slot is absent", () => {
+    const budget = createBudget([
+      { name: "system", priority: 100, fraction: 0.1, overflowTarget: null },
+      { name: "documents", priority: 60, fraction: 0.1, overflowTarget: null },
+    ], 10000, 0);
+
+    expect(budget.remainingTokens).toBeGreaterThan(0);
+    expect(budget.slots.find((slot) => slot.name === "documents")?.allocatedTokens)
+      .toBe(budget.slots.find((slot) => slot.name === "documents")?.maxTokens);
+  });
 });
 
 // ── estimateTokens ────────────────────────────────────────────────────────

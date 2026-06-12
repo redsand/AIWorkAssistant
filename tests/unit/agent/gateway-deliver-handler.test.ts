@@ -5,13 +5,23 @@ const { mockSend } = vi.hoisted(() => ({
   mockSend: vi.fn<() => Promise<DeliveryResult>>(),
 }));
 
+vi.mock("../../../src/config/env", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/config/env")>();
+  return {
+    env: {
+      ...actual.env,
+      GATEWAY_ENABLED: true,
+    },
+  };
+});
+
 vi.mock("../../../src/integrations/gateway/gateway-engine", () => ({
   gatewayEngine: {
     send: mockSend,
   },
 }));
 
-import { dispatchToolCall } from "../../../src/agent/tool-dispatcher";
+import { _resetGatewayRateLimits, dispatchToolCall } from "../../../src/agent/tool-dispatcher";
 
 function successResult(overrides?: Partial<DeliveryResult>): DeliveryResult {
   return {
@@ -26,6 +36,7 @@ function successResult(overrides?: Partial<DeliveryResult>): DeliveryResult {
 
 describe("gateway.deliver tool handler", () => {
   beforeEach(() => {
+    _resetGatewayRateLimits();
     mockSend.mockReset();
   });
 
@@ -204,6 +215,7 @@ describe("gateway.deliver tool handler", () => {
 
 describe("gateway.deliver rate limiting", () => {
   beforeEach(() => {
+    _resetGatewayRateLimits();
     mockSend.mockReset();
     mockSend.mockResolvedValue(successResult());
   });

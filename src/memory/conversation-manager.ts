@@ -178,6 +178,7 @@ export class ConversationManager {
     mode: "productivity" | "engineering",
     metadata?: Record<string, unknown>,
   ): string {
+    const profileId = (metadata?.profileId as string) || "default";
     const sessionId = uuidv4();
 
     const session: ConversationSession = {
@@ -192,7 +193,10 @@ export class ConversationManager {
           (metadata?.title as string) ||
           `Session ${new Date().toLocaleDateString()}`,
         tags: (metadata?.tags as string[]) || [],
-        context: (metadata?.context as Record<string, unknown>) || {},
+        context: {
+          ...(metadata?.context as Record<string, unknown>) || {},
+          profileId,
+        },
       },
     };
 
