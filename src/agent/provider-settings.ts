@@ -275,13 +275,18 @@ export const providerSettings = {
     models: ProviderModelCacheEntry;
   }> {
     const models = await this.getModels(provider);
-    const selectedModel =
-      model || models.models[0] || defaultModelForProvider(provider);
-    if (model && models.models.length > 0 && !models.models.includes(model)) {
+    const normalizedModel = model?.toLowerCase();
+    const normalizedList = models.models.map((m) => m.toLowerCase());
+    const matchIdx = normalizedModel ? normalizedList.indexOf(normalizedModel) : -1;
+    if (normalizedModel && models.models.length > 0 && matchIdx === -1) {
       throw new Error(
         `Model '${model}' is not available for provider '${provider}'`,
       );
     }
+    const selectedModel =
+      (matchIdx >= 0 ? models.models[matchIdx] : undefined) ||
+      models.models[0] ||
+      defaultModelForProvider(provider);
 
     process.env.AI_PROVIDER = provider;
     process.env[modelEnvKey(provider)] = selectedModel;
