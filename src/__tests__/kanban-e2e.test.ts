@@ -80,6 +80,13 @@ vi.mock('../autonomous-loop/agent-runner', () => ({
   runAgent: vi.fn(),
 }));
 
+vi.mock('../routes/autonomous-loop', () => ({
+  makeBranchName: (num: number, title: string) => {
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+    return `ai/issue-${num}-${slug}`;
+  },
+}));
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const REPO_DIR_NAME = `kanban-e2e-${process.pid}`;

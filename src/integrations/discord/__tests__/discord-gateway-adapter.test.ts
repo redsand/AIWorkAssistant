@@ -1,6 +1,31 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { DiscordGatewayAdapter } from "../discord-gateway-adapter";
 import type { IncomingMessage } from "../../gateway/platform-adapter";
+
+vi.mock("discord.js", () => {
+  const mockClient = {
+    on: vi.fn(),
+    login: vi.fn(() => Promise.reject(new Error("Invalid token"))),
+    destroy: vi.fn(),
+    user: null,
+    users: { fetch: vi.fn() },
+    channels: { fetch: vi.fn() },
+  };
+  return {
+    Client: vi.fn(() => mockClient),
+    GatewayIntentBits: {
+      Guilds: 1,
+      GuildMessages: 2,
+      MessageContent: 4,
+      DirectMessages: 8,
+      DirectMessageReactions: 16,
+    },
+    Partials: {
+      Channel: 1,
+      Message: 2,
+    },
+  };
+});
 
 describe("DiscordGatewayAdapter", () => {
   let adapter: DiscordGatewayAdapter;
