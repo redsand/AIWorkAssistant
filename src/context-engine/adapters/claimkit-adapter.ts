@@ -81,6 +81,12 @@ function isAssertionSupported(assertion: string, evidenceText: string): boolean 
   return matched / uniqueTokens.length >= MIN_SUPPORT_TOKEN_OVERLAP;
 }
 
+export interface ConfidenceTrace {
+  source: string;
+  stages?: Record<string, number>;
+  [key: string]: unknown;
+}
+
 export interface ClaimKitQueryResult {
   answer: string;
   citations: Array<{ claimId: string; sourceId: string; text: string }>;
@@ -94,7 +100,7 @@ export interface ClaimKitQueryResult {
     processingTimeMs: number;
     retrievalScore: number;
   };
-  confidenceTrace?: unknown;
+  confidenceTrace?: ConfidenceTrace;
 }
 
 export class ClaimKitAdapter {
@@ -240,9 +246,16 @@ export class ClaimKitAdapter {
             topK: env.CLAIMKIT_TOP_K,
             minScore: env.CLAIMKIT_MIN_SCORE,
             maxEvidenceItems: env.CLAIMKIT_MAX_EVIDENCE_ITEMS,
+            usePlannerLLM: !env.CLAIMKIT_DISABLE_PLANNER_LLM,
+          },
+          verification: {
+            skipLLM: env.CLAIMKIT_DISABLE_VERIFIER_LLM,
+          },
+          contradiction: {
+            useLLM: !env.CLAIMKIT_DISABLE_CONTRADICTION_LLM,
           },
         },
-      });
+      } as ConstructorParameters<typeof ClaimKit>[0]);
       this.initialized = true;
       console.log(
         `[ClaimKit] Initialized — embeddings: ${settledProvider.provider}/${settledProvider.model} (${actualDimensions}d)`,
@@ -310,7 +323,7 @@ export class ClaimKitAdapter {
         })),
       ],
       confidence: verifiedGraph.length > 0
-        ? Math.max(result.confidence, ...verifiedGraph.map((verification) => verification.confidence))
+        ? this.blendConfidence(result.confidence, verifiedGraph)
         : result.confidence,
       contradictions: result.contradictions.map((c) => ({
         claimA: c.claimText1,
@@ -349,7 +362,7 @@ export class ClaimKitAdapter {
         if (match) {
           return {
             verified: true,
-            confidence: 1.0,
+            confidence: 0.85,
             trustTier: "curated",
             evidence: `Graph edge: ${sourceNode.title} -[${match.type}]-> ${targetNode.title}`,
             source: "knowledge-graph",
@@ -486,11 +499,18 @@ export class ClaimKitAdapter {
   private relationshipResult(sourceNode: KGNode, targetNode: KGNode, edgeType: KGEdgeType): VerificationResult {
     return {
       verified: true,
-      confidence: 1.0,
+      confidence: 0.85,
       trustTier: "curated",
       evidence: `Graph edge: ${sourceNode.title} -[${edgeType}]-> ${targetNode.title}`,
       source: "knowledge-graph",
     };
+  }
+
+  private blendConfidence(ckConfidence: number, verifications: Array<VerificationResult & { evidence: string }>): number {
+    const ckWeight = 0.7;
+    const graphWeight = 0.3;
+    const avgGraphConfidence = verifications.reduce((sum, v) => sum + v.confidence, 0) / verifications.length;
+    return Math.min(1, ckWeight * ckConfidence + graphWeight * avgGraphConfidence);
   }
 
   private cleanRelationshipTerm(value: string): string {

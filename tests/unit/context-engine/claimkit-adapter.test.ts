@@ -68,6 +68,9 @@ vi.doMock("../../../src/config/env", () => ({
     CLAIMKIT_TOP_K: 10,
     CLAIMKIT_MIN_SCORE: 0.0,
     CLAIMKIT_MAX_EVIDENCE_ITEMS: 20,
+    CLAIMKIT_DISABLE_PLANNER_LLM: false,
+    CLAIMKIT_DISABLE_VERIFIER_LLM: false,
+    CLAIMKIT_DISABLE_CONTRADICTION_LLM: false,
   },
 }));
 
@@ -128,6 +131,9 @@ describe("ClaimKitAdapter", () => {
         CLAIMKIT_TOP_K: 10,
         CLAIMKIT_MIN_SCORE: 0.0,
         CLAIMKIT_MAX_EVIDENCE_ITEMS: 20,
+        CLAIMKIT_DISABLE_PLANNER_LLM: false,
+        CLAIMKIT_DISABLE_VERIFIER_LLM: false,
+        CLAIMKIT_DISABLE_CONTRADICTION_LLM: false,
       },
     }));
     vi.resetModules();
@@ -154,6 +160,9 @@ describe("ClaimKitAdapter", () => {
           CLAIMKIT_TOP_K: 10,
           CLAIMKIT_MIN_SCORE: 0.0,
           CLAIMKIT_MAX_EVIDENCE_ITEMS: 20,
+          CLAIMKIT_DISABLE_PLANNER_LLM: false,
+          CLAIMKIT_DISABLE_VERIFIER_LLM: false,
+          CLAIMKIT_DISABLE_CONTRADICTION_LLM: false,
         },
       }));
       vi.resetModules();
@@ -216,6 +225,9 @@ describe("ClaimKitAdapter", () => {
           CLAIMKIT_TOP_K: 10,
           CLAIMKIT_MIN_SCORE: 0.0,
           CLAIMKIT_MAX_EVIDENCE_ITEMS: 20,
+          CLAIMKIT_DISABLE_PLANNER_LLM: false,
+          CLAIMKIT_DISABLE_VERIFIER_LLM: false,
+          CLAIMKIT_DISABLE_CONTRADICTION_LLM: false,
         },
       }));
       vi.resetModules();
@@ -237,6 +249,9 @@ describe("ClaimKitAdapter", () => {
           CLAIMKIT_TOP_K: 10,
           CLAIMKIT_MIN_SCORE: 0.0,
           CLAIMKIT_MAX_EVIDENCE_ITEMS: 20,
+          CLAIMKIT_DISABLE_PLANNER_LLM: false,
+          CLAIMKIT_DISABLE_VERIFIER_LLM: false,
+          CLAIMKIT_DISABLE_CONTRADICTION_LLM: false,
         },
       }));
       vi.resetModules();
@@ -403,7 +418,8 @@ describe("ClaimKitAdapter", () => {
           text: "Graph edge: API Gateway -[depends_on]-> Auth Service",
         },
       ]);
-      expect(result.confidence).toBe(1);
+      // Blended: 0.7 * 0.4 (ck) + 0.3 * 0.85 (graph) = 0.535
+      expect(result.confidence).toBeCloseTo(0.535, 2);
       expect(result.metadata.sourceIds).toEqual(["s1", "knowledge-graph"]);
       expect(result.metadata.claimCount).toBe(3);
       expect(result.confidenceTrace).toEqual({ source: "claimkit" });
@@ -451,7 +467,8 @@ describe("ClaimKitAdapter", () => {
           text: "Graph edge: API Gateway -[depends_on]-> Auth Service",
         },
       ]);
-      expect(result.confidence).toBe(1);
+      // Blended: 0.7 * 0.2 (ck) + 0.3 * 0.85 (graph) = 0.395
+      expect(result.confidence).toBeCloseTo(0.395, 2);
       expect(result.metadata.sourceIds).toEqual(["knowledge-graph"]);
       expect(result.metadata.claimCount).toBe(1);
       expect(mockGetEdgesForNode).toHaveBeenCalledWith("target-1", "incoming");
@@ -524,7 +541,7 @@ describe("ClaimKitAdapter", () => {
 
       expect(result).toEqual({
         verified: true,
-        confidence: 1,
+        confidence: 0.85,
         trustTier: "curated",
         evidence: "Graph edge: API Gateway -[depends_on]-> Auth Service",
         source: "knowledge-graph",
@@ -772,7 +789,7 @@ describe("ClaimKitAdapter", () => {
       const result = await adapter.verifyRelationship("Service Alpha", "Service Beta", "depends_on");
 
       expect(result.verified).toBe(true);
-      expect(result.confidence).toBe(1);
+      expect(result.confidence).toBe(0.85);
       expect(result.trustTier).toBe("curated");
       expect(result.evidence).toBe("Graph edge: Service Alpha -[depends_on]-> Service Beta");
       expect(result.source).toBe("knowledge-graph");
@@ -849,6 +866,374 @@ describe("ClaimKitAdapter", () => {
 
       expect(result.verified).toBe(true);
       expect(result.evidence).toBe("Graph edge: Service Alpha v2 -[implements]-> Service Beta v1");
+    });
+  });
+
+  describe("splitAssertions", () => {
+    it("should split on period followed by whitespace", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({
+        text: "First assertion. Second assertion. Third assertion.",
+        evidence: [{ title: "Doc", content: "First assertion. Second assertion. Third assertion." }],
+      });
+
+      expect(result.sentenceResults).toHaveLength(3);
+      expect(result.sentenceResults.map((s) => s.text)).toEqual([
+        "First assertion.",
+        "Second assertion.",
+        "Third assertion.",
+      ]);
+    });
+
+    it("should split on exclamation mark followed by whitespace", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({
+        text: "Alert triggered! System recovered!",
+        evidence: [{ title: "Doc", content: "Alert triggered! System recovered!" }],
+      });
+
+      expect(result.sentenceResults).toHaveLength(2);
+    });
+
+    it("should split on question mark followed by whitespace", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({
+        text: "Is this valid? Yes it is.",
+        evidence: [{ title: "Doc", content: "Is this valid? Yes it is." }],
+      });
+
+      expect(result.sentenceResults).toHaveLength(2);
+    });
+
+    it("should split on newlines", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({
+        text: "Line one assertion\nLine two assertion\nLine three assertion",
+        evidence: [{ title: "Doc", content: "Line one assertion\nLine two assertion\nLine three assertion" }],
+      });
+
+      expect(result.sentenceResults).toHaveLength(3);
+    });
+
+    it("should trim whitespace from split assertions", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({
+        text: "  First.  \n  Second.  ",
+        evidence: [{ title: "Doc", content: "First. Second." }],
+      });
+
+      expect(result.sentenceResults[0].text).toBe("First.");
+      expect(result.sentenceResults[1].text).toBe("Second.");
+    });
+
+    it("should filter out empty assertions", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({
+        text: "Valid assertion.\n\n\nAnother valid assertion.",
+        evidence: [{ title: "Doc", content: "Valid assertion. Another valid assertion." }],
+      });
+
+      expect(result.sentenceResults).toHaveLength(2);
+    });
+
+    it("should handle single assertion without sentence-ending punctuation", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({
+        text: "This is a single claim without punctuation",
+        evidence: [{ title: "Doc", content: "This is a single claim without punctuation" }],
+      });
+
+      expect(result.sentenceResults).toHaveLength(1);
+      expect(result.sentenceResults[0].text).toBe("This is a single claim without punctuation");
+    });
+  });
+
+  describe("ground edge cases", () => {
+    it("should return grounded=true for empty string text", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({ text: "", evidence: [] });
+
+      expect(result).toEqual({
+        grounded: true,
+        hallucinationRate: 0,
+        supportedAssertionCount: 0,
+        unsupportedAssertionCount: 0,
+        unsupportedPhrases: [],
+        sentenceResults: [],
+      });
+    });
+
+    it("should return grounded=true for whitespace-only text", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({ text: "   \t  \n  ", evidence: [] });
+
+      expect(result.grounded).toBe(true);
+      expect(result.sentenceResults).toHaveLength(0);
+    });
+
+    it("should handle single-character text gracefully", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({ text: "x", evidence: [] });
+
+      // Single char "x" has no tokens >2 chars, so assertionTokens returns []
+      // isAssertionSupported treats < MIN_ASSERTION_TOKENS as exact match
+      expect(result.sentenceResults).toHaveLength(1);
+      expect(result.sentenceResults[0].supported).toBe(false);
+    });
+
+    it("should handle text with only punctuation", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({ text: "!!! ??? ...", evidence: [] });
+
+      // Split by whitespace after "?": "!!!" and "???" and "..."
+      expect(result.sentenceResults.length).toBeGreaterThanOrEqual(1);
+      for (const sr of result.sentenceResults) {
+        expect(sr.supported).toBe(false);
+      }
+    });
+
+    it("should use preExtractedClaims via text field first", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({
+        text: "Claim alpha is supported.",
+        evidence: [],
+        preExtractedClaims: [{ text: "Claim alpha is supported" }],
+      });
+
+      expect(result.sentenceResults[0].supported).toBe(true);
+    });
+
+    it("should fall back to claimText when text is not present", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({
+        text: "Claim beta verified.",
+        evidence: [],
+        preExtractedClaims: [{ claimText: "Claim beta verified" }],
+      });
+
+      expect(result.sentenceResults[0].supported).toBe(true);
+    });
+
+    it("should compose subject/predicate/object when neither text nor claimText exist", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({
+        text: "Gateway depends on Service.",
+        evidence: [],
+        preExtractedClaims: [{ subject: "Gateway", predicate: "depends on", object: "Service" }],
+      });
+
+      // The composed string "Gateway depends on Service" becomes evidence
+      expect(result.sentenceResults[0].supported).toBe(true);
+    });
+
+    it("should calculate hallucinationRate correctly for mixed results", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({
+        text: "Supported claim here. Unsupported fabrication here.",
+        evidence: [{ title: "Doc", content: "Supported claim here." }],
+      });
+
+      expect(result.hallucinationRate).toBeCloseTo(0.5, 5);
+      expect(result.supportedAssertionCount).toBe(1);
+      expect(result.unsupportedAssertionCount).toBe(1);
+      expect(result.unsupportedPhrases).toEqual(["Unsupported fabrication here."]);
+    });
+
+    it("should handle evidence title concatenated with content", async () => {
+      await adapter.initialize();
+
+      const result = await adapter.ground({
+        text: "The system handles authentication correctly.",
+        evidence: [{ title: "System Auth", content: "handles authentication correctly" }],
+      });
+
+      // Title "System Auth" + content "handles authentication correctly" both contribute tokens
+      expect(result.sentenceResults[0].supported).toBe(true);
+    });
+  });
+
+  describe("isAssertionSupported boundary behavior", () => {
+    beforeEach(async () => {
+      await adapter.initialize();
+    });
+
+    it("should support assertion at exactly 60% token overlap (boundary inclusive)", async () => {
+      // Tokens >2 chars: "authentication"(14), "gateway"(7), "handles"(7), "validation"(10), "securely"(8) = 5 unique
+      // Evidence has: authentication, gateway, handles = 3 matched -> 3/5 = 0.6 exactly
+      const result = await adapter.ground({
+        text: "Authentication gateway handles validation securely.",
+        evidence: [{ title: "Partial", content: "Authentication gateway handles various operations." }],
+      });
+
+      expect(result.sentenceResults[0].supported).toBe(true);
+    });
+
+    it("should NOT support assertion at just below 60% token overlap", async () => {
+      // Tokens >2 chars: "authentication"(14), "gateway"(7), "handles"(7), "validation"(10), "encryption"(10), "securely"(8) = 6 unique
+      // Evidence has: authentication, gateway, handles = 3 matched -> 3/6 = 0.5 < 0.6
+      const result = await adapter.ground({
+        text: "Authentication gateway handles validation encryption securely.",
+        evidence: [{ title: "Partial", content: "Authentication gateway handles various operations." }],
+      });
+
+      expect(result.sentenceResults[0].supported).toBe(false);
+    });
+
+    it("should support assertion above 60% token overlap", async () => {
+      // Tokens >2 chars: "authentication"(14), "gateway"(7), "handles"(7), "validation"(10) = 4 unique
+      // Evidence has: authentication, gateway, handles = 3 matched -> 3/4 = 0.75 > 0.6
+      const result = await adapter.ground({
+        text: "Authentication gateway handles validation.",
+        evidence: [{ title: "Doc", content: "Authentication gateway handles various operations." }],
+      });
+
+      expect(result.sentenceResults[0].supported).toBe(true);
+    });
+
+    it("should use exact substring match for short assertions (<3 meaningful tokens)", async () => {
+      const result = await adapter.ground({
+        text: "OK.",
+        evidence: [{ title: "Doc", content: "Status: OK. All tests passing." }],
+      });
+
+      expect(result.sentenceResults[0].supported).toBe(true);
+    });
+
+    it("should reject short assertions not found as exact substring", async () => {
+      const result = await adapter.ground({
+        text: "Fail.",
+        evidence: [{ title: "Doc", content: "Status: OK. All tests passing." }],
+      });
+
+      expect(result.sentenceResults[0].supported).toBe(false);
+    });
+
+    it("should handle duplicate tokens correctly by deduplicating before overlap check", async () => {
+      // "the the the authentication gateway" -> tokens >2: the(3), the(3), the(3), authentication(14), gateway(7)
+      // Unique: the, authentication, gateway = 3 unique
+      // Evidence has: authentication, gateway = 2/3 = 0.667 > 0.6
+      const result = await adapter.ground({
+        text: "The the the authentication gateway system.",
+        evidence: [{ title: "Doc", content: "Authentication gateway implementation details." }],
+      });
+
+      expect(result.sentenceResults[0].supported).toBe(true);
+    });
+
+    it("should filter tokens shorter than 3 characters", async () => {
+      // "It is a test" -> tokens >2: test(4) = 1 unique token
+      // That's < MIN_ASSERTION_TOKENS (3), so falls back to exact match
+      const result = await adapter.ground({
+        text: "It is a test.",
+        evidence: [{ title: "Doc", content: "It is a test." }],
+      });
+
+      expect(result.sentenceResults[0].supported).toBe(true);
+    });
+
+    it("should handle boundary with exactly MIN_ASSERTION_TOKENS (3) tokens", async () => {
+      // "database migration schema" -> tokens >2: database, migration, schema = 3 unique (exactly MIN_ASSERTION_TOKENS)
+      // Evidence has: database, migration = 2/3 = 0.667 > 0.6
+      const result = await adapter.ground({
+        text: "Database migration schema.",
+        evidence: [{ title: "Doc", content: "Database migration operations." }],
+      });
+
+      expect(result.sentenceResults[0].supported).toBe(true);
+    });
+
+    it("should reject at exactly 2/5 = 0.4 overlap (well below threshold)", async () => {
+      // 5 unique tokens, only 2 matched
+      const result = await adapter.ground({
+        text: "Authentication gateway handles validation encryption securely.",
+        evidence: [{ title: "Doc", content: "Authentication gateway completely different topic here." }],
+      });
+
+      expect(result.sentenceResults[0].supported).toBe(false);
+    });
+  });
+
+  describe("confidence blending", () => {
+    const mockAnswerResult = {
+      answer: "The answer is 42.",
+      citations: [{ claimId: "c1", sourceId: "s1", evidenceText: "evidence" }],
+      confidence: 0.95,
+      contradictions: [{ claimText1: "a", claimText2: "b", explanation: "conflict" }],
+      missingEvidence: ["missing piece"],
+      packet: { answerability: { status: "answerable" } },
+      metadata: {
+        sourceIds: ["s1"],
+        claimCount: 5,
+        processingTimeMs: 100,
+        retrievalScore: 0.9,
+      },
+    };
+
+    it("should use weighted blend (0.7 ck + 0.3 graph) when graph evidence is found", async () => {
+      mockClaimKitInstance.query.mockResolvedValueOnce({
+        ...mockAnswerResult,
+        citations: [],
+        confidence: 0.5,
+        metadata: { ...mockAnswerResult.metadata, sourceIds: ["s1"], claimCount: 2 },
+      });
+      mockQueryNodes
+        .mockReturnValueOnce([{ id: "source-1", title: "API Gateway" }])
+        .mockReturnValueOnce([{ id: "target-1", title: "Auth Service" }]);
+      mockGetEdgesForNode.mockReturnValueOnce([
+        { id: "edge-1", sourceId: "source-1", targetId: "target-1", type: "depends_on", createdAt: new Date() },
+      ]);
+      await adapter.initialize();
+
+      const result = await adapter.query("Does the API Gateway depend on the Auth Service?");
+
+      // 0.7 * 0.5 + 0.3 * 0.85 = 0.35 + 0.255 = 0.605
+      expect(result.confidence).toBeCloseTo(0.605, 2);
+    });
+
+    it("should cap blended confidence at 1.0", async () => {
+      mockClaimKitInstance.query.mockResolvedValueOnce({
+        ...mockAnswerResult,
+        citations: [],
+        confidence: 1.0,
+        metadata: { ...mockAnswerResult.metadata, sourceIds: ["s1"], claimCount: 2 },
+      });
+      mockQueryNodes
+        .mockReturnValueOnce([{ id: "source-1", title: "API Gateway" }])
+        .mockReturnValueOnce([{ id: "target-1", title: "Auth Service" }]);
+      mockGetEdgesForNode.mockReturnValueOnce([
+        { id: "edge-1", sourceId: "source-1", targetId: "target-1", type: "depends_on", createdAt: new Date() },
+      ]);
+      await adapter.initialize();
+
+      const result = await adapter.query("Does the API Gateway depend on the Auth Service?");
+
+      // 0.7 * 1.0 + 0.3 * 0.85 = 0.7 + 0.255 = 0.955
+      expect(result.confidence).toBeCloseTo(0.955, 2);
+      expect(result.confidence).toBeLessThanOrEqual(1.0);
+    });
+
+    it("should not boost confidence when no graph verifications are found", async () => {
+      mockClaimKitInstance.query.mockResolvedValueOnce(mockAnswerResult);
+      await adapter.initialize();
+
+      const result = await adapter.query("What is the meaning of life?");
+
+      expect(result.confidence).toBe(0.95);
     });
   });
 });
