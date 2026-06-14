@@ -27,6 +27,7 @@ function bindEvents() {
   document.getElementById("add-case-btn").addEventListener("click", openAddCaseModal);
   document.getElementById("add-case-cancel").addEventListener("click", closeAddCaseModal);
   document.getElementById("add-case-save").addEventListener("click", saveNewCase);
+  document.querySelector("#add-case-modal .modal-backdrop").addEventListener("click", closeAddCaseModal);
   document.getElementById("run-all-btn").addEventListener("click", runAllUnrun);
   document
     .getElementById("segment-filter")

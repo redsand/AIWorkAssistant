@@ -343,6 +343,83 @@ async function initializeProviderControls(refreshHealth = true) {
   if (refreshHealth) await updateProviderHealth();
 }
 
+function fmtTokens(n) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return `${n}`;
+}
+
+function updateTokenUsageDisplay(sessionTokens, balanceData) {
+  const widget = document.getElementById("tokenUsageWidget");
+  const labelEl = document.getElementById("tokenUsageLabel");
+  const fillEl = document.getElementById("tokenUsageFill");
+  if (!widget || !labelEl || !fillEl) return;
+
+  const provider = balanceData?.provider ?? null;
+  const hasData = provider != null || sessionTokens > 0;
+  if (!hasData) {
+    widget.style.display = "none";
+    return;
+  }
+
+  const budget = balanceData?.budget ?? 0;
+  const remaining = balanceData?.remaining ?? null;
+  const lifetime = balanceData?.lifetime ?? null;
+
+  let label, fillPct, fillClass;
+
+  if (budget > 0 && remaining != null) {
+    // Budget-aware: bar shows remaining capacity (high = good, low = bad)
+    const pct = Math.max(0, Math.min(100, Math.round((remaining / budget) * 100)));
+    label = `${fmtTokens(remaining)} / ${fmtTokens(budget)} remaining (${pct}%)`;
+    fillPct = pct;
+    fillClass = pct < 10 ? "danger" : pct < 30 ? "warning" : "";
+  } else {
+    // No budget: show session consumption, bar shows lifetime usage vs soft cap
+    const lifetimeTotal = lifetime?.totalTokens ?? 0;
+    const sessionLabel = sessionTokens > 0 ? `${fmtTokens(sessionTokens)} tokens` : "0 tokens";
+    label = provider ? `${sessionLabel} · ${provider}` : sessionLabel;
+    // Consumption bar: fills as lifetime usage grows; soft cap at 500K for visual scale
+    const softCap = 500_000;
+    fillPct = lifetimeTotal > 0 ? Math.min(100, Math.round((lifetimeTotal / softCap) * 100)) : 0;
+    fillClass = fillPct > 90 ? "danger" : fillPct > 70 ? "warning" : "";
+  }
+
+  labelEl.textContent = label;
+  fillEl.style.width = `${fillPct}%`;
+  fillEl.className = `token-usage-fill${fillClass ? " " + fillClass : ""}`;
+
+  // Tooltip with breakdown
+  const tipParts = [];
+  if (sessionTokens > 0) tipParts.push(`Session: ${sessionTokens.toLocaleString()}`);
+  if (lifetime?.promptTokens > 0) tipParts.push(`Prompt: ${lifetime.promptTokens.toLocaleString()}`);
+  if (lifetime?.completionTokens > 0) tipParts.push(`Completion: ${lifetime.completionTokens.toLocaleString()}`);
+  if (lifetime?.totalTokens > 0) tipParts.push(`Lifetime total: ${lifetime.totalTokens.toLocaleString()}`);
+  if (balanceData?.model) tipParts.push(`Model: ${balanceData.model}`);
+  widget.title = tipParts.join("\n") || provider || "";
+
+  widget.style.display = "flex";
+}
+
+async function fetchTokenUsage() {
+  try {
+    const balanceRes = await fetch(`${API_BASE}/chat/balance`, { headers: authHeaders() });
+    const balance = balanceRes.ok ? await balanceRes.json() : null;
+
+    if (currentSessionId) {
+      const usageRes = await fetch(`${API_BASE}/chat/usage?sessionId=${encodeURIComponent(currentSessionId)}`, { headers: authHeaders() });
+      const usage = usageRes.ok ? await usageRes.json() : null;
+      updateTokenUsageDisplay(usage?.totalTokens ?? 0, balance);
+    } else {
+      updateTokenUsageDisplay(0, balance);
+    }
+  } catch {}
+}
+
+// Fetch immediately so provider info shows even before first message
+fetchTokenUsage();
+setInterval(fetchTokenUsage, 10_000);
+
 async function updateProviderHealth() {
   const response = await fetch(`${API_BASE}/chat/health`, {
     headers: authHeaders(),
@@ -477,6 +554,7 @@ export async function clearChat() {
     activeStreamController.abort();
     setActiveStreamController(null);
   }
+  updateTokenUsageDisplay(0, null);
 
   try {
     await fetch(`${API_BASE}/chat/sessions/${currentSessionId}`, {
@@ -593,6 +671,7 @@ async function executeSend(message, { resend = false } = {}) {
 
     const result = await handleStreamResponse(response, progressElRef);
     setActiveStreamController(null);
+    fetchTokenUsage();
 
     finalizeToolProgress();
     document.getElementById("processingIndicator")?.classList.remove("active");

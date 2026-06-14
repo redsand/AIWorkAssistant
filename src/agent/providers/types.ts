@@ -79,7 +79,8 @@ export interface ProviderCapabilities {
 
 export type StreamEvent =
   | { type: "thinking"; content: string }
-  | { type: "tool_calls"; toolCalls: ToolCall[] };
+  | { type: "tool_calls"; toolCalls: ToolCall[] }
+  | { type: "usage"; usage: { promptTokens: number; completionTokens: number; totalTokens: number } };
 
 export type OpenCodeConfig = ProviderConfig;
 

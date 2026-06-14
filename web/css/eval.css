@@ -412,16 +412,20 @@
 .modal {
   position: fixed;
   inset: 0;
-  display: flex;
   align-items: center;
   justify-content: center;
   z-index: 100;
+}
+
+.modal:not([hidden]) {
+  display: flex;
 }
 
 .modal-backdrop {
   position: absolute;
   inset: 0;
   background: rgba(0, 0, 0, 0.4);
+  cursor: pointer;
 }
 
 .modal-body {

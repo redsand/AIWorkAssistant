@@ -43,6 +43,45 @@
   color: #666;
 }
 
+.token-usage-widget {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 130px;
+  max-width: 190px;
+  cursor: default;
+}
+
+.token-usage-label {
+  font-size: 11px;
+  color: #888;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.token-usage-track {
+  height: 4px;
+  background: #e5e7eb;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.token-usage-fill {
+  height: 100%;
+  background: #4ade80;
+  border-radius: 2px;
+  transition: width 0.5s ease, background-color 0.5s ease;
+}
+
+.token-usage-fill.warning {
+  background: #fbbf24;
+}
+
+.token-usage-fill.danger {
+  background: #f87171;
+}
+
 .logout-btn {
   padding: 6px 16px;
   background: transparent;

@@ -66,6 +66,12 @@
         <div class="status">
           <div class="status-indicator"></div>
           <span class="status-text">Connecting...</span>
+          <div class="token-usage-widget" id="tokenUsageWidget" style="display:none;" title="">
+            <span class="token-usage-label" id="tokenUsageLabel">0 tokens</span>
+            <div class="token-usage-track">
+              <div class="token-usage-fill" id="tokenUsageFill" style="width:0%"></div>
+            </div>
+          </div>
           <div class="provider-controls" aria-label="AI provider and model selection">
             <select id="providerSelect" class="provider-select" title="AI Provider" disabled></select>
             <select id="modelSelect" class="provider-select model-select" title="AI Model" disabled></select>

@@ -453,6 +453,7 @@ export class ZaiProvider extends AIProvider {
 
         let lineBuffer = "";
         const toolCallAccumulator: ToolCall[] = [];
+        let streamUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | null = null;
         for await (const chunk of response.data) {
           lineBuffer += chunk.toString();
           const lines = lineBuffer.split("\n");
@@ -468,6 +469,14 @@ export class ZaiProvider extends AIProvider {
               const parsed = JSON.parse(data);
               const delta = parsed.choices[0]?.delta;
               const finishReason = parsed.choices[0]?.finish_reason;
+
+              if (parsed.usage?.prompt_tokens) {
+                streamUsage = {
+                  promptTokens: parsed.usage.prompt_tokens,
+                  completionTokens: parsed.usage.completion_tokens || 0,
+                  totalTokens: parsed.usage.total_tokens || 0,
+                };
+              }
 
               if (delta?.reasoning_content || delta?.thinking) {
                 yield `<<THINKING>>${delta.reasoning_content || delta.thinking}<<//THINKING>>`;
@@ -514,6 +523,9 @@ export class ZaiProvider extends AIProvider {
               continue;
             }
           }
+        }
+        if (streamUsage) {
+          yield { type: "usage" as const, usage: streamUsage };
         }
         return;
       } finally {

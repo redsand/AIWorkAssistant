@@ -248,6 +248,7 @@ export class OpenAIProvider extends AIProvider {
     await aiRequestLimiter.acquire();
     try {
       const requestBody = this.buildRequestBody({ ...request, stream: true });
+      (requestBody as any).stream_options = { include_usage: true };
       const toolNameMap = (requestBody as any)[kToolNameMap] as Map<string, string> | undefined;
 
       if (DEBUG) console.log("[OpenAI] Starting stream request");
@@ -302,6 +303,7 @@ export class OpenAIProvider extends AIProvider {
 
       let lineBuffer = "";
       const toolCallAccumulator: ToolCall[] = [];
+      let streamUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | null = null;
 
       for await (const chunk of response.data) {
         lineBuffer += chunk.toString();
@@ -317,6 +319,14 @@ export class OpenAIProvider extends AIProvider {
             const parsed = JSON.parse(data);
             const delta = parsed.choices[0]?.delta;
             const finishReason = parsed.choices[0]?.finish_reason;
+
+            if (parsed.usage?.prompt_tokens) {
+              streamUsage = {
+                promptTokens: parsed.usage.prompt_tokens,
+                completionTokens: parsed.usage.completion_tokens || 0,
+                totalTokens: parsed.usage.total_tokens || 0,
+              };
+            }
 
             if (delta?.content) {
               yield delta.content;
@@ -352,6 +362,9 @@ export class OpenAIProvider extends AIProvider {
         }
       }
 
+      if (streamUsage) {
+        yield { type: "usage" as const, usage: streamUsage };
+      }
       if (DEBUG) console.log("[OpenAI] Stream completed");
     } catch (error) {
       console.error("[OpenAI] Stream error:", error);

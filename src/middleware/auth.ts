@@ -30,6 +30,8 @@ const PUBLIC_PATHS = new Set([
   "/comparison",
   // Repository issue dashboard — HTML shell, data fetched via protected APIs
   "/dashboard",
+  // Calibration eval dashboard — local dev tool
+  "/eval",
 ]);
 
 const SESSION_TOKEN_BYTES = 32;
@@ -142,6 +144,10 @@ export async function authMiddleware(fastify: FastifyInstance) {
       }
 
       if (request.url.startsWith("/api/comparison")) {
+        return;
+      }
+
+      if (request.url.startsWith("/api/eval-calibration")) {
         return;
       }
 

@@ -346,6 +346,7 @@ export class OllamaProvider extends AIProvider {
       let lineBuffer = "";
       const toolCallAccumulator: ToolCall[] = [];
       let hasCompleteMessageToolCalls = false;
+      let streamUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | null = null;
       const emitToolCalls = function* (): Generator<StreamEvent> {
         if (toolCallAccumulator.length === 0) return;
         const mappedCalls = toolCallAccumulator.map((tc, index) => ({
@@ -412,6 +413,14 @@ export class OllamaProvider extends AIProvider {
               this.accumulateToolCallDeltas(streamedToolCalls, toolCallAccumulator);
             }
 
+            if (parsed.usage?.prompt_tokens) {
+              streamUsage = {
+                promptTokens: parsed.usage.prompt_tokens,
+                completionTokens: parsed.usage.completion_tokens || 0,
+                totalTokens: parsed.usage.total_tokens || 0,
+              };
+            }
+
             if (
               (finishReason === "tool_calls" ||
                 done ||
@@ -450,6 +459,9 @@ export class OllamaProvider extends AIProvider {
       }
       if (hasCompleteMessageToolCalls) yield* emitToolCalls();
 
+      if (streamUsage) {
+        yield { type: "usage" as const, usage: streamUsage };
+      }
       if (DEBUG) console.log("[Ollama API] Stream completed");
     } catch (error) {
       console.error("[Ollama API] Stream error:", error);

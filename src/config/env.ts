@@ -45,6 +45,8 @@ const envSchema = z.object({
   ZAI_TEMPERATURE: z.string().transform(Number).default("0.95"),
   ZAI_TOP_P: z.string().transform(Number).default("0.9"),
   ZAI_MAX_CONTEXT_TOKENS: z.coerce.number().default(200000),
+  // Known token budget for ZAI account (set to your plan's total tokens; 0 = unknown)
+  ZAI_TOKEN_BUDGET: z.coerce.number().default(0),
 
   // Ollama (local and cloud models)
   OLLAMA_API_URL: z.string().url().default("http://localhost:11434"),

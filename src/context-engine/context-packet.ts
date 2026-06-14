@@ -42,13 +42,32 @@ export interface RoutingDecision {
   routingReason: string;
 }
 
+const INSUFFICIENT_EVIDENCE_PATTERNS = [
+  "insufficient evidence to answer this question",
+  "the available evidence is insufficient",
+  "not enough evidence",
+  "no evidence available",
+  "evidence is insufficient",
+];
+
+function isInsufficientEvidenceAnswer(answer: string): boolean {
+  const normalized = answer.toLowerCase().trim();
+  return INSUFFICIENT_EVIDENCE_PATTERNS.some((p) => normalized.includes(p));
+}
+
 export function determineRoutingTier(ckResult: ClaimKitQueryResult | null, ckUnavailableReason?: string): RoutingDecision {
   if (!ckResult) {
     // CK did not produce an answer — routing falls back to RAG but this is NOT a quality win for RAG.
     return { tier: "rag_primary", preferredSource: "rag", overallWinner: "tie", routingReason: ckUnavailableReason ?? "ck_unavailable" };
   }
 
-  const { confidence, answerability } = ckResult;
+  const { confidence, answerability, answer } = ckResult;
+
+  // If CK returned a fallback "Insufficient evidence" string, it did not actually answer.
+  // Regardless of the retrieval-phase scores, route to RAG.
+  if (isInsufficientEvidenceAnswer(answer)) {
+    return { tier: "rag_primary", preferredSource: "rag", overallWinner: "rag", routingReason: "ck_no_answer" };
+  }
 
   // Align with comparison framework thresholds:
   // CK wins at > 0.5 with real evidence; RAG wins at < 0.3 or not answerable; blended in between.
@@ -460,6 +479,7 @@ export async function assembleContextPacket(
   if (env.CLAIMKIT_ENABLED) {
     const ragTokens = compressedDocs.reduce((s, d) => s + d.tokens, 0);
     const ckWins = claimKitResult &&
+      !isInsufficientEvidenceAnswer(claimKitResult.answer) &&
       claimKitResult.confidence > 0.15 &&
       (claimKitResult.answerability === "answerable" || claimKitResult.answerability === "partially-answerable");
     const winner = claimKitResult

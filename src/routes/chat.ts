@@ -175,6 +175,26 @@ const processingJobs = new Map<string, ProcessingJob>();
 // pre-expanded on subsequent requests instead of requiring a repeat tools.discover call.
 const sessionDiscoveredCategories = new Map<string, Set<string>>();
 
+interface SessionUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  messageCount: number;
+}
+const sessionUsageMap = new Map<string, SessionUsage>();
+
+// Lifetime totals since server start — keyed by provider name.
+// Reset on server restart; use ZAI_TOKEN_BUDGET to show remaining.
+const providerLifetimeUsage = new Map<string, { promptTokens: number; completionTokens: number; totalTokens: number }>();
+
+function recordProviderUsage(provider: string, usage: { promptTokens: number; completionTokens: number; totalTokens: number }) {
+  const entry = providerLifetimeUsage.get(provider) ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  entry.promptTokens += usage.promptTokens;
+  entry.completionTokens += usage.completionTokens;
+  entry.totalTokens += usage.totalTokens;
+  providerLifetimeUsage.set(provider, entry);
+}
+
 function buildCategoryToolDefs(mode: string, category: string) {
   return getToolsByCategory(mode, category).map((tool) => {
     const properties: Record<string, unknown> = {};
@@ -883,6 +903,14 @@ async function streamChatIteration(
       emitJobEvent(sessionId, "thinking", { thinking: event.content });
     } else if (event.type === "tool_calls") {
       toolCalls = event.toolCalls;
+    } else if (event.type === "usage") {
+      const entry = sessionUsageMap.get(sessionId) ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0, messageCount: 0 };
+      entry.promptTokens += event.usage.promptTokens;
+      entry.completionTokens += event.usage.completionTokens;
+      entry.totalTokens += event.usage.totalTokens;
+      entry.messageCount += 1;
+      sessionUsageMap.set(sessionId, entry);
+      recordProviderUsage(aiClient.providerName, event.usage);
     }
   }
 
@@ -2280,6 +2308,54 @@ export async function chatRoutes(fastify: FastifyInstance) {
         embeddingAvailable,
       },
     };
+  });
+
+  fastify.get("/chat/usage", async (request, reply) => {
+    const { sessionId } = request.query as { sessionId?: string };
+    if (!sessionId) return reply.code(400).send({ error: "sessionId required" });
+    const usage = sessionUsageMap.get(sessionId) ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0, messageCount: 0 };
+    return usage;
+  });
+
+  fastify.get("/chat/balance", async (_request, _reply) => {
+    const current = providerSettings.getCurrent();
+    const provider = current.provider;
+    const lifetime = providerLifetimeUsage.get(provider) ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
+    const result: Record<string, unknown> = {
+      provider,
+      model: current.model,
+      lifetime,
+    };
+
+    if (provider === "zai") {
+      const budget = env.ZAI_TOKEN_BUDGET;
+      result.budget = budget > 0 ? budget : null;
+      result.remaining = budget > 0 ? Math.max(0, budget - lifetime.totalTokens) : null;
+      result.balanceApi = "unavailable";
+      result.note = "Z.ai does not expose a public balance API. Configure ZAI_TOKEN_BUDGET to track remaining.";
+    } else if (provider === "ollama") {
+      result.budget = null;
+      result.remaining = null;
+      result.balanceApi = "local";
+      // Probe Ollama for running models
+      try {
+        const ollamaUrl = (process.env.OLLAMA_API_URL || env.OLLAMA_API_URL).replace(/\/$/, "");
+        const res = await fetch(`${ollamaUrl}/api/ps`);
+        if (res.ok) result.ollamaRunning = await res.json();
+      } catch {}
+    } else if (provider === "openai") {
+      result.budget = null;
+      result.remaining = null;
+      result.balanceApi = "unavailable";
+      result.note = "OpenAI billing API requires dashboard access; not queryable from here.";
+    } else {
+      result.budget = null;
+      result.remaining = null;
+      result.balanceApi = "unavailable";
+    }
+
+    return result;
   });
 
   fastify.get("/chat/providers", async (_request, _reply) => {

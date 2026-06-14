@@ -30,12 +30,12 @@ class OpenCodeClient {
     this.provider = getProvider();
   }
 
-  chat(request: ChatRequest): Promise<ChatResponse> {
+  async chat(request: ChatRequest): Promise<ChatResponse> {
     return this.provider.chat(request);
   }
 
-  chatStream(request: ChatRequest): AsyncGenerator<string | StreamEvent, void, unknown> {
-    return this.provider.chatStream(request);
+  async *chatStream(request: ChatRequest): AsyncGenerator<string | StreamEvent, void, unknown> {
+    yield* this.provider.chatStream(request);
   }
 
   isConfigured(): boolean {
