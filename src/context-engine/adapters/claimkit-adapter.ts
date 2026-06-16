@@ -81,11 +81,11 @@ function isAssertionSupported(assertion: string, evidenceText: string): boolean 
   return matched / uniqueTokens.length >= MIN_SUPPORT_TOKEN_OVERLAP;
 }
 
-export interface ConfidenceTrace {
-  source: string;
-  stages?: Record<string, number>;
-  [key: string]: unknown;
-}
+// ClaimKit's ConfidenceTrace is an internal telemetry object (claimCount,
+// avgClaimConfidence, penalties, stageTimings, etc.). We don't need to mirror
+// its evolving shape here; callers persist it as opaque JSON, so treat it as
+// unknown to stay compatible with whatever claimkit returns.
+export type ConfidenceTrace = unknown;
 
 export interface ClaimKitQueryResult {
   answer: string;
@@ -195,24 +195,34 @@ export class ClaimKitAdapter {
 
           // Detect and auto-repair vector dimension mismatch from a previous
           // embedding model. If stored dim differs, flush stale keys so the
-          // new model starts with a clean namespace.
+          // new model starts with a clean namespace. The flush runs in the
+          // background using SCAN + UNLINK to avoid blocking Redis.
           const metaKey = `${prefix}:meta:vector-dim`;
           const rc = client as unknown as {
             get(k: string): Promise<string | null>;
             set(k: string, v: string): Promise<unknown>;
-            keys(pattern: string): Promise<string[]>;
-            del(keys: string[]): Promise<number>;
+            scan(cursor: number, options: { MATCH: string; COUNT: number }): Promise<{ cursor: number; keys: string[] }>;
+            unlink(keys: string[]): Promise<number>;
           };
           const storedDim = await rc.get(metaKey);
-          if (storedDim !== null && parseInt(storedDim, 10) !== dim) {
+          if (
+            env.CLAIMKIT_REPAIR_ON_DIMENSION_MISMATCH &&
+            storedDim !== null &&
+            parseInt(storedDim, 10) !== dim
+          ) {
             console.warn(
-              `[ClaimKit] Dimension changed (${storedDim}d → ${dim}d) — flushing stale Redis keys for "${prefix}"...`,
+              `[ClaimKit] Dimension changed (${storedDim}d → ${dim}d) — flushing stale Redis keys for "${prefix}" in the background...`,
             );
-            const staleKeys = await rc.keys(`${prefix}:*`);
-            if (staleKeys.length > 0) await rc.del(staleKeys);
-            console.log(`[ClaimKit] Flushed ${staleKeys.length} stale key(s)`);
+            this.repairStaleKeys(rc, metaKey, prefix, dim).catch((err) => {
+              console.error(
+                `[ClaimKit] Background Redis repair failed: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            });
+          } else {
+            await rc.set(metaKey, String(dim));
           }
-          await rc.set(metaKey, String(dim));
 
           stores = createRedisStores({
             client,
@@ -267,6 +277,33 @@ export class ClaimKitAdapter {
     }
   }
 
+  private async repairStaleKeys(
+    rc: {
+      get(k: string): Promise<string | null>;
+      set(k: string, v: string): Promise<unknown>;
+      scan(cursor: number, options: { MATCH: string; COUNT: number }): Promise<{ cursor: number; keys: string[] }>;
+      unlink(keys: string[]): Promise<number>;
+    },
+    metaKey: string,
+    prefix: string,
+    dim: number,
+  ): Promise<void> {
+    let cursor = 0;
+    let total = 0;
+    const pattern = `${prefix}:*`;
+    do {
+      const reply = await rc.scan(cursor, { MATCH: pattern, COUNT: 100 });
+      cursor = reply.cursor;
+      if (reply.keys.length > 0) {
+        await rc.unlink(reply.keys);
+        total += reply.keys.length;
+      }
+    } while (cursor !== 0);
+
+    await rc.set(metaKey, String(dim));
+    console.log(`[ClaimKit] Flushed ${total} stale key(s) for "${prefix}"`);
+  }
+
   async close(): Promise<void> {
     if (this.redisClient) {
       await closeRedis(this.redisClient);
@@ -296,7 +333,7 @@ export class ClaimKitAdapter {
     return { sourceId: result.ingest.source.id };
   }
 
-  async query(question: string, options?: QueryOptions): Promise<ClaimKitQueryResult> {
+  async query(question: string, options?: QueryOptions & { signal?: AbortSignal }): Promise<ClaimKitQueryResult> {
     if (!this.claimKit) throw new Error("ClaimKit not initialized");
     const t0 = Date.now();
     const result = await this.claimKit.query(question, options);
@@ -331,7 +368,7 @@ export class ClaimKitAdapter {
         reason: c.explanation,
       })),
       missingEvidence: [...result.missingEvidence],
-      answerability: result.packet?.answerability?.status ?? "answerable",
+      answerability: result.packet?.answerability?.status ?? "not_answerable",
       metadata: {
         sourceIds: verifiedGraph.length > 0
           ? [...new Set([...result.metadata.sourceIds, "knowledge-graph"])]

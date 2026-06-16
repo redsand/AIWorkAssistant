@@ -171,32 +171,36 @@ describe("ClaimKitAdapter stores", () => {
     (env as any).CLAIMKIT_REDIS_URL = "";
   });
 
-  it("flushes stale Redis keys when stored vector dimension differs from current", async () => {
+  it("flushes stale Redis keys in the background when stored vector dimension differs from current", async () => {
     (env as any).CLAIMKIT_REDIS_URL = "redis://localhost:6379";
+    (env as any).CLAIMKIT_REPAIR_ON_DIMENSION_MISMATCH = true;
 
     const staleKeys = ["aiworkassistant:text-embedding-3-small:vec:1", "aiworkassistant:text-embedding-3-small:meta:vector-dim"];
     const fakeClient = {
       ping: vi.fn().mockResolvedValue("PONG"),
       get: vi.fn().mockResolvedValue("768"), // stored dim differs from current 1536
       set: vi.fn().mockResolvedValue("OK"),
-      keys: vi.fn().mockResolvedValue(staleKeys),
-      del: vi.fn().mockResolvedValue(staleKeys.length),
+      scan: vi.fn().mockResolvedValue({ cursor: 0, keys: staleKeys }),
+      unlink: vi.fn().mockResolvedValue(staleKeys.length),
     };
     mockCreateRedisClient.mockReturnValue(fakeClient);
     mockConnectRedis.mockResolvedValue(undefined);
     mockCreateRedisStores.mockReturnValue(makeStores());
 
     await adapter.initialize();
+    // The flush runs in the background; let scheduled microtasks complete.
+    await new Promise((resolve) => setImmediate(resolve));
 
     // get() was called to read stored dim
     expect(fakeClient.get).toHaveBeenCalledWith(expect.stringContaining(":meta:vector-dim"));
-    // keys() and del() were called to flush stale data
-    expect(fakeClient.keys).toHaveBeenCalledWith(expect.stringContaining(":*"));
-    expect(fakeClient.del).toHaveBeenCalledWith(staleKeys);
-    // set() was called to write new dim
+    // SCAN + UNLINK were used to flush stale data, not blocking KEYS + DEL
+    expect(fakeClient.scan).toHaveBeenCalledWith(0, { MATCH: expect.stringContaining(":*"), COUNT: 100 });
+    expect(fakeClient.unlink).toHaveBeenCalledWith(staleKeys);
+    // set() was called to write new dim after the flush
     expect(fakeClient.set).toHaveBeenCalledWith(expect.stringContaining(":meta:vector-dim"), "1536");
 
     (env as any).CLAIMKIT_REDIS_URL = "";
+    (env as any).CLAIMKIT_REPAIR_ON_DIMENSION_MISMATCH = undefined;
   });
 
   it("does not re-initialize if already initialized", async () => {

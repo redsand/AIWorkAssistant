@@ -50,7 +50,8 @@ const INSUFFICIENT_EVIDENCE_PATTERNS = [
   "evidence is insufficient",
 ];
 
-function isInsufficientEvidenceAnswer(answer: string): boolean {
+function isInsufficientEvidenceAnswer(answer: string | undefined | null): boolean {
+  if (typeof answer !== "string") return false;
   const normalized = answer.toLowerCase().trim();
   return INSUFFICIENT_EVIDENCE_PATTERNS.some((p) => normalized.includes(p));
 }
@@ -69,18 +70,23 @@ export function determineRoutingTier(ckResult: ClaimKitQueryResult | null, ckUna
     return { tier: "rag_primary", preferredSource: "rag", overallWinner: "rag", routingReason: "ck_no_answer" };
   }
 
-  // Align with comparison framework thresholds:
-  // CK wins at > 0.5 with real evidence; RAG wins at < 0.3 or not answerable; blended in between.
-  if (confidence > 0.5 && (answerability === "answerable" || answerability === "partially-answerable")) {
+  const highThreshold = env.CLAIMKIT_ROUTE_HIGH_CONFIDENCE;
+  const lowThreshold = env.CLAIMKIT_ROUTE_LOW_CONFIDENCE;
+  const isAnswerable = answerability === "answerable" || answerability === "partially-answerable";
+  const isNotAnswerable = answerability === "not_answerable" || answerability === undefined;
+
+  // CK wins above high threshold with real evidence; RAG wins below low
+  // threshold or when not answerable; blended in between.
+  if (confidence > highThreshold && isAnswerable) {
     return { tier: "ck_primary", preferredSource: "claimkit", overallWinner: "claimkit", routingReason: "high_confidence" };
   }
 
-  if (confidence < 0.3 || answerability === "not_answerable") {
+  if (confidence < lowThreshold || isNotAnswerable) {
     return {
       tier: "rag_primary",
       preferredSource: "rag",
       overallWinner: "rag",
-      routingReason: answerability === "not_answerable" ? "not_answerable" : "low_confidence",
+      routingReason: isNotAnswerable ? "not_answerable" : "low_confidence",
     };
   }
 
@@ -105,6 +111,33 @@ async function withTimeout<T>(
   }
 }
 
+/**
+ * Race an abortable async task against a timeout. If the timeout wins, the
+ * controller is aborted so the losing task can stop holding provider slots
+ * or CPU. The caller must pass the signal down to the async work.
+ */
+export async function withAbortableTimeout<T>(
+  makePromise: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  timeoutValue: T,
+): Promise<T> {
+  const controller = new AbortController();
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      makePromise(controller.signal),
+      new Promise<T>((resolve) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          resolve(timeoutValue);
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 export async function assembleContextPacket(
   params: AssembleContextParams,
 ): Promise<ContextPacket> {
@@ -117,7 +150,7 @@ export async function assembleContextPacket(
     onProgress,
   } = params;
 
-  const budget = createBudget(undefined, providerMaxTokens, toolTokens);
+  const budget = createBudget(env.CONTEXT_PACKET_V2_BUDGET, providerMaxTokens, toolTokens);
   const stageTimings: Record<string, number> = {};
   const timeStage = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
     const start = Date.now();
@@ -203,7 +236,15 @@ export async function assembleContextPacket(
 
   const baseSystemPrompt = getSystemPrompt(mode, query, "engine");
   const systemTokens = estimateTokens(baseSystemPrompt);
-  systemSlot.allocatedTokens = Math.max(systemSlot.allocatedTokens, systemTokens + memoryTokens + skillsTokens + soulTokens + reflectionsTokens);
+  // Pre-V2 only: memory/skills/soul/reflections were not budgeted, so the code
+  // inflated the system slot to absorb their cost. In V2 these sections have
+  // their own slots, so we leave systemSlot unchanged.
+  if (!env.CONTEXT_PACKET_V2_BUDGET) {
+    systemSlot.allocatedTokens = Math.max(
+      systemSlot.allocatedTokens,
+      systemTokens + memoryTokens + skillsTokens + soulTokens + reflectionsTokens,
+    );
+  }
 
   onProgress?.("Retrieving knowledge sources...");
   const ragStart = Date.now();
@@ -260,22 +301,23 @@ export async function assembleContextPacket(
   } else {
     onProgress?.("Extracting knowledge claims...");
     const seedStart = Date.now();
-    const seedPromise = ingestScoredDocumentsForQuery(docs, query, env.CLAIMKIT_QUERY_SEED_LIMIT)
-      .catch((err) => { console.warn("[ClaimKit] Query seed failed:", err); });
+    const seedTimeoutMs = env.CLAIMKIT_SEED_TIMEOUT_MS;
+    const seedPromise = withAbortableTimeout(
+      (signal) => ingestScoredDocumentsForQuery(docs, query, env.CLAIMKIT_QUERY_SEED_LIMIT, signal)
+        .catch((err) => { console.warn("[ClaimKit] Query seed failed:", err); })
+        .then(() => true as const),
+      seedTimeoutMs,
+      false as const,
+    );
     if (env.CLAIMKIT_AWAIT_SEED) {
       // Hard cap the seed wait. Without this, a slow LLM extractor on 15
       // seeded docs could take 56+ minutes (real production observation,
       // run 8b58e79d) before the outer 500s query timeout even fires.
       // Cap is intentionally smaller than CLAIMKIT_QUERY_TIMEOUT_MS so a
       // slow seed degrades gracefully into "continue without these claims"
-      // rather than poisoning the whole context assembly.
-      const seedTimeoutMs = env.CLAIMKIT_SEED_TIMEOUT_MS;
-      const timedSeedPromise = withTimeout(
-        seedPromise.then(() => true as const),
-        seedTimeoutMs,
-        false as const,
-      );
-      const seedFinished = await timedSeedPromise;
+      // rather than poisoning the whole context assembly. The abortable
+      // timeout cancels pending ingest work when the cap is hit.
+      const seedFinished = await seedPromise;
       if (!seedFinished) {
         console.warn(
           `[ClaimKit] Seed wait timed out after ${seedTimeoutMs}ms — ` +
@@ -289,8 +331,8 @@ export async function assembleContextPacket(
     onProgress?.("Querying knowledge graph...");
     const ckStart = Date.now();
     try {
-      claimKitResult = await withTimeout(
-        claimKitAdapter.query(query),
+      claimKitResult = await withAbortableTimeout(
+        (signal) => claimKitAdapter.query(query, { signal }),
         env.CLAIMKIT_QUERY_TIMEOUT_MS,
         null,
       );
@@ -871,20 +913,68 @@ export async function assembleContextPacket(
       msg.role !== "system" &&
       msg.role !== "tool"
     ) {
-      // Drop the EARLIER message. Track its tool_call_ids so the orphan
-      // sweep above can remove now-unparented tool results.
-      if (prev.role === "assistant" && prev.tool_calls?.length) {
-        for (const tc of prev.tool_calls) {
-          if (tc.id) droppedToolCallIds.add(tc.id);
+      if (msg.role === "user") {
+        // Two consecutive user messages — the earlier one is the goal anchor
+        // (e.g., the original question) and the later is a follow-up like
+        // "keep going" after a transient error. Dropping the earlier one
+        // would strand the LLM with no goal. Instead, inject a stub
+        // assistant turn so the LLM sees the canonical alternating pattern
+        // and treats both user messages as meaningful.
+        cleaned.push({
+          role: "assistant",
+          content:
+            "[Prior request was interrupted by a transient error before completing. Continuing from the original goal above.]",
+        });
+        console.warn(
+          `[ContextPacket] Injected stub assistant between consecutive user messages at packet position ${cleaned.length - 1} to preserve goal anchor`,
+        );
+      } else {
+        // assistant->assistant: drop the EARLIER message. Track its
+        // tool_call_ids so the orphan sweep above can remove now-unparented
+        // tool results.
+        if (prev.role === "assistant" && prev.tool_calls?.length) {
+          for (const tc of prev.tool_calls) {
+            if (tc.id) droppedToolCallIds.add(tc.id);
+          }
         }
+        console.warn(
+          `[ContextPacket] Dropped consecutive ${msg.role} message at packet position ${cleaned.length - 1} to keep chain valid`,
+        );
+        cleaned.pop();
       }
-      console.warn(
-        `[ContextPacket] Dropped consecutive ${msg.role} message at packet position ${cleaned.length - 1} to keep chain valid`,
-      );
-      cleaned.pop();
     }
 
     cleaned.push(msg);
+  }
+
+  // Tool-result truncation: oversized tool payloads dominate the conversation
+  // budget after a few tool loops (e.g. tenable.list_assets returns 3000+
+  // items, ~30k tokens). Stringification already caps at 25k chars per call,
+  // but several such results compound. Cap them at TOOL_RESULT_TRUNCATION_CHARS
+  // for retained history so the LLM gets enough shape to reason without
+  // re-paying the full payload cost. The model can re-call the tool with a
+  // narrower scope if it needs detail.
+  const TOOL_RESULT_TRUNCATION_CHARS = 4000;
+  const TOOL_RESULT_HEAD_CHARS = 1200;
+  for (let i = 0; i < cleaned.length; i++) {
+    const m = cleaned[i];
+    if (m.role === "tool" && m.content && m.content.length > TOOL_RESULT_TRUNCATION_CHARS) {
+      // Never truncate a cache-ref stub: the model needs the full pointer
+      // (ref + instructions) to call tools.fetch_cached and retrieve the
+      // actual payload. The ref is small, so keeping it doesn't blow the budget.
+      if (m.content.includes('"_cached_ref"')) continue;
+      const originalChars = m.content.length;
+      const head = m.content.substring(0, TOOL_RESULT_HEAD_CHARS);
+      cleaned[i] = {
+        ...m,
+        content:
+          head +
+          `\n…[Tool result truncated for retained context (${originalChars.toLocaleString()} chars total). Re-call the tool with a narrower query if more detail is needed.]`,
+      };
+      console.warn(
+        `[ContextPacket] Truncated retained tool result from ${originalChars} → ${cleaned[i].content!.length} chars`,
+      );
+    }
   }
   messages.length = 0;
   messages.push(...cleaned);

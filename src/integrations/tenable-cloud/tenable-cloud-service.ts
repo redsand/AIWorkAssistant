@@ -81,8 +81,15 @@ export class TenableCloudService {
     return this.client.getAssetVulnerabilities(assetId, params, opts);
   }
 
-  async listAssets(opts?: TenableRequestOptions): Promise<TenableAsset[]> {
-    return this.client.listAssets(opts);
+  async listAssets(
+    params: { limit?: number; offset?: number } = {},
+    opts?: TenableRequestOptions,
+  ): Promise<TenableAsset[]> {
+    return this.client.listAssets(params, opts);
+  }
+
+  async listAllAssets(opts?: TenableRequestOptions): Promise<TenableAsset[]> {
+    return this.client.listAllAssets(opts);
   }
 
   async getAsset(assetId: string, opts?: TenableRequestOptions): Promise<TenableAsset> {
@@ -371,6 +378,10 @@ export class TenableCloudService {
 
   async listAgents(params: { offset?: number; limit?: number } = {}, opts?: TenableRequestOptions): Promise<{ agents: TenableAgent[]; pagination: unknown }> {
     return this.client.listAgents(params, opts);
+  }
+
+  async listAllAgents(opts?: TenableRequestOptions): Promise<TenableAgent[]> {
+    return this.client.listAllAgents(opts);
   }
 
   async getAgent(agentId: number, opts?: TenableRequestOptions): Promise<TenableAgent> {

@@ -1,21 +1,32 @@
 import {
   CHARS_PER_TOKEN,
-  DEFAULT_SLOT_DEFINITIONS,
+  getSlotDefinitions,
   type AllocatedBudget,
   type BudgetSlotDefinition,
   type ContextSection,
 } from "./types";
 
 const SAFETY_MARGIN = 0.7;
+// Cap applied to sections that have no matching budget slot, so newly added
+// sections cannot silently blow up the prompt. Logged as a warning so the
+// developer knows to add an explicit slot.
+const UNKNOWN_SECTION_TOKEN_CAP = 200;
 
 export function createBudget(
-  slotDefinitions: BudgetSlotDefinition[] = DEFAULT_SLOT_DEFINITIONS,
+  slotDefinitions: BudgetSlotDefinition[] | boolean = false,
   totalTokenBudget: number,
   toolTokens: number,
 ): AllocatedBudget {
+  // Backwards compatibility: callers used to pass DEFAULT_SLOT_DEFINITIONS
+  // directly. `false` means "use defaults" and is the new canonical default.
+  const definitions =
+    typeof slotDefinitions === "boolean"
+      ? getSlotDefinitions(slotDefinitions)
+      : slotDefinitions;
   const safeLimit = Math.floor(totalTokenBudget * SAFETY_MARGIN);
   const availableTokens = safeLimit - toolTokens;
-  const slots = slotDefinitions
+  // Do not mutate the caller's array (or the shared default constant).
+  const slots = [...definitions]
     .sort((a, b) => b.priority - a.priority)
     .map((def) => ({
       name: def.name,
@@ -68,7 +79,13 @@ export function enforceBudget(
   const result: ContextSection[] = [];
   for (const section of sections) {
     const slot = budget.slots.find((s) => s.name === section.name);
-    const maxTokens = slot ? slot.allocatedTokens : Infinity;
+    const hasSlot = slot !== undefined;
+    const maxTokens = hasSlot ? slot.allocatedTokens : UNKNOWN_SECTION_TOKEN_CAP;
+    if (!hasSlot && section.tokens > UNKNOWN_SECTION_TOKEN_CAP) {
+      console.warn(
+        `[enforceBudget] Section "${section.name}" has no budget slot; capping at ${UNKNOWN_SECTION_TOKEN_CAP} tokens. Add it to the slot definitions.`,
+      );
+    }
     const originalTokens = estimateTokens(section.content);
 
     if (originalTokens <= maxTokens) {

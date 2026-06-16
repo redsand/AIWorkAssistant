@@ -372,7 +372,7 @@ describe("ClaimKitAdapter", () => {
       expect(mockClaimKitInstance.query).toHaveBeenCalledWith("question", options);
     });
 
-    it("should default answerability to 'answerable' when packet is missing", async () => {
+    it("should default answerability to 'not_answerable' when packet is missing", async () => {
       mockClaimKitInstance.query.mockResolvedValueOnce({
         ...mockAnswerResult,
         packet: undefined,
@@ -380,7 +380,7 @@ describe("ClaimKitAdapter", () => {
       await adapter.initialize();
 
       const result = await adapter.query("question");
-      expect(result.answerability).toBe("answerable");
+      expect(result.answerability).toBe("not_answerable");
     });
 
     it("should add graph evidence for a direct relationship query", async () => {

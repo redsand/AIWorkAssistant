@@ -4027,7 +4027,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "system.exec",
     description:
-      "Execute a shell command and return stdout/stderr. Use for running tests, builds, scripts, git operations, file operations, and any CLI tool. IMPORTANT: This executes on the host system — never use for destructive operations (rm -rf, drop tables, etc.) without explicit user approval.",
+      "Execute a shell command and return stdout/stderr. Use for running tests, builds, scripts, git operations, file operations, and any CLI tool. IMPORTANT: This executes on the host system — never use for destructive operations (rm -rf, drop tables, etc.) without explicit user approval. Do NOT use system.exec to call APIs for services that already have dedicated tools; those tools use the server's configured credentials, handle pagination, and return structured results. Examples include Tenable, GitHub, Jira, and GitLab, but the rule applies to any service with a dedicated tool.",
     params: {
       command: {
         type: "string",
@@ -6183,8 +6183,9 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   // -- Assets --
   {
     name: "tenable.list_workbench_assets",
-    description: "Return a comprehensive list of ALL assets from Tenable with severity summaries (not capped at 5,000). Internally uses the export API to download every chunk automatically. May take 10–60 seconds for large datasets. Provide accessKey/secretKey for per-customer access.",
+    description: "Return a comprehensive list of ALL assets from Tenable with severity summaries (not capped at 5,000). Internally uses the export API to download every chunk automatically. May take 10–60 seconds for large datasets. Provide accessKey/secretKey for per-customer access. Pass `search` to return only assets whose hostname, fqdn, or ipv4 matches the substring.",
     params: {
+      search: { type: "string", description: "Substring matched against hostname, fqdn, or ipv4 (case-insensitive). When provided, only matching assets are returned.", required: false },
       chunk_size: { type: "number", description: "Number of assets per export chunk (default: 1000)", required: false },
       accessKey: { type: "string", description: "Tenable API access key override", required: false },
       secretKey: { type: "string", description: "Tenable API secret key override", required: false },
@@ -7050,6 +7051,34 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     },
     actionType: "tenable.agents.bulk_unlink",
     riskLevel: "high",
+  },
+  {
+    name: "tenable.review_duplicate_agents",
+    description:
+      "Review all Tenable agents, group them by name, and identify duplicates where older/unseen agents share the same hostname/agent name. Returns the keeper (most recently seen) and the duplicate list. Pass unlink=true and scanner_id to bulk-unlink the older duplicates. Use tenable.list_scanners to find the scanner_id if unknown.",
+    params: {
+      unlink: { type: "boolean", description: "If true, bulk-unlink the older duplicate agents. Requires scanner_id.", required: false },
+      scanner_id: { type: "number", description: "Scanner ID the duplicate agents are linked to. Required when unlink=true. Use tenable.list_scanners to discover it.", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.agents.review_duplicates",
+    riskLevel: "high",
+  },
+  {
+    name: "tenable.review_agent_health",
+    description:
+      "Review all Tenable agents and flag those that appear unhealthy: offline (status not 'on'), stale last_connect, stale last_scanned, or running a core_version / plugin_feed_id that differs from the fleet majority (likely failed update). Returns a categorized, read-only report. Use tenable.unlink_agent or tenable.bulk_unlink_agents to remove problem agents.",
+    params: {
+      stale_days: { type: "number", description: "Agents whose last_connect is older than this many days are flagged as stale (default 7).", required: false },
+      scan_stale_days: { type: "number", description: "Agents whose last_scanned is older than this many days are flagged as scan-stale (default 14).", required: false },
+      offline_only: { type: "boolean", description: "If true, only report agents whose status is not 'on'.", required: false },
+      outdated_only: { type: "boolean", description: "If true, only report agents whose core_version or plugin_feed_id differs from the fleet majority.", required: false },
+      accessKey: { type: "string", description: "Tenable API access key override", required: false },
+      secretKey: { type: "string", description: "Tenable API secret key override", required: false },
+    },
+    actionType: "tenable.agents.review_health",
+    riskLevel: "low",
   },
   {
     name: "tenable.list_agent_groups",
@@ -8429,6 +8458,8 @@ const TENABLE_REPORT_TOOL_NAMES = new Set([
   "tenable.get_asset_vulnerabilities",
   "tenable.get_server_status",
   "tenable.get_server_properties",
+  "tenable.review_duplicate_agents",
+  "tenable.review_agent_health",
   // Hawk IR — report/summary read tools
   "hawk_ir.monthly_summary",
   "hawk_ir.weekly_report",

@@ -54,6 +54,16 @@ function isNonRetryableError(err: unknown): boolean {
 }
 
 /**
+ * Decide whether an error should trigger the MemoryLLMAdapter fallback.
+ * Non-retryable errors are propagated so auth/schema/model failures are
+ * visible, unless the fatal-fallback escape hatch is enabled.
+ */
+function shouldFallback(err: unknown): boolean {
+  if (env.CLAIMKIT_LLM_FATAL_FALLBACK) return true;
+  return !isNonRetryableError(err);
+}
+
+/**
  * Sleep with small jitter (±20%) to spread out concurrent retries across
  * parallel ClaimKit stages — prevents thundering-herd on the same provider.
  */
@@ -215,6 +225,7 @@ export class AIProviderLLMAdapter implements LLMAdapter {
         () => this.fallback.generateText(messages, options),
       );
     } catch (err) {
+      if (!shouldFallback(err)) throw err;
       console.warn("[AIProviderLLMAdapter] generateText failed, falling back:", err instanceof Error ? err.message : String(err));
       return this.fallback.generateText(messages, options);
     }
@@ -231,6 +242,7 @@ export class AIProviderLLMAdapter implements LLMAdapter {
         () => this.fallback.generateJson<T>(messages, _schema, options),
       );
     } catch (err) {
+      if (!shouldFallback(err)) throw err;
       console.warn("[AIProviderLLMAdapter] generateJson failed, falling back:", err instanceof Error ? err.message : String(err));
       return this.fallback.generateJson<T>(messages, _schema, options);
     }
@@ -312,6 +324,7 @@ Each claim object must have:
         () => this.fallback.extractClaims(chunkText, sourceId, chunkId, options),
       );
     } catch (err) {
+      if (!shouldFallback(err)) throw err;
       console.warn(
         "[AIProviderLLMAdapter] extractClaims failed, falling back to MemoryLLMAdapter:",
         err instanceof Error ? err.message : String(err),
@@ -354,6 +367,7 @@ Rules:
         () => this.fallback.generateAnswer(packet, question),
       );
     } catch (err) {
+      if (!shouldFallback(err)) throw err;
       console.warn(
         "[AIProviderLLMAdapter] generateAnswer failed, falling back to MemoryLLMAdapter:",
         err instanceof Error ? err.message : String(err),
@@ -399,6 +413,7 @@ Respond with JSON: { "contradictions": [...] }`,
         () => this.fallback.detectContradictions(claims),
       );
     } catch (err) {
+      if (!shouldFallback(err)) throw err;
       console.warn(
         "[AIProviderLLMAdapter] detectContradictions failed, falling back to MemoryLLMAdapter:",
         err instanceof Error ? err.message : String(err),
@@ -451,6 +466,7 @@ Respond with JSON:
         () => this.fallback.verifyClaims(answer, packet),
       );
     } catch (err) {
+      if (!shouldFallback(err)) throw err;
       console.warn(
         "[AIProviderLLMAdapter] verifyClaims failed, falling back to MemoryLLMAdapter:",
         err instanceof Error ? err.message : String(err),

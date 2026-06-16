@@ -1,8 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { determineRoutingTier } from "../context-packet";
 import { createBudget, estimateTokens, enforceBudget } from "../budget";
 import type { ContextSection, AllocatedBudget } from "../types";
-import { DEFAULT_SLOT_DEFINITIONS, CHARS_PER_TOKEN } from "../types";
+import { DEFAULT_SLOT_DEFINITIONS, V2_SLOT_DEFINITIONS, CHARS_PER_TOKEN } from "../types";
 import type { ClaimKitQueryResult } from "../adapters/claimkit-adapter";
 
 // ── determineRoutingTier ──────────────────────────────────────────────────
@@ -73,6 +73,16 @@ describe("determineRoutingTier", () => {
     expect(decision.routingReason).toBe("not_answerable");
   });
 
+  it("should treat missing answerability as not_answerable and route to rag_primary", () => {
+    const ck = {
+      confidence: 0.9,
+      answerability: undefined,
+    } as unknown as ClaimKitQueryResult;
+    const decision = determineRoutingTier(ck);
+    expect(decision.tier).toBe("rag_primary");
+    expect(decision.routingReason).toBe("not_answerable");
+  });
+
   it("should return blended for mid-range confidence + answerable", () => {
     const ck = {
       confidence: 0.4,
@@ -126,6 +136,39 @@ describe("createBudget", () => {
     // remainingTokens may be > 0 when fractions don't exactly sum to 1.0
     // History slot should get the extra allocation
     expect(budget.remainingTokens).toBeGreaterThanOrEqual(0);
+  });
+
+  it("should not mutate DEFAULT_SLOT_DEFINITIONS", () => {
+    const originalOrder = DEFAULT_SLOT_DEFINITIONS.map((s) => s.name);
+    createBudget(DEFAULT_SLOT_DEFINITIONS, 10000, 0);
+    expect(DEFAULT_SLOT_DEFINITIONS.map((s) => s.name)).toEqual(originalOrder);
+  });
+
+  it("V2 slot fractions should sum to exactly 1.0", () => {
+    const sum = V2_SLOT_DEFINITIONS.reduce((acc, s) => acc + s.fraction, 0);
+    expect(Math.abs(sum - 1)).toBeLessThan(1e-10);
+  });
+
+  it("V2 should include a slot for every section emitted by context-packet", () => {
+    const expected = new Set([
+      "system",
+      "history",
+      "documents",
+      "graph",
+      "claimkit_evidence",
+      "entity_claims",
+      "recent_sessions",
+      "health",
+      "skills",
+      "recent_reflections",
+      "agent_memory",
+      "user_profile",
+      "soul",
+    ]);
+    const actual = new Set(V2_SLOT_DEFINITIONS.map((s) => s.name));
+    for (const name of expected) {
+      expect(actual).toContain(name);
+    }
   });
 
   it("should leave remaining tokens when no overflow slots exist", () => {
@@ -263,6 +306,22 @@ describe("enforceBudget", () => {
     const result = enforceBudget(sections, budget);
     expect(result[0].content).toBe(content);
     expect(result[0].tokens).toBe(estimateTokens(content));
+  });
+
+  it("should cap and warn for unknown sections over the default cap", () => {
+    const longContent = "x".repeat(1000);
+    const sections: ContextSection[] = [
+      { name: "unknown_section", content: longContent, tokens: estimateTokens(longContent) },
+    ];
+    const budget = makeBudget({ system: 100 });
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = enforceBudget(sections, budget);
+    expect(result[0].content).toContain("...[truncated]");
+    expect(result[0].tokens).toBeLessThan(estimateTokens(longContent));
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Section "unknown_section" has no budget slot'),
+    );
+    consoleSpy.mockRestore();
   });
 });
 

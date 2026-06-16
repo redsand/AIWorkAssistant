@@ -14,11 +14,12 @@ import { personalOsBriefGenerator } from "../personal-os/brief-generator";
 import { productChiefOfStaff } from "../product/product-chief-of-staff";
 import { hawkIrService } from "../integrations/hawk-ir/hawk-ir-service";
 import { tenableCloudService } from "../integrations/tenable-cloud/tenable-cloud-service";
-import type { TenableExportStatus } from "../integrations/tenable-cloud/types";
+import type { TenableAgent, TenableAsset, TenableExportStatus } from "../integrations/tenable-cloud/types";
 import { roadmapDatabase } from "../roadmap/database";
 import { auditLogger } from "../audit/logger";
 import { env } from "../config/env";
 import { claimKitAdapter } from "../context-engine/adapters/claimkit-adapter";
+import { ingestedIds, hashContent } from "../context-engine/claimkit-ingestion";
 import { providerSettings } from "./provider-settings";
 import { reviewGate, formatGateBlockComment } from "../autonomous-loop/review-gate";
 import { loadReviewGateState } from "../autonomous-loop/review-gate-state";
@@ -61,7 +62,7 @@ import { soulManager } from "../memory/soul-manager";
 import { createSoulManageHandler } from "./handlers/soul-manage";
 import { createSessionSearchHandler } from "./handlers/session-search";
 import { conversationManager } from "../memory/conversation-manager";
-import { toolCallCache } from "../memory/tool-cache";
+import { toolCallCache, hashCall } from "../memory/tool-cache";
 import { reflectionEngine } from "./reflection-engine";
 import { subagentSpawner } from "./subagent-spawner";
 import type { SubagentResult } from "./subagent-spawner";
@@ -3235,6 +3236,26 @@ async function handleSystemExec(
       return {
         success: false,
         error: `Blocked dangerous command pattern: "${pattern}". Use with explicit user approval via approvals system.`,
+      };
+    }
+  }
+
+  // Block attempts to use system.exec as a bypass for APIs that already have
+  // dedicated tools. The dedicated tools use the server's configured credentials
+  // and handle pagination; shell calls will typically fail on missing creds.
+  const apiBypassPatterns: { pattern: string; tool: string }[] = [
+    { pattern: "cloud.tenable.com", tool: "tenable.*" },
+    { pattern: "tenable.io", tool: "tenable.*" },
+    { pattern: "api.github.com", tool: "github.*" },
+    { pattern: "gitlab.com/api", tool: "gitlab.*" },
+    { pattern: "/rest/api", tool: "jira.*" },
+    { pattern: "atlassian.net", tool: "jira.*" },
+  ];
+  for (const { pattern, tool } of apiBypassPatterns) {
+    if (command.includes(pattern)) {
+      return {
+        success: false,
+        error: `system.exec cannot be used to call external APIs that have dedicated tools. Detected '${pattern}' — use the ${tool} tool instead. Those tools use the server's configured credentials and pagination.`,
       };
     }
   }
@@ -7199,6 +7220,23 @@ function tenableAssetName(asset: any): string {
   );
 }
 
+function tenableAssetMatchesSearch(asset: any, search: string): boolean {
+  const term = search.toLowerCase();
+  const first = (value: unknown): string | undefined =>
+    Array.isArray(value) ? value.find((v) => typeof v === "string") : typeof value === "string" ? value : undefined;
+  const values = [
+    first(asset?.hostname),
+    first(asset?.fqdn),
+    asset?.netbios_name,
+    first(asset?.ipv4),
+    first(asset?.ipv6),
+    first(asset?.asset?.hostname),
+    first(asset?.asset?.fqdn),
+    first(asset?.asset?.ipv4),
+  ];
+  return values.some((v) => typeof v === "string" && v.toLowerCase().includes(term));
+}
+
 function summarizeTenableVulnerabilities(vulnerabilities: any[]) {
   const severityCounts: Record<string, number> = {
     critical: 0,
@@ -7535,6 +7573,11 @@ async function handleTenableDownloadVulnExportChunk(params: Record<string, unkno
       chunks_remaining: remaining,
       all_chunks_downloaded: allDone,
       summary: summarizeTenableVulnerabilities(vulns),
+      // Include the raw vulnerabilities array so the outer tool-call cache can
+      // store it and compact large chunks into a `_cached_ref` instead of
+      // inlining megabytes of JSON. The model fetches the full array via
+      // tools.fetch_cached when needed.
+      vulnerabilities: vulns,
       _guidance: guidance,
     },
   };
@@ -7544,6 +7587,39 @@ async function handleTenableListWorkbenchAssets(params: Record<string, unknown>)
   const err = tenableConfigCheck(params);
   if (err) return { success: false, error: err };
   const opts = tenableOpts(params);
+
+  const search = typeof params.search === "string" ? params.search.trim().toLowerCase() : null;
+
+  // Fast path: when the model is looking for a specific host, use /assets
+  // (paginated) instead of the heavy export API. This turns a 10–60 second
+  // multi-chunk export/poll into a single request for typical inventories.
+  if (search) {
+    const startTime = Date.now();
+    try {
+      const all = await tenableCloudService.listAllAssets(opts);
+      const items = all.filter((a: any) => tenableAssetMatchesSearch(a, search));
+      const samples = items.slice(0, 10).map((a: any) => ({
+        id: a?.id,
+        name: tenableAssetName(a),
+        ipv4: Array.isArray(a?.ipv4) ? a.ipv4[0] : a?.ipv4,
+        last_seen: a?.last_seen ?? a?.last_scanned ?? null,
+      }));
+      return {
+        success: true,
+        data: {
+          summary: summarizeTenableAssets(items),
+          total_assets: all.length,
+          matched_count: items.length,
+          samples,
+          elapsed_seconds: Math.round((Date.now() - startTime) / 1000),
+          _guidance: `Found ${items.length} asset(s) matching '${search}' across ${all.length} total assets. Use tenable.get_asset with one of the ids to load full details.`,
+        },
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: `Asset search failed: ${message}` };
+    }
+  }
 
   // Tenable's /assets/export requires chunk_size (100–10000) in the
   // request body — passing it as undefined produces a 400. Default to
@@ -7564,13 +7640,17 @@ async function handleTenableListWorkbenchAssets(params: Record<string, unknown>)
       (chunkId) => tenableCloudService.downloadAssetExportChunk(export_uuid, chunkId, opts),
     );
 
+    const items = result.items;
+
     return {
       success: true,
       data: {
-        summary: summarizeTenableAssets(result.items),
+        summary: summarizeTenableAssets(items),
         export_uuid,
         chunks_downloaded: result.chunksDownloaded,
         total_assets: result.items.length,
+        matched_count: result.items.length,
+        samples: null,
         elapsed_seconds: Math.round(result.elapsedMs / 1000),
         _guidance: `Comprehensive asset export complete: ${result.items.length} assets across ${result.chunksDownloaded} chunk(s).`,
       },
@@ -7595,12 +7675,16 @@ async function handleTenableGetAssetVulnerabilities(params: Record<string, unkno
 async function handleTenableListAssets(params: Record<string, unknown>): Promise<ToolCallResult> {
   const err = tenableConfigCheck(params);
   if (err) return { success: false, error: err };
-  const data = await tenableCloudService.listAssets(tenableOpts(params));
+  const opts = tenableOpts(params);
 
   // Filter by hostname/IP/FQDN match when the model asks for a specific host.
   // Discovered 2026-06-11 from session a149093c: model spent ~100s of LLM
   // time looping because the summary contained no hostnames — it kept asking
   // "where is host EPM?" and the response only had OS / device-type counts.
+  //
+  // Tenable's /assets endpoint paginates (default 1000). If we only filtered
+  // the first page, hosts not on that page would appear to be missing. When
+  // searching, walk every page so the answer is authoritative.
   const search = typeof params.search === "string" ? params.search.trim().toLowerCase() : null;
   const limit = typeof params.limit === "number" && params.limit > 0
     ? Math.min(params.limit, 200)
@@ -7614,28 +7698,36 @@ async function handleTenableListAssets(params: Record<string, unknown>): Promise
     return { id: a?.id, hostname: hostname ?? fqdn ?? netbios ?? null, fqdn: fqdn ?? null, ip: ip ?? null };
   };
 
-  let filtered = data;
+  const assetFilter = (a: any) => {
+    if (!search) return true;
+    const f = flatten(a);
+    return [f.hostname, f.fqdn, f.ip].some(
+      (v) => typeof v === "string" && v.toLowerCase().includes(search),
+    );
+  };
+
+  let data: TenableAsset[];
+  let filtered: TenableAsset[];
   if (search) {
-    filtered = data.filter((a: any) => {
-      const f = flatten(a);
-      return [f.hostname, f.fqdn, f.ip].some(
-        (v) => typeof v === "string" && v.toLowerCase().includes(search),
-      );
-    });
+    data = await tenableCloudService.listAllAssets(opts);
+    filtered = data.filter(assetFilter);
+  } else {
+    data = await tenableCloudService.listAssets({}, opts);
+    filtered = data;
   }
 
-  const samples = (search ? filtered : data).slice(0, limit).map(flatten);
+  const samples = filtered.slice(0, limit).map(flatten);
 
   return {
     success: true,
     data: {
-      summary: summarizeTenableAssets(data),
+      summary: summarizeTenableAssets(filtered),
       total_assets: data.length,
       matched_count: search ? filtered.length : data.length,
       samples,
       _guidance: search
-        ? `${filtered.length} asset(s) matched '${search}'. Showing first ${samples.length}. Use tenable.get_asset with one of the ids to load full details.`
-        : `Sample of ${samples.length} of ${data.length} assets. Pass {"search":"<hostname>"} to filter; pass {"limit":N} (max 200) to return more samples.`,
+        ? `${filtered.length} asset(s) matched '${search}' across ${data.length} total assets. Showing first ${samples.length}. Use tenable.get_asset with one of the ids to load full details.`
+        : `Sample of ${samples.length} of ${data.length} assets. Pass {"search":"<hostname>"} to filter across the full inventory; pass {"limit":N} (max 200) to return more samples.`,
     },
   };
 }
@@ -7700,8 +7792,27 @@ async function handleTenableDownloadAssetExportChunk(params: Record<string, unkn
   const chunkId = params.chunk_id as number;
   if (!exportUuid) return { success: false, error: "export_uuid is required" };
   if (chunkId === undefined) return { success: false, error: "chunk_id is required" };
-  const data = await tenableCloudService.downloadAssetExportChunk(exportUuid, chunkId, tenableOpts(params));
-  return { success: true, data };
+  const assets = await tenableCloudService.downloadAssetExportChunk(exportUuid, chunkId, tenableOpts(params));
+  // Keep a small preview so the model can identify the chunk without fetching
+  // the cache, while the outer cache layer compacts large chunks into a ref.
+  const sample = assets.slice(0, 5).map((a: any) => ({
+    id: a?.id,
+    name: tenableAssetName(a),
+    ipv4: Array.isArray(a?.ipv4) ? a.ipv4[0] : a?.ipv4,
+  }));
+  return {
+    success: true,
+    data: {
+      chunk_id: chunkId,
+      count: assets.length,
+      summary: summarizeTenableAssets(assets),
+      sample,
+      // Include the raw assets array so it can be cached/compacted by the
+      // outer tool-call cache instead of being inlined into the context.
+      assets,
+      _guidance: `Chunk ${chunkId} downloaded (${assets.length} assets). Large chunks are stored in the session cache; use tools.fetch_cached with the returned ref to inspect the full array.`,
+    },
+  };
 }
 
 async function handleTenableBulkDeleteAssets(params: Record<string, unknown>): Promise<ToolCallResult> {
@@ -8324,6 +8435,229 @@ async function handleTenableBulkUnlinkAgents(params: Record<string, unknown>): P
   if (!Array.isArray(params.agent_ids)) return { success: false, error: "agent_ids must be an array" };
   const data = await tenableCloudService.bulkUnlinkAgents(params.scanner_id as number, params.agent_ids as number[], tenableOpts(params));
   return { success: true, data };
+}
+
+/**
+ * Review Tenable agents and identify duplicates by name. The "keeper" in each
+ * duplicate group is the agent with the most recent last_seen/last_connect/
+ * last_scanned. With `unlink: true` and a `scanner_id`, the older duplicates
+ * are bulk-unlinked.
+ */
+async function handleTenableReviewDuplicateAgents(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const opts = tenableOpts(params);
+  const full = await tenableCloudService.listAllAgents(opts);
+
+  // Group by name (name is the closest proxy to hostname/agent name).
+  const byName = new Map<string, TenableAgent[]>();
+  for (const agent of full) {
+    const name = agent.name ?? "unknown";
+    const group = byName.get(name) ?? [];
+    group.push(agent);
+    byName.set(name, group);
+  }
+
+  const agentLastSeen = (a: TenableAgent): number => {
+    const times = [a.last_seen, a.last_connect, a.last_scanned, a.linked_on].filter(
+      (t): t is number => typeof t === "number" && t > 0,
+    );
+    return times.length > 0 ? Math.max(...times) : 0;
+  };
+
+  const duplicateGroups: {
+    name: string;
+    count: number;
+    keeper: TenableAgent;
+    duplicates: TenableAgent[];
+  }[] = [];
+
+  for (const [name, group] of byName.entries()) {
+    if (group.length < 2) continue;
+    const sorted = group.sort((a, b) => agentLastSeen(b) - agentLastSeen(a));
+    duplicateGroups.push({
+      name,
+      count: group.length,
+      keeper: sorted[0],
+      duplicates: sorted.slice(1),
+    });
+  }
+
+  const duplicateIds = duplicateGroups.flatMap((g) => g.duplicates.map((a) => a.id));
+
+  let unlinkResult: { scanner_id: number; agent_ids: number[]; task_uuid?: string } | null = null;
+  if (params.unlink === true && duplicateIds.length > 0) {
+    const scannerId = params.scanner_id as number | undefined;
+    if (!scannerId) {
+      return {
+        success: false,
+        error: "scanner_id is required when unlink=true. Pass the scanner the duplicate agents are linked to.",
+      };
+    }
+    const result = await tenableCloudService.bulkUnlinkAgents(scannerId, duplicateIds, opts);
+    unlinkResult = { scanner_id: scannerId, agent_ids: duplicateIds, task_uuid: result.task_uuid };
+  }
+
+  const toSummary = (a: TenableAgent) => ({
+    id: a.id,
+    name: a.name ?? "unknown",
+    ip: a.ip,
+    status: a.status,
+    last_seen: a.last_seen,
+    last_connect: a.last_connect,
+    last_scanned: a.last_scanned,
+    platform: a.platform,
+  });
+
+  return {
+    success: true,
+    data: {
+      total_agents: full.length,
+      duplicate_groups: duplicateGroups.length,
+      duplicate_agent_count: duplicateIds.length,
+      groups: duplicateGroups.map((g) => ({
+        name: g.name,
+        count: g.count,
+        keeper: toSummary(g.keeper),
+        duplicates: g.duplicates.map(toSummary),
+      })),
+      unlinked: unlinkResult,
+      _guidance:
+        duplicateIds.length > 0
+          ? `Found ${duplicateIds.length} duplicate agent(s) across ${duplicateGroups.length} name group(s). ` +
+            (unlinkResult
+              ? `Unlink task started: ${unlinkResult.task_uuid ?? "n/a"}.`
+              : `Pass {"unlink": true, "scanner_id": N} to unlink the older duplicates.`)
+          : "No duplicate agent names found.",
+    },
+  };
+}
+
+/**
+ * Review Tenable agent fleet health. Flags agents that are offline, stale,
+ * scan-stale, or running a core/plugin-feed version that differs from the
+ * majority. Read-only — no agents are modified.
+ */
+async function handleTenableReviewAgentHealth(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = tenableConfigCheck(params);
+  if (err) return { success: false, error: err };
+  const opts = tenableOpts(params);
+
+  const staleDays = typeof params.stale_days === "number" && params.stale_days > 0
+    ? params.stale_days
+    : 7;
+  const scanStaleDays = typeof params.scan_stale_days === "number" && params.scan_stale_days > 0
+    ? params.scan_stale_days
+    : 14;
+  const offlineOnly = params.offline_only === true;
+  const outdatedOnly = params.outdated_only === true;
+
+  const full = await tenableCloudService.listAllAgents(opts);
+  const now = Math.floor(Date.now() / 1000);
+  const staleCutoff = now - staleDays * 24 * 60 * 60;
+  const scanStaleCutoff = now - scanStaleDays * 24 * 60 * 60;
+
+  function modeValue(values: (string | undefined)[]): string | null {
+    const counts = new Map<string, number>();
+    for (const v of values) {
+      if (!v) continue;
+      counts.set(v, (counts.get(v) ?? 0) + 1);
+    }
+    let best: string | null = null;
+    let bestCount = 0;
+    for (const [v, c] of counts.entries()) {
+      if (c > bestCount) {
+        best = v;
+        bestCount = c;
+      }
+    }
+    return best;
+  }
+
+  const modeCoreVersion = modeValue(full.map((a) => a.core_version));
+  const modePluginFeedId = modeValue(full.map((a) => a.plugin_feed_id));
+
+  type AgentIssue = "offline" | "stale" | "scan_stale" | "outdated_core" | "outdated_feed";
+
+  const flagged: Array<{
+    agent: TenableAgent;
+    issues: AgentIssue[];
+  }> = [];
+
+  for (const agent of full) {
+    const issues: AgentIssue[] = [];
+    const status = (agent.status ?? "").toLowerCase();
+
+    if (status && status !== "on") {
+      issues.push("offline");
+    }
+    if (typeof agent.last_connect === "number" && agent.last_connect > 0 && agent.last_connect < staleCutoff) {
+      issues.push("stale");
+    }
+    if (typeof agent.last_scanned === "number" && agent.last_scanned > 0 && agent.last_scanned < scanStaleCutoff) {
+      issues.push("scan_stale");
+    }
+    if (modeCoreVersion && agent.core_version && agent.core_version !== modeCoreVersion) {
+      issues.push("outdated_core");
+    }
+    if (modePluginFeedId && agent.plugin_feed_id && agent.plugin_feed_id !== modePluginFeedId) {
+      issues.push("outdated_feed");
+    }
+
+    if (issues.length === 0) continue;
+
+    if (offlineOnly && !issues.includes("offline")) continue;
+    if (outdatedOnly && !issues.some((i) => i === "outdated_core" || i === "outdated_feed")) continue;
+
+    flagged.push({ agent, issues });
+  }
+
+  const byIssue: Record<AgentIssue, number> = {
+    offline: 0,
+    stale: 0,
+    scan_stale: 0,
+    outdated_core: 0,
+    outdated_feed: 0,
+  };
+  for (const { issues } of flagged) {
+    for (const issue of issues) {
+      byIssue[issue] += 1;
+    }
+  }
+
+  const toSummary = (a: TenableAgent, issues: AgentIssue[]) => ({
+    id: a.id,
+    name: a.name ?? "unknown",
+    ip: a.ip,
+    platform: a.platform,
+    distro: a.distro,
+    status: a.status,
+    last_connect: a.last_connect,
+    last_scanned: a.last_scanned,
+    core_version: a.core_version,
+    plugin_feed_id: a.plugin_feed_id,
+    issues,
+  });
+
+  return {
+    success: true,
+    data: {
+      total_agents: full.length,
+      flagged_count: flagged.length,
+      thresholds: { stale_days: staleDays, scan_stale_days: scanStaleDays },
+      fleet_mode: { core_version: modeCoreVersion, plugin_feed_id: modePluginFeedId },
+      issue_summary: byIssue,
+      agents: flagged.map(({ agent, issues }) => toSummary(agent, issues)),
+      _guidance: flagged.length > 0
+        ? `Found ${flagged.length} agent(s) with health issues across ${full.length} total agents. ` +
+          `Categories: ${Object.entries(byIssue)
+            .filter(([, c]) => c > 0)
+            .map(([k, c]) => `${k}=${c}`)
+            .join(", ")}. ` +
+          `Use tenable.get_agent for details or tenable.bulk_unlink_agents to remove them.`
+        : `No agent health issues detected across ${full.length} agents with the current thresholds.`,
+    },
+  };
 }
 
 async function handleTenableListAgentGroups(params: Record<string, unknown>): Promise<ToolCallResult> {
@@ -9431,6 +9765,8 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "tenable.unlink_agent": handleTenableUnlinkAgent,
   "tenable.bulk_delete_agents": handleTenableBulkDeleteAgents,
   "tenable.bulk_unlink_agents": handleTenableBulkUnlinkAgents,
+  "tenable.review_duplicate_agents": handleTenableReviewDuplicateAgents,
+  "tenable.review_agent_health": handleTenableReviewAgentHealth,
   "tenable.list_agent_groups": handleTenableListAgentGroups,
   "tenable.create_agent_group": handleTenableCreateAgentGroup,
   "tenable.update_agent_group": handleTenableUpdateAgentGroup,
@@ -9710,7 +10046,7 @@ function shouldIndexToolResult(toolName: string, result: unknown): boolean {
   return true;
 }
 
-function ingestToolResult(toolName: string, result: unknown, userId: string): void {
+function ingestToolResult(toolName: string, params: Record<string, unknown>, result: unknown, userId: string): void {
   if (!shouldIndexToolResult(toolName, result)) return;
   const obj = result as Record<string, unknown>;
   const data = obj.data as Record<string, unknown> | undefined;
@@ -9746,17 +10082,23 @@ function ingestToolResult(toolName: string, result: unknown, userId: string): vo
   // the text path keeps ClaimKit's general retrieval working for fuzzy
   // queries that aren't entity-specific.
   const text = `${toolName} result:\n${JSON.stringify(data ?? obj, null, 2)}`;
-  claimKitAdapter
-    .ingest(text, {
-      source: `tool:${toolName}`,
-      toolName,
-      userId,
-      timestamp: new Date().toISOString(),
-      trustTier: "observed",
-    })
-    .catch(() => {
-      // Non-blocking: indexing failures must not break the tool flow
-    });
+  const paramsHash = hashCall(toolName, params);
+  const key = `tool:${toolName}:${paramsHash}:${userId}`;
+  const hash = hashContent(text);
+  if (ingestedIds.hasChanged(key, hash)) {
+    claimKitAdapter
+      .ingest(text, {
+        source: `tool:${toolName}`,
+        toolName,
+        userId,
+        timestamp: new Date().toISOString(),
+        trustTier: "observed",
+      })
+      .then(() => ingestedIds.add(key, hash))
+      .catch(() => {
+        // Non-blocking: indexing failures must not break the tool flow
+      });
+  }
 }
 
 async function handleProfileSwitch(
@@ -9843,6 +10185,17 @@ const IDENTICAL_CALL_THRESHOLD = 4; // 5th identical call within window is block
 const IDENTICAL_CALL_WINDOW_MS = 10 * 60_000;
 const MAX_GUARDRAIL_SESSIONS = 1000;
 
+// Some tools are intentionally polled with identical arguments because their
+// result changes over time (export status, health checks). Exempt them from
+// the identical-call guardrail so legitimate polling isn't blocked.
+const IDENTICAL_CALL_EXEMPT_TOOLS = new Set([
+  "tenable.get_vuln_export_status",
+  "tenable.get_asset_export_status",
+  "tenable.get_export_status",
+  "system.get_time",
+  "system.check_health",
+]);
+
 interface CallRecord {
   hash: string;
   timestamp: number;
@@ -9873,6 +10226,8 @@ function checkIdenticalCallGuardrail(
   toolName: string,
   params: Record<string, unknown>,
 ): { blocked: false } | { blocked: true; count: number; error: string } {
+  if (IDENTICAL_CALL_EXEMPT_TOOLS.has(toolName)) return { blocked: false };
+
   const hash = stableArgsHash(toolName, params);
   const now = Date.now();
   const horizon = now - IDENTICAL_CALL_WINDOW_MS;
@@ -9900,13 +10255,102 @@ function checkIdenticalCallGuardrail(
   return { blocked: false };
 }
 
+// ─── Repeated-failing-call guardrail ─────────────────────────────────
+// A stricter track of consecutive identical *failed* calls. Catches the
+// spiral where the model keeps retrying a broken command (e.g. system.exec
+// with a curl call that 401s) and ignores the failure signal. Successful
+// calls reset the counter for that hash.
+
+const FAILED_CALL_THRESHOLD = 2; // 3rd identical failure in window is blocked
+const FAILED_CALL_WINDOW_MS = 5 * 60_000;
+const MAX_FAILED_GUARDRAIL_SESSIONS = 1000;
+
+interface FailedCallRecord {
+  hash: string;
+  count: number;
+  firstFailureAt: number;
+  lastFailureAt: number;
+}
+
+const failedCallLog = new Map<string, FailedCallRecord[]>();
+
+function trimFailedGuardrailMemory(): void {
+  if (failedCallLog.size <= MAX_FAILED_GUARDRAIL_SESSIONS) return;
+  const oldest = failedCallLog.keys().next().value;
+  if (oldest !== undefined) failedCallLog.delete(oldest);
+}
+
+function pruneFailedRecords(records: FailedCallRecord[], now: number): FailedCallRecord[] {
+  const horizon = now - FAILED_CALL_WINDOW_MS;
+  return records.filter((r) => r.lastFailureAt >= horizon);
+}
+
+export function recordAndCheckFailedCall(
+  sessionKey: string,
+  toolName: string,
+  params: Record<string, unknown>,
+): { blocked: false } | { blocked: true; count: number; error: string } {
+  const hash = stableArgsHash(toolName, params);
+  const now = Date.now();
+
+  let records = failedCallLog.get(sessionKey) ?? [];
+  records = pruneFailedRecords(records, now);
+
+  const existing = records.find((r) => r.hash === hash);
+  if (existing) {
+    existing.count += 1;
+    existing.lastFailureAt = now;
+  } else {
+    records.push({ hash, count: 1, firstFailureAt: now, lastFailureAt: now });
+  }
+
+  failedCallLog.set(sessionKey, records);
+  trimFailedGuardrailMemory();
+
+  const record = records.find((r) => r.hash === hash)!;
+  if (record.count > FAILED_CALL_THRESHOLD) {
+    return {
+      blocked: true,
+      count: record.count,
+      error:
+        `Repeated-failure guardrail: '${toolName}' with the same arguments has failed ${record.count} times ` +
+        `in the last ${FAILED_CALL_WINDOW_MS / 1000}s. This usually means the approach is broken ` +
+        `(missing credentials, wrong path, malformed command). Stop repeating it. ` +
+        `Try a different tool, ask the user for guidance, or report that you cannot proceed.`,
+    };
+  }
+
+  return { blocked: false };
+}
+
+export function clearFailedCallRecord(
+  sessionKey: string,
+  toolName: string,
+  params: Record<string, unknown>,
+): void {
+  const hash = stableArgsHash(toolName, params);
+  const records = failedCallLog.get(sessionKey);
+  if (!records) return;
+  const filtered = records.filter((r) => r.hash !== hash);
+  if (filtered.length === 0) {
+    failedCallLog.delete(sessionKey);
+  } else {
+    failedCallLog.set(sessionKey, filtered);
+  }
+}
+
 /**
  * Test/maintenance hook — drops guardrail state for a session (or all
  * sessions when no key is passed).
  */
 export function resetIdenticalCallGuardrail(sessionKey?: string): void {
-  if (sessionKey) identicalCallLog.delete(sessionKey);
-  else identicalCallLog.clear();
+  if (sessionKey) {
+    identicalCallLog.delete(sessionKey);
+    failedCallLog.delete(sessionKey);
+  } else {
+    identicalCallLog.clear();
+    failedCallLog.clear();
+  }
 }
 
 /**
@@ -10208,7 +10652,40 @@ export async function dispatchToolCall(
       severity: result.success ? "info" : "warn",
     });
 
-    ingestToolResult(resolvedToolName, result, userId);
+    if (context?.sessionKey) {
+      if (result.success) {
+        // A successful identical call resets its failure streak so a later
+        // transient failure can be retried without instantly tripping the
+        // repeated-failure guardrail.
+        clearFailedCallRecord(context.sessionKey, resolvedToolName, params);
+      } else {
+        const failedGuard = recordAndCheckFailedCall(
+          context.sessionKey,
+          resolvedToolName,
+          params,
+        );
+        if (failedGuard.blocked) {
+          console.warn(
+            `[ToolDispatcher] repeated-failure guardrail blocked '${resolvedToolName}' (count=${failedGuard.count}) on session ${context.sessionKey}`,
+          );
+          return { success: false, error: failedGuard.error };
+        }
+      }
+    }
+
+    // Indexing tool results must NEVER overwrite a successful result with an
+    // ingestion error. If the dedupe store or ClaimKit ingest fails, log it but
+    // still return the real tool result to the model. The chat 2686e148 showed
+    // how a missing SQLite column in claimkit_ingestion.db turned every Tenable
+    // success into a fake "no such column" failure.
+    try {
+      ingestToolResult(resolvedToolName, params, result, userId);
+    } catch (ingestErr) {
+      console.warn(
+        `[ToolDispatcher] ingestToolResult failed for ${resolvedToolName} but result is still valid:`,
+        ingestErr instanceof Error ? ingestErr.message : ingestErr,
+      );
+    }
 
     return result;
   } catch (error) {
@@ -10221,6 +10698,21 @@ export async function dispatchToolCall(
       details: { params, error: message },
       severity: "error",
     });
+
+    if (context?.sessionKey) {
+      const failedGuard = recordAndCheckFailedCall(
+        context.sessionKey,
+        resolvedToolName,
+        params,
+      );
+      if (failedGuard.blocked) {
+        console.warn(
+          `[ToolDispatcher] repeated-failure guardrail blocked '${resolvedToolName}' (count=${failedGuard.count}) on session ${context.sessionKey}`,
+        );
+        return { success: false, error: failedGuard.error };
+      }
+    }
+
     return { success: false, error: message };
   }
 }

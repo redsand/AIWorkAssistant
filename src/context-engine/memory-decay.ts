@@ -232,6 +232,25 @@ export function selectMessages(
     addRequired(lastUserMsg);
   }
 
+  // Goal anchor: also force-include the chronologically FIRST user message
+  // in the current task window. Without this, multi-turn follow-ups like
+  // "keep going" / "i asked about X" lose the original goal — the first
+  // user message gets evicted because big tool outputs outscore it on
+  // effectiveWeight. Window is bounded to the last CURRENT_TASK_WINDOW
+  // messages so we don't surface an unrelated user message from way earlier.
+  const CURRENT_TASK_WINDOW = 20;
+  const windowStart = Math.max(0, maxIndex - CURRENT_TASK_WINDOW);
+  const firstUserInWindow = scored.find(
+    (s) => s.index >= windowStart && s.message.role === "user",
+  );
+  if (
+    firstUserInWindow &&
+    firstUserInWindow.index !== lastUserMsg?.index &&
+    !selectedIndices.has(firstUserInWindow.index)
+  ) {
+    addRequired(firstUserInWindow);
+  }
+
   for (const msg of otherMsgs) {
     if (selectedIndices.has(msg.index)) continue;
     addGroup(toolGroupFor(msg));

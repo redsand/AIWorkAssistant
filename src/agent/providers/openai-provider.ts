@@ -10,8 +10,10 @@ import {
 } from "./types";
 import { sanitizeToolName, repairToolMessagePairs } from "./tool-message-repair";
 import { aiRequestLimiter } from "./ai-request-limiter";
+import { env } from "../../config/env";
 
 const DEBUG = process.env.AICODER_DEBUG === "true";
+const MAX_RATE_LIMIT_SLEEP_MS = 300_000;
 
 const kToolNameMap = Symbol("toolNameMap");
 
@@ -122,6 +124,9 @@ export class OpenAIProvider extends AIProvider {
 
     let lastError: Error | null = null;
     const maxAttempts = this.config.maxRetries + 1;
+    let rateLimitedSince: number | null = null;
+    const rateLimitBudgetMs = env.AI_RATE_LIMIT_MAX_WAIT_MS;
+    let rateLimitAttempt = 0;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -210,12 +215,24 @@ export class OpenAIProvider extends AIProvider {
           }
 
           if (status === 429) {
-            if (attempt >= maxAttempts) {
-              throw new Error(`OpenAI API rate limited (429) on final attempt`);
+            // 429 = rate-limit, not failure. Loop until AI_RATE_LIMIT_MAX_WAIT_MS
+            // budget is exhausted, then throw.
+            rateLimitedSince ??= Date.now();
+            rateLimitAttempt++;
+            const totalWaited = Date.now() - rateLimitedSince;
+            if (totalWaited >= rateLimitBudgetMs) {
+              throw new Error(
+                `OpenAI API rate limited for ${Math.round(totalWaited / 1000)}s ` +
+                `(budget ${Math.round(rateLimitBudgetMs / 1000)}s exhausted)`,
+              );
             }
-            const delay = this.getRateLimitDelay(error, attempt);
-            if (DEBUG) console.warn(`[OpenAI] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
+            const delay = Math.min(this.getRateLimitDelay(error, rateLimitAttempt), MAX_RATE_LIMIT_SLEEP_MS);
+            if (DEBUG) console.warn(
+              `[OpenAI] Rate limited (429), waiting ${Math.round(delay)}ms ` +
+              `(throttled for ${Math.round(totalWaited / 1000)}s, budget ${Math.round(rateLimitBudgetMs / 1000)}s)`,
+            );
             await this.sleep(delay);
+            attempt--; // 429 retries don't consume attempt budget
             continue;
           }
 
@@ -256,6 +273,9 @@ export class OpenAIProvider extends AIProvider {
       const maxAttempts = this.config.maxRetries + 1;
       let lastError: Error | null = null;
       let response: any;
+      let streamRateLimitedSince: number | null = null;
+      const streamRateLimitBudgetMs = env.AI_RATE_LIMIT_MAX_WAIT_MS;
+      let streamRateLimitAttempt = 0;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
           response = await this.client.post("/chat/completions", requestBody, {
@@ -267,13 +287,20 @@ export class OpenAIProvider extends AIProvider {
           if (axios.isAxiosError(error)) {
             const status = error.response?.status;
             if (status === 429) {
-              if (attempt >= maxAttempts) {
-                throw new Error(`OpenAI API rate limited (429) on final attempt`);
+              streamRateLimitedSince ??= Date.now();
+              streamRateLimitAttempt++;
+              const totalWaited = Date.now() - streamRateLimitedSince;
+              if (totalWaited >= streamRateLimitBudgetMs) {
+                throw new Error(
+                  `OpenAI API rate limited for ${Math.round(totalWaited / 1000)}s ` +
+                  `(budget ${Math.round(streamRateLimitBudgetMs / 1000)}s exhausted)`,
+                );
               }
-              const delay = this.getRateLimitDelay(error, attempt);
-              if (DEBUG) console.warn(`[OpenAI] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
-              yield { type: "thinking" as const, content: `Rate limited by OpenAI API, retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${maxAttempts})...` };
+              const delay = Math.min(this.getRateLimitDelay(error, streamRateLimitAttempt), MAX_RATE_LIMIT_SLEEP_MS);
+              if (DEBUG) console.warn(`[OpenAI] Rate limited (429), waiting ${Math.round(delay)}ms (throttled for ${Math.round(totalWaited / 1000)}s)`);
+              yield { type: "thinking" as const, content: `Rate limited, waiting ${Math.round(delay / 1000)}s before retry…` };
               await this.sleep(delay);
+              attempt--;
               continue;
             }
             if (status && status >= 500) {

@@ -156,6 +156,40 @@ class JobTimeoutError extends Error {
   }
 }
 
+/**
+ * Classifies an error as transient/retryable. Used to decide whether to
+ * roll back assistant+tool messages on run failure: for retryable errors
+ * (rate limits, 5xx, network blips, timeouts), keep the partial state so
+ * a follow-up turn can continue with goal context intact. The repair
+ * passes (repairOrphanedToolCalls/repairConversationState) handle any
+ * dangling tool calls. Permanent errors (auth, validation, 400) still
+ * roll back to avoid poisoning the next request.
+ */
+function isRetryableTransientError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error instanceof JobTimeoutError) return true;
+  if (error instanceof ToolLoopLimitError) return true;
+  const msg = error.message.toLowerCase();
+  return (
+    msg.includes("rate limit") ||
+    msg.includes("rate-limited") ||
+    msg.includes("rate limited") ||
+    msg.includes("429") ||
+    msg.includes("throttle") ||
+    msg.includes("server error (5") ||
+    msg.includes(" 502 ") ||
+    msg.includes(" 503 ") ||
+    msg.includes(" 504 ") ||
+    msg.includes("timed out") ||
+    msg.includes("timeout") ||
+    msg.includes("econnreset") ||
+    msg.includes("etimedout") ||
+    msg.includes("econnrefused") ||
+    msg.includes("network") ||
+    msg.includes("socket hang up")
+  );
+}
+
 interface ProcessingJob {
   sessionId: string;
   status: "processing" | "completed" | "failed";
@@ -928,16 +962,10 @@ async function streamChatIteration(
  * sampling rate is enforced upstream when populating handle (see
  * context-packet.ts groundingHandle assignment).
  */
-/**
- * Per-document evidence size cap for shadow grounding. ClaimKit's
- * `ground()` ingests every evidence doc which triggers LLM calls for
- * claim extraction. With 12 docs at 5KB each, a single shadow-grounding
- * run could spawn dozens of LLM calls — load amplification that defeats
- * the "shadow" promise. 3K chars per doc keeps each ingestion fast.
- */
-const SHADOW_GROUND_DOC_CHARS = 3000;
-/** Total evidence size ceiling. */
-const SHADOW_GROUND_TOTAL_CHARS = 24000;
+/** Total evidence size ceiling derived from env limits. */
+const SHADOW_GROUND_TOTAL_CHARS =
+  env.CLAIMKIT_LIVE_GROUNDING_MAX_EVIDENCE_DOCS *
+  env.CLAIMKIT_LIVE_GROUNDING_MAX_CHARS_PER_DOC;
 /** Don't shadow-ground responses below this length — too little signal. */
 const SHADOW_GROUND_MIN_RESPONSE_CHARS = 40;
 
@@ -980,7 +1008,7 @@ function collectPreExtractedClaimsForGrounding(
   return claims;
 }
 
-async function runShadowGrounding(
+export async function runShadowGrounding(
   handle: GroundingHandle,
   responseText: string,
   sessionId: string,
@@ -994,13 +1022,15 @@ async function runShadowGrounding(
     // the ~30s ingest+extract LLM cycle inside ClaimKit's ground().
     const preExtracted = collectPreExtractedClaimsForGrounding(trimmedResponse);
 
-    // Standard path evidence: bounded per-doc and total to keep ingest
-    // cost predictable even when RAG returned huge docs.
+    // Standard path evidence: bounded per-doc, doc count, and total to
+    // keep ingest cost predictable even when RAG returned huge docs.
+    const maxEvidenceDocs = env.CLAIMKIT_LIVE_GROUNDING_MAX_EVIDENCE_DOCS;
+    const maxCharsPerDoc = env.CLAIMKIT_LIVE_GROUNDING_MAX_CHARS_PER_DOC;
     let remaining = SHADOW_GROUND_TOTAL_CHARS;
     const evidence: Array<{ title: string; content: string }> = [];
-    for (const e of handle.ragEvidence) {
+    for (const e of handle.ragEvidence.slice(0, maxEvidenceDocs)) {
       if (remaining <= 100) break;
-      const cap = Math.min(SHADOW_GROUND_DOC_CHARS, remaining);
+      const cap = Math.min(maxCharsPerDoc, remaining);
       const content = e.content.length > cap
         ? e.content.substring(0, cap) + "\n...[truncated for grounding]"
         : e.content;
@@ -1287,10 +1317,19 @@ async function runChatJob(
         context: { mode, requestedModel: model },
       });
       // Roll back any assistant/tool messages written during this failed run so
-      // the next request doesn't inherit orphaned conversation state.
-      try {
-        conversationManager.rollbackToCheckpoint(sessionId, conversationCheckpoint);
-      } catch (e) { console.error("[Chat/Job] Rollback failed:", e); }
+      // the next request doesn't inherit orphaned conversation state. Skip for
+      // transient errors (rate limits, 5xx, network) — keeping the partial
+      // assistant turn preserves the goal anchor so a follow-up turn ("keep
+      // going") doesn't strand the user with no model-side context.
+      if (!isRetryableTransientError(error)) {
+        try {
+          conversationManager.rollbackToCheckpoint(sessionId, conversationCheckpoint);
+        } catch (e) { console.error("[Chat/Job] Rollback failed:", e); }
+      } else {
+        console.warn(
+          `[Chat/Job] Transient error — keeping partial conversation state for session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
 
     // When cancelled (superseded by a new request), don't emit cleanup events.
@@ -1711,10 +1750,14 @@ export async function chatRoutes(fastify: FastifyInstance) {
         runId,
       });
       try { if (runId) agentRunDatabase.failRun(runId, error instanceof Error ? error.message : "Unknown error"); } catch (e) { console.error("[AgentRuns]", e); }
-      // Roll back any assistant/tool messages written during this failed request.
-      try {
-        if (sessionId) conversationManager.rollbackToCheckpoint(sessionId, conversationCheckpoint);
-      } catch (e) { console.error("[Chat] Rollback failed:", e); }
+      // Roll back any assistant/tool messages — but only if the error is not
+      // a transient/retryable one. Keeping partial state on retryable failures
+      // preserves goal context for the next turn.
+      if (!isRetryableTransientError(error)) {
+        try {
+          if (sessionId) conversationManager.rollbackToCheckpoint(sessionId, conversationCheckpoint);
+        } catch (e) { console.error("[Chat] Rollback failed:", e); }
+      }
       return {
         error: "Failed to process chat request",
         message: error instanceof Error ? error.message : "Unknown error",

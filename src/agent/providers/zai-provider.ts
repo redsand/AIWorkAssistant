@@ -12,6 +12,14 @@ import {
 import { sanitizeToolName, repairToolMessagePairs } from "./tool-message-repair";
 import { zaiRateLimiter } from "./zai-rate-limiter";
 import { aiRequestLimiter } from "./ai-request-limiter";
+import { env } from "../../config/env";
+
+// 429 is rate-limiting, not failure. Provider-level retry loops loop on 429
+// indefinitely (until this wallclock budget) so the user never sees a
+// "Sorry, rate limited" error for a transient throttle. Per-attempt sleep
+// is capped at MAX_RATE_LIMIT_SLEEP_MS so a wedged retry-after header can't
+// stall the request beyond a sane individual wait.
+const MAX_RATE_LIMIT_SLEEP_MS = 300_000;
 
 const kToolNameMap = Symbol("toolNameMap");
 
@@ -188,6 +196,11 @@ export class ZaiProvider extends AIProvider {
   ): Promise<ChatResponse> {
     let lastError: Error | null = null;
     const maxAttempts = this.config.maxRetries + 1;
+    // Tracks when the *first* 429 in this request was seen, so the wallclock
+    // budget covers the full throttle window even across many 429 cycles.
+    let rateLimitedSince: number | null = null;
+    const rateLimitBudgetMs = env.AI_RATE_LIMIT_MAX_WAIT_MS;
+    let rateLimitAttempt = 0;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -309,15 +322,27 @@ export class ZaiProvider extends AIProvider {
           }
 
           if (status === 429) {
-            if (attempt >= maxAttempts) {
-              throw new Error(`Z.ai API rate limited (429) on final attempt`);
+            // 429 is rate-limiting, not failure. Don't count it against
+            // maxAttempts — loop until AI_RATE_LIMIT_MAX_WAIT_MS budget
+            // is exhausted, then throw.
+            rateLimitedSince ??= Date.now();
+            rateLimitAttempt++;
+            const totalWaited = Date.now() - rateLimitedSince;
+            if (totalWaited >= rateLimitBudgetMs) {
+              throw new Error(
+                `Z.ai API rate limited for ${Math.round(totalWaited / 1000)}s ` +
+                `(budget ${Math.round(rateLimitBudgetMs / 1000)}s exhausted)`,
+              );
             }
-            const delay = this.getRateLimitDelay(error, attempt);
+            const delay = this.getRateLimitDelay(error, rateLimitAttempt);
             zaiRateLimiter.reportRateLimit(delay);
             console.warn(
-              `[Z.ai API] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`,
+              `[Z.ai API] Rate limited (429), waiting ${Math.round(delay)}ms ` +
+              `(throttled for ${Math.round(totalWaited / 1000)}s, budget ${Math.round(rateLimitBudgetMs / 1000)}s)`,
             );
             await this.sleep(delay, request.signal);
+            // Cancel the loop's attempt++ so the rate-limit retry is free.
+            attempt--;
             continue;
           }
 
@@ -362,6 +387,9 @@ export class ZaiProvider extends AIProvider {
   ): AsyncGenerator<string | StreamEvent, void, unknown> {
     const maxAttempts = this.config.maxRetries + 1;
     let lastError: Error | null = null;
+    let rateLimitedSince: number | null = null;
+    const rateLimitBudgetMs = env.AI_RATE_LIMIT_MAX_WAIT_MS;
+    let rateLimitAttempt = 0;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -426,14 +454,26 @@ export class ZaiProvider extends AIProvider {
           }
 
           if (response.status === 429) {
-            if (attempt >= maxAttempts) {
-              throw new Error(`Z.ai API rate limited (429) on final attempt: ${errorBody}`);
+            // 429 doesn't count toward maxAttempts — loop until the
+            // AI_RATE_LIMIT_MAX_WAIT_MS wallclock budget is exhausted.
+            rateLimitedSince ??= Date.now();
+            rateLimitAttempt++;
+            const totalWaited = Date.now() - rateLimitedSince;
+            if (totalWaited >= rateLimitBudgetMs) {
+              throw new Error(
+                `Z.ai API rate limited for ${Math.round(totalWaited / 1000)}s ` +
+                `(budget ${Math.round(rateLimitBudgetMs / 1000)}s exhausted)`,
+              );
             }
-            const delay = this.getStreamRateLimitDelay(response.headers, attempt);
+            const delay = this.getStreamRateLimitDelay(response.headers, rateLimitAttempt);
             zaiRateLimiter.reportRateLimit(delay);
-            console.warn(`[Z.ai API] Rate limited (429), waiting ${Math.round(delay)}ms before attempt ${attempt + 1}/${maxAttempts}`);
-            yield { type: "thinking" as const, content: `Rate limited by Z.ai API, retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${maxAttempts})...` };
+            console.warn(
+              `[Z.ai API] Rate limited (429), waiting ${Math.round(delay)}ms ` +
+              `(throttled for ${Math.round(totalWaited / 1000)}s, budget ${Math.round(rateLimitBudgetMs / 1000)}s)`,
+            );
+            yield { type: "thinking" as const, content: `Rate limited, waiting ${Math.round(delay / 1000)}s before retry…` };
             await this.sleep(delay, request.signal);
+            attempt--; // 429 retries are free
             continue;
           }
 
@@ -633,19 +673,21 @@ export class ZaiProvider extends AIProvider {
   }
 
   private getStreamRateLimitDelay(headers: Record<string, unknown> | undefined, attempt: number): number {
-    const maxDelay = 60000;
+    // Honor retry-after up to MAX_RATE_LIMIT_SLEEP_MS so the server can ask
+    // for long waits (multi-minute throttles are normal on shared tiers).
+    // The old 60s cap force-retried into the same limit and burned attempts.
     const retryAfter = headers?.["retry-after"];
     if (retryAfter) {
       const seconds = Number(retryAfter);
       if (!isNaN(seconds) && seconds > 0) {
-        return Math.min(seconds * 1000 + Math.random() * 500, maxDelay);
+        return Math.min(seconds * 1000 + Math.random() * 500, MAX_RATE_LIMIT_SLEEP_MS);
       }
     }
 
     const baseDelay = 10000;
     const exponentialDelay = Math.min(
-      baseDelay * Math.pow(2, attempt - 1),
-      maxDelay,
+      baseDelay * Math.pow(2, Math.min(attempt - 1, 5)),
+      MAX_RATE_LIMIT_SLEEP_MS,
     );
     const jitter = Math.random() * 8000;
     return exponentialDelay + jitter;

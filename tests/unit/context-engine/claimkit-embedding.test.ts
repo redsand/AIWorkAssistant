@@ -139,16 +139,16 @@ describe("ClaimKitEmbeddingAdapter", () => {
       );
     });
 
-    it("updates dimensions from actual embedding result", async () => {
+    it("keeps constructor dimensions even when actual result differs", async () => {
       const shortEmbedding = new Array(384).fill(0.5);
       mockEmbed.mockResolvedValue({ embedding: shortEmbedding, model: "all-minilm", provider: "ollama" });
 
       expect(adapter.dimensions).toBe(1536);
       await adapter.embed("test");
-      expect(adapter.dimensions).toBe(384);
+      expect(adapter.dimensions).toBe(1536);
     });
 
-    it("does not update dimensions again once detected with same value", async () => {
+    it("does not change dimensions across repeated embed calls", async () => {
       const embedding1 = new Array(1536).fill(0.1);
       const embedding2 = new Array(1536).fill(0.2);
       mockEmbed
@@ -161,7 +161,8 @@ describe("ClaimKitEmbeddingAdapter", () => {
       expect(adapter.dimensions).toBe(1536);
     });
 
-    it("updates dimensions when detected value changes", async () => {
+    it("logs a warning but keeps constructor dimensions when detected value changes", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       const emb1 = new Array(1536).fill(0.1);
       const emb2 = new Array(768).fill(0.2);
       mockEmbed
@@ -171,7 +172,9 @@ describe("ClaimKitEmbeddingAdapter", () => {
       await adapter.embed("first");
       expect(adapter.dimensions).toBe(1536);
       await adapter.embed("second");
-      expect(adapter.dimensions).toBe(768);
+      expect(adapter.dimensions).toBe(1536);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Dimension mismatch"));
+      warnSpy.mockRestore();
     });
   });
 
@@ -228,7 +231,7 @@ describe("ClaimKitEmbeddingAdapter", () => {
       );
     });
 
-    it("updates dimensions from each batch result", async () => {
+    it("keeps constructor dimensions for each batch result", async () => {
       const emb1 = new Array(768).fill(0.1);
       const emb2 = new Array(768).fill(0.2);
       mockEmbedBatch.mockResolvedValue([
@@ -238,10 +241,11 @@ describe("ClaimKitEmbeddingAdapter", () => {
 
       await adapter.embedBatch(["a", "b"]);
 
-      expect(adapter.dimensions).toBe(768);
+      expect(adapter.dimensions).toBe(1536);
     });
 
-    it("updates dimensions when a batch result has different dimensions than initial guess", async () => {
+    it("logs a warning but keeps constructor dimensions when a batch result has different dimensions", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       const emb = new Array(3072).fill(0.5);
       mockEmbedBatch.mockResolvedValue([
         { embedding: emb, model: "m1", provider: "p1" },
@@ -249,7 +253,9 @@ describe("ClaimKitEmbeddingAdapter", () => {
 
       expect(adapter.dimensions).toBe(1536);
       await adapter.embedBatch(["text"]);
-      expect(adapter.dimensions).toBe(3072);
+      expect(adapter.dimensions).toBe(1536);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Dimension mismatch"));
+      warnSpy.mockRestore();
     });
   });
 });

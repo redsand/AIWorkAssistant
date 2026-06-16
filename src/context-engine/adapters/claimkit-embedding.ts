@@ -23,7 +23,6 @@ function guessDimensions(model: string | undefined): number {
 
 export class ClaimKitEmbeddingAdapter implements EmbeddingAdapter {
   private _dimensions: number;
-  private _detected = false;
 
   constructor(dimensionsOverride?: number) {
     this._dimensions = dimensionsOverride ?? guessDimensions(env.RAG_EMBEDDING_MODEL);
@@ -53,7 +52,7 @@ export class ClaimKitEmbeddingAdapter implements EmbeddingAdapter {
         }`,
       );
     }
-    this.recordDimensions(result.embedding.length);
+    this.guardDimension(result.embedding.length);
     return result.embedding;
   }
 
@@ -69,16 +68,18 @@ export class ClaimKitEmbeddingAdapter implements EmbeddingAdapter {
           `[ClaimKitEmbedding] Batch embed[${i}] failed for provider=${info.provider}`,
         );
       }
-      this.recordDimensions(r.embedding.length);
+      this.guardDimension(r.embedding.length);
       embeddings.push(r.embedding);
     }
     return embeddings;
   }
 
-  private recordDimensions(dim: number): void {
-    if (!this._detected || dim !== this._dimensions) {
-      this._dimensions = dim;
-      this._detected = true;
+  private guardDimension(dim: number): void {
+    if (dim !== this._dimensions) {
+      console.warn(
+        `[ClaimKitEmbedding] Dimension mismatch: expected ${this._dimensions}, got ${dim}. ` +
+          `Ignoring the mismatch to keep vector store consistent.`,
+      );
     }
   }
 }

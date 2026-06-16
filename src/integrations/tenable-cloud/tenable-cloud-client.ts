@@ -133,9 +133,40 @@ export class TenableCloudClient {
 
   // ── Assets ─────────────────────────────────────────────────────────────────
 
-  async listAssets(opts?: TenableRequestOptions): Promise<TenableAsset[]> {
-    const r = await this.http.get("/assets", { headers: this.headers(opts) });
+  async listAssets(
+    params: { limit?: number; offset?: number } = {},
+    opts?: TenableRequestOptions,
+  ): Promise<TenableAsset[]> {
+    const query: Record<string, number> = {};
+    if (typeof params.limit === "number" && params.limit > 0) {
+      query.limit = params.limit;
+    }
+    if (typeof params.offset === "number" && params.offset >= 0) {
+      query.offset = params.offset;
+    }
+    const r = await this.http.get("/assets", {
+      headers: this.headers(opts),
+      params: query,
+    });
     return r.data.assets ?? [];
+  }
+
+  /**
+   * Walk every page of the /assets endpoint. Needed when the caller is
+   * searching for a specific host that may not be on the first page.
+   */
+  async listAllAssets(opts?: TenableRequestOptions): Promise<TenableAsset[]> {
+    const all: TenableAsset[] = [];
+    const pageSize = 10000; // Tenable maximum
+    let offset = 0;
+    while (true) {
+      const page = await this.listAssets({ limit: pageSize, offset }, opts);
+      if (page.length === 0) break;
+      all.push(...page);
+      if (page.length < pageSize) break;
+      offset += pageSize;
+    }
+    return all;
   }
 
   async getAsset(assetId: string, opts?: TenableRequestOptions): Promise<TenableAsset> {
@@ -489,6 +520,21 @@ export class TenableCloudClient {
   async listAgents(params: { offset?: number; limit?: number } = {}, opts?: TenableRequestOptions): Promise<{ agents: TenableAgent[]; pagination: unknown }> {
     const r = await this.http.get("/agents", { headers: this.headers(opts), params });
     return r.data;
+  }
+
+  async listAllAgents(opts?: TenableRequestOptions): Promise<TenableAgent[]> {
+    const all: TenableAgent[] = [];
+    const pageSize = 10000;
+    let offset = 0;
+    while (true) {
+      const page = await this.listAgents({ limit: pageSize, offset }, opts);
+      const agents = page.agents ?? [];
+      if (agents.length === 0) break;
+      all.push(...agents);
+      if (agents.length < pageSize) break;
+      offset += pageSize;
+    }
+    return all;
   }
 
   async getAgent(agentId: number, opts?: TenableRequestOptions): Promise<TenableAgent> {

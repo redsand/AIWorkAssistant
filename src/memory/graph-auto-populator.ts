@@ -59,6 +59,29 @@ const RELATIONSHIP_ATTRIBUTES: Record<string, KGEdgeType> = {
 const REVERSE_DIRECTION_ATTRIBUTES = new Set(["blocked_by"]);
 
 /**
+ * Entity types that should NEVER become KG nodes via auto-population.
+ *
+ * These come from high-volume polling sources (helpdesk tickets, CI pipelines)
+ * where every cycle would otherwise mint a fresh KG node — bloating the graph
+ * and forcing ClaimKit to re-run LLM extraction over hundreds of low-signal
+ * "requirements" on every server restart.
+ *
+ * Why: jitbit produced 166 `requirement` nodes from alert tickets, which
+ * blocked server.listen() for ~90min/start as ClaimKit re-ingested them.
+ * How to apply: keep facts in entity-memory (they're cheap there) but don't
+ * promote ticket/pipeline entities to the KG layer.
+ */
+const KG_AUTOPOPULATE_BLOCKED_TYPES = new Set<string>(["ticket", "pipeline"]);
+
+/**
+ * Entity sources that should NEVER become KG nodes via auto-population,
+ * regardless of entity type. Same rationale as KG_AUTOPOPULATE_BLOCKED_TYPES
+ * but keyed on source so future helpdesk integrations are covered without
+ * touching mapEntityType.
+ */
+const KG_AUTOPOPULATE_BLOCKED_SOURCES = new Set<string>(["jitbit"]);
+
+/**
  * Ensure a knowledge graph node exists for the given entity-memory entity.
  * If a matching node already exists (by title or entityName metadata),
  * this is a no-op (deduplication).
@@ -68,6 +91,11 @@ const REVERSE_DIRECTION_ATTRIBUTES = new Set(["blocked_by"]);
  * that already exist in the graph.
  */
 export function autoPopulateFromEntity(entity: MemoryEntity): void {
+  // 0. Drop high-volume / low-signal sources before they hit the KG.
+  //    These stay in entity-memory (cheap) but never become KG nodes.
+  if (KG_AUTOPOPULATE_BLOCKED_TYPES.has(entity.type)) return;
+  if (KG_AUTOPOPULATE_BLOCKED_SOURCES.has(entity.source)) return;
+
   // 1. Check if node already exists (search by entity name in title).
   const existing = knowledgeGraph.queryNodes({ search: entity.name, limit: 5 });
   const match = existing.find(

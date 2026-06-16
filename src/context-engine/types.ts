@@ -206,6 +206,10 @@ export const DEFAULT_RERANK_OPTIONS: RerankOptions = {
   diversityPenalty: 0.1,
 };
 
+// V1 fractions sum to 1.2 and several sections emitted by context-packet.ts
+// are not budgeted (they get Infinity in enforceBudget). V2 adds explicit
+// slots for every section and rebalances to exactly 1.0. Enable with
+// CONTEXT_PACKET_V2_BUDGET=true after validating on live traffic.
 export const DEFAULT_SLOT_DEFINITIONS: BudgetSlotDefinition[] = [
   { name: "system", priority: 100, fraction: 0.3, overflowTarget: "history" },
   { name: "history", priority: 80, fraction: 0.35, overflowTarget: "documents" },
@@ -219,6 +223,26 @@ export const DEFAULT_SLOT_DEFINITIONS: BudgetSlotDefinition[] = [
   { name: "entity_claims", priority: 70, fraction: 0.05, overflowTarget: "claimkit_evidence" },
   { name: "health", priority: 20, fraction: 0.05, overflowTarget: null },
 ];
+
+export const V2_SLOT_DEFINITIONS: BudgetSlotDefinition[] = [
+  { name: "system", priority: 100, fraction: 0.18, overflowTarget: "history" },
+  { name: "history", priority: 80, fraction: 0.23, overflowTarget: "documents" },
+  { name: "documents", priority: 60, fraction: 0.18, overflowTarget: "graph" },
+  { name: "claimkit_evidence", priority: 55, fraction: 0.12, overflowTarget: "documents" },
+  { name: "entity_claims", priority: 70, fraction: 0.08, overflowTarget: "claimkit_evidence" },
+  { name: "graph", priority: 40, fraction: 0.07, overflowTarget: "health" },
+  { name: "recent_sessions", priority: 35, fraction: 0.04, overflowTarget: "graph" },
+  { name: "health", priority: 20, fraction: 0.03, overflowTarget: null },
+  { name: "skills", priority: 30, fraction: 0.02, overflowTarget: "documents" },
+  { name: "recent_reflections", priority: 25, fraction: 0.02, overflowTarget: "agent_memory" },
+  { name: "agent_memory", priority: 45, fraction: 0.01, overflowTarget: "history" },
+  { name: "user_profile", priority: 45, fraction: 0.01, overflowTarget: "history" },
+  { name: "soul", priority: 110, fraction: 0.01, overflowTarget: "system" },
+];
+
+export function getSlotDefinitions(v2 = false): BudgetSlotDefinition[] {
+  return v2 ? V2_SLOT_DEFINITIONS : DEFAULT_SLOT_DEFINITIONS;
+}
 
 export interface Community {
   id: string;

@@ -1,4 +1,5 @@
 import { claimKitAdapter } from "./adapters/claimkit-adapter";
+import { ingestedIds, hashContent } from "./claimkit-ingestion";
 import { tenableCloudService } from "../integrations/tenable-cloud/tenable-cloud-service";
 import { jiraClient } from "../integrations/jira/jira-client";
 import { hawkIrService } from "../integrations/hawk-ir/hawk-ir-service";
@@ -10,8 +11,6 @@ export interface IntegrationIngestionStats {
   errors: number;
   durationMs: number;
 }
-
-const ingestedKeys = new Set<string>();
 
 function makeKey(source: string, id: string): string {
   return `${source}:${id}`;
@@ -25,7 +24,9 @@ async function ingestIfNew(
   metadata: Record<string, unknown>,
 ): Promise<boolean> {
   const key = makeKey(source, id);
-  if (ingestedKeys.has(key)) return false;
+  const updatedAt = typeof metadata.updated === "string" ? metadata.updated : undefined;
+  const hash = hashContent(content);
+  if (!ingestedIds.hasChanged(key, hash, updatedAt)) return false;
   if (!claimKitAdapter.isAvailable()) return false;
 
   try {
@@ -35,7 +36,7 @@ async function ingestIfNew(
       trustTier: "curated",
       ...metadata,
     });
-    ingestedKeys.add(key);
+    ingestedIds.add(key, hash, updatedAt);
     return true;
   } catch (err) {
     console.warn(`[IntegrationIngestion] Failed to ingest ${key}:`, err instanceof Error ? err.message : err);

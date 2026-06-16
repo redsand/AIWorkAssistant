@@ -557,12 +557,14 @@ async function start() {
       stopPollingEngine();
       await cronEngine.stop();
       await gatewayEngine.stop();
+      await claimKitAdapter.close();
       process.exit(0);
     });
     process.on("SIGINT", async () => {
       stopPollingEngine();
       await cronEngine.stop();
       await gatewayEngine.stop();
+      await claimKitAdapter.close();
       process.exit(0);
     });
 

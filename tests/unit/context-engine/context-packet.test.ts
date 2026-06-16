@@ -71,6 +71,8 @@ vi.doMock("../../../src/config/env", () => ({
     CLAIMKIT_QUERY_TIMEOUT_MS: 120000,
     CLAIMKIT_INIT_TIMEOUT_MS: 5000,
     CLAIMKIT_AWAIT_SEED: true,
+    CLAIMKIT_ROUTE_HIGH_CONFIDENCE: 0.5,
+    CLAIMKIT_ROUTE_LOW_CONFIDENCE: 0.3,
   },
 }));
 
@@ -139,7 +141,10 @@ describe("assembleContextPacket - ClaimKit integration", () => {
   it("should still call query() when taking the isAvailable fast path", async () => {
     mockClaimKitAdapter.isAvailable.mockReturnValue(true);
     await assembleContextPacket(baseParams);
-    expect(mockClaimKitAdapter.query).toHaveBeenCalledWith(baseParams.query);
+    expect(mockClaimKitAdapter.query).toHaveBeenCalledWith(
+      baseParams.query,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it("should call claimKitAdapter.query() when ClaimKit is available", async () => {
@@ -147,7 +152,10 @@ describe("assembleContextPacket - ClaimKit integration", () => {
 
     await assembleContextPacket(baseParams);
 
-    expect(mockClaimKitAdapter.query).toHaveBeenCalledWith(baseParams.query);
+    expect(mockClaimKitAdapter.query).toHaveBeenCalledWith(
+      baseParams.query,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it("should include claimkit_evidence section in the packet sections", async () => {

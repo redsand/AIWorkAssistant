@@ -1,3 +1,7 @@
+import path from "path";
+import fs from "fs";
+import { createHash } from "node:crypto";
+import Database from "better-sqlite3";
 import { claimKitAdapter } from "./adapters/claimkit-adapter";
 import { knowledgeStore } from "../agent/knowledge-store";
 import type { KnowledgeEntry } from "../agent/knowledge-store";
@@ -7,6 +11,7 @@ import { knowledgeGraph } from "../agent/knowledge-graph";
 import type { KGNode, KGEdge } from "../agent/knowledge-graph";
 import type { RelationshipClaim, ScoredDocument } from "./types";
 import { env } from "../config/env";
+import { embeddingService } from "../agent/embedding-service";
 
 export interface IngestionStats {
   total: number;
@@ -17,7 +22,150 @@ export interface IngestionStats {
   durationMs: number;
 }
 
-const ingestedIds = new Set<string>();
+export function hashContent(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex").substring(0, 32);
+}
+
+// Persistent dedupe for ClaimKit ingestion. Previously this was an in-memory
+// Set, which forced a re-ingest of every store entry on every server restart —
+// each entry costs one LLM extraction call, so a few hundred entries blocked
+// server.listen() for tens of minutes. The key embeds the embedding model
+// because switching models invalidates the vector store and requires a re-ingest.
+// See [[ollama-multi-process-instability]] for the original startup-hang
+// investigation that led here.
+export class IngestionDedupeStore {
+  private db: Database.Database | null = null;
+  private memory: Map<string, { hash: string | null; updatedAt: string | null }> = new Map();
+
+  private getDb(): Database.Database | null {
+    if (this.db) return this.db;
+    // Under vitest / explicit test runs, stay in-memory so per-test
+    // vi.resetModules() actually gives each test a fresh dedupe state.
+    if (process.env.VITEST || process.env.NODE_ENV === "test") return null;
+    try {
+      const dbFile = path.join(path.resolve(process.cwd(), "data"), "claimkit_ingestion.db");
+      const dir = path.dirname(dbFile);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const db = new Database(dbFile);
+      db.pragma("journal_mode = WAL");
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ingested (
+          key TEXT NOT NULL,
+          embed_model TEXT NOT NULL,
+          content_hash TEXT,
+          updated_at TEXT,
+          ingested_at TEXT NOT NULL,
+          PRIMARY KEY (key, embed_model)
+        );
+      `);
+
+      // Migrate older DBs created before content_hash/updated_at columns were added.
+      // CREATE TABLE IF NOT EXISTS leaves existing tables untouched, so we ALTER them.
+      const columns = db
+        .prepare("SELECT name FROM pragma_table_info('ingested')")
+        .all() as { name: string }[];
+      const columnNames = new Set(columns.map((c) => c.name));
+      if (!columnNames.has("content_hash")) {
+        db.exec(`ALTER TABLE ingested ADD COLUMN content_hash TEXT;`);
+      }
+      if (!columnNames.has("updated_at")) {
+        db.exec(`ALTER TABLE ingested ADD COLUMN updated_at TEXT;`);
+      }
+
+      this.db = db;
+      return db;
+    } catch (err) {
+      console.warn("[ClaimKit Ingestion] Dedupe store unavailable, using in-memory fallback:", err);
+      return null;
+    }
+  }
+
+  private currentModel(): string {
+    // Must match ClaimKit's vector-store namespace so the dedupe invalidates
+    // automatically when the embedding model changes (which flushes the store).
+    // embeddingService settles its provider/model during ClaimKit init, before
+    // ingestion runs, so this is reliable here.
+    try {
+      const info = embeddingService.getProviderInfo();
+      if (info?.model) return info.model;
+    } catch {
+      // fall through
+    }
+    try {
+      return env.RAG_EMBEDDING_MODEL || "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
+
+  private makeKey(key: string): { key: string; model: string } {
+    return { key, model: this.currentModel() };
+  }
+
+  /**
+   * Check whether this key has already been ingested with the same content hash.
+   * If `updatedAt` is provided and is newer than the stored `updated_at`, or if
+   * the hash differs, returns true so the caller can re-ingest.
+   */
+  hasChanged(key: string, hash?: string, updatedAt?: string): boolean {
+    const { key: fullKey, model } = this.makeKey(key);
+    const cached = this.memory.get(fullKey);
+    if (cached !== undefined) {
+      return this.isChanged(cached, hash, updatedAt);
+    }
+    const db = this.getDb();
+    if (!db) return true; // no persistence → assume changed
+    const row = db
+      .prepare("SELECT content_hash, updated_at FROM ingested WHERE key = ? AND embed_model = ?")
+      .get(fullKey, model) as { content_hash: string | null; updated_at: string | null } | undefined;
+    if (!row) return true;
+    const stored = { hash: row.content_hash ?? null, updatedAt: row.updated_at ?? null };
+    this.memory.set(fullKey, stored);
+    return this.isChanged(stored, hash, updatedAt);
+  }
+
+  private isChanged(
+    stored: { hash: string | null; updatedAt: string | null },
+    hash?: string,
+    updatedAt?: string,
+  ): boolean {
+    if (hash !== undefined && stored.hash !== hash) return true;
+    if (updatedAt !== undefined && stored.updatedAt !== null) {
+      return new Date(updatedAt) > new Date(stored.updatedAt);
+    }
+    return false;
+  }
+
+  /** Legacy boolean check: present and unchanged. */
+  has(key: string): boolean {
+    return !this.hasChanged(key);
+  }
+
+  /**
+   * Record that a key has been ingested. Pass the content hash and upstream
+   * updated-at timestamp so future calls to hasChanged() can detect changes.
+   */
+  add(key: string, hash?: string, updatedAt?: string): void {
+    const { key: fullKey, model } = this.makeKey(key);
+    this.memory.set(fullKey, { hash: hash ?? "", updatedAt: updatedAt ?? null });
+    const db = this.getDb();
+    if (!db) return;
+    try {
+      db.prepare(
+        "INSERT OR REPLACE INTO ingested (key, embed_model, content_hash, updated_at, ingested_at) VALUES (?, ?, ?, ?, ?)",
+      ).run(fullKey, model, hash ?? null, updatedAt ?? null, new Date().toISOString());
+    } catch (err) {
+      console.warn("[ClaimKit Ingestion] Failed to persist dedupe key:", err);
+    }
+  }
+
+  // For tests: clear in-memory state without touching disk.
+  resetMemory(): void {
+    this.memory.clear();
+  }
+}
+
+export const ingestedIds = new IngestionDedupeStore();
 
 function buildRelationshipClaim(
   edge: KGEdge,
@@ -50,24 +198,24 @@ async function ingestDocument(
   stats: IngestionStats,
 ): Promise<void> {
   const key = `scored-doc:${doc.source}:${doc.id}`;
-  if (ingestedIds.has(key)) {
+  const sourceDetail = doc.source === "codebase"
+    ? `${doc.metadata.filePath ?? doc.title}:${doc.metadata.startLine ?? ""}-${doc.metadata.endLine ?? ""}`
+    : doc.title;
+  const text = [
+    `Source type: ${doc.source}`,
+    `Title: ${doc.title}`,
+    `Location: ${sourceDetail}`,
+    `Matched query: ${query}`,
+    "",
+    doc.content,
+  ].join("\n");
+  const hash = hashContent(text);
+  if (!ingestedIds.hasChanged(key, hash)) {
     stats.skipped++;
     return;
   }
 
   try {
-    const sourceDetail = doc.source === "codebase"
-      ? `${doc.metadata.filePath ?? doc.title}:${doc.metadata.startLine ?? ""}-${doc.metadata.endLine ?? ""}`
-      : doc.title;
-    const text = [
-      `Source type: ${doc.source}`,
-      `Title: ${doc.title}`,
-      `Location: ${sourceDetail}`,
-      `Matched query: ${query}`,
-      "",
-      doc.content,
-    ].join("\n");
-
     const { sourceId } = await claimKitAdapter.ingest(text, {
       docId: doc.id,
       title: doc.title,
@@ -80,7 +228,7 @@ async function ingestDocument(
 
     stats.sourceIds.push(sourceId);
     stats.ingested++;
-    ingestedIds.add(key);
+    ingestedIds.add(key, hash);
   } catch (err) {
     console.warn(`[ClaimKit Ingestion] Failed to ingest scored document ${doc.id}:`, err);
     stats.errors++;
@@ -90,6 +238,7 @@ async function ingestDocument(
 async function runWithConcurrencyLimit<T>(
   items: T[],
   limit: number,
+  signal: AbortSignal | undefined,
   fn: (item: T) => Promise<void>,
 ): Promise<void> {
   const queue = items.slice();
@@ -98,6 +247,7 @@ async function runWithConcurrencyLimit<T>(
     workers.push(
       (async () => {
         while (queue.length > 0) {
+          if (signal?.aborted) return;
           const item = queue.shift()!;
           await fn(item);
         }
@@ -109,7 +259,6 @@ async function runWithConcurrencyLimit<T>(
 
 export async function ingestSingleKnowledgeEntry(entry: KnowledgeEntry): Promise<void> {
   if (!claimKitAdapter.isAvailable()) return;
-  if (ingestedIds.has(`knowledge:${entry.id}`)) return;
 
   // Safeguard: when RAG_INCLUDE_LOCAL_SOURCES is off, never push
   // file_read content (the agent calling local.read_file in chat) into
@@ -121,6 +270,9 @@ export async function ingestSingleKnowledgeEntry(entry: KnowledgeEntry): Promise
 
   try {
     const text = `${entry.title}\n\n${entry.content}`;
+    const key = `knowledge:${entry.id}`;
+    const hash = hashContent(text);
+    if (!ingestedIds.hasChanged(key, hash)) return;
     await claimKitAdapter.ingest(text, {
       docId: entry.id,
       title: entry.title,
@@ -128,7 +280,7 @@ export async function ingestSingleKnowledgeEntry(entry: KnowledgeEntry): Promise
       trustTier: "curated",
       tags: entry.tags ?? [],
     });
-    ingestedIds.add(`knowledge:${entry.id}`);
+    ingestedIds.add(key, hash);
   } catch (err) {
     console.warn(`[ClaimKit Ingestion] Failed to ingest doc ${entry.id}:`, err);
   }
@@ -138,6 +290,7 @@ export async function ingestScoredDocumentsForQuery(
   docs: ScoredDocument[],
   query: string,
   limit: number,
+  signal?: AbortSignal,
 ): Promise<IngestionStats> {
   const start = Date.now();
   const stats: IngestionStats = { total: 0, ingested: 0, skipped: 0, errors: 0, sourceIds: [], durationMs: 0 };
@@ -152,7 +305,7 @@ export async function ingestScoredDocumentsForQuery(
   stats.total = selected.length;
 
   const concurrency = Math.max(1, env.AI_MAX_CONCURRENT);
-  await runWithConcurrencyLimit(selected, concurrency, (doc) => ingestDocument(doc, query, stats));
+  await runWithConcurrencyLimit(selected, concurrency, signal, (doc) => ingestDocument(doc, query, stats));
 
   stats.durationMs = Date.now() - start;
   if (stats.ingested > 0 || stats.errors > 0) {
@@ -176,11 +329,13 @@ export async function ingestCodebaseStore(): Promise<IngestionStats> {
   for (const file of files) {
     try {
       const key = `codebase:${file.path}`;
-      if (ingestedIds.has(key)) {
+      const text = `File: ${file.path}\n\n${file.content}`;
+      const hash = hashContent(text);
+      if (!ingestedIds.hasChanged(key, hash)) {
         stats.skipped++;
         continue;
       }
-      const { sourceId } = await claimKitAdapter.ingest(`File: ${file.path}\n\n${file.content}`, {
+      const { sourceId } = await claimKitAdapter.ingest(text, {
         path: file.path,
         title: file.path,
         source: "codebase",
@@ -189,7 +344,7 @@ export async function ingestCodebaseStore(): Promise<IngestionStats> {
       });
       stats.sourceIds.push(sourceId);
       stats.ingested++;
-      ingestedIds.add(key);
+      ingestedIds.add(key, hash);
     } catch (err) {
       console.warn(`[ClaimKit Ingestion] Failed to ingest file ${file.path}:`, err);
       stats.errors++;
@@ -203,17 +358,20 @@ export async function ingestCodebaseStore(): Promise<IngestionStats> {
 
 export async function ingestSingleCodebaseFile(file: IndexedFile): Promise<void> {
   if (!claimKitAdapter.isAvailable()) return;
-  if (ingestedIds.has(`codebase:${file.path}`)) return;
 
   try {
-    await claimKitAdapter.ingest(`File: ${file.path}\n\n${file.content}`, {
+    const text = `File: ${file.path}\n\n${file.content}`;
+    const key = `codebase:${file.path}`;
+    const hash = hashContent(text);
+    if (!ingestedIds.hasChanged(key, hash)) return;
+    await claimKitAdapter.ingest(text, {
       path: file.path,
       title: file.path,
       source: "codebase",
       language: file.language,
       trustTier: "curated",
     });
-    ingestedIds.add(`codebase:${file.path}`);
+    ingestedIds.add(key, hash);
   } catch (err) {
     console.warn(`[ClaimKit Ingestion] Failed to ingest file ${file.path}:`, err);
   }
@@ -222,17 +380,19 @@ export async function ingestSingleCodebaseFile(file: IndexedFile): Promise<void>
 
 export async function ingestSingleGraphNode(node: KGNode): Promise<void> {
   if (!claimKitAdapter.isAvailable()) return;
-  if (ingestedIds.has(`graph-node:${node.id}`)) return;
 
   try {
     const text = `Entity: ${node.title} (${node.type})\n${node.content}\nContext: ${node.context ?? "N/A"}\nStatus: ${node.status}`;
+    const key = `graph-node:${node.id}`;
+    const hash = hashContent(text);
+    if (!ingestedIds.hasChanged(key, hash)) return;
     await claimKitAdapter.ingest(text, {
       entityId: node.id,
       entityType: node.type,
       source: "graph",
       trustTier: "curated",
     });
-    ingestedIds.add(`graph-node:${node.id}`);
+    ingestedIds.add(key, hash);
   } catch (err) {
     console.warn(`[ClaimKit Ingestion] Failed to ingest node ${node.id}:`, err);
   }
@@ -240,13 +400,15 @@ export async function ingestSingleGraphNode(node: KGNode): Promise<void> {
 
 export async function ingestSingleGraphEdge(edge: KGEdge): Promise<void> {
   if (!claimKitAdapter.isAvailable()) return;
-  if (ingestedIds.has(`graph-edge:${edge.id}`)) return;
 
   try {
     const sourceNode = knowledgeGraph.getNode(edge.sourceId);
     const targetNode = knowledgeGraph.getNode(edge.targetId);
     const relationshipClaim = buildRelationshipClaim(edge, sourceNode, targetNode);
     const text = formatRelationshipClaim(relationshipClaim, edge.description);
+    const key = `graph-edge:${edge.id}`;
+    const hash = hashContent(text);
+    if (!ingestedIds.hasChanged(key, hash)) return;
     await claimKitAdapter.ingest(text, {
       relationshipId: edge.id,
       relationshipType: edge.type,
@@ -254,7 +416,7 @@ export async function ingestSingleGraphEdge(edge: KGEdge): Promise<void> {
       source: "graph",
       trustTier: "curated",
     });
-    ingestedIds.add(`graph-edge:${edge.id}`);
+    ingestedIds.add(key, hash);
   } catch (err) {
     console.warn(`[ClaimKit Ingestion] Failed to ingest edge ${edge.id}:`, err);
   }
@@ -286,11 +448,12 @@ export async function ingestKnowledgeStore(): Promise<IngestionStats> {
   for (const doc of documents) {
     try {
       const key = `knowledge:${doc.id}`;
-      if (ingestedIds.has(key)) {
+      const text = `${doc.title}\n\n${doc.content}`;
+      const hash = hashContent(text);
+      if (!ingestedIds.hasChanged(key, hash)) {
         stats.skipped++;
         continue;
       }
-      const text = `${doc.title}\n\n${doc.content}`;
       const { sourceId } = await claimKitAdapter.ingest(text, {
         docId: doc.id,
         title: doc.title,
@@ -300,7 +463,7 @@ export async function ingestKnowledgeStore(): Promise<IngestionStats> {
       });
       stats.sourceIds.push(sourceId);
       stats.ingested++;
-      ingestedIds.add(key);
+      ingestedIds.add(key, hash);
     } catch (err) {
       console.warn(`[ClaimKit Ingestion] Failed to ingest doc ${doc.id}:`, err);
       stats.errors++;
@@ -329,11 +492,12 @@ export async function ingestGraphStore(): Promise<IngestionStats> {
   for (const node of nodes) {
     try {
       const key = `graph-node:${node.id}`;
-      if (ingestedIds.has(key)) {
+      const text = `Entity: ${node.title} (${node.type})\n${node.content}\nContext: ${node.context ?? "N/A"}\nStatus: ${node.status}`;
+      const hash = hashContent(text);
+      if (!ingestedIds.hasChanged(key, hash)) {
         stats.skipped++;
         continue;
       }
-      const text = `Entity: ${node.title} (${node.type})\n${node.content}\nContext: ${node.context ?? "N/A"}\nStatus: ${node.status}`;
       const { sourceId } = await claimKitAdapter.ingest(text, {
         entityId: node.id,
         entityType: node.type,
@@ -342,7 +506,7 @@ export async function ingestGraphStore(): Promise<IngestionStats> {
       });
       stats.sourceIds.push(sourceId);
       stats.ingested++;
-      ingestedIds.add(key);
+      ingestedIds.add(key, hash);
     } catch (err) {
       console.warn(`[ClaimKit Ingestion] Failed to ingest node ${node.id}:`, err);
       stats.errors++;
@@ -352,14 +516,15 @@ export async function ingestGraphStore(): Promise<IngestionStats> {
   for (const edge of edges) {
     try {
       const key = `graph-edge:${edge.id}`;
-      if (ingestedIds.has(key)) {
-        stats.skipped++;
-        continue;
-      }
       const sourceNode = knowledgeGraph.getNode(edge.sourceId);
       const targetNode = knowledgeGraph.getNode(edge.targetId);
       const relationshipClaim = buildRelationshipClaim(edge, sourceNode, targetNode);
       const text = formatRelationshipClaim(relationshipClaim, edge.description);
+      const hash = hashContent(text);
+      if (!ingestedIds.hasChanged(key, hash)) {
+        stats.skipped++;
+        continue;
+      }
       const { sourceId } = await claimKitAdapter.ingest(text, {
         relationshipId: edge.id,
         relationshipType: edge.type,
@@ -369,7 +534,7 @@ export async function ingestGraphStore(): Promise<IngestionStats> {
       });
       stats.sourceIds.push(sourceId);
       stats.ingested++;
-      ingestedIds.add(key);
+      ingestedIds.add(key, hash);
     } catch (err) {
       console.warn(`[ClaimKit Ingestion] Failed to ingest edge ${edge.id}:`, err);
       stats.errors++;

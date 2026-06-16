@@ -32,11 +32,14 @@ import {
 let originalEnv: Record<string, string | undefined>;
 
 beforeEach(() => {
-  // Save original environment variables
+  // Save original environment variables and force-disable optional backends
+  // so tests that use a non-audio dummy file always take the fallback path.
   originalEnv = {
     MUSICIAN_ENABLE_ESSENTIA: process.env.MUSICIAN_ENABLE_ESSENTIA,
     MUSICIAN_ENABLE_BASIC_PITCH: process.env.MUSICIAN_ENABLE_BASIC_PITCH,
   };
+  process.env.MUSICIAN_ENABLE_ESSENTIA = "false";
+  process.env.MUSICIAN_ENABLE_BASIC_PITCH = "false";
 });
 
 afterEach(() => {

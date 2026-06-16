@@ -85,7 +85,18 @@ vi.mock("../../integrations/hawk-ir/hawk-ir-service", () => ({
   },
 }));
 vi.mock("../../integrations/tenable-cloud/tenable-cloud-service", () => ({
-  tenableCloudService: { getExports: vi.fn(), getExportStatus: vi.fn() },
+  tenableCloudService: {
+    isConfigured: vi.fn().mockReturnValue(true),
+    listAssets: vi.fn(),
+    listAllAssets: vi.fn(),
+    exportAssets: vi.fn(),
+    getAssetExportStatus: vi.fn(),
+    downloadAssetExportChunk: vi.fn(),
+    listAllAgents: vi.fn(),
+    bulkUnlinkAgents: vi.fn(),
+    getExports: vi.fn(),
+    getExportStatus: vi.fn(),
+  },
 }));
 vi.mock("../../roadmap/database", () => ({
   roadmapDatabase: { getItems: vi.fn(), createItem: vi.fn(), updateItem: vi.fn() },
@@ -249,13 +260,16 @@ import {
   dispatchToolCall,
   resetToolCallCounter,
   getToolCallCounter,
+  resetIdenticalCallGuardrail,
 } from "../tool-dispatcher";
+import { tenableCloudService } from "../../integrations/tenable-cloud/tenable-cloud-service";
 
 const TEST_USER = "nudge-test-user";
 
 describe("Tool Dispatcher - Counter & Nudge", () => {
   beforeEach(() => {
     resetToolCallCounter();
+    resetIdenticalCallGuardrail();
     vi.clearAllMocks();
   });
 
@@ -514,6 +528,240 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
         const result = await dispatchToolCall("tools.discover", {}, user, true);
         expect(result.message ?? "").not.toContain("Skill suggestion");
       }
+    });
+  });
+
+  // ── Tenable asset search pagination ───────────────────────────────────
+
+  describe("Tenable Cloud - asset search pagination", () => {
+    it("list_assets with search scans all pages and returns matched samples", async () => {
+      const targetAsset = {
+        id: "target-id",
+        hostname: ["WSAMZN-JALBHLC7"],
+        ipv4: ["10.0.0.5"],
+        has_plugin_results: true,
+      };
+      const otherAssets = Array.from({ length: 10 }, (_, i) => ({
+        id: `other-${i}`,
+        hostname: [`host-${i}`],
+        ipv4: [`10.0.0.${i}`],
+        has_plugin_results: false,
+      }));
+      (tenableCloudService.listAllAssets as ReturnType<typeof vi.fn>).mockResolvedValue([
+        ...otherAssets,
+        targetAsset,
+      ]);
+
+      const result = await dispatchToolCall(
+        "tenable.list_assets",
+        { search: "WSAMZN-JALBHLC7" },
+        TEST_USER,
+        true,
+        { sessionKey: "tenable-test-session" },
+      );
+
+      const data = result.data as any;
+      expect(result.success).toBe(true);
+      expect(data.matched_count).toBe(1);
+      expect(data.samples).toHaveLength(1);
+      expect(data.samples[0].id).toBe("target-id");
+      expect(tenableCloudService.listAllAssets).toHaveBeenCalledTimes(1);
+    });
+
+    it("list_assets without search uses a single lightweight page", async () => {
+      const assets = Array.from({ length: 5 }, (_, i) => ({
+        id: `asset-${i}`,
+        hostname: [`host-${i}`],
+        has_plugin_results: true,
+      }));
+      (tenableCloudService.listAssets as ReturnType<typeof vi.fn>).mockResolvedValue(assets);
+
+      const result = await dispatchToolCall(
+        "tenable.list_assets",
+        {},
+        TEST_USER,
+        true,
+        { sessionKey: "tenable-test-session" },
+      );
+
+      const data = result.data as any;
+      expect(result.success).toBe(true);
+      expect(data.total_assets).toBe(5);
+      expect(tenableCloudService.listAssets).toHaveBeenCalledTimes(1);
+      expect(tenableCloudService.listAllAssets).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Tenable Cloud - workbench asset search", () => {
+    it("list_workbench_assets with search uses fast /assets path and returns matched samples", async () => {
+      const matched = {
+        id: "matched-id",
+        hostname: ["EPM"],
+        ipv4: ["192.168.1.10"],
+        last_seen: "2026-06-10T00:00:00Z",
+        has_plugin_results: true,
+      };
+      const unmatched = {
+        id: "unmatched-id",
+        hostname: ["OTHER"],
+        ipv4: ["192.168.1.20"],
+        has_plugin_results: false,
+      };
+
+      (tenableCloudService.listAllAssets as ReturnType<typeof vi.fn>).mockResolvedValue([
+        unmatched,
+        matched,
+      ]);
+
+      const result = await dispatchToolCall(
+        "tenable.list_workbench_assets",
+        { search: "EPM" },
+        TEST_USER,
+        true,
+        { sessionKey: "tenable-wb-session" },
+      );
+
+      const data = result.data as any;
+      expect(result.success).toBe(true);
+      expect(data.matched_count).toBe(1);
+      expect(data.samples).toHaveLength(1);
+      expect(data.samples[0].id).toBe("matched-id");
+      expect(data.samples[0].name).toBe("EPM");
+      expect(tenableCloudService.exportAssets).not.toHaveBeenCalled();
+      expect(tenableCloudService.listAllAssets).toHaveBeenCalledTimes(1);
+    });
+
+    it("review_duplicate_agents identifies older duplicates and can unlink them", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      (tenableCloudService.listAllAgents as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { id: 1, name: "EPM", ip: "10.0.0.1", last_seen: now - 100 },
+        { id: 2, name: "EPM", ip: "10.0.0.2", last_seen: now },
+        { id: 3, name: "OTHER", ip: "10.0.0.3", last_seen: now - 50 },
+      ]);
+      (tenableCloudService.bulkUnlinkAgents as ReturnType<typeof vi.fn>).mockResolvedValue({
+        task_uuid: "task-abc",
+      });
+
+      const result = await dispatchToolCall(
+        "tenable.review_duplicate_agents",
+        { unlink: true, scanner_id: 42 },
+        TEST_USER,
+        true,
+        { sessionKey: "tenable-agent-session" },
+      );
+
+      const data = result.data as any;
+      expect(result.success).toBe(true);
+      expect(data.duplicate_groups).toBe(1);
+      expect(data.duplicate_agent_count).toBe(1);
+      expect(data.groups[0].keeper.id).toBe(2);
+      expect(data.groups[0].duplicates[0].id).toBe(1);
+      expect(data.unlinked.scanner_id).toBe(42);
+      expect(data.unlinked.agent_ids).toEqual([1]);
+      expect(tenableCloudService.bulkUnlinkAgents).toHaveBeenCalledWith(42, [1], undefined);
+    });
+
+    it("review_agent_health flags offline, stale, and outdated agents", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      (tenableCloudService.listAllAgents as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { id: 1, name: "Healthy", ip: "10.0.0.1", status: "on", last_connect: now - 100, last_scanned: now - 100, core_version: "10.8.0", plugin_feed_id: "feed-a" },
+        { id: 2, name: "OfflineAgent", ip: "10.0.0.2", status: "off", last_connect: now - 100, last_scanned: now - 100, core_version: "10.8.0", plugin_feed_id: "feed-a" },
+        { id: 3, name: "StaleAgent", ip: "10.0.0.3", status: "on", last_connect: now - 10 * 24 * 60 * 60, last_scanned: now - 100, core_version: "10.8.0", plugin_feed_id: "feed-a" },
+        { id: 4, name: "OutdatedAgent", ip: "10.0.0.4", status: "on", last_connect: now - 100, last_scanned: now - 100, core_version: "10.7.0", plugin_feed_id: "feed-b" },
+      ]);
+
+      const result = await dispatchToolCall(
+        "tenable.review_agent_health",
+        {},
+        TEST_USER,
+        true,
+        { sessionKey: "tenable-health-session" },
+      );
+
+      const data = result.data as any;
+      expect(result.success).toBe(true);
+      expect(data.total_agents).toBe(4);
+      expect(data.flagged_count).toBe(3);
+      expect(data.issue_summary.offline).toBe(1);
+      expect(data.issue_summary.stale).toBe(1);
+      expect(data.issue_summary.outdated_core).toBe(1);
+      expect(data.issue_summary.outdated_feed).toBe(1);
+      expect(data.agents.find((a: any) => a.id === 2).issues).toContain("offline");
+      expect(data.agents.find((a: any) => a.id === 3).issues).toContain("stale");
+      expect(data.agents.find((a: any) => a.id === 4).issues).toContain("outdated_core");
+      expect(data.agents.find((a: any) => a.id === 4).issues).toContain("outdated_feed");
+    });
+  });
+
+  // ── system.exec API bypass guard ──────────────────────────────────────
+
+  describe("system.exec API bypass guard", () => {
+    it("blocks system.exec commands targeting Tenable API endpoints", async () => {
+      const result = await dispatchToolCall(
+        "system.exec",
+        { command: "curl https://cloud.tenable.com/assets" },
+        TEST_USER,
+        true,
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("cannot be used to call external APIs");
+      expect(result.error).toContain("tenable.*");
+    });
+  });
+
+  // ── Repeated-failure guardrail ─────────────────────────────────────────
+
+  describe("Repeated-failure guardrail", () => {
+    it("blocks the third identical failing call with a guardrail message", async () => {
+      (tenableCloudService.listAllAssets as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new Error("Tenable API unavailable"),
+      );
+
+      const args = { search: "failure-loop-host" };
+      const ctx = { sessionKey: "failure-test-session" };
+
+      const r1 = await dispatchToolCall("tenable.list_assets", args, TEST_USER, true, ctx);
+      expect(r1.success).toBe(false);
+      expect(r1.error).toContain("Tenable API unavailable");
+
+      const r2 = await dispatchToolCall("tenable.list_assets", args, TEST_USER, true, ctx);
+      expect(r2.success).toBe(false);
+      expect(r2.error).toContain("Tenable API unavailable");
+
+      const r3 = await dispatchToolCall("tenable.list_assets", args, TEST_USER, true, ctx);
+      expect(r3.success).toBe(false);
+      expect(r3.error).toContain("Repeated-failure guardrail");
+      expect(r3.error).not.toContain("Tenable API unavailable");
+    });
+
+    it("resets the failure streak after a successful identical call", async () => {
+      (tenableCloudService.listAllAssets as ReturnType<typeof vi.fn>)
+        .mockRejectedValueOnce(new Error("Tenable API unavailable"))
+        .mockRejectedValueOnce(new Error("Tenable API unavailable"))
+        .mockResolvedValueOnce([
+          { id: "ok-1", hostname: ["ok-host"], has_plugin_results: true },
+        ])
+        .mockRejectedValueOnce(new Error("Tenable API unavailable"));
+
+      const args = { search: "streak-host" };
+      const ctx = { sessionKey: "streak-test-session" };
+
+      // Two failures put the failure count at 2 (just below the threshold).
+      expect((await dispatchToolCall("tenable.list_assets", args, TEST_USER, true, ctx)).success).toBe(false);
+      expect((await dispatchToolCall("tenable.list_assets", args, TEST_USER, true, ctx)).success).toBe(false);
+
+      // One success resets the failure streak for this (tool, args) hash.
+      const success = await dispatchToolCall("tenable.list_assets", args, TEST_USER, true, ctx);
+      expect(success.success).toBe(true);
+
+      // A third failure overall, but the first after the success, should NOT
+      // trip the guardrail because the streak was reset. It should surface the
+      // original API error instead.
+      const after = await dispatchToolCall("tenable.list_assets", args, TEST_USER, true, ctx);
+      expect(after.success).toBe(false);
+      expect(after.error).toContain("Tenable API unavailable");
+      expect(after.error).not.toContain("Repeated-failure guardrail");
     });
   });
 });

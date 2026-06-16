@@ -32,6 +32,12 @@ const envSchema = z.object({
   AI_MAX_CONCURRENT: z.coerce.number().default(3),
   AI_QUEUE_TIMEOUT_MS: z.coerce.number().default(120000),
 
+  // Total wallclock time a provider will keep waiting on HTTP 429 before
+  // giving up. 429 is rate-limiting (not failure), so the providers retry
+  // indefinitely up to this budget instead of surfacing a terminal error.
+  // Per-attempt sleep is capped separately (see provider code: 300s).
+  AI_RATE_LIMIT_MAX_WAIT_MS: z.coerce.number().default(900000),
+
   // OpenAI
   OPENAI_API_URL: z.string().url().default("https://api.openai.com/v1"),
   OPENAI_API_KEY: z.string().default(""),
@@ -213,6 +219,12 @@ const envSchema = z.object({
 
   // Context assembly mode: "rag" (current behavior) or "engine" (budget-aware context engine)
   CONTEXT_MODE: z.enum(["rag", "engine"]).default("rag"),
+  // V2 context budget: explicit slots for every section, fractions sum to 1.0,
+  // unknown sections are capped instead of Infinity. Default false until validated.
+  CONTEXT_PACKET_V2_BUDGET: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
 
   // RAG / Codebase Indexing
   RAG_INDEX_ON_STARTUP: z
@@ -257,6 +269,13 @@ const envSchema = z.object({
     .default("comparison"),
   CLAIMKIT_REDIS_URL: z.string().default(""),
   CLAIMKIT_REDIS_PREFIX: z.string().default("aiworkassistant"),
+  // If true, a dimension mismatch triggers a background flush of stale Redis
+  // keys under the model-specific prefix. Uses SCAN + UNLINK in batches to
+  // avoid blocking the server.
+  CLAIMKIT_REPAIR_ON_DIMENSION_MISMATCH: z
+    .string()
+    .transform((s) => s === "true")
+    .default("true"),
   CLAIMKIT_TOP_K: z.coerce.number().default(10),
   CLAIMKIT_MIN_SCORE: z.coerce.number().default(0.0),
   CLAIMKIT_MAX_EVIDENCE_ITEMS: z.coerce.number().default(20),
@@ -277,11 +296,31 @@ const envSchema = z.object({
   CLAIMKIT_LLM_MODEL: z.string().default(""),
   CLAIMKIT_LLM_TIMEOUT_MS: z.coerce.number().default(15000),
   CLAIMKIT_LLM_MAX_ATTEMPTS: z.coerce.number().default(5),
+  // If true, all LLM errors (including auth/schema/model failures) fall back
+  // to the MemoryLLMAdapter. Default false — non-retryable errors propagate
+  // so misconfiguration is visible.
+  CLAIMKIT_LLM_FATAL_FALLBACK: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
   // Live shadow grounding — fraction of live queries to run ground() on after
   // the agent responds. Populates rag_hallucination_rate / rag_grounded in
   // comparison_cases without affecting foreground latency. 0 disables; 1.0
-  // grounds every query. Default 0.5 — enough signal without doubling ZAI load.
-  CLAIMKIT_LIVE_GROUNDING_RATE: z.coerce.number().default(0.5),
+  // grounds every query. Default 0.1 — measured signal without saturating
+  // providers or ballooning cost.
+  CLAIMKIT_LIVE_GROUNDING_RATE: z.coerce.number().default(0.1),
+  // Max RAG evidence documents passed to shadow grounding. Fewer docs bounds
+  // the ingest+extract LLM cost per sample.
+  CLAIMKIT_LIVE_GROUNDING_MAX_EVIDENCE_DOCS: z.coerce.number().default(6),
+  // Max characters per evidence doc in shadow grounding. Truncation keeps
+  // each ingestion fast.
+  CLAIMKIT_LIVE_GROUNDING_MAX_CHARS_PER_DOC: z.coerce.number().default(1500),
+  // Routing thresholds for the ClaimKit/RAG blend decision.
+  // CK wins when confidence is strictly above the high threshold and the
+  // answer is answerable/partially-answerable. RAG wins when confidence is
+  // strictly below the low threshold or the answer is not_answerable.
+  CLAIMKIT_ROUTE_HIGH_CONFIDENCE: z.coerce.number().default(0.5),
+  CLAIMKIT_ROUTE_LOW_CONFIDENCE: z.coerce.number().default(0.3),
   // Cascading retrieval (Idea 4): when ClaimKit's answer comes back with
   // confidence below this threshold and a non-empty missingEvidence list,
   // do a targeted second-pass RAG retrieval against each missing-evidence
