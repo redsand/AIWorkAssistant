@@ -545,6 +545,23 @@ function repairOrphanedToolCalls(messages: ChatMessage[]): ChatMessage[] {
   return repaired;
 }
 
+function ensureFirstNonSystemIsUser(messages: ChatMessage[]): ChatMessage[] {
+  const firstNonSystemIdx = messages.findIndex((m) => m.role !== "system");
+  if (
+    firstNonSystemIdx !== -1 &&
+    messages[firstNonSystemIdx].role !== "user"
+  ) {
+    console.warn(
+      `[Chat] Inserting placeholder user before first non-system message (${messages[firstNonSystemIdx].role})`,
+    );
+    messages.splice(firstNonSystemIdx, 0, {
+      role: "user",
+      content: "[conversation continues]",
+    });
+  }
+  return messages;
+}
+
 /**
  * Repairs conversation state left orphaned by a crashed run:
  *
@@ -1137,6 +1154,7 @@ async function runChatJob(
     messages = repairConversationState(messages);
     messages = repairOrphanedToolCalls(messages);
     messages = injectManifest(messages, sessionId);
+    messages = ensureFirstNonSystemIsUser(messages);
     warnIfInvalidModelMessages(messages, "stream_initial");
     if (Date.now() - jobStartTime > JOB_TIMEOUT_MS) {
       console.warn(`[Chat/Job] Job timeout (${JOB_TIMEOUT_MS}ms) reached before first stream for ${sessionId}`);
@@ -1268,6 +1286,7 @@ async function runChatJob(
       messages = repairConversationState(messages);
       messages = repairOrphanedToolCalls(messages);
       messages = injectManifest(messages, sessionId);
+      messages = ensureFirstNonSystemIsUser(messages);
 
       warnIfInvalidModelMessages(messages, "stream_tool_loop");
 
@@ -1543,6 +1562,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       messages = repairConversationState(messages);
       messages = repairOrphanedToolCalls(messages);
       messages = injectManifest(messages, sessionId);
+      messages = ensureFirstNonSystemIsUser(messages);
 
       warnIfInvalidModelMessages(messages, "chat_initial");
       let response = await aiClient.chat({
@@ -1691,6 +1711,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         messages = repairConversationState(messages);
         messages = repairOrphanedToolCalls(messages);
         messages = injectManifest(messages, sessionId);
+        messages = ensureFirstNonSystemIsUser(messages);
 
         warnIfInvalidModelMessages(messages, "chat_tool_loop");
 

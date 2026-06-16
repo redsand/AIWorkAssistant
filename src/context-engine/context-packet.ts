@@ -979,6 +979,19 @@ export async function assembleContextPacket(
   messages.length = 0;
   messages.push(...cleaned);
 
+  // Final safety: the packet handed to chat.ts must never start with a tool
+  // or assistant message, even after message pruning and merging.
+  const firstNonSystemIdx = messages.findIndex((m) => m.role !== "system");
+  if (
+    firstNonSystemIdx !== -1 &&
+    messages[firstNonSystemIdx].role !== "user"
+  ) {
+    messages.splice(firstNonSystemIdx, 0, {
+      role: "user",
+      content: "[conversation continues]",
+    });
+  }
+
   const totalTokens = messages.reduce(
     (sum, m) => sum + estimateTokens(m.content || ""),
     0,
@@ -1043,12 +1056,28 @@ export async function assembleContextPacket(
   };
 }
 
+const graphContextCache = new Map<string, { result: string; expires: number }>();
+
+function normalizeGraphQuery(query: string): string {
+  return query.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function isToolOrFollowUpQuery(query: string): boolean {
+  // Very short queries and explicit slash commands are unlikely to benefit
+  // from graph context on every turn.
+  const trimmed = query.trim();
+  if (trimmed.startsWith("/")) return true;
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  return words.length > 0 && words.length < 3;
+}
+
 async function retrieveAllStores(query: string): Promise<ScoredDocument[]> {
   const docs: ScoredDocument[] = [];
 
   // Safeguard against indexing this assistant's own source folder when
   // running locally. See RAG_INCLUDE_LOCAL_SOURCES in env.ts.
   const includeLocal = env.RAG_INCLUDE_LOCAL_SOURCES;
+  const graphQueryEnabled = env.KNOWLEDGE_GRAPH_QUERY_ENABLED;
 
   const [
     knowledgeResultsRaw = [],
@@ -1059,7 +1088,9 @@ async function retrieveAllStores(query: string): Promise<ScoredDocument[]> {
     includeLocal
       ? Promise.resolve().then(() => codebaseIndexer.search(query, { limit: 10 })).catch(() => [] as ReturnType<typeof codebaseIndexer.search>)
       : Promise.resolve([] as ReturnType<typeof codebaseIndexer.search>),
-    Promise.resolve().then(() => knowledgeGraph.queryNodes({ search: query, limit: 10 })).catch(() => [] as ReturnType<typeof knowledgeGraph.queryNodes>),
+    graphQueryEnabled
+      ? Promise.resolve().then(() => knowledgeGraph.queryNodes({ search: query, limit: env.KNOWLEDGE_GRAPH_DOC_LIMIT })).catch(() => [] as ReturnType<typeof knowledgeGraph.queryNodes>)
+      : Promise.resolve([] as ReturnType<typeof knowledgeGraph.queryNodes>),
   ]);
 
   // Strip file_read knowledge entries when local sources are excluded.
@@ -1135,7 +1166,18 @@ async function retrieveAllStores(query: string): Promise<ScoredDocument[]> {
 }
 
 function retrieveGraphContext(query: string): string {
+  if (!env.KNOWLEDGE_GRAPH_QUERY_ENABLED || isToolOrFollowUpQuery(query)) {
+    return "";
+  }
+
+  const key = normalizeGraphQuery(query);
+  const cached = graphContextCache.get(key);
+  if (cached && Date.now() < cached.expires) {
+    return cached.result;
+  }
+
   try {
+    const start = Date.now();
     const parts: string[] = [];
 
     const nodes = knowledgeGraph.queryNodes({ search: query, limit: 5 });
@@ -1145,7 +1187,10 @@ function retrieveGraphContext(query: string): string {
     }
 
     // For broad/thematic queries, include community summaries
-    const communitySummaries = knowledgeGraph.retrieveCommunitySummaries(query);
+    const communitySummaries = knowledgeGraph.retrieveCommunitySummaries(
+      query,
+      env.KNOWLEDGE_GRAPH_COMMUNITY_LIMIT,
+    );
     if (communitySummaries.length > 0) {
       parts.push("\n=== COMMUNITY SUMMARIES ===");
       for (const summary of communitySummaries) {
@@ -1153,7 +1198,15 @@ function retrieveGraphContext(query: string): string {
       }
     }
 
-    return parts.join("\n");
+    const result = parts.join("\n");
+    graphContextCache.set(key, {
+      result,
+      expires: Date.now() + env.KNOWLEDGE_GRAPH_CACHE_TTL_MS,
+    });
+    if (Date.now() - start > 50) {
+      console.log(`[ContextPacket] Graph context assembled in ${Date.now() - start}ms`);
+    }
+    return result;
   } catch (err) {
     console.warn("[ContextPacket] Graph context retrieval failed:", err instanceof Error ? err.message : err);
     return "";

@@ -54,6 +54,7 @@ export interface KGEdge {
 
 class KnowledgeGraph {
   private db: Database.Database;
+  private fts5Enabled = false;
 
   constructor(dbPath?: string) {
     const dbFile = dbPath ?? path.join(path.resolve(process.cwd(), "data"), "knowledge_graph.db");
@@ -65,6 +66,10 @@ class KnowledgeGraph {
     this.db = new Database(dbFile);
     this.db.pragma("journal_mode = WAL");
     this.initSchema();
+  }
+
+  isFts5Enabled(): boolean {
+    return this.fts5Enabled;
   }
 
   private initSchema() {
@@ -114,6 +119,36 @@ class KnowledgeGraph {
     if (!columns.some((c: any) => c.name === "stale")) {
       this.db.exec(`ALTER TABLE kg_communities ADD COLUMN stale INTEGER NOT NULL DEFAULT 0`);
     }
+
+    // FTS5 index for fast node text search.
+    try {
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS kg_nodes_fts USING fts5(
+          node_id,
+          title,
+          content,
+          context
+        );
+      `);
+      this.fts5Enabled = true;
+
+      // Backfill existing nodes when the FTS5 table is newly created.
+      const ftsCount = (this.db.prepare(`SELECT COUNT(*) as c FROM kg_nodes_fts`).get() as any).c;
+      const nodeCount = (this.db.prepare(`SELECT COUNT(*) as c FROM kg_nodes`).get() as any).c;
+      if (ftsCount === 0 && nodeCount > 0) {
+        this.db.exec(`
+          INSERT INTO kg_nodes_fts(node_id, title, content, context)
+          SELECT id, title, content, context FROM kg_nodes;
+        `);
+        console.log(`[KnowledgeGraph] Backfilled ${nodeCount} nodes into FTS5 index`);
+      }
+    } catch (err) {
+      this.fts5Enabled = false;
+      console.warn(
+        "[KnowledgeGraph] FTS5 unavailable; graph search will use LIKE fallback:",
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
   addNode(node: Omit<KGNode, "id" | "createdAt" | "updatedAt">): string {
@@ -137,6 +172,19 @@ class KnowledgeGraph {
         now,
         now,
       );
+
+    if (this.fts5Enabled) {
+      this.db
+        .prepare(
+          `INSERT INTO kg_nodes_fts(node_id, title, content, context) VALUES (?, ?, ?, ?)`,
+        )
+        .run(
+          id,
+          node.title,
+          node.content,
+          node.context || "",
+        );
+    }
 
     ingestSingleGraphNode({
       id,
@@ -213,12 +261,30 @@ class KnowledgeGraph {
       .prepare(`UPDATE kg_nodes SET ${setClauses.join(", ")} WHERE id = ?`)
       .run(...params);
 
+    if (
+      this.fts5Enabled &&
+      (updates.title !== undefined || updates.content !== undefined || updates.context !== undefined)
+    ) {
+      const node = this.getNode(id);
+      if (node) {
+        this.db.prepare(`DELETE FROM kg_nodes_fts WHERE node_id = ?`).run(id);
+        this.db
+          .prepare(
+            `INSERT INTO kg_nodes_fts(node_id, title, content, context) VALUES (?, ?, ?, ?)`,
+          )
+          .run(id, node.title, node.content, node.context ?? "");
+      }
+    }
+
     this.invalidateCommunities([id]);
 
     return this.getNode(id);
   }
 
   deleteNode(id: string): boolean {
+    if (this.fts5Enabled) {
+      this.db.prepare(`DELETE FROM kg_nodes_fts WHERE node_id = ?`).run(id);
+    }
     this.db
       .prepare(`DELETE FROM kg_edges WHERE source_id = ? OR target_id = ?`)
       .run(id, id);
@@ -355,6 +421,47 @@ class KnowledgeGraph {
     search?: string;
     limit?: number;
   }): KGNode[] {
+    if (options.search && this.fts5Enabled) {
+      try {
+        const matchExpr = buildFtsQuery(options.search);
+        if (matchExpr) {
+          const limit = options.limit ?? 1000;
+          const ftsRows = this.db
+            .prepare(
+              `SELECT node_id FROM kg_nodes_fts WHERE kg_nodes_fts MATCH ? ORDER BY bm25(kg_nodes_fts) LIMIT ?`,
+            )
+            .all(matchExpr, limit) as any[];
+          const matchedIds = ftsRows.map((r) => r.node_id as string);
+          if (matchedIds.length > 0) {
+            const placeholders = matchedIds.map(() => "?").join(",");
+            const rows = this.db
+              .prepare(`SELECT * FROM kg_nodes WHERE id IN (${placeholders})`)
+              .all(...matchedIds) as any[];
+            let nodes = rows.map((r) => this.rowToNode(r));
+            if (options.type) {
+              nodes = nodes.filter((n) => n.type === options.type);
+            }
+            if (options.status) {
+              nodes = nodes.filter((n) => n.status === options.status);
+            }
+            if (options.tags && options.tags.length > 0) {
+              nodes = nodes.filter((n) => options.tags!.every((t) => n.tags.includes(t)));
+            }
+            if (options.limit) {
+              nodes = nodes.slice(0, options.limit);
+            }
+            return nodes;
+          }
+          return [];
+        }
+      } catch (err) {
+        console.warn(
+          "[KnowledgeGraph] FTS5 query failed, falling back to LIKE:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
     let sql = `SELECT * FROM kg_nodes WHERE 1=1`;
     const params: unknown[] = [];
 
@@ -425,38 +532,73 @@ class KnowledgeGraph {
     };
   }
 
-  exportForContext(nodeIds: string[]): string {
+  exportForContextBatch(nodeIds: string[]): string {
+    if (nodeIds.length === 0) return "";
+    const placeholders = nodeIds.map(() => "?").join(",");
+
+    const nodes = this.db
+      .prepare(`SELECT * FROM kg_nodes WHERE id IN (${placeholders})`)
+      .all(...nodeIds) as any[];
+
+    const edgesWithNeighbors = this.db
+      .prepare(
+        `SELECT
+          e.id as edge_id,
+          e.source_id,
+          e.target_id,
+          e.type,
+          e.description,
+          s.title as source_title,
+          s.type as source_type,
+          t.title as target_title,
+          t.type as target_type
+        FROM kg_edges e
+        JOIN kg_nodes s ON e.source_id = s.id
+        JOIN kg_nodes t ON e.target_id = t.id
+        WHERE e.source_id IN (${placeholders}) OR e.target_id IN (${placeholders})`,
+      )
+      .all(...nodeIds, ...nodeIds) as any[];
+
+    const edgesByNode = new Map<string, any[]>();
+    for (const e of edgesWithNeighbors) {
+      for (const nodeId of [e.source_id, e.target_id]) {
+        if (nodeIds.includes(nodeId)) {
+          if (!edgesByNode.has(nodeId)) edgesByNode.set(nodeId, []);
+          edgesByNode.get(nodeId)!.push(e);
+        }
+      }
+    }
+
     const parts: string[] = [];
-
-    for (const id of nodeIds) {
-      const node = this.getNode(id);
-      if (!node) continue;
-
+    for (const row of nodes) {
+      const node = this.rowToNode(row);
       parts.push(`## ${node.type.toUpperCase()}: ${node.title}`);
       parts.push(`Status: ${node.status}`);
       if (node.context) parts.push(`Context: ${node.context}`);
       parts.push(node.content);
 
-      const edges = this.getEdgesForNode(id);
+      const edges = edgesByNode.get(node.id) || [];
       if (edges.length > 0) {
         parts.push("Relationships:");
         for (const e of edges) {
           const other =
-            e.sourceId === id
-              ? this.getNode(e.targetId)
-              : this.getNode(e.sourceId);
-          if (other) {
-            const dir = e.sourceId === id ? "→" : "←";
-            parts.push(
-              `  ${dir} [${e.type}] ${other.title} (${other.type})${e.description ? `: ${e.description}` : ""}`,
-            );
-          }
+            e.source_id === node.id
+              ? { title: e.target_title, type: e.target_type }
+              : { title: e.source_title, type: e.source_type };
+          const dir = e.source_id === node.id ? "→" : "←";
+          parts.push(
+            `  ${dir} [${e.type}] ${other.title} (${other.type})${e.description ? `: ${e.description}` : ""}`,
+          );
         }
       }
       parts.push("");
     }
 
     return parts.join("\n");
+  }
+
+  exportForContext(nodeIds: string[]): string {
+    return this.exportForContextBatch(nodeIds);
   }
 
   async detectCommunities(maxLevels: number = 2): Promise<Community[]> {
@@ -763,13 +905,13 @@ class KnowledgeGraph {
     return `Community of ${nodes.length} nodes spanning types: ${types.join(", ")}. Includes: ${titles.join(", ")}.`;
   }
 
-  retrieveCommunitySummaries(query: string): string[] {
+  retrieveCommunitySummaries(query: string, limit: number = 1000): string[] {
     if (!isBroadQuery(query)) return [];
 
     try {
       const rows = this.db
-        .prepare(`SELECT summary, stale FROM kg_communities WHERE level = 0 ORDER BY created_at DESC`)
-        .all() as any[];
+        .prepare(`SELECT summary, stale FROM kg_communities WHERE level = 0 ORDER BY created_at DESC LIMIT ?`)
+        .all(limit) as any[];
 
       return rows.map(r => {
         if (r.stale === 1) {
@@ -869,6 +1011,17 @@ class KnowledgeGraph {
 
 export { KnowledgeGraph };
 export const knowledgeGraph = new KnowledgeGraph();
+
+function buildFtsQuery(raw: string): string {
+  const tokens = raw
+    .replace(/[^a-zA-Z0-9_\s]/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter((t) => t.length > 0);
+  if (tokens.length === 0) return "";
+  if (tokens.length === 1) return tokens[0];
+  return tokens.join(" AND ");
+}
 
 const BROAD_QUERY_PATTERNS = [
   /what\s+are\s+the\s+main/i,

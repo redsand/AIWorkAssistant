@@ -279,6 +279,23 @@ export abstract class AIProvider {
     return recent;
   }
 
+  private ensureFirstNonSystemIsUser(messages: ChatMessage[]): ChatMessage[] {
+    const firstNonSystemIdx = messages.findIndex((m) => m.role !== "system");
+    if (
+      firstNonSystemIdx !== -1 &&
+      messages[firstNonSystemIdx].role !== "user"
+    ) {
+      console.warn(
+        `[${this.name}] Inserting placeholder user before first non-system message (${messages[firstNonSystemIdx].role})`,
+      );
+      messages.splice(firstNonSystemIdx, 0, {
+        role: "user",
+        content: "[conversation continues]",
+      });
+    }
+    return messages;
+  }
+
   protected pruneToContextWindow(
     messages: ChatMessage[],
     tools?: Tool[],
@@ -300,6 +317,8 @@ export abstract class AIProvider {
         `[${this.name}] Tool schemas consume ~${toolTokens} tokens, leaving only ${messageBudget} for messages (out of ${maxTokens}). Consider reducing the number of tools.`,
       );
     }
+
+    messages = this.ensureFirstNonSystemIsUser(messages);
 
     let estimated = this.estimateTokens(messages);
 

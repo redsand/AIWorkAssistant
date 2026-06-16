@@ -520,7 +520,52 @@ describe("OpenAIProvider — single system message sent to API", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 6. Cross-provider consistency — all four produce identical structure
+// 6. First non-system message guard
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("AIProvider — first non-system message must be user", () => {
+  const provider = new TestProvider();
+
+  it("inserts a placeholder user message when the chain starts with tool", () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "System prompt" },
+      { role: "tool", content: "result", tool_call_id: "call_1" },
+      { role: "assistant", content: "hi" },
+      { role: "user", content: "hello" },
+    ];
+
+    const pruned = provider.pruneMessages(messages);
+    const firstNonSystem = pruned.find((m) => m.role !== "system");
+    expect(firstNonSystem?.role).toBe("user");
+    expect(firstNonSystem?.content).toBe("[conversation continues]");
+  });
+
+  it("inserts a placeholder user message when the chain starts with assistant", () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "System prompt" },
+      { role: "assistant", content: "hi" },
+      { role: "user", content: "hello" },
+    ];
+
+    const pruned = provider.pruneMessages(messages);
+    const firstNonSystem = pruned.find((m) => m.role !== "system");
+    expect(firstNonSystem?.role).toBe("user");
+  });
+
+  it("does not modify a chain that already starts with user", () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "System prompt" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+    ];
+
+    const pruned = provider.pruneMessages(messages);
+    expect(pruned).toBe(messages);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. Cross-provider consistency — all four produce identical structure
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("cross-provider consistency", () => {

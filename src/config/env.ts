@@ -329,6 +329,20 @@ const envSchema = z.object({
   // Max missing-evidence items to use as second-pass RAG queries per turn.
   // Each adds one knowledge-store search; cap small to bound latency.
   CLAIMKIT_GAP_FILL_MAX_QUERIES: z.coerce.number().default(3),
+
+  // Knowledge graph retrieval controls
+  KNOWLEDGE_GRAPH_QUERY_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("true"),
+  KNOWLEDGE_GRAPH_FTS5_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("true"),
+  KNOWLEDGE_GRAPH_CACHE_TTL_MS: z.coerce.number().default(30_000),
+  KNOWLEDGE_GRAPH_DOC_LIMIT: z.coerce.number().default(5),
+  KNOWLEDGE_GRAPH_COMMUNITY_LIMIT: z.coerce.number().default(10),
+
   // If true, server.listen() is preceded by `await claimKitAdapter.initialize()`
   // and a hard process.exit(1) on failure. If false, init runs in the background
   // and failures are logged but non-fatal (existing 60s retry backoff applies).
