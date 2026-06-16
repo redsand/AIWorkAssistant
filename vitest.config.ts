@@ -25,6 +25,7 @@ export default defineConfig({
         'src/routes/chat.ts',
         'src/routes/code-review.ts',
         'src/routes/cto.ts',
+        'src/routes/detection.ts',
         'src/routes/digests.ts',
         'src/routes/engineering.ts',
         'src/routes/file-calendar.ts',
