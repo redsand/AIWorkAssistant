@@ -68,7 +68,7 @@ describe("aicoder arg parser provider aliases", () => {
       "--poll",
       "--claude",
       "--debug",
-      "--skip-baseline",
+      "--enable-baseline",
       "--skip-agent",
       "--skip-tests",
       "--skip-prompt-check",
@@ -111,7 +111,7 @@ describe("aicoder arg parser provider aliases", () => {
     expect(parser.FOCUSED_MODE).toBe(false);
     expect(parser.AGENT).toBe("claude");
     expect(parser.DEBUG).toBe(true);
-    expect(parser.SKIP_BASELINE).toBe(true);
+    expect(parser.ENABLE_BASELINE).toBe(true);
     expect(parser.SKIP_AGENT).toBe(true);
     expect(parser.SKIP_TESTS).toBe(true);
     expect(parser.SKIP_PROMPT_CHECK).toBe(true);
@@ -135,6 +135,26 @@ describe("aicoder arg parser provider aliases", () => {
     expect(parser.BASE_BRANCH_CANDIDATES[0]).toBe("develop");
     expect(parser.MAX_REWORK).toBe(3);
     expect(parser.REVIEW_POLL_MS).toBe(5);
+  });
+
+  it("disables baseline tests by default", async () => {
+    const parser = await loadArgParser([]);
+
+    expect(parser.ENABLE_BASELINE).toBe(false);
+  });
+
+  it("enables baseline tests via --enable-baseline", async () => {
+    const parser = await loadArgParser(["--enable-baseline"]);
+
+    expect(parser.ENABLE_BASELINE).toBe(true);
+  });
+
+  it("enables baseline tests via AICODER_ENABLE_BASELINE env var", async () => {
+    process.env.AICODER_ENABLE_BASELINE = "true";
+    const parser = await loadArgParser([]);
+    delete process.env.AICODER_ENABLE_BASELINE;
+
+    expect(parser.ENABLE_BASELINE).toBe(true);
   });
 
   it("makes --watch a forced discard-run cycle", async () => {

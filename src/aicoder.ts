@@ -23,7 +23,7 @@ import type {
 } from "./autonomous-loop/types";
 import {
   ARGV, WORKSPACE, AGENT, LABEL, SPRINT, PRIORITY, SOURCE, LOOKUP,
-  USE_OLLAMA, DEBUG, SKIP_BASELINE, SKIP_AGENT, SKIP_TESTS, SKIP_PROMPT_CHECK,
+  USE_OLLAMA, DEBUG, ENABLE_BASELINE, SKIP_AGENT, SKIP_TESTS, SKIP_PROMPT_CHECK,
   RESUME_RUN, DISCARD_RUN, FORCE_REPROCESS, WATCH_ISSUE, MODEL, OLLAMA_URL,
   TARGET_ISSUE_KEY, PUBLISH_BRANCH, BASE_BRANCH_CANDIDATES, FOCUSED_MODE,
   SKIP_POLL, MAX_REWORK, REVIEW_POLL_MS, WAIT_FOR_DEPS, DRY_RUN_PUSH, FORCE_DONE,
@@ -2653,9 +2653,9 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     trackStep(run.id, "note", "Ensured AGENTS.md contains targeted prompt rules for this workspace");
   }
 
-  // TDD: Run baseline tests first; if they fail, try to fix before starting work
-  if (SKIP_BASELINE) {
-    runLogger.logConfig("Skipping baseline test check (--skip-baseline)");
+  // TDD: Run baseline tests first when explicitly enabled; if they fail, try to fix before starting work
+  if (!ENABLE_BASELINE) {
+    runLogger.logConfig("Skipping baseline test check (enable with --enable-baseline)");
   } else if (!(await fixBaselineTests(cfg, item))) {
     runLogger.logError("Baseline tests could not be fixed — aborting. Issue will be retried.");
     runLogger.endRun(1);
@@ -2961,7 +2961,7 @@ async function continueFromBranchCheckout(cfg: ServerConfig, item: WorkItem, sta
   }
 
   // Baseline tests
-  if (!SKIP_BASELINE && !(await fixBaselineTests(cfg, item))) {
+  if (ENABLE_BASELINE && !(await fixBaselineTests(cfg, item))) {
     runLogger.logError("Baseline tests could not be fixed on resume — aborting");
     clearRunState(state.issueKey);
     return;

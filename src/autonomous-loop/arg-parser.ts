@@ -44,7 +44,7 @@ Options:
   --issue <number>     Work on a specific issue by number (skips polling, runs once)
   --publish <branch>   Create PR/MR from an existing branch and exit
   --watch <key>        Watch an existing PR/MR for review feedback and rework (issue key or number)
-  --skip-baseline     Skip baseline test check before agent starts (only test after)
+  --enable-baseline   Run baseline test check before agent starts (default: skip)
   --skip-agent        Skip agent execution — commit/test/push existing changes only
   --skip-tests        Skip all tests and coverage checks — just commit and push
   --skip-prompt-check Pick up tickets even without a ## Coding Prompt section (uses ticket body as prompt)
@@ -85,8 +85,8 @@ Remote config (fetches everything else from AIWorkAssistant):
       out["agent"] = "codex";
     } else if (argv[i] === "--debug") {
       out["debug"] = "true";
-    } else if (argv[i] === "--skip-baseline") {
-      out["skip-baseline"] = "true";
+    } else if (argv[i] === "--enable-baseline") {
+      out["enable-baseline"] = "true";
     } else if (argv[i] === "--skip-agent") {
       out["skip-agent"] = "true";
     } else if (argv[i] === "--skip-tests") {
@@ -158,7 +158,7 @@ export const API_PROVIDER = (
   ARGV.api || (CLI_PROVIDER === "opencode" || CLI_PROVIDER === "zai" ? CLI_PROVIDER : null)
 ) as "opencode" | "zai" | null;
 export const DEBUG = "debug" in ARGV || process.env.AICODER_DEBUG === "true";
-export const SKIP_BASELINE = "skip-baseline" in ARGV || process.env.AICODER_SKIP_BASELINE === "true";
+export const ENABLE_BASELINE = "enable-baseline" in ARGV || process.env.AICODER_ENABLE_BASELINE === "true";
 export const SKIP_AGENT = "skip-agent" in ARGV || process.env.AICODER_SKIP_AGENT === "true";
 export const SKIP_TESTS = "skip-tests" in ARGV || process.env.AICODER_SKIP_TESTS === "true";
 export const SKIP_PROMPT_CHECK = "skip-prompt-check" in ARGV || process.env.AICODER_SKIP_PROMPT_CHECK === "true";
