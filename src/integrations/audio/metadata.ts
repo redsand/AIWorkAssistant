@@ -1,22 +1,35 @@
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import { existsSync, mkdirSync } from "fs";
 import { dirname } from "path";
 import { AudioTechnicalMetrics } from "../../musician/analysis-types";
 import type { FfprobeData } from "./types";
 
+let ffprobeDetected: boolean | undefined;
+
 /**
  * Attempts to detect if ffprobe is available on the system.
+ * The result is cached for the lifetime of the process to avoid repeated
+ * process spawns, which can be expensive and flaky under concurrent load.
  */
 export function detectFfprobe(): boolean {
+  if (ffprobeDetected !== undefined) {
+    return ffprobeDetected;
+  }
+
   // On Windows, check for ffprobe.exe
   // On Unix-like systems, check for ffprobe
   const isWindows = process.platform === "win32";
   const executable = isWindows ? "ffprobe.exe" : "ffprobe";
 
   try {
-    spawn(executable, ["-version"], { detached: true, stdio: "ignore" });
-    return true;
+    const result = spawnSync(executable, ["-version"], {
+      stdio: "ignore",
+      timeout: 5000,
+    });
+    ffprobeDetected = result.error === undefined;
+    return ffprobeDetected;
   } catch {
+    ffprobeDetected = false;
     return false;
   }
 }
@@ -30,15 +43,21 @@ export async function runFfprobe(filePath: string): Promise<FfprobeData | null> 
   const executable = isWindows ? "ffprobe.exe" : "ffprobe";
 
   return new Promise((resolve) => {
-    const child = spawn(executable, [
-      "-v",
-      "quiet",
-      "-print_format",
-      "json",
-      "-show_format",
-      "-show_streams",
-      filePath,
-    ]);
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(executable, [
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+        filePath,
+      ]);
+    } catch {
+      resolve(null);
+      return;
+    }
 
     let output = "";
     let error = "";
