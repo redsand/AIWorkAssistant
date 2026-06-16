@@ -9,7 +9,9 @@ import type {
   DetectionReviewOutput,
   DetectionWorkItemInput,
 } from './types.js';
+import { auditLogger } from '../audit/logger.js';
 import { workItemDatabase } from '../work-items/database.js';
+import { v4 as uuidv4 } from 'uuid';
 
 export class DetectionAssistant {
   async generateDetectionIdea(input: DetectionIdeaInput): Promise<DetectionIdeaOutput> {
@@ -21,7 +23,7 @@ export class DetectionAssistant {
 
     const severity = input.severity || 'medium';
 
-    return {
+    const output = {
       summary: `Detection idea for ${input.name}`,
       hypothesis: `If ${input.description}, then an adversary may be performing ${input.name} using ${input.mitreTechniques?.join(', ') || 'unknown techniques'}`,
       dataSources: [input.dataSource || 'logs', 'endpoint', 'network'].filter(Boolean),
@@ -37,9 +39,9 @@ export class DetectionAssistant {
         'Authorized security scanning or testing',
       ],
       testCases: [
-        { name: `${input.name} - True Positive`, description: `Execute ${input.name} technique and verify detection fires`, type: 'true_positive' },
-        { name: `${input.name} - True Negative`, description: `Perform legitimate activity and verify detection does NOT fire`, type: 'true_negative' },
-        { name: `${input.name} - False Positive`, description: `Test common false positive scenarios for this detection`, type: 'false_positive' },
+        { name: `${input.name} - True Positive`, description: `Execute ${input.name} technique and verify detection fires`, type: 'true_positive' as const },
+        { name: `${input.name} - True Negative`, description: `Perform legitimate activity and verify detection does NOT fire`, type: 'true_negative' as const },
+        { name: `${input.name} - False Positive`, description: `Test common false positive scenarios for this detection`, type: 'false_positive' as const },
       ],
       validationPlan: [
         'Test with known-bad sample data',
@@ -69,7 +71,23 @@ export class DetectionAssistant {
         { format: 'sigma-like', content: `title: ${input.name}\ndescription: ${input.description}\nstatus: experimental\nlevel: ${severity}` },
         { format: 'kql-like', content: `// Detection: ${input.name}\nevent where ${input.description}` },
       ],
-    };
+    } satisfies DetectionIdeaOutput;
+
+    await auditLogger.log({
+      id: uuidv4(),
+      timestamp: new Date(),
+      action: 'detection_idea_generated',
+      actor: 'detection-assistant',
+      details: {
+        name: input.name,
+        severity,
+        techniques: input.mitreTechniques ?? [],
+        workItemCount: output.workItems.length,
+      },
+      severity: 'info',
+    });
+
+    return output;
   }
 
   async mapToMitre(input: MitreMappingInput): Promise<MitreMappingOutput> {
@@ -80,10 +98,23 @@ export class DetectionAssistant {
       techniques.push({
         id: input.technique,
         name: input.name || `Technique ${input.technique}`,
-        tactic: input.description || 'Unknown',
+        tactic: input.tactic || 'Unknown',
         subtechniques: [],
       });
     }
+
+    await auditLogger.log({
+      id: uuidv4(),
+      timestamp: new Date(),
+      action: 'detection_mitre_mapped',
+      actor: 'detection-assistant',
+      details: {
+        technique: input.technique,
+        tactic: input.tactic,
+        mappedTechniques: techniques.length,
+      },
+      severity: 'info',
+    });
 
     return {
       techniques,
@@ -98,7 +129,7 @@ export class DetectionAssistant {
   }
 
   async reviewDetectionLogic(input: DetectionReviewInput): Promise<DetectionReviewOutput> {
-    return {
+    const output: DetectionReviewOutput = {
       strengths: ['Detection logic is structured and follows naming conventions'],
       weaknesses: ['Consider adding threshold-based logic to reduce false positives'],
       falsePositiveRisk: 'medium',
@@ -109,27 +140,81 @@ export class DetectionAssistant {
       ],
       improvedLogic: `// Improved: ${input.name}\n${input.logic}\n// Added: threshold logic and allowlisting`,
     };
+
+    await auditLogger.log({
+      id: uuidv4(),
+      timestamp: new Date(),
+      action: 'detection_logic_reviewed',
+      actor: 'detection-assistant',
+      details: {
+        name: input.name,
+        format: input.format,
+        falsePositiveRisk: output.falsePositiveRisk,
+      },
+      severity: 'info',
+    });
+
+    return output;
   }
 
   async createDetectionWorkItems(input: DetectionWorkItemInput): Promise<string[]> {
     const createdIds: string[] = [];
+    const source = input.assignToJira ? 'jira' : 'hawk-ir';
 
     for (const item of input.idea.workItems) {
-      const id = workItemDatabase.createWorkItem({
-        type: 'detection',
-        title: item.title,
-        description: item.description,
-        priority: item.priority as any,
-        source: 'hawk-ir',
-        status: 'proposed',
+      try {
+        const created = workItemDatabase.createWorkItem({
+          type: 'detection',
+          title: item.title,
+          description: item.description,
+          priority: item.priority as any,
+          source,
+          status: 'proposed',
+          metadata: input.assignToJira ? { assignToJira: true } : undefined,
+        });
+        createdIds.push(created.id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown database error';
+        await auditLogger.log({
+          id: uuidv4(),
+          timestamp: new Date(),
+          action: 'detection_work_item_failed',
+          actor: 'detection-assistant',
+          details: {
+            title: item.title,
+            source,
+            error: message,
+          },
+          severity: 'error',
+        });
+        throw new Error(`Failed to create detection work item: ${message}`);
+      }
+    }
+
+    if (createdIds.length > 0) {
+      await auditLogger.log({
+        id: uuidv4(),
+        timestamp: new Date(),
+        action: 'detection_work_items_created',
+        actor: 'detection-assistant',
+        details: {
+          count: createdIds.length,
+          source,
+          assignToJira: input.assignToJira ?? false,
+        },
+        severity: 'info',
       });
-      createdIds.push(id.id);
     }
 
     return createdIds;
   }
 
   async summarizeCoverageGaps(input: CoverageGapInput): Promise<CoverageGapOutput> {
+    const totalTechniques = input.mitreTechniques?.length ?? 0;
+    const coveragePercentage = totalTechniques
+      ? Math.min(100, ((input.existingDetections?.length ?? 0) / totalTechniques) * 100)
+      : 0;
+
     return {
       gaps: [
         {
@@ -146,9 +231,7 @@ export class DetectionAssistant {
           priority: 'high',
         },
       ],
-      coveragePercentage: input.existingDetections?.length
-        ? Math.min(100, (input.existingDetections.length / 14) * 100)
-        : 0,
+      coveragePercentage,
     };
   }
 }

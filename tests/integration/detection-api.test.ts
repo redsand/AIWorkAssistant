@@ -79,6 +79,7 @@ describe("Detection API", () => {
       const body = response.json();
       expect(Array.isArray(body.techniques)).toBe(true);
       expect(body.techniques[0].id).toBe("T1528");
+      expect(body.techniques[0].tactic).toBe("Credential Access");
     });
 
     it("returns 400 for invalid body", async () => {

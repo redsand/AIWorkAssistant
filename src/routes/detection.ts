@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { detectionAssistant } from "../detection/detection-assistant.js";
-import type { DetectionWorkItemInput, DetectionIdeaOutput } from "../detection/types.js";
+import type { DetectionIdeaOutput } from "../detection/types.js";
 
 const DetectionIdeaInputSchema = z.object({
   name: z.string(),
@@ -54,48 +54,90 @@ export async function detectionRoutes(fastify: FastifyInstance) {
   fastify.post("/detection/idea", async (request, reply) => {
     const input = parseRequest(DetectionIdeaInputSchema, request.body, reply);
     if (!input) return;
-    const result = await detectionAssistant.generateDetectionIdea(input);
-    return result;
+    try {
+      fastify.log.info({ route: "/detection/idea", name: input.name }, "Generating detection idea");
+      const result = await detectionAssistant.generateDetectionIdea(input);
+      fastify.log.info({ route: "/detection/idea", name: input.name }, "Detection idea generated");
+      return result;
+    } catch (error) {
+      fastify.log.error({ route: "/detection/idea", error }, "Failed to generate detection idea");
+      reply.status(500).send({ error: "Failed to generate detection idea" });
+      return;
+    }
   });
 
   fastify.post("/detection/mitre", async (request, reply) => {
     const input = parseRequest(MitreMappingInputSchema, request.body, reply);
     if (!input) return;
-    const result = await detectionAssistant.mapToMitre(input);
-    return result;
+    try {
+      fastify.log.info({ route: "/detection/mitre", technique: input.technique }, "Mapping to MITRE");
+      const result = await detectionAssistant.mapToMitre(input);
+      fastify.log.info({ route: "/detection/mitre", technique: input.technique }, "MITRE mapping completed");
+      return result;
+    } catch (error) {
+      fastify.log.error({ route: "/detection/mitre", error }, "Failed to map to MITRE");
+      reply.status(500).send({ error: "Failed to map to MITRE" });
+      return;
+    }
   });
 
   fastify.post("/detection/tests", async (request, reply) => {
     const input = parseRequest(DetectionIdeaInputSchema, request.body, reply);
     if (!input) return;
-    const result = await detectionAssistant.generateTestCases(input);
-    return result;
+    try {
+      fastify.log.info({ route: "/detection/tests", name: input.name }, "Generating detection tests");
+      const result = await detectionAssistant.generateTestCases(input);
+      fastify.log.info({ route: "/detection/tests", name: input.name, count: result.length }, "Detection tests generated");
+      return result;
+    } catch (error) {
+      fastify.log.error({ route: "/detection/tests", error }, "Failed to generate detection tests");
+      reply.status(500).send({ error: "Failed to generate detection tests" });
+      return;
+    }
   });
 
   fastify.post("/detection/review", async (request, reply) => {
     const input = parseRequest(DetectionReviewInputSchema, request.body, reply);
     if (!input) return;
-    const result = await detectionAssistant.reviewDetectionLogic(input);
-    return result;
+    try {
+      fastify.log.info({ route: "/detection/review", name: input.name }, "Reviewing detection logic");
+      const result = await detectionAssistant.reviewDetectionLogic(input);
+      fastify.log.info({ route: "/detection/review", name: input.name }, "Detection logic reviewed");
+      return result;
+    } catch (error) {
+      fastify.log.error({ route: "/detection/review", error }, "Failed to review detection logic");
+      reply.status(500).send({ error: "Failed to review detection logic" });
+      return;
+    }
   });
 
   fastify.post("/detection/work-items", async (request, reply) => {
-    const parsed = DetectionWorkItemInputSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({
-        error: "Validation failed",
-        details: parsed.error.issues,
-      });
+    const input = parseRequest(DetectionWorkItemInputSchema, request.body, reply);
+    if (!input) return;
+    try {
+      fastify.log.info({ route: "/detection/work-items", assignToJira: input.assignToJira }, "Creating detection work items");
+      const result = await detectionAssistant.createDetectionWorkItems(input);
+      fastify.log.info({ route: "/detection/work-items", count: result.length }, "Detection work items created");
+      return { created: result };
+    } catch (error) {
+      fastify.log.error({ route: "/detection/work-items", error }, "Failed to create detection work items");
+      reply.status(500).send({ error: "Failed to create detection work items" });
+      return;
     }
-    const input = parsed.data as DetectionWorkItemInput;
-    const result = await detectionAssistant.createDetectionWorkItems(input);
-    return { created: result };
   });
 
   fastify.get("/detection/coverage-gaps", async (request, reply) => {
     const input = parseRequest(CoverageGapInputSchema, request.query, reply);
     if (!input) return;
-    const result = await detectionAssistant.summarizeCoverageGaps(input);
-    return result;
+    try {
+      fastify.log.info({ route: "/detection/coverage-gaps" }, "Summarizing coverage gaps");
+      const result = await detectionAssistant.summarizeCoverageGaps(input);
+      fastify.log.info({ route: "/detection/coverage-gaps", coveragePercentage: result.coveragePercentage }, "Coverage gaps summarized");
+      return result;
+    } catch (error) {
+      fastify.log.error({ route: "/detection/coverage-gaps", error }, "Failed to summarize coverage gaps");
+      reply.status(500).send({ error: "Failed to summarize coverage gaps" });
+      return;
+    }
   });
 }
