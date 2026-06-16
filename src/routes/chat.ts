@@ -215,7 +215,9 @@ interface SessionUsage {
   totalTokens: number;
   messageCount: number;
 }
-const sessionUsageMap = new Map<string, SessionUsage>();
+// Exported for testing so tests can seed/reset per-session usage without
+// going through the full streaming pipeline.
+export const sessionUsageMap = new Map<string, SessionUsage>();
 
 // Lifetime totals since server start — keyed by provider name.
 // Reset on server restart; use ZAI_TOKEN_BUDGET to show remaining.

@@ -11,6 +11,7 @@ export interface CachedToolCall {
   resultSize: number;
   calledAt: number;
   toolCallId: string;
+  ttlMs: number;
 }
 
 // Patterns identifying read-style tools that produce idempotent results.
@@ -52,6 +53,33 @@ const NEVER_CACHE = new Set<string>([
   "skill.manage",
   "cron.manage",
 ]);
+
+// Tools that return frequently-changing state get a short cache TTL.
+// Everything else keeps session-lifetime caching (immutable reads like
+// file contents, commit history, blame, tree listings).
+const MUTABLE_STATE_TTL_MS: Record<string, number> = {
+  // GitHub — issue/PR state changes on close/merge/label
+  "github.get_issue": 120_000,
+  "github.get_pull_request": 120_000,
+  "github.list_issues": 120_000,
+  "github.list_pull_requests": 120_000,
+  "github.list_workflow_runs": 60_000,
+  "github.get_workflow_run": 60_000,
+  // GitLab — same mutable state patterns
+  "gitlab.get_issue": 120_000,
+  "gitlab.get_merge_request": 120_000,
+  "gitlab.list_merge_requests": 120_000,
+  // Jira — issue status transitions
+  "jira.get_issue": 120_000,
+  "jira.search_issues": 120_000,
+  // HAWK IR — case state changes
+  "hawk_ir.get_case": 60_000,
+  "hawk_ir.list_cases": 60_000,
+  // Approval state changes on approve/reject
+  "system.list_approvals": 60_000,
+};
+
+const DEFAULT_IMMUTABLE_TTL_MS = Infinity; // session lifetime
 
 export function isCacheableTool(canonicalName: string): boolean {
   if (NEVER_CACHE.has(canonicalName)) return false;
@@ -261,7 +289,17 @@ class ToolCallCache {
   ): CachedToolCall | null {
     if (!isCacheableTool(toolName)) return null;
     const key = hashCall(toolName, params);
-    return this.bySession.get(sessionId)?.get(key) ?? null;
+    const entry = this.bySession.get(sessionId)?.get(key) ?? null;
+    if (!entry) return null;
+
+    const ttlMs = entry.ttlMs ?? DEFAULT_IMMUTABLE_TTL_MS;
+    if (ttlMs !== Infinity && (Date.now() - entry.calledAt) > ttlMs) {
+      // Expired — evict from both maps.
+      this.bySession.get(sessionId)?.delete(key);
+      this.byRef.delete(entry.ref);
+      return null;
+    }
+    return entry;
   }
 
   set(
@@ -283,6 +321,7 @@ class ToolCallCache {
     }
     const resultStr =
       typeof result === "string" ? result : JSON.stringify(result ?? null);
+    const ttlMs = MUTABLE_STATE_TTL_MS[toolName] ?? DEFAULT_IMMUTABLE_TTL_MS;
     const entry: CachedToolCall = {
       ref,
       toolName,
@@ -292,6 +331,7 @@ class ToolCallCache {
       resultSize: resultStr.length,
       calledAt: Date.now(),
       toolCallId,
+      ttlMs,
     };
 
     let sessionCache = this.bySession.get(sessionId);
@@ -328,12 +368,32 @@ class ToolCallCache {
   getByRef(ref: string): CachedToolCall | null {
     const lookup = this.byRef.get(ref);
     if (!lookup) return null;
-    return this.bySession.get(lookup.sessionId)?.get(lookup.key) ?? null;
+    const sessionCache = this.bySession.get(lookup.sessionId);
+    if (!sessionCache) return null;
+    const entry = sessionCache.get(lookup.key) ?? null;
+    if (!entry) return null;
+
+    const ttlMs = entry.ttlMs ?? DEFAULT_IMMUTABLE_TTL_MS;
+    if (ttlMs !== Infinity && (Date.now() - entry.calledAt) > ttlMs) {
+      // Expired — evict from both maps.
+      sessionCache.delete(lookup.key);
+      this.byRef.delete(ref);
+      return null;
+    }
+    return entry;
   }
 
   list(sessionId: string): CachedToolCall[] {
     const sessionCache = this.bySession.get(sessionId);
     if (!sessionCache) return [];
+    const now = Date.now();
+    for (const [key, entry] of sessionCache.entries()) {
+      const ttlMs = entry.ttlMs ?? DEFAULT_IMMUTABLE_TTL_MS;
+      if (ttlMs !== Infinity && (now - entry.calledAt) > ttlMs) {
+        sessionCache.delete(key);
+        this.byRef.delete(entry.ref);
+      }
+    }
     return Array.from(sessionCache.values()).sort((a, b) => a.calledAt - b.calledAt);
   }
 
