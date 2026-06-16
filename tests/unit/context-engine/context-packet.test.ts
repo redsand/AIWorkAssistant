@@ -28,6 +28,7 @@ vi.doMock("../../../src/agent/knowledge-graph", () => ({
   knowledgeGraph: {
     queryNodes: vi.fn(() => []),
     exportForContext: vi.fn(() => ""),
+    retrieveCommunitySummaries: vi.fn(() => []),
   },
 }));
 
@@ -265,7 +266,7 @@ describe("assembleContextPacket - ClaimKit integration", () => {
       timedOut: false,
       includedInMessages: false,
       preferredSource: "rag",
-      routingReason: "ck_unavailable",
+      routingReason: "ck_disabled",
       confidence: null,
       answerability: null,
       claimCount: null,

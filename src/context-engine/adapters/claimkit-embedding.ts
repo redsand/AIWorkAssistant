@@ -76,9 +76,11 @@ export class ClaimKitEmbeddingAdapter implements EmbeddingAdapter {
 
   private guardDimension(dim: number): void {
     if (dim !== this._dimensions) {
-      console.warn(
+      throw new Error(
         `[ClaimKitEmbedding] Dimension mismatch: expected ${this._dimensions}, got ${dim}. ` +
-          `Ignoring the mismatch to keep vector store consistent.`,
+          `Refusing the embedding to protect the vector store. Restart the process (or set ` +
+          `EMBEDDING_ALLOW_PROVIDER_SWITCH=true and rebuild vector indexes) if you intentionally ` +
+          `changed the embedding model.`,
       );
     }
   }

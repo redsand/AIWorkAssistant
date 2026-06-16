@@ -139,12 +139,12 @@ describe("ClaimKitEmbeddingAdapter", () => {
       );
     });
 
-    it("keeps constructor dimensions even when actual result differs", async () => {
+    it("throws when actual result differs from constructor dimensions", async () => {
       const shortEmbedding = new Array(384).fill(0.5);
       mockEmbed.mockResolvedValue({ embedding: shortEmbedding, model: "all-minilm", provider: "ollama" });
 
       expect(adapter.dimensions).toBe(1536);
-      await adapter.embed("test");
+      await expect(adapter.embed("test")).rejects.toThrow("Dimension mismatch");
       expect(adapter.dimensions).toBe(1536);
     });
 
@@ -161,8 +161,7 @@ describe("ClaimKitEmbeddingAdapter", () => {
       expect(adapter.dimensions).toBe(1536);
     });
 
-    it("logs a warning but keeps constructor dimensions when detected value changes", async () => {
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    it("throws when detected value changes", async () => {
       const emb1 = new Array(1536).fill(0.1);
       const emb2 = new Array(768).fill(0.2);
       mockEmbed
@@ -171,10 +170,8 @@ describe("ClaimKitEmbeddingAdapter", () => {
 
       await adapter.embed("first");
       expect(adapter.dimensions).toBe(1536);
-      await adapter.embed("second");
+      await expect(adapter.embed("second")).rejects.toThrow("Dimension mismatch");
       expect(adapter.dimensions).toBe(1536);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Dimension mismatch"));
-      warnSpy.mockRestore();
     });
   });
 
@@ -231,7 +228,7 @@ describe("ClaimKitEmbeddingAdapter", () => {
       );
     });
 
-    it("keeps constructor dimensions for each batch result", async () => {
+    it("throws when a batch result differs from constructor dimensions", async () => {
       const emb1 = new Array(768).fill(0.1);
       const emb2 = new Array(768).fill(0.2);
       mockEmbedBatch.mockResolvedValue([
@@ -239,23 +236,19 @@ describe("ClaimKitEmbeddingAdapter", () => {
         { embedding: emb2, model: "m2", provider: "p2" },
       ]);
 
-      await adapter.embedBatch(["a", "b"]);
-
+      await expect(adapter.embedBatch(["a", "b"])).rejects.toThrow("Dimension mismatch");
       expect(adapter.dimensions).toBe(1536);
     });
 
-    it("logs a warning but keeps constructor dimensions when a batch result has different dimensions", async () => {
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    it("throws when a batch result has different dimensions", async () => {
       const emb = new Array(3072).fill(0.5);
       mockEmbedBatch.mockResolvedValue([
         { embedding: emb, model: "m1", provider: "p1" },
       ]);
 
       expect(adapter.dimensions).toBe(1536);
-      await adapter.embedBatch(["text"]);
+      await expect(adapter.embedBatch(["text"])).rejects.toThrow("Dimension mismatch");
       expect(adapter.dimensions).toBe(1536);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Dimension mismatch"));
-      warnSpy.mockRestore();
     });
   });
 });

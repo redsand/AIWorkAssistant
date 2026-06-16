@@ -285,6 +285,7 @@ export async function assembleContextPacket(
   let claimKitResult: Awaited<ReturnType<typeof claimKitAdapter.query>> | null = null;
   let ckMs = 0;
   let ckStatus: CkStatus | null = null;
+  let routing: RoutingDecision | undefined;
   let groundingHandle: GroundingHandle | undefined = undefined;
   // Collaboration trackers — recorded on the comparison_cases row so the
   // dashboard can show how often each new feature actually fired.
@@ -542,12 +543,14 @@ export async function assembleContextPacket(
       );
     }
 
-    // Auto-save comparison data for dashboard — use routing decision
+    // Compute routing once inside the ClaimKit-enabled block so it captures
+    // the final ckStatus (timeout/error/disabled/answered).
     const unavailableReason = ckStatus === "timeout" ? "ck_timeout"
       : ckStatus === "error" ? "ck_error"
       : ckStatus === "disabled" ? "ck_disabled"
       : undefined;
-    const comparisonRouting = determineRoutingTier(claimKitResult, unavailableReason);
+    routing = determineRoutingTier(claimKitResult, unavailableReason);
+
     const ragMs = Date.now() - ragStart;
     const ckIncludedInContext = claimKitResult != null;
 
@@ -560,12 +563,10 @@ export async function assembleContextPacket(
     let ckSectionTokensEstimate: number | null = null;
     if (claimKitResult && ckIncludedInContext) {
       const previewLines: string[] = [];
-      // Header — one of three labels depending on routing tier. The
-      // comparison routing decision was already computed above as
-      // comparisonRouting; reuse it instead of recomputing.
-      if (comparisonRouting.preferredSource === "claimkit") {
+      // Header — one of three labels depending on routing tier.
+      if (routing.preferredSource === "claimkit") {
         previewLines.push("=== PRIMARY ANSWER (ClaimKit — high confidence) ===");
-      } else if (comparisonRouting.preferredSource === "rag") {
+      } else if (routing.preferredSource === "rag") {
         previewLines.push("=== SUPPLEMENTARY ANALYSIS (ClaimKit) ===");
       } else {
         previewLines.push("=== VERIFIED EVIDENCE (ClaimKit) ===");
@@ -603,8 +604,8 @@ export async function assembleContextPacket(
       ckRetrievalScore: claimKitResult?.metadata.retrievalScore ?? null,
       ckSourceCount: claimKitResult?.metadata.sourceIds.length ?? null,
       ckMissingEvidence: claimKitResult?.missingEvidence?.join(", ") ?? null,
-      overallWinner: comparisonRouting.overallWinner,
-      winnerReason: comparisonRouting.routingReason,
+      overallWinner: routing.overallWinner,
+      winnerReason: routing.routingReason,
       ckStatus,
       ckIncludedInContext,
       ckSectionTokens: ckSectionTokensEstimate,
@@ -658,7 +659,11 @@ export async function assembleContextPacket(
   const knowledgeSection = formatDocumentsSection(compressedDocs);
   const graphSection = trimmedGraph;
 
-  const routing = determineRoutingTier(claimKitResult);
+  // If ClaimKit is disabled, compute a default routing here. When enabled,
+  // routing was already computed inside the block so it captured ckStatus.
+  if (!routing) {
+    routing = determineRoutingTier(claimKitResult, ckStatus === "disabled" ? "ck_disabled" : undefined);
+  }
   console.log(
     `[ROUTING DECISION] winner=${routing.overallWinner.toUpperCase()} | tier=${routing.tier} | reason=${routing.routingReason}` +
     (claimKitResult
