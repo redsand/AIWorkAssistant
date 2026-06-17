@@ -76,6 +76,10 @@ export interface SkillHubOptions {
   fetchImpl?: typeof fetch;
   /** GitHub publisher (injectable for tests). */
   publisher?: HubPublisher;
+  /** Allow pushing to the shared registry. Defaults to SKILLS_HUB_PUBLISH_ENABLED. */
+  publishEnabled?: boolean;
+  /** Per-request timeout (ms) for hub fetches. Defaults to SKILLS_HUB_TIMEOUT_MS. */
+  timeoutMs?: number;
 }
 
 export class SkillHub {
@@ -83,6 +87,8 @@ export class SkillHub {
   private hubUrl: string;
   private fetchImpl: typeof fetch;
   private publisher?: HubPublisher;
+  private publishEnabled: boolean;
+  private timeoutMs: number;
 
   constructor(opts: SkillHubOptions = {}) {
     this._skillsBasePath = opts.skillsBasePath;
@@ -92,6 +98,26 @@ export class SkillHub {
     );
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch;
     this.publisher = opts.publisher;
+    this.publishEnabled = opts.publishEnabled ?? env.SKILLS_HUB_PUBLISH_ENABLED;
+    this.timeoutMs = opts.timeoutMs ?? env.SKILLS_HUB_TIMEOUT_MS;
+  }
+
+  /** Fetch with an AbortController timeout so a slow hub cannot hang the agent. */
+  private async fetchWithTimeout(url: string): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      return await this.fetchImpl(url, { signal: controller.signal });
+    } catch (e) {
+      if ((e as Error)?.name === "AbortError") {
+        throw new Error(
+          `Hub request to '${url}' timed out after ${this.timeoutMs}ms`,
+        );
+      }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private get skillsBasePath(): string {
@@ -169,19 +195,14 @@ export class SkillHub {
   }
 
   private async fetchRegistryIndex(): Promise<SkillManifest[]> {
-    const res = await this.fetchImpl(`${this.hubUrl}/index.json`);
+    const res = await this.fetchWithTimeout(`${this.hubUrl}/index.json`);
     if (!res.ok) {
       throw new Error(
         `Failed to fetch hub index (HTTP ${res.status}) from ${this.hubUrl}/index.json`,
       );
     }
     const data = (await res.json()) as unknown;
-    const list = Array.isArray(data)
-      ? data
-      : Array.isArray((data as { skills?: unknown }).skills)
-        ? (data as { skills: unknown[] }).skills
-        : [];
-    return list as SkillManifest[];
+    return parseManifestList(data);
   }
 
   // ── Install / quarantine ──────────────────────────────────────────
@@ -247,7 +268,7 @@ export class SkillHub {
 
     let body: string;
     try {
-      const res = await this.fetchImpl(url);
+      const res = await this.fetchWithTimeout(url);
       if (!res.ok) {
         return {
           success: false,
@@ -335,6 +356,17 @@ export class SkillHub {
 
   /** Package a local skill and push it to the registry repo. */
   async publish(localPath: string): Promise<PublishResult> {
+    // Publishing mutates a shared, public registry. Require an explicit opt-in
+    // so an agent cannot push to the community repo by default.
+    if (!this.publishEnabled) {
+      return {
+        success: false,
+        name: localPath,
+        error:
+          "Publishing to the skill hub is disabled. Set SKILLS_HUB_PUBLISH_ENABLED=true to enable it.",
+      };
+    }
+
     const publisher = this.publisher;
     if (!publisher) {
       return { success: false, name: localPath, error: "No hub publisher configured" };
@@ -418,22 +450,31 @@ export class SkillHub {
   private async fetchRegistryIndexForPublish(
     publisher: HubPublisher,
   ): Promise<SkillManifest[]> {
+    let file: { content: string; encoding: string; sha: string };
     try {
-      const file = await publisher.getFile(
+      file = await publisher.getFile(
         "index.json",
         HUB_REPO_BRANCH,
         HUB_REPO_OWNER,
         HUB_REPO_NAME,
       );
-      const decoded =
-        file.encoding === "base64"
-          ? Buffer.from(file.content, "base64").toString("utf-8")
-          : file.content;
-      const data = JSON.parse(decoded);
-      return Array.isArray(data) ? data : (data.skills ?? []);
-    } catch {
-      return [];
+    } catch (e) {
+      // A missing index.json (first publish ever) is expected — start fresh.
+      // Any other failure (transient API error, auth, rate limit) must NOT be
+      // swallowed: returning [] here would overwrite the whole registry with
+      // only the new skill, destroying every other entry.
+      if (isNotFoundError(e)) return [];
+      throw new Error(
+        `Failed to read registry index before publish: ${(e as Error).message}. Aborting to avoid clobbering the registry.`,
+      );
     }
+
+    const decoded =
+      file.encoding === "base64"
+        ? Buffer.from(file.content, "base64").toString("utf-8")
+        : file.content;
+    const data = JSON.parse(decoded);
+    return parseManifestList(data);
   }
 
   private async putRepoFile(
@@ -451,7 +492,10 @@ export class SkillHub {
         HUB_REPO_NAME,
       );
       existingSha = existing.sha;
-    } catch {
+    } catch (e) {
+      // 404 means the file does not exist yet → create it. Any other error must
+      // propagate so we don't blindly create over a file we failed to read.
+      if (!isNotFoundError(e)) throw e;
       existingSha = undefined;
     }
 
@@ -539,6 +583,64 @@ export class SkillHub {
     skills.push(entry);
     this.writeIndex(skills);
   }
+}
+
+// ── Remote index validation ─────────────────────────────────────────
+
+/** True if an error from the publisher represents a missing file (HTTP 404). */
+function isNotFoundError(e: unknown): boolean {
+  const err = e as {
+    status?: number;
+    response?: { status?: number };
+    message?: string;
+  };
+  if (err?.status === 404 || err?.response?.status === 404) return true;
+  return typeof err?.message === "string" && /\b404\b|not found/i.test(err.message);
+}
+
+/**
+ * Validate the shape of a remote manifest. Remote registry JSON is untrusted:
+ * name/category feed path construction and the other fields are surfaced to the
+ * user, so every required field must be a string of the expected form.
+ */
+function isValidManifest(value: unknown): value is SkillManifest {
+  if (!value || typeof value !== "object") return false;
+  const m = value as Record<string, unknown>;
+  const requiredStrings = [
+    "name",
+    "version",
+    "author",
+    "description",
+    "category",
+    "checksum",
+    "downloadUrl",
+    "license",
+  ];
+  for (const key of requiredStrings) {
+    if (typeof m[key] !== "string" || (m[key] as string).length === 0) {
+      return false;
+    }
+  }
+  // name and category are used to build filesystem and URL paths — they must be
+  // safe segments, never traversal or absolute fragments.
+  if (
+    !VALID_SEGMENT_RE.test(m.name as string) ||
+    !VALID_SEGMENT_RE.test(m.category as string)
+  ) {
+    return false;
+  }
+  if (m.tags !== undefined && !Array.isArray(m.tags)) return false;
+  return true;
+}
+
+/** Coerce arbitrary remote JSON into a list of validated manifests. */
+function parseManifestList(data: unknown): SkillManifest[] {
+  const list = Array.isArray(data)
+    ? data
+    : Array.isArray((data as { skills?: unknown })?.skills)
+      ? (data as { skills: unknown[] }).skills
+      : [];
+  return list.filter(isValidManifest);
 }
 
 // ── Frontmatter helpers ─────────────────────────────────────────────

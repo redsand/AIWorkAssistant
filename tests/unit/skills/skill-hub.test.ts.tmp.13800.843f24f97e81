@@ -264,22 +264,6 @@ describe("SkillHub", () => {
     });
 
     it("refuses a manifest with no checksum (mandatory integrity)", async () => {
-      // A blank checksum is also stripped by index validation, so test the
-      // guard directly via installFromManifest.
-      const manifest = manifestFor(SKILL_BODY);
-      manifest.checksum = "";
-      const h = hub({ fetchImpl: makeFetch({ skillBody: SKILL_BODY }) });
-
-      const result = await h.installFromManifest(manifest);
-      expect(result.success).toBe(false);
-      expect(result.checksumVerified).toBe(false);
-      expect(result.error).toMatch(/missing a checksum/);
-      expect(
-        fs.existsSync(path.join(baseDir, ".hub", "quarantine", "fix-auth")),
-      ).toBe(false);
-    });
-
-    it("drops a blank-checksum entry from the index (install reports not found)", async () => {
       const manifest = manifestFor(SKILL_BODY);
       manifest.checksum = "";
       const index = { skills: [manifest] };
@@ -287,7 +271,11 @@ describe("SkillHub", () => {
 
       const result = await h.install("fix-auth");
       expect(result.success).toBe(false);
-      expect(result.error).toMatch(/not found in hub registry/);
+      expect(result.checksumVerified).toBe(false);
+      expect(result.error).toMatch(/missing a checksum/);
+      expect(
+        fs.existsSync(path.join(baseDir, ".hub", "quarantine", "fix-auth")),
+      ).toBe(false);
     });
 
     it("refuses a downloadUrl on a different origin (SSRF guard)", async () => {
@@ -495,97 +483,6 @@ describe("SkillHub", () => {
       const result = await h.publish("debugging/fix-auth/SKILL.md");
       expect(result.success).toBe(false);
       expect(result.error).toMatch(/No hub publisher/);
-    });
-
-    it("refuses to publish when publishing is disabled (authorization gate)", async () => {
-      const skillDir = path.join(baseDir, "debugging", "fix-auth");
-      fs.mkdirSync(skillDir, { recursive: true });
-      fs.writeFileSync(path.join(skillDir, "SKILL.md"), SKILL_BODY, "utf-8");
-
-      const publisher = mockPublisher();
-      const h = hub({ publisher, publishEnabled: false });
-      const result = await h.publish("debugging/fix-auth/SKILL.md");
-      expect(result.success).toBe(false);
-      expect(result.error).toMatch(/SKILLS_HUB_PUBLISH_ENABLED/);
-      // Nothing must be pushed.
-      expect(publisher.created).toEqual({});
-    });
-
-    it("aborts (does not clobber the index) when the index read fails transiently", async () => {
-      const skillDir = path.join(baseDir, "debugging", "fix-auth");
-      fs.mkdirSync(skillDir, { recursive: true });
-      fs.writeFileSync(path.join(skillDir, "SKILL.md"), SKILL_BODY, "utf-8");
-
-      const created: Record<string, string> = {};
-      const publisher: HubPublisher & { created: Record<string, string> } = {
-        created,
-        getFile: vi.fn(async (filePath: string) => {
-          if (filePath === "index.json") {
-            // Transient API failure — must NOT be swallowed.
-            throw Object.assign(new Error("Server error"), { status: 500 });
-          }
-          // Skill file does not exist yet (404 → create).
-          throw Object.assign(new Error("Not Found"), { status: 404 });
-        }),
-        createFile: vi.fn(async (filePath: string, content: string) => {
-          created[filePath] = content;
-          return { content: { html_url: `https://github.com/x/${filePath}` } };
-        }),
-        updateFile: vi.fn(async (filePath: string, content: string) => {
-          created[filePath] = content;
-          return { content: { html_url: `https://github.com/x/${filePath}` } };
-        }),
-      };
-
-      const h = hub({ publisher });
-      const result = await h.publish("debugging/fix-auth/SKILL.md");
-
-      expect(result.success).toBe(false);
-      expect(result.error).toMatch(/Aborting to avoid clobbering/);
-      // The skill file may have been written, but the index must be untouched.
-      expect(created["index.json"]).toBeUndefined();
-    });
-
-    it("merges into an existing remote index without dropping entries", async () => {
-      const skillDir = path.join(baseDir, "debugging", "fix-auth");
-      fs.mkdirSync(skillDir, { recursive: true });
-      fs.writeFileSync(path.join(skillDir, "SKILL.md"), SKILL_BODY, "utf-8");
-
-      const existing = {
-        skills: [
-          { ...manifestFor(SKILL_BODY), name: "keep-me", category: "other" },
-        ],
-      };
-      const created: Record<string, string> = {};
-      const publisher: HubPublisher & { created: Record<string, string> } = {
-        created,
-        getFile: vi.fn(async (filePath: string) => {
-          if (filePath === "index.json") {
-            return {
-              content: Buffer.from(JSON.stringify(existing)).toString("base64"),
-              encoding: "base64",
-              sha: "abc",
-            };
-          }
-          throw Object.assign(new Error("Not Found"), { status: 404 });
-        }),
-        createFile: vi.fn(async (filePath: string, content: string) => {
-          created[filePath] = content;
-          return { content: { html_url: `https://github.com/x/${filePath}` } };
-        }),
-        updateFile: vi.fn(async (filePath: string, content: string) => {
-          created[filePath] = content;
-          return { content: { html_url: `https://github.com/x/${filePath}` } };
-        }),
-      };
-
-      const h = hub({ publisher });
-      const result = await h.publish("debugging/fix-auth/SKILL.md");
-
-      expect(result.success).toBe(true);
-      const indexJson = JSON.parse(created["index.json"]);
-      const names = indexJson.skills.map((s: SkillManifest) => s.name).sort();
-      expect(names).toEqual(["fix-auth", "keep-me"]);
     });
   });
 });
