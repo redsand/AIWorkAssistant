@@ -28,6 +28,7 @@
     "test:aicoder": "tsx scripts/test-aicoder-smoke.ts",
     "test:aicoder:live": "tsx scripts/test-aicoder-smoke.ts --live",
     "init:roadmap": "tsx scripts/init-roadmap.ts",
+    "eval:graph": "tsx scripts/evaluate-graph-retrieval.ts",
     "deploy": "bash scripts/deploy.sh",
     "deploy:production": "bash scripts/deploy.sh deploy production",
     "backup": "bash scripts/backup-system.sh",

@@ -1,0 +1,102 @@
+[
+  {
+    "query": "what depends on IR-82?",
+    "groundTruth": ["IR-83", "IR-84"],
+    "type": "structural"
+  },
+  {
+    "query": "what depends on IR-55?",
+    "groundTruth": ["IR-56", "IR-57", "IR-58"],
+    "type": "structural"
+  },
+  {
+    "query": "how does auth relate to notifications?",
+    "groundTruth": ["auth-service", "notification-service"],
+    "type": "structural"
+  },
+  {
+    "query": "how does the context engine relate to ClaimKit?",
+    "groundTruth": ["context-engine", "claimkit-adapter"],
+    "type": "structural"
+  },
+  {
+    "query": "what blocks IR-90?",
+    "groundTruth": ["IR-88", "IR-89"],
+    "type": "structural"
+  },
+  {
+    "query": "what is the relationship between knowledge-graph and comparison-runs?",
+    "groundTruth": ["knowledge-graph", "comparison-runs"],
+    "type": "structural"
+  },
+  {
+    "query": "what depends on the embedding-service?",
+    "groundTruth": ["claimkit-adapter", "knowledge-store"],
+    "type": "structural"
+  },
+  {
+    "query": "how does the reaper relate to agent-runs?",
+    "groundTruth": ["reaper", "agent-runs"],
+    "type": "structural"
+  },
+  {
+    "query": "what implements the routing decision?",
+    "groundTruth": ["context-packet", "determineRoutingTier"],
+    "type": "structural"
+  },
+  {
+    "query": "what depends on the knowledge-graph?",
+    "groundTruth": ["context-packet", "claimkit-adapter", "community-cache"],
+    "type": "structural"
+  },
+  {
+    "query": "how does the dependency parser relate to the autonomous loop?",
+    "groundTruth": ["dependency-parser", "autonomous-loop"],
+    "type": "structural"
+  },
+  {
+    "query": "what blocks the graph evaluation work?",
+    "groundTruth": ["IR-206", "IR-207", "IR-208"],
+    "type": "structural"
+  },
+  {
+    "query": "how does the detection assistant relate to the server routes?",
+    "groundTruth": ["detection-assistant", "routes"],
+    "type": "structural"
+  },
+  {
+    "query": "what depends on the comparison-runs database?",
+    "groundTruth": ["auto-capture", "comparison-runs-api"],
+    "type": "structural"
+  },
+  {
+    "query": "what is the relationship between the reranker and the compressor?",
+    "groundTruth": ["reranker", "compressor"],
+    "type": "structural"
+  },
+  {
+    "query": "how does the soul manager relate to the context packet?",
+    "groundTruth": ["soul-manager", "context-packet"],
+    "type": "structural"
+  },
+  {
+    "query": "what depends on the budget allocator?",
+    "groundTruth": ["context-packet", "enforceBudget"],
+    "type": "structural"
+  },
+  {
+    "query": "how does session tracking relate to token usage?",
+    "groundTruth": ["chat", "token-usage"],
+    "type": "structural"
+  },
+  {
+    "query": "what implements community detection?",
+    "groundTruth": ["knowledge-graph", "community-cache"],
+    "type": "structural"
+  },
+  {
+    "query": "how does profile isolation relate to agent instances?",
+    "groundTruth": ["profile-handlers", "agent-runs"],
+    "type": "structural"
+  }
+]
