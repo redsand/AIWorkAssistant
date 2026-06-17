@@ -546,23 +546,67 @@ export function resolvePath(relativePath: string): string {
     readActiveProfileName(home) ||
     env.ACTIVE_PROFILE ||
     "default";
-  // The profile name comes from an env var or the on-disk `active` marker, so
-  // it is untrusted input. Reject anything that isn't a plain identifier so a
-  // value like "../other" can't escape the profile root and read or clobber a
-  // different profile's state, which would silently defeat isolation.
-  const profile = /^[A-Za-z0-9._-]+$/.test(requested) && requested !== ".."
-    ? requested
-    : "default";
-  return path.join(home, "profiles", profile, relativePath);
+  return path.join(home, "profiles", safeProfileName(requested), relativePath);
 }
+
+// A plain identifier: letters, digits, dot, underscore, hyphen. Note this
+// pattern alone still matches "." and "..", which are filesystem traversal
+// tokens, so safeProfileName() rejects those explicitly below.
+const PROFILE_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * Normalize an untrusted profile name (from an env var or the on-disk `active`
+ * marker) into a safe directory segment. Anything that isn't a plain identifier
+ * — or is "." / ".." — falls back to "default" so a tampered value can't escape
+ * the profile root and read or clobber another profile's state (which would
+ * silently defeat isolation). "." is the critical case: path.join(home,
+ * "profiles", ".", "memories") collapses to HERMES_HOME/profiles/memories,
+ * escaping the per-profile boundary.
+ */
+function safeProfileName(requested: string): string {
+  if (
+    !PROFILE_NAME_PATTERN.test(requested) ||
+    requested === "." ||
+    requested === ".."
+  ) {
+    return "default";
+  }
+  return requested;
+}
+
+// Cache the active-marker read, keyed by the marker file's mtime. resolvePath()
+// is called on every memory/skill/session access, so re-reading the file each
+// time adds avoidable sync I/O. A `profile switch` rewrites the marker (bumping
+// mtime), so the cache self-invalidates without an explicit reset.
+let activeMarkerCache:
+  | { file: string; mtimeMs: number; name: string | undefined }
+  | null = null;
 
 /** Read the active profile name from `HERMES_HOME/profiles/active`, if present. */
 function readActiveProfileName(home: string): string | undefined {
+  const activeFile = path.join(home, "profiles", "active");
+  let mtimeMs: number;
   try {
-    const activeFile = path.join(home, "profiles", "active");
-    const name = fs.readFileSync(activeFile, "utf-8").trim();
-    return name || undefined;
+    mtimeMs = fs.statSync(activeFile).mtimeMs;
   } catch {
+    activeMarkerCache = null;
     return undefined;
   }
+
+  if (
+    activeMarkerCache &&
+    activeMarkerCache.file === activeFile &&
+    activeMarkerCache.mtimeMs === mtimeMs
+  ) {
+    return activeMarkerCache.name;
+  }
+
+  let name: string | undefined;
+  try {
+    name = fs.readFileSync(activeFile, "utf-8").trim() || undefined;
+  } catch {
+    name = undefined;
+  }
+  activeMarkerCache = { file: activeFile, mtimeMs, name };
+  return name;
 }

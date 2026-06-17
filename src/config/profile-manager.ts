@@ -19,6 +19,8 @@
 
 import fs from "fs";
 import path from "path";
+import { env } from "./env";
+import { auditLogger } from "../audit/logger";
 
 export interface Profile {
   name: string;
@@ -53,8 +55,23 @@ export class ProfileManager {
   }
 
   private resolveProfilesRoot(): string {
-    const home = process.env.HERMES_HOME || "data";
+    // Mirror resolvePath() in config/env.ts exactly: runtime override first,
+    // then the zod-validated env default, then the literal "data". Diverging
+    // here would let ProfileManager scaffold profiles under a different root
+    // than the one resolvePath() reads from, silently splitting state.
+    const home = process.env.HERMES_HOME || env.HERMES_HOME || "data";
     return path.join(home, "profiles");
+  }
+
+  private audit(action: string, name: string): void {
+    void auditLogger.log({
+      id: crypto.randomUUID(),
+      timestamp: new Date(),
+      action,
+      actor: "system",
+      details: { profile: name, profilesRoot: this.profilesRoot },
+      severity: "info",
+    });
   }
 
   /** Absolute path to a profile's directory. */
@@ -81,6 +98,43 @@ export class ProfileManager {
     }
   }
 
+  /**
+   * One-time migration of pre-profile-isolation data into the default profile.
+   *
+   * Before profiles existed, state lived directly under HERMES_HOME:
+   * `data/memories/` (MEMORY.md, USER.md, SOUL.md) and `data/skills/`. With
+   * isolation those paths became `data/profiles/default/...`, which would
+   * orphan an existing install's data on upgrade. When the default profile is
+   * first scaffolded, copy any legacy directories in so nothing is lost.
+   *
+   * Copies (never moves) and never overwrites a file that already exists in the
+   * destination, so it is safe to re-run and leaves the originals untouched.
+   */
+  private migrateLegacyData(defaultDir: string): void {
+    const legacyRoot = path.dirname(this.profilesRoot); // HERMES_HOME
+    for (const sub of ["memories", "skills"]) {
+      const src = path.join(legacyRoot, sub);
+      const dest = path.join(defaultDir, sub);
+      if (!fs.existsSync(src) || !fs.statSync(src).isDirectory()) continue;
+      try {
+        fs.cpSync(src, dest, {
+          recursive: true,
+          force: false,
+          errorOnExist: false,
+        });
+        this.audit("profile.migrate", `default:${sub}`);
+        console.log(
+          `[ProfileManager] Migrated legacy ${src} → ${dest} (originals left in place)`,
+        );
+      } catch (err) {
+        console.warn(
+          `[ProfileManager] Failed to migrate legacy ${src}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  }
+
   private readMeta(dir: string): { createdAt: string; lastUsedAt: string } {
     const configPath = path.join(dir, "config.yaml");
     const fallback = new Date().toISOString();
@@ -89,9 +143,14 @@ export class ProfileManager {
     try {
       const content = fs.readFileSync(configPath, "utf-8");
       for (const line of content.split("\n")) {
-        const m = line.match(/^(createdAt|lastUsedAt):\s*(.+)$/);
-        if (m) {
-          (meta as Record<string, string>)[m[1]] = m[2].trim();
+        // Split on the FIRST colon only so ISO timestamps (which contain
+        // colons, e.g. 2026-06-17T10:22:53Z) survive the value side intact.
+        const idx = line.indexOf(":");
+        if (idx === -1) continue;
+        const key = line.slice(0, idx).trim();
+        const value = line.slice(idx + 1).trim();
+        if (key === "createdAt" || key === "lastUsedAt") {
+          (meta as Record<string, string>)[key] = value;
         }
       }
     } catch {
@@ -172,6 +231,7 @@ export class ProfileManager {
 
     fs.mkdirSync(dir, { recursive: true });
     this.scaffold(dir);
+    this.audit("profile.create", name);
     return this.toProfile(name);
   }
 
@@ -208,10 +268,15 @@ export class ProfileManager {
   /** Set the active profile, updating data/profiles/active. */
   switch(name: string): void {
     validateProfileName(name);
-    if (!fs.existsSync(this.profilePath(name))) {
+    const dir = this.profilePath(name);
+    if (!fs.existsSync(dir)) {
       throw new Error(`Profile '${name}' not found`);
     }
     this.writeActiveName(name);
+    // lastUsedAt is bumped here (on an explicit switch) rather than on every
+    // getActive() read, so a hot read path does not rewrite config.yaml.
+    this.touch(dir);
+    this.audit("profile.switch", name);
   }
 
   /**
@@ -220,18 +285,26 @@ export class ProfileManager {
    */
   getActive(): Profile {
     const name = this.readActiveName();
+    // The name comes off disk (the `active` marker) and is untrusted: a
+    // tampered marker like "../escape" would otherwise reach path.join and
+    // fs.mkdirSync below. Validate before any filesystem operation.
+    validateProfileName(name);
     const dir = path.join(this.profilesRoot, name);
 
     if (!fs.existsSync(dir)) {
       // Auto-create the requested profile (default on a fresh install).
       fs.mkdirSync(dir, { recursive: true });
       this.scaffold(dir);
+      // Pull a pre-isolation install's data into the default profile so an
+      // upgrade does not strand existing memories/skills.
+      if (name === DEFAULT_PROFILE_NAME) {
+        this.migrateLegacyData(dir);
+      }
       this.writeActiveName(name);
     } else if (!fs.existsSync(this.activeFilePath())) {
       this.writeActiveName(name);
     }
 
-    this.touch(dir);
     return this.toProfile(name);
   }
 
@@ -248,6 +321,7 @@ export class ProfileManager {
       );
     }
     fs.rmSync(dir, { recursive: true, force: true });
+    this.audit("profile.delete", name);
   }
 
   /** Copy config.yaml and .env from a source profile into a new profile. */
@@ -271,9 +345,18 @@ export class ProfileManager {
       const src = path.join(fromDir, file);
       if (fs.existsSync(src)) {
         fs.copyFileSync(src, path.join(toDir, file));
+        if (file === ".env") {
+          // The source .env can hold API keys/tokens. Cloning duplicates them
+          // verbatim into the new profile — make that copy visible rather than
+          // silent so the operator knows secrets were propagated.
+          console.warn(
+            `[ProfileManager] Copied .env (may contain secrets) from '${fromName}' to '${toName}'. Review and rotate credentials if the profiles should not share them.`,
+          );
+        }
       }
     }
 
+    this.audit("profile.clone", `${fromName}->${toName}`);
     return this.toProfile(toName);
   }
 }

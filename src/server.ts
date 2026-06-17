@@ -284,6 +284,19 @@ async function start() {
       void toolCallCache.connectRedis(redisUrl);
     }
 
+    // ─── Profile systems ───
+    // Two distinct managers coexist on purpose; they are NOT duplicates:
+    //   • profiles/profile-manager (getProfileManager) — per-SESSION runtime
+    //     selection of system prompt + allowed tools. Concurrent chat sessions
+    //     can run under different personalities without a restart. In-memory,
+    //     keyed by sessionId.
+    //   • config/profile-manager (getConfigProfileManager) — on-disk profile
+    //     ISOLATION: each profile owns a separate memories/skills/sessions
+    //     directory tree, selected by the `active` marker and consumed by
+    //     resolvePath(). This is process-global and chosen at boot.
+    // The session manager decides *which prompt/tools* a request uses; the
+    // config manager decides *which directory* all state lands in.
+
     // ─── Profile Manager: initialize profiles ───
     try {
       const pm = getProfileManager();

@@ -47,6 +47,61 @@ describe("config/ProfileManager", () => {
       const first = pm.getActive();
       expect(first.lastUsedAt).toBeTruthy();
     });
+
+    it("falls back to default when the active marker is tampered with a traversal sequence", () => {
+      const pm = makeManager();
+      pm.getActive(); // seed default + marker
+      const marker = path.join(rootDir, "profiles", "active");
+      fs.writeFileSync(marker, "../escape\n", "utf-8");
+
+      // A tampered name must never reach path.join/fs.mkdirSync unvalidated.
+      expect(() => pm.getActive()).toThrow();
+      // No directory should have been created outside the profiles root.
+      expect(fs.existsSync(path.join(rootDir, "escape"))).toBe(false);
+    });
+
+    it("migrates legacy data/memories and data/skills into the default profile on first run", () => {
+      // Simulate a pre-isolation install: state directly under HERMES_HOME.
+      const legacyMem = path.join(rootDir, "memories");
+      const legacySkills = path.join(rootDir, "skills", "general", "greet");
+      fs.mkdirSync(legacyMem, { recursive: true });
+      fs.mkdirSync(legacySkills, { recursive: true });
+      fs.writeFileSync(path.join(legacyMem, "MEMORY.md"), "legacy fact", "utf-8");
+      fs.writeFileSync(path.join(legacySkills, "SKILL.md"), "---\nname: greet\n---\n", "utf-8");
+
+      const pm = makeManager();
+      const active = pm.getActive();
+
+      expect(
+        fs.readFileSync(path.join(active.path, "memories", "MEMORY.md"), "utf-8"),
+      ).toContain("legacy fact");
+      expect(
+        fs.existsSync(
+          path.join(active.path, "skills", "general", "greet", "SKILL.md"),
+        ),
+      ).toBe(true);
+      // Originals are left in place (copy, not move).
+      expect(fs.existsSync(path.join(legacyMem, "MEMORY.md"))).toBe(true);
+    });
+
+    it("does not overwrite existing default-profile files during migration", () => {
+      const legacyMem = path.join(rootDir, "memories");
+      fs.mkdirSync(legacyMem, { recursive: true });
+      fs.writeFileSync(path.join(legacyMem, "MEMORY.md"), "legacy", "utf-8");
+
+      // Pre-create the default profile with its own MEMORY.md.
+      const defaultMem = path.join(rootDir, "profiles", "default", "memories");
+      fs.mkdirSync(defaultMem, { recursive: true });
+      fs.writeFileSync(path.join(defaultMem, "MEMORY.md"), "existing", "utf-8");
+
+      const pm = makeManager();
+      pm.getActive();
+
+      // Default dir already existed → migration must not clobber it.
+      expect(fs.readFileSync(path.join(defaultMem, "MEMORY.md"), "utf-8")).toBe(
+        "existing",
+      );
+    });
   });
 
   describe("create", () => {
