@@ -52,6 +52,7 @@ import { mcpClient } from "../integrations/mcp";
 import { codebaseIndexer } from "./codebase-indexer";
 import { knowledgeGraph } from "./knowledge-graph";
 import { entityMemory } from "../memory/entity-memory";
+import { entityMarkdown, ENTITY_SECTIONS } from "../memory/entity-markdown";
 import { ingestStructuredClaims } from "../memory/tool-claim-extractor";
 import { createMemoryGetEntityClaimsHandler } from "./handlers/memory-get-entity-claims";
 import { agentMemory } from "../memory/agent-memory";
@@ -2392,6 +2393,39 @@ async function handleMemoryAddEntityFact(
     return { success: true, data: { entity, fact: stored } };
   } catch (error) {
     return { success: false, error: String(error) };
+  }
+}
+
+async function handleUpdateEntityMd(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const entityId = typeof params.entity_id === "string" ? params.entity_id.trim() : "";
+    const section = typeof params.section === "string" ? params.section.trim() : "";
+    const content = typeof params.content === "string" ? params.content : "";
+    if (!entityId || !section) {
+      return { success: false, error: "entity_id and section are required" };
+    }
+    if (!ENTITY_SECTIONS.includes(section as (typeof ENTITY_SECTIONS)[number])) {
+      return {
+        success: false,
+        error: `Unknown section '${section}'. Valid: ${ENTITY_SECTIONS.join(", ")}`,
+      };
+    }
+    // Prefer the canonical entity name for the file header when the id resolves
+    // to a known entity; fall back to the raw id otherwise.
+    const known = entityMemory.getEntity(entityId);
+    entityMarkdown.updateSection(entityId, section, content, known?.name);
+    return {
+      success: true,
+      data: {
+        message: `Updated '${section}' for entity '${entityId}'`,
+        entityId,
+        section,
+      },
+    };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -9920,6 +9954,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "memory.get_entity_context": handleMemoryGetEntityContext,
   "memory.get_entity_claims": handleMemoryGetEntityClaims,
   "memory.add_entity_fact": handleMemoryAddEntityFact,
+  "update_entity_md": handleUpdateEntityMd,
   "memory.manage": handleMemoryManage,
   "skill.manage": handleSkillManage,
   "soul.manage": handleSoulManage,
@@ -10050,6 +10085,7 @@ function shouldIndexToolResult(toolName: string, result: unknown): boolean {
     "calendar.", "cron.", "todo.", "memory.", "local.", "lsp.",
     "codebase.", "git.", "workflow.", "session.", "productivity.",
     "personal_os.", "cto.", "product.", "skill.", "soul.",
+    "update_entity_md",
   ]);
   const prefix = toolName.includes(".") ? toolName.split(".")[0] + "." : toolName;
   if (skippedPrefixes.has(prefix) || skippedPrefixes.has(toolName)) return false;
