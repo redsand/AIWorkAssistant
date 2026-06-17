@@ -17,6 +17,7 @@ function makeResult(overrides?: Partial<GraphEvalResult>): GraphEvalResult {
     graphAccuracy: 1,
     claimkitVerified: true,
     ragHallucinated: false,
+    graphError: false,
     latencyMs: 12,
     ...overrides,
   };
@@ -96,6 +97,26 @@ describe("generateReport", () => {
   it("escapes pipe characters in query text", () => {
     const report = generateReport([makeResult({ query: "a | b" })]);
     expect(report).toContain("a \\| b");
+  });
+
+  it("escapes pipe characters in the type column", () => {
+    const report = generateReport([makeResult({ type: "structural | meta" })]);
+    expect(report).toContain("structural \\| meta");
+  });
+
+  it("reports the graph query error count", () => {
+    const report = generateReport([
+      makeResult({ graphError: true, graphRetrieved: false }),
+      makeResult({ graphError: false }),
+    ]);
+    expect(report).toContain("Graph query errors: 1/2");
+    expect(report).toMatch(/Graph retrieval threw on 1\/2 query/);
+  });
+
+  it("omits the graph-error recommendation when there are no errors", () => {
+    const report = generateReport([makeResult({ graphError: false })]);
+    expect(report).toContain("Graph query errors: 0/1");
+    expect(report).not.toMatch(/Graph retrieval threw/);
   });
 });
 

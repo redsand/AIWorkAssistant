@@ -37,6 +37,7 @@ import {
   evaluateGraphRetrieval,
   generateReport,
   loadQueries,
+  retrieveGraphEntities,
   RAG_BASELINE_HALLUCINATION_RATE,
   type GraphEvalResult,
 } from "../evaluate-graph-retrieval";
@@ -225,6 +226,48 @@ describe("loadQueries", () => {
   });
 });
 
+describe("retrieveGraphEntities (against known graph data)", () => {
+  it("returns matched nodes plus their 1-hop neighbors by id and title", () => {
+    graph.queryNodes.mockReturnValue([
+      { id: "IR-82", title: "Incident 82" },
+    ] as never);
+    graph.getNeighbors.mockReturnValue({
+      nodes: [
+        { id: "IR-83", title: "Incident 83" },
+        { id: "IR-84", title: "Incident 84" },
+      ],
+      edges: [],
+    } as never);
+
+    const { entities, error } = retrieveGraphEntities("what depends on IR-82?");
+
+    expect(error).toBe(false);
+    // matched node (id + title) and both neighbors (id + title) are surfaced.
+    expect(new Set(entities)).toEqual(
+      new Set(["IR-82", "Incident 82", "IR-83", "Incident 83", "IR-84", "Incident 84"]),
+    );
+    // neighbors are expanded from the matched node id.
+    expect(graph.getNeighbors).toHaveBeenCalledWith("IR-82", 1);
+  });
+
+  it("returns no entities when nothing matches", () => {
+    graph.queryNodes.mockReturnValue([] as never);
+    const { entities, error } = retrieveGraphEntities("unmatched query");
+    expect(entities).toEqual([]);
+    expect(error).toBe(false);
+    expect(graph.getNeighbors).not.toHaveBeenCalled();
+  });
+
+  it("flags error: true (without throwing) when the graph query throws", () => {
+    graph.queryNodes.mockImplementation(() => {
+      throw new Error("store offline");
+    });
+    const { entities, error } = retrieveGraphEntities("what depends on IR-82?");
+    expect(error).toBe(true);
+    expect(entities).toEqual([]);
+  });
+});
+
 describe("evaluateGraphRetrieval (end-to-end)", () => {
   let dir: string;
   let queriesPath: string;
@@ -275,6 +318,20 @@ describe("evaluateGraphRetrieval (end-to-end)", () => {
     expect(report).not.toMatch(/\(improvement\)/);
   });
 
+  it("records a graph error (not zero-retrieval) when the graph query throws", async () => {
+    graph.queryNodes.mockImplementation(() => {
+      throw new Error("store offline");
+    });
+
+    const results = await evaluateGraphRetrieval(queriesPath, reportPath);
+
+    expect(results[0].graphError).toBe(true);
+    expect(results[0].graphRetrieved).toBe(false);
+    const report = fs.readFileSync(reportPath, "utf-8");
+    expect(report).toContain("Graph query errors: 1/1");
+    expect(report).toMatch(/Graph retrieval threw/);
+  });
+
   it("propagates a validation error for a malformed queries file", async () => {
     fs.writeFileSync(queriesPath, "not json");
     await expect(evaluateGraphRetrieval(queriesPath, reportPath)).rejects.toThrow(
@@ -292,6 +349,7 @@ describe("generateReport hallucination accounting", () => {
       graphAccuracy: 1,
       claimkitVerified: true,
       ragHallucinated: false,
+      graphError: false,
       latencyMs: 1,
       ...overrides,
     };
