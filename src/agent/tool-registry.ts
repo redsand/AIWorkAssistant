@@ -3326,6 +3326,31 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "low",
   },
   {
+    name: "update_entity_md",
+    description:
+      "Update a section of an entity's human-readable relationship file (ENTITY.md). Use this to record how to work with a specific person, customer, or company — e.g. that your boss prefers Slack over email, that a client is in EST, or a key decision made with them. Sections: identity, preferences, interaction_history, key_decisions, notes.",
+    params: {
+      entity_id: {
+        type: "string",
+        description: "The entity to update (entity ID or name).",
+        required: true,
+      },
+      section: {
+        type: "string",
+        description:
+          "Section to update: identity, preferences, interaction_history, key_decisions, notes",
+        required: true,
+      },
+      content: {
+        type: "string",
+        description: "New content for the section",
+        required: true,
+      },
+    },
+    actionType: "update_entity_md",
+    riskLevel: "low",
+  },
+  {
     name: "memory.manage",
     description:
       "Manage the agent's persistent bounded memory (MEMORY.md) and user profile (USER.md). Use 'add' to store new knowledge, 'replace' to update existing entries, 'remove' to delete entries, 'consolidate' to merge related entries into denser versions, or 'status' to check usage. Memory is injected at session start so the agent remembers across sessions.",
