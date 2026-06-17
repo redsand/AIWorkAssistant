@@ -8,6 +8,9 @@ import type {
   IvantiCatalogBody,
   IvantiDistributionBody,
   IvantiOnDemandInstallBody,
+  IvantiInstalledSoftwareParams,
+  IvantiMdmGroupsParams,
+  IvantiModule,
 } from "./types";
 
 export class IvantiService {
@@ -149,10 +152,32 @@ export class IvantiService {
     return this.client.onDemandInstall(body);
   }
 
+  async listInstalledSoftware(params: IvantiInstalledSoftwareParams = {}) {
+    return this.client.listInstalledSoftware(params);
+  }
+
+  // ── MDM Cloud ──────────────────────────────────────────────────────────────
+
+  async listMdmGroups(params: IvantiMdmGroupsParams = {}) {
+    return this.client.listMdmGroups(params);
+  }
+
+  async getMdmGroup(id: string, type?: "device" | "user") {
+    return this.client.getMdmGroup(id, type);
+  }
+
+  mdmConfigured(): boolean {
+    return this.client.mdmConfigured();
+  }
+
+  nztaConfigured(): boolean {
+    return this.client.nztaConfigured();
+  }
+
   // ── Proxy ──────────────────────────────────────────────────────────────────
 
   async proxy(
-    module: "inventory" | "bots" | "patch" | "appdist",
+    module: IvantiModule,
     method: string,
     path: string,
     params?: Record<string, unknown>,

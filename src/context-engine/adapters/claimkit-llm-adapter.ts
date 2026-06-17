@@ -73,18 +73,18 @@ function sleepWithJitter(baseMs: number): Promise<void> {
 }
 
 /**
- * Calls the LLM with bounded retries and a hard total-time budget.
+ * Calls the LLM with bounded retries and a configurable total-time budget.
  *
- * Policy changes vs. the original exponential-backoff version:
- *   1. Linear backoff (baseMs per attempt) instead of doubling — avoids
- *      degenerate worst cases like 15+30+60+120+240=465s per stage.
- *   2. Total elapsed time across all attempts is capped at baseMs × 4 or
- *      90s, whichever is smaller. Cleanly aborts a stuck stage instead of
- *      stretching the user's chat indefinitely.
- *   3. Non-retryable errors (4xx other than 429, schema errors, auth)
- *      short-circuit the loop — no point spending retries on these.
- *   4. Inter-attempt sleeps with ±20% jitter to spread out parallel retries.
- *   5. Falls back to MemoryLLMAdapter on exhaustion (unchanged).
+ * Policy:
+ *   - Per-attempt timeout is CLAIMKIT_LLM_TIMEOUT_MS (default 60s).
+ *   - Total elapsed budget is CLAIMKIT_LLM_TOTAL_TIMEOUT_MS; 0 means no
+ *     global ceiling — we keep retrying until maxAttempts or until the
+ *     call succeeds. This lets ClaimKit initialization wait as long as the
+ *     provider needs instead of aborting arbitrarily.
+ *   - Non-retryable errors (4xx other than 429, schema errors, auth)
+ *     short-circuit the loop.
+ *   - Inter-attempt sleeps with ±20% jitter.
+ *   - Falls back to MemoryLLMAdapter on exhaustion.
  */
 async function withLlmTimeout<T>(
   makeCall: (signal: AbortSignal) => Promise<T>,
@@ -92,24 +92,27 @@ async function withLlmTimeout<T>(
 ): Promise<T> {
   const maxAttempts = env.CLAIMKIT_LLM_MAX_ATTEMPTS;
   const baseMs = env.CLAIMKIT_LLM_TIMEOUT_MS;
-  const totalBudgetMs = Math.min(baseMs * 4, 90_000);
+  const totalBudgetMs = env.CLAIMKIT_LLM_TOTAL_TIMEOUT_MS;
+  const budgetEnabled = totalBudgetMs > 0;
   const startedAt = Date.now();
   let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const elapsed = Date.now() - startedAt;
-    if (elapsed >= totalBudgetMs) {
+    if (budgetEnabled && elapsed >= totalBudgetMs) {
       console.warn(
         `[ClaimKit LLM] Total time budget exhausted (${elapsed}ms ≥ ${totalBudgetMs}ms) before attempt ${attempt}/${maxAttempts}`,
       );
       break;
     }
 
-    // Linear, not exponential. Caps each attempt at the remaining total
-    // budget so a slow attempt can't push us past the ceiling.
-    const remaining = totalBudgetMs - elapsed;
-    const timeoutMs = Math.min(baseMs, remaining);
-    if (timeoutMs < 1000) break; // Not enough time for a meaningful attempt.
+    // Cap each attempt at the remaining total budget when a ceiling is set.
+    let timeoutMs = baseMs;
+    if (budgetEnabled) {
+      const remaining = totalBudgetMs - elapsed;
+      timeoutMs = Math.min(baseMs, remaining);
+      if (timeoutMs < 1000) break; // Not enough time for a meaningful attempt.
+    }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);

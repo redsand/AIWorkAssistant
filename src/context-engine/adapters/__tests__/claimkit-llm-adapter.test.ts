@@ -14,6 +14,7 @@ describe("AIProviderLLMAdapter failure handling", () => {
     process.env = {
       ...originalEnv,
       CLAIMKIT_LLM_TIMEOUT_MS: "1000",
+      CLAIMKIT_LLM_TOTAL_TIMEOUT_MS: "3000",
       CLAIMKIT_LLM_MAX_ATTEMPTS: "1",
       CLAIMKIT_LLM_FATAL_FALLBACK: "false",
     };

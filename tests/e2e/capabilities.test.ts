@@ -161,7 +161,7 @@ describe("E2E: Capabilities endpoints", () => {
       const res = await server.inject({ method: "GET", url: "/api/tools" });
       const { tools }: { tools: any[] } = res.json();
       for (const tool of tools) {
-        expect(tool.name).toMatch(/^[a-z_]+\.[a-z_]+$/);
+        expect(tool.name).toMatch(/^[a-z_]+(?:\.[a-z_]+)+$/);
       }
     });
 

@@ -1,4 +1,5 @@
 import { agentRunDatabase } from "./database";
+import { env } from "../config/env";
 
 /**
  * Periodic reaper for stuck agent_runs rows. Marks runs as failed when
@@ -10,20 +11,35 @@ import { agentRunDatabase } from "./database";
  * Discovered via session 0a6a8d8d (2026-06-11) where a glm-5.1 tool
  * confusion loop left two runs in status='running' with no terminal
  * state ever set.
+ *
+ * The threshold is controlled by AICODER_STALE_TIMEOUT_MINUTES. Set it
+ * to 0 to disable the reaper entirely (useful for supervised long runs).
  */
 
-const STALE_AFTER_MS = 5 * 60 * 1000; // 5 minutes of silence
+function getStaleAfterMs(): number {
+  const minutes = Number(env.AICODER_STALE_TIMEOUT_MINUTES);
+  if (Number.isNaN(minutes) || minutes <= 0) return 0;
+  return minutes * 60 * 1000;
+}
+
 const REAPER_INTERVAL_MS = 60 * 1000; // run once per minute
 
 let reaperTimer: NodeJS.Timeout | null = null;
 
 export function startStaleAgentRunReaper(): void {
   if (reaperTimer) return;
+  const staleAfterMs = getStaleAfterMs();
+  if (staleAfterMs === 0) {
+    console.log("[AgentRunReaper] disabled (AICODER_STALE_TIMEOUT_MINUTES=0)");
+    return;
+  }
   reaperTimer = setInterval(() => {
     try {
-      const reaped = agentRunDatabase.reapStaleRunningRuns(STALE_AFTER_MS);
+      const threshold = getStaleAfterMs();
+      if (threshold === 0) return; // disabled mid-flight
+      const reaped = agentRunDatabase.reapStaleRunningRuns(threshold);
       if (reaped > 0) {
-        console.log(`[AgentRunReaper] marked ${reaped} stuck run(s) as failed (no activity for ${STALE_AFTER_MS / 1000}s)`);
+        console.log(`[AgentRunReaper] marked ${reaped} stuck run(s) as failed (no activity for ${threshold / 1000}s)`);
       }
     } catch (err) {
       console.error("[AgentRunReaper] reap failed:", err);
@@ -31,7 +47,7 @@ export function startStaleAgentRunReaper(): void {
   }, REAPER_INTERVAL_MS);
   // Don't keep the event loop alive solely for the reaper.
   if (typeof reaperTimer.unref === "function") reaperTimer.unref();
-  console.log(`[AgentRunReaper] started (stale threshold: ${STALE_AFTER_MS / 1000}s, check interval: ${REAPER_INTERVAL_MS / 1000}s)`);
+  console.log(`[AgentRunReaper] started (stale threshold: ${staleAfterMs / 1000}s, check interval: ${REAPER_INTERVAL_MS / 1000}s)`);
 }
 
 export function stopStaleAgentRunReaper(): void {

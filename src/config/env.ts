@@ -294,7 +294,10 @@ const envSchema = z.object({
   CLAIMKIT_DISABLE_CONTRADICTION_LLM: z.string().transform((s) => s === "true").default("false"),
   CLAIMKIT_INIT_TIMEOUT_MS: z.coerce.number().default(5000),
   CLAIMKIT_LLM_MODEL: z.string().default(""),
-  CLAIMKIT_LLM_TIMEOUT_MS: z.coerce.number().default(15000),
+  // Per-attempt timeout for each ClaimKit LLM call.
+  CLAIMKIT_LLM_TIMEOUT_MS: z.coerce.number().default(60000),
+  // Total elapsed budget across all ClaimKit LLM attempts. 0 = no global ceiling.
+  CLAIMKIT_LLM_TOTAL_TIMEOUT_MS: z.coerce.number().default(0),
   CLAIMKIT_LLM_MAX_ATTEMPTS: z.coerce.number().default(5),
   // If true, all LLM errors (including auth/schema/model failures) fall back
   // to the MemoryLLMAdapter. Default false — non-retryable errors propagate
@@ -411,6 +414,24 @@ const envSchema = z.object({
     .transform((s) => s === "true")
     .default("false"),
 
+  // Optional Ivanti Neurons for MDM Cloud module (device/user groups)
+  IVANTI_MDM_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
+  IVANTI_MDM_HOST: z.string().default(""),
+  IVANTI_MDM_USERNAME: z.string().default(""),
+  IVANTI_MDM_PASSWORD: z.string().default(""),
+  IVANTI_MDM_PARTITION_ID: z.string().default(""),
+
+  // Optional Ivanti nZTA (Neurons for Secure Access) analytics/policy proxy
+  IVANTI_NZTA_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
+  IVANTI_NZTA_HOST: z.string().default(""),
+  IVANTI_NZTA_DSID: z.string().default(""),
+
   // Web Push (VAPID)
   VAPID_PUBLIC_KEY: z.string().default(""),
   VAPID_PRIVATE_KEY: z.string().default(""),
@@ -447,7 +468,8 @@ const envSchema = z.object({
   // Tool loop limit (max iterations before forcing a final response)
   MAX_TOOL_LOOPS: z.coerce.number().default(75),
 
-  // Job timeout (ms) — wall-clock limit for a single agent job before it is forcibly failed
+  // Job timeout (ms) — wall-clock limit for a single agent job before it is forcibly failed.
+  // Set to 0 to disable the ceiling and allow multi-hour runs.
   AGENT_JOB_TIMEOUT_MS: z.coerce.number().default(600000),
 
   // Admin user IDs (comma-separated) — users allowed to override system prompts
@@ -467,6 +489,7 @@ const envSchema = z.object({
   AICODER_LOOKUP: z.enum(["memory", "llm"]).default("memory"),
   AICODER_POLL_MS: z.coerce.number().default(60000),
   AICODER_MAX_CYCLES: z.coerce.number().default(0),
+  AICODER_STALE_TIMEOUT_MINUTES: z.coerce.number().default(30),
   AICODER_WORKSPACE: z.string().default(""),
   AICODER_OLLAMA: z
     .string()

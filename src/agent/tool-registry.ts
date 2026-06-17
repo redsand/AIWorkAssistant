@@ -8574,7 +8574,7 @@ const IVANTI_TOOLS: Tool[] = [
     description: "Query CVE records from Ivanti Patch Management.",
     params: {
       Filter: { type: "string", description: "Filter expression", required: false },
-      OrderBy: { type: "string", description: "Sort expression", required: false },
+      OrderBy: { type: "string", description: "Sort field (valid: CVEId, PublishedDate)", required: false },
       PageNumber: { type: "number", description: "Page number", required: false },
       PageSize: { type: "number", description: "Page size (max 150)", required: false },
     },
@@ -8587,7 +8587,7 @@ const IVANTI_TOOLS: Tool[] = [
       "Query patch metadata from Ivanti Patch Management. Set allPages=true to page through every result.",
     params: {
       Filter: { type: "string", description: "Filter expression", required: false },
-      OrderBy: { type: "string", description: "Sort expression", required: false },
+      OrderBy: { type: "string", description: "Sort field (valid: Name, Severity, PatchId)", required: false },
       PageNumber: { type: "number", description: "Page number", required: false },
       PageSize: { type: "number", description: "Page size (max 150)", required: false },
       allPages: { type: "boolean", description: "Page through all results", required: false },
@@ -8600,7 +8600,7 @@ const IVANTI_TOOLS: Tool[] = [
     description: "Query security bulletins / notifications from Ivanti Patch Management.",
     params: {
       Filter: { type: "string", description: "Filter expression", required: false },
-      OrderBy: { type: "string", description: "Sort expression", required: false },
+      OrderBy: { type: "string", description: "Sort field (valid: Title, NotificationId)", required: false },
       PageNumber: { type: "number", description: "Page number", required: false },
       PageSize: { type: "number", description: "Page size (max 150)", required: false },
     },
@@ -8612,7 +8612,7 @@ const IVANTI_TOOLS: Tool[] = [
     description: "Query endpoint vulnerability overview from Ivanti Patch Management.",
     params: {
       Filter: { type: "string", description: "Filter expression", required: false },
-      OrderBy: { type: "string", description: "Sort expression", required: false },
+      OrderBy: { type: "string", description: "Sort field (valid: RiskScore, DiscoveryId, MissingPatches)", required: false },
       PageNumber: { type: "number", description: "Page number", required: false },
       PageSize: { type: "number", description: "Page size (max 150)", required: false },
     },
@@ -8624,7 +8624,7 @@ const IVANTI_TOOLS: Tool[] = [
     description: "Query patch deployment history from Ivanti Patch Management.",
     params: {
       Filter: { type: "string", description: "Filter expression", required: false },
-      OrderBy: { type: "string", description: "Sort expression", required: false },
+      OrderBy: { type: "string", description: "Sort field (valid: Status)", required: false },
       PageNumber: { type: "number", description: "Page number", required: false },
       PageSize: { type: "number", description: "Page size (max 150)", required: false },
     },
@@ -8636,7 +8636,20 @@ const IVANTI_TOOLS: Tool[] = [
     description: "Query patch groups from Ivanti Patch Management.",
     params: {
       Filter: { type: "string", description: "Filter expression", required: false },
-      OrderBy: { type: "string", description: "Sort expression", required: false },
+      OrderBy: { type: "string", description: "Sort field (valid: PatchGroupId)", required: false },
+      PageNumber: { type: "number", description: "Page number", required: false },
+      PageSize: { type: "number", description: "Page size (max 150)", required: false },
+      allPages: { type: "boolean", description: "Page through all results", required: false },
+    },
+    actionType: "ivanti.patch.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.patch.list_patch_group_audit",
+    description: "Query patch group audit history from Ivanti Patch Management.",
+    params: {
+      Filter: { type: "string", description: "Filter expression", required: false },
+      OrderBy: { type: "string", description: "Sort field (omit if unsure)", required: false },
       PageNumber: { type: "number", description: "Page number", required: false },
       PageSize: { type: "number", description: "Page size (max 150)", required: false },
       allPages: { type: "boolean", description: "Page through all results", required: false },
@@ -8699,6 +8712,25 @@ const IVANTI_TOOLS: Tool[] = [
     description: "List device package deployment status from Ivanti App Distribution.",
     params: {
       $filter: { type: "string", description: "OData filter expression", required: false },
+      $top: { type: "number", description: "Page size", required: false },
+      $select: { type: "string", description: "Comma-separated OData select", required: false },
+      $skip: { type: "number", description: "OData skip", required: false },
+      $orderby: { type: "string", description: "OData orderby", required: false },
+      allPages: { type: "boolean", description: "Follow @odata.nextLink until maxItems", required: false },
+    },
+    actionType: "ivanti.appdist.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.appdist.list_installed_software",
+    description:
+      "Query installed/managed software on devices via Ivanti App Distribution devicePackageStatusExternal. Use deviceId, deviceName, or packageName to filter; set allPages=true to page through every result.",
+    params: {
+      deviceId: { type: "string", description: "Filter by device DiscoveryId", required: false },
+      deviceName: { type: "string", description: "Filter by device name (contains)", required: false },
+      packageName: { type: "string", description: "Filter by package name (contains)", required: false },
+      state: { type: "string", description: "Filter by package state, e.g. Installed", required: false },
+      $filter: { type: "string", description: "Raw OData filter expression (overrides friendly filters)", required: false },
       $top: { type: "number", description: "Page size", required: false },
       $select: { type: "string", description: "Comma-separated OData select", required: false },
       $skip: { type: "number", description: "OData skip", required: false },
@@ -8802,15 +8834,42 @@ const IVANTI_TOOLS: Tool[] = [
     riskLevel: "high",
   },
 
+  // MDM Cloud (device/user groups)
+  {
+    name: "ivanti.mdm.list_groups",
+    description:
+      "List Ivanti Neurons for MDM Cloud device groups (rule_group) or user groups (group). Requires IVANTI_MDM_ENABLED=true and MDM credentials.",
+    params: {
+      type: { type: "string", description: "device (default) or user", required: false },
+      $top: { type: "number", description: "Page size", required: false },
+      $filter: { type: "string", description: "OData filter expression", required: false },
+      $select: { type: "string", description: "Comma-separated OData select", required: false },
+      $skip: { type: "number", description: "OData skip", required: false },
+      $orderby: { type: "string", description: "OData orderby", required: false },
+    },
+    actionType: "ivanti.mdm.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.mdm.get_group",
+    description: "Get a single Ivanti MDM device or user group by ID. Requires IVANTI_MDM_ENABLED=true and MDM credentials.",
+    params: {
+      groupId: { type: "string", description: "Group ID", required: true },
+      type: { type: "string", description: "device (default) or user", required: false },
+    },
+    actionType: "ivanti.mdm.read",
+    riskLevel: "low",
+  },
+
   // Generic proxy
   {
     name: "ivanti.proxy",
     description:
-      "Generic authenticated proxy to any allowed Ivanti Neurons endpoint. Use only when no specific tool covers the request.",
+      "Generic authenticated proxy to any allowed Ivanti Neurons endpoint. Use only when no specific tool covers the request. Modules mdm and nzta require their respective optional credentials.",
     params: {
       module: {
         type: "string",
-        description: "inventory, bots, patch, or appdist",
+        description: "inventory, bots, patch, appdist, mdm, or nzta",
         required: true,
       },
       method: { type: "string", description: "GET, POST, PUT, PATCH, or DELETE", required: true },

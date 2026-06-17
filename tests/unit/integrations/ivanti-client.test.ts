@@ -26,6 +26,14 @@ vi.mock("../../../src/config/env", () => ({
     IVANTI_APPDIST_HOST: "",
     IVANTI_TIMEOUT: "60000",
     IVANTI_DEBUG: "false",
+    IVANTI_MDM_ENABLED: "false",
+    IVANTI_MDM_HOST: "",
+    IVANTI_MDM_USERNAME: "",
+    IVANTI_MDM_PASSWORD: "",
+    IVANTI_MDM_PARTITION_ID: "",
+    IVANTI_NZTA_ENABLED: "false",
+    IVANTI_NZTA_HOST: "",
+    IVANTI_NZTA_DSID: "",
   },
 }));
 
@@ -122,6 +130,39 @@ describe("IvantiClient", () => {
 
       expect(mockPost).toHaveBeenCalledTimes(1);
       expect(mockRequest).toHaveBeenCalledTimes(2);
+    });
+
+    it("retries GET requests on ECONNRESET", async () => {
+      mockPost.mockResolvedValueOnce({
+        data: { access_token: "oauth-token", expires_in: 3600 },
+      });
+      mockRequest
+        .mockRejectedValueOnce({ code: "ECONNRESET", request: {}, message: "read ECONNRESET" })
+        .mockRejectedValueOnce({ code: "ECONNRESET", request: {}, message: "read ECONNRESET" })
+        .mockResolvedValueOnce({ data: { value: [] } });
+
+      const client = new IvantiClient();
+      const result = await client.listBots();
+
+      expect(mockRequest).toHaveBeenCalledTimes(3);
+      expect(result).toEqual({ value: [] });
+    });
+
+    it("does not retry non-idempotent requests on network errors", async () => {
+      mockPost.mockResolvedValueOnce({ data: { access_token: "oauth-token", expires_in: 3600 } });
+      mockRequest.mockRejectedValueOnce({ code: "ECONNRESET", request: {}, message: "read ECONNRESET" });
+
+      const client = new IvantiClient();
+      await expect(
+        client.runBot({
+          botDefinitionId: "bot-1",
+          agentIds: ["agent-1"],
+          inputs: [],
+        }),
+      ).rejects.toThrow("read ECONNRESET");
+
+      expect(mockPost).toHaveBeenCalledTimes(1); // token
+      expect(mockRequest).toHaveBeenCalledTimes(1); // bot POST, no retry
     });
   });
 
@@ -339,6 +380,109 @@ describe("IvantiClient", () => {
           method: "GET",
           url: "https://nvuprd-sfc.ivanticloud.com/api/apigatewaydataservices/v1/devices",
           params: { $top: 5 },
+        }),
+      );
+    });
+
+    it("uses mdm auth mode for mdm proxy requests", async () => {
+      mockRequest.mockResolvedValue({ data: { value: [] } });
+
+      const client = new IvantiClient({
+        mdmHost: "mdm.ivanticloud.com",
+        mdmUsername: "admin",
+        mdmPassword: "secret",
+      });
+      await client.proxy("mdm", "GET", "/rule_group", { $top: 5 });
+
+      expect(mockRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: "GET",
+          url: "https://mdm.ivanticloud.com/api/v1/rule_group",
+          params: { $top: 5 },
+          headers: { Authorization: "Basic YWRtaW46c2VjcmV0" },
+        }),
+      );
+    });
+
+    it("uses nzta auth mode for nzta proxy requests", async () => {
+      mockRequest.mockResolvedValue({ data: { value: [] } });
+
+      const client = new IvantiClient({
+        nztaHost: "nzta.ivanticloud.com",
+        nztaDsid: "dsid-123",
+      });
+      await client.proxy("nzta", "GET", "/api/analytics/sessions", { limit: 10 });
+
+      expect(mockRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: "GET",
+          url: "https://nzta.ivanticloud.com/api/analytics/sessions",
+          params: { limit: 10 },
+          headers: { Cookie: "DSID=dsid-123" },
+        }),
+      );
+    });
+  });
+
+  describe("installed software", () => {
+    it("maps friendly filters to OData expression", async () => {
+      mockPost.mockResolvedValue({ data: { access_token: "oauth-token" } });
+      mockRequest.mockResolvedValue({ data: { value: [{ packageName: "7-Zip" }] } });
+
+      const client = new IvantiClient();
+      await client.listInstalledSoftware({ deviceId: "dev-1", packageName: "7-Zip", state: "Installed" });
+
+      expect(mockRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: "GET",
+          url: "https://nvuprd-sfc.ivanticloud.com/api/SwdPackage/odata/devicePackageStatusExternal",
+          params: expect.objectContaining({
+            $filter: "DiscoveryId eq 'dev-1' and contains(PackageName,'7-Zip') and State eq 'Installed'",
+          }),
+        }),
+      );
+    });
+  });
+
+  describe("mdm groups", () => {
+    it("lists device groups with mdm auth", async () => {
+      mockRequest.mockResolvedValue({ data: { value: [] } });
+
+      const client = new IvantiClient({
+        mdmHost: "mdm.ivanticloud.com",
+        mdmUsername: "admin",
+        mdmPassword: "secret",
+        mdmPartitionId: "partition-1",
+      });
+      await client.listMdmGroups({ type: "device", $top: 10 });
+
+      expect(mockRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: "GET",
+          url: "https://mdm.ivanticloud.com/api/v1/rule_group",
+          params: { dmPartitionId: "partition-1", $top: 10 },
+          headers: { Authorization: "Basic YWRtaW46c2VjcmV0" },
+        }),
+      );
+    });
+
+    it("gets a user group by id", async () => {
+      mockRequest.mockResolvedValue({ data: { id: "group-1" } });
+
+      const client = new IvantiClient({
+        mdmHost: "mdm.ivanticloud.com",
+        mdmUsername: "admin",
+        mdmPassword: "secret",
+        mdmPartitionId: "partition-1",
+      });
+      await client.getMdmGroup("group-1", "user");
+
+      expect(mockRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: "GET",
+          url: "https://mdm.ivanticloud.com/api/v1/group/group-1",
+          params: { dmPartitionId: "partition-1" },
+          headers: { Authorization: "Basic YWRtaW46c2VjcmV0" },
         }),
       );
     });

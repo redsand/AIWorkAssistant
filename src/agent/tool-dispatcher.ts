@@ -7203,6 +7203,30 @@ function ivantiConfigCheck(): string | null {
   return null;
 }
 
+function ivantiMdmConfigCheck(): string | null {
+  const base = ivantiConfigCheck();
+  if (base) return base;
+  if (!env.IVANTI_MDM_ENABLED) {
+    return "Ivanti MDM Cloud module is disabled. Set IVANTI_MDM_ENABLED=true and configure IVANTI_MDM_HOST, IVANTI_MDM_USERNAME, and IVANTI_MDM_PASSWORD.";
+  }
+  if (!ivantiService.mdmConfigured()) {
+    return "Ivanti MDM Cloud not configured. Set IVANTI_MDM_HOST, IVANTI_MDM_USERNAME, and IVANTI_MDM_PASSWORD.";
+  }
+  return null;
+}
+
+function ivantiNztaConfigCheck(): string | null {
+  const base = ivantiConfigCheck();
+  if (base) return base;
+  if (!env.IVANTI_NZTA_ENABLED) {
+    return "Ivanti nZTA module is disabled. Set IVANTI_NZTA_ENABLED=true and configure IVANTI_NZTA_HOST and IVANTI_NZTA_DSID.";
+  }
+  if (!ivantiService.nztaConfigured()) {
+    return "Ivanti nZTA not configured. Set IVANTI_NZTA_HOST and IVANTI_NZTA_DSID.";
+  }
+  return null;
+}
+
 function asArray(value: unknown): string[] {
   if (Array.isArray(value)) return value.map(String);
   if (typeof value === "string") return value.split(",").map((s) => s.trim()).filter(Boolean);
@@ -9642,12 +9666,45 @@ async function handleIvantiGetBotLogMessages(params: Record<string, unknown>): P
   return { success: true, data: result };
 }
 
+const IVANTI_PATCH_ORDER_BY_FIELDS: Record<string, string[]> = {
+  listCves: ["CVEId", "PublishedDate"],
+  listPatches: ["Name", "Severity", "PatchId"],
+  listNotifications: ["Title", "NotificationId"],
+  listEndpointVulnerabilities: ["RiskScore", "DiscoveryId", "MissingPatches"],
+  listDeploymentHistory: ["Status"],
+  listPatchGroups: ["PatchGroupId"],
+  listPatchGroupAudit: [],
+};
+
+function extractOrderByField(orderBy: string): string {
+  return String(orderBy || "")
+    .trim()
+    .split(/\s+/)[0]
+    .replace(/^-+/, "");
+}
+
+function validateIvantiPatchOrderBy(
+  method: keyof typeof ivantiService,
+  params: Record<string, unknown>,
+): string | null {
+  const valid = IVANTI_PATCH_ORDER_BY_FIELDS[method as string];
+  if (!valid || valid.length === 0) return null;
+  const orderBy = params.OrderBy as string | undefined;
+  if (!orderBy) return null;
+  const field = extractOrderByField(orderBy);
+  if (!field) return null;
+  if (valid.some((v) => v.toLowerCase() === field.toLowerCase())) return null;
+  return `Invalid OrderBy field '${field}' for ${method}. Valid fields: ${valid.join(", ")}.`;
+}
+
 async function handleIvantiPatchRead(
   params: Record<string, unknown>,
   method: keyof typeof ivantiService,
 ): Promise<ToolCallResult> {
   const err = ivantiConfigCheck();
   if (err) return { success: false, error: err };
+  const orderByErr = validateIvantiPatchOrderBy(method, params);
+  if (orderByErr) return { success: false, error: orderByErr };
   const fn = ivantiService[method] as (p?: IvantiPatchParams) => Promise<unknown>;
   const result = await fn.call(ivantiService, {
     Filter: params.Filter as string | undefined,
@@ -9755,6 +9812,24 @@ async function handleIvantiListDevicePackageStatus(params: Record<string, unknow
   return handleIvantiAppDistRead(params, "listDevicePackageStatus");
 }
 
+async function handleIvantiListInstalledSoftware(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  const result = await ivantiService.listInstalledSoftware({
+    deviceId: params.deviceId as string | undefined,
+    deviceName: params.deviceName as string | undefined,
+    packageName: params.packageName as string | undefined,
+    state: params.state as string | undefined,
+    $filter: params.$filter as string | undefined,
+    $top: params.$top as number | undefined,
+    $select: params.$select as string | undefined,
+    $skip: params.$skip as number | undefined,
+    $orderby: params.$orderby as string | undefined,
+    allPages: params.allPages as boolean | undefined,
+  });
+  return { success: true, data: result };
+}
+
 async function handleIvantiCreateCatalog(params: Record<string, unknown>): Promise<ToolCallResult> {
   const err = ivantiConfigCheck();
   if (err) return { success: false, error: err };
@@ -9852,13 +9927,54 @@ async function handleIvantiOnDemandInstall(params: Record<string, unknown>): Pro
   return { success: true, data: result };
 }
 
-async function handleIvantiProxy(params: Record<string, unknown>): Promise<ToolCallResult> {
-  const err = ivantiConfigCheck();
+async function handleIvantiListMdmGroups(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiMdmConfigCheck();
   if (err) return { success: false, error: err };
-  const module = params.module as "inventory" | "bots" | "patch" | "appdist";
-  if (!module || !["inventory", "bots", "patch", "appdist"].includes(module)) {
-    return { success: false, error: "module must be inventory, bots, patch, or appdist" };
+  const type = (params.type as string) || "device";
+  if (type !== "device" && type !== "user") {
+    return { success: false, error: "type must be device or user" };
   }
+  const result = await ivantiService.listMdmGroups({
+    type,
+    $top: params.$top as number | undefined,
+    $filter: params.$filter as string | undefined,
+    $select: params.$select as string | undefined,
+    $skip: params.$skip as number | undefined,
+    $orderby: params.$orderby as string | undefined,
+  });
+  return { success: true, data: result };
+}
+
+async function handleIvantiGetMdmGroup(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiMdmConfigCheck();
+  if (err) return { success: false, error: err };
+  if (!params.groupId) return { success: false, error: "groupId is required" };
+  const type = (params.type as string) || "device";
+  if (type !== "device" && type !== "user") {
+    return { success: false, error: "type must be device or user" };
+  }
+  const result = await ivantiService.getMdmGroup(String(params.groupId), type);
+  return { success: true, data: result };
+}
+
+async function handleIvantiProxy(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const module = params.module as "inventory" | "bots" | "patch" | "appdist" | "mdm" | "nzta";
+  const allowed = ["inventory", "bots", "patch", "appdist", "mdm", "nzta"];
+  if (!module || !allowed.includes(module)) {
+    return { success: false, error: "module must be inventory, bots, patch, appdist, mdm, or nzta" };
+  }
+
+  if (module === "mdm") {
+    const err = ivantiMdmConfigCheck();
+    if (err) return { success: false, error: err };
+  } else if (module === "nzta") {
+    const err = ivantiNztaConfigCheck();
+    if (err) return { success: false, error: err };
+  } else {
+    const err = ivantiConfigCheck();
+    if (err) return { success: false, error: err };
+  }
+
   const result = await ivantiService.proxy(
     module,
     String(params.method || "GET"),
@@ -10198,6 +10314,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "ivanti.patch.get_patch_group_mapping": handleIvantiGetPatchGroupMapping,
   "ivanti.appdist.list_catalog": handleIvantiListAppCatalog,
   "ivanti.appdist.list_device_package_status": handleIvantiListDevicePackageStatus,
+  "ivanti.appdist.list_installed_software": handleIvantiListInstalledSoftware,
   "ivanti.appdist.create_catalog": handleIvantiCreateCatalog,
   "ivanti.appdist.update_catalog": handleIvantiUpdateCatalog,
   "ivanti.appdist.delete_catalog": handleIvantiDeleteCatalog,
@@ -10205,6 +10322,8 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "ivanti.appdist.update_distribution": handleIvantiUpdateDistribution,
   "ivanti.appdist.get_distribution": handleIvantiGetDistribution,
   "ivanti.appdist.ondemand_install": handleIvantiOnDemandInstall,
+  "ivanti.mdm.list_groups": handleIvantiListMdmGroups,
+  "ivanti.mdm.get_group": handleIvantiGetMdmGroup,
   "ivanti.proxy": handleIvantiProxy,
 
   "code_review.github_pr": handleCodeReviewGithubPr,

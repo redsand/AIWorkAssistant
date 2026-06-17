@@ -22,6 +22,14 @@ vi.mock("../../../src/config/env", () => ({
     IVANTI_TENANT_ID_OR_PATH: "huntcompanies.ivanticloud.com",
     IVANTI_CLIENT_ID: "test-client-id",
     IVANTI_CLIENT_SECRET: "test-client-secret",
+    IVANTI_MDM_ENABLED: false,
+    IVANTI_MDM_HOST: "",
+    IVANTI_MDM_USERNAME: "",
+    IVANTI_MDM_PASSWORD: "",
+    IVANTI_MDM_PARTITION_ID: "",
+    IVANTI_NZTA_ENABLED: false,
+    IVANTI_NZTA_HOST: "",
+    IVANTI_NZTA_DSID: "",
     JIRA_BASE_URL: "https://test.atlassian.net",
     JIRA_EMAIL: "test@example.com",
     JIRA_API_TOKEN: "test-token",
@@ -45,6 +53,8 @@ vi.mock("../../../src/config/env", () => ({
 vi.mock("../../../src/integrations/ivanti/ivanti-service", () => {
   const mockIvantiService = {
     isConfigured: vi.fn(),
+    mdmConfigured: vi.fn(),
+    nztaConfigured: vi.fn(),
     lookup: vi.fn(),
     listDevices: vi.fn(),
     getDevice: vi.fn(),
@@ -67,6 +77,7 @@ vi.mock("../../../src/integrations/ivanti/ivanti-service", () => {
     getPatchGroupMapping: vi.fn(),
     listAppCatalog: vi.fn(),
     listDevicePackageStatus: vi.fn(),
+    listInstalledSoftware: vi.fn(),
     createCatalog: vi.fn(),
     updateCatalog: vi.fn(),
     deleteCatalog: vi.fn(),
@@ -74,6 +85,8 @@ vi.mock("../../../src/integrations/ivanti/ivanti-service", () => {
     updateDistribution: vi.fn(),
     getDistributions: vi.fn(),
     onDemandInstall: vi.fn(),
+    listMdmGroups: vi.fn(),
+    getMdmGroup: vi.fn(),
     proxy: vi.fn(),
   };
   return { ivantiService: mockIvantiService };
@@ -131,6 +144,7 @@ vi.mock("../../../src/approvals/queue", () => ({
 }));
 
 import { ivantiService } from "../../../src/integrations/ivanti/ivanti-service";
+import { env } from "../../../src/config/env";
 import { dispatchToolCall } from "../../../src/agent/tool-dispatcher";
 
 describe("ivanti tool dispatcher", () => {
@@ -245,5 +259,125 @@ describe("ivanti tool dispatcher", () => {
 
     expect(result.success).toBe(true);
     expect(mockSvc.proxy).toHaveBeenCalledWith("inventory", "GET", "/devices", { $top: 5 }, undefined);
+  });
+
+  it("rejects invalid OrderBy field for ivanti.patch.list_patches", async () => {
+    const result = await dispatchToolCall(
+      "ivanti.patch.list_patches",
+      { OrderBy: "RiskScore desc", PageSize: 10 },
+      "user-1",
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Invalid OrderBy field 'RiskScore'");
+    expect(mockSvc.listPatches).not.toHaveBeenCalled();
+  });
+
+  it("allows valid OrderBy field for ivanti.patch.list_patches", async () => {
+    mockSvc.listPatches.mockResolvedValue({ value: [] });
+
+    const result = await dispatchToolCall(
+      "ivanti.patch.list_patches",
+      { OrderBy: "Severity desc", PageSize: 10 },
+      "user-1",
+    );
+
+    expect(result.success).toBe(true);
+    expect(mockSvc.listPatches).toHaveBeenCalledWith(
+      expect.objectContaining({ OrderBy: "Severity desc", PageSize: 10 }),
+    );
+  });
+
+  it("rejects invalid OrderBy field for ivanti.patch.list_endpoint_vulnerabilities", async () => {
+    const result = await dispatchToolCall(
+      "ivanti.patch.list_endpoint_vulnerabilities",
+      { OrderBy: "severity desc", PageSize: 10 },
+      "user-1",
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Invalid OrderBy field 'severity'");
+    expect(mockSvc.listEndpointVulnerabilities).not.toHaveBeenCalled();
+  });
+
+  it("dispatches ivanti.appdist.list_installed_software", async () => {
+    mockSvc.listInstalledSoftware.mockResolvedValue({ value: [] });
+
+    const result = await dispatchToolCall(
+      "ivanti.appdist.list_installed_software",
+      { deviceId: "dev-1", state: "Installed", allPages: true },
+      "user-1",
+    );
+
+    expect(result.success).toBe(true);
+    expect(mockSvc.listInstalledSoftware).toHaveBeenCalledWith({
+      deviceId: "dev-1",
+      deviceName: undefined,
+      packageName: undefined,
+      state: "Installed",
+      $filter: undefined,
+      $top: undefined,
+      $select: undefined,
+      $skip: undefined,
+      $orderby: undefined,
+      allPages: true,
+    });
+  });
+
+  it("dispatches ivanti.mdm.list_groups when MDM is enabled", async () => {
+    env.IVANTI_MDM_ENABLED = true;
+    mockSvc.mdmConfigured.mockReturnValue(true);
+    mockSvc.listMdmGroups.mockResolvedValue({ value: [] });
+
+    const result = await dispatchToolCall("ivanti.mdm.list_groups", { type: "device", $top: 10 }, "user-1");
+
+    expect(result.success).toBe(true);
+    expect(mockSvc.listMdmGroups).toHaveBeenCalledWith({
+      type: "device",
+      $top: 10,
+      $filter: undefined,
+      $select: undefined,
+      $skip: undefined,
+      $orderby: undefined,
+    });
+  });
+
+  it("returns error for ivanti.mdm.list_groups when MDM is disabled", async () => {
+    env.IVANTI_MDM_ENABLED = false;
+
+    const result = await dispatchToolCall("ivanti.mdm.list_groups", { type: "device" }, "user-1");
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Ivanti MDM Cloud module is disabled");
+    expect(mockSvc.listMdmGroups).not.toHaveBeenCalled();
+  });
+
+  it("dispatches ivanti.proxy for mdm module when configured", async () => {
+    env.IVANTI_MDM_ENABLED = true;
+    mockSvc.mdmConfigured.mockReturnValue(true);
+    mockSvc.proxy.mockResolvedValue({ value: [] });
+
+    const result = await dispatchToolCall(
+      "ivanti.proxy",
+      { module: "mdm", method: "GET", path: "/rule_group", params: { $top: 5 } },
+      "user-1",
+    );
+
+    expect(result.success).toBe(true);
+    expect(mockSvc.proxy).toHaveBeenCalledWith("mdm", "GET", "/rule_group", { $top: 5 }, undefined);
+  });
+
+  it("returns error for ivanti.proxy with nzta when nZTA is disabled", async () => {
+    env.IVANTI_NZTA_ENABLED = false;
+
+    const result = await dispatchToolCall(
+      "ivanti.proxy",
+      { module: "nzta", method: "GET", path: "/api/v1/policies" },
+      "user-1",
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Ivanti nZTA module is disabled");
+    expect(mockSvc.proxy).not.toHaveBeenCalled();
   });
 });

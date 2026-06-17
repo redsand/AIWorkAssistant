@@ -18,6 +18,12 @@ export interface IvantiClientConfig {
   botsHost?: string;
   patchHost?: string;
   appDistHost?: string;
+  mdmHost?: string;
+  mdmUsername?: string;
+  mdmPassword?: string;
+  mdmPartitionId?: string;
+  nztaHost?: string;
+  nztaDsid?: string;
   timeout?: number;
   debug?: boolean;
 }
@@ -34,6 +40,7 @@ export interface IvantiRequestOptions {
   params?: Record<string, unknown>;
   data?: unknown;
   headers?: Record<string, string>;
+  authMode?: "oauth" | "inventory" | "mdm" | "nzta";
 }
 
 export interface IvantiHttpResponse<T = unknown> {
@@ -148,4 +155,26 @@ export interface IvantiOnDemandInstallBody {
   displayName?: string;
 }
 
-export type IvantiModule = "inventory" | "bots" | "patch" | "appdist";
+export interface IvantiInstalledSoftwareParams {
+  deviceId?: string;
+  deviceName?: string;
+  packageName?: string;
+  state?: string;
+  $top?: number;
+  $filter?: string;
+  $select?: string;
+  $skip?: number;
+  $orderby?: string;
+  allPages?: boolean;
+}
+
+export interface IvantiMdmGroupsParams {
+  type?: "device" | "user";
+  $top?: number;
+  $filter?: string;
+  $select?: string;
+  $skip?: number;
+  $orderby?: string;
+}
+
+export type IvantiModule = "inventory" | "bots" | "patch" | "appdist" | "mdm" | "nzta";

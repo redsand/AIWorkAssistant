@@ -12,6 +12,29 @@ function parseBool(value: unknown): boolean {
   return s === "true" || s === "1" || s === "yes" || s === "y";
 }
 
+function isRetryableError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const e = error as {
+    code?: string;
+    response?: { status?: number };
+    message?: string;
+  };
+  if (e.response?.status != null && e.response.status >= 500) return true;
+  const retryableCodes = new Set([
+    "ECONNRESET",
+    "ETIMEDOUT",
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "EPIPE",
+    "ECONNABORTED",
+    "ERR_NETWORK",
+  ]);
+  if (e.code && retryableCodes.has(e.code)) return true;
+  const msg = String(e.message || "").toLowerCase();
+  if (msg.includes("timeout") || msg.includes("econnreset") || msg.includes("socket")) return true;
+  return false;
+}
+
 function buildErrorMessage(error: unknown): string {
   if (!error || typeof error !== "object") return String(error);
   const e = error as {
@@ -48,10 +71,17 @@ export class IvantiAuthManager {
   private scope?: string;
   private authUrl: string;
   private inventoryTokenUrl: string;
+  private mdmHost: string;
+  private mdmUsername: string;
+  private mdmPassword: string;
+  private mdmPartitionId: string;
+  private nztaHost: string;
+  private nztaDsid: string;
   private debug: boolean;
   private http: AxiosInstance;
   private oauthToken?: TokenEntry;
   private inventoryToken?: TokenEntry;
+  private resolvedMdmPartitionId?: string;
 
   constructor(config?: Partial<IvantiClientConfig>) {
     this.hostname = config?.hostname ?? env.IVANTI_HOST;
@@ -64,6 +94,12 @@ export class IvantiAuthManager {
       env.IVANTI_AUTH_URL ||
       `https://${this.hostname}/${this.tenantId}/connect/token`;
     this.inventoryTokenUrl = `https://${this.hostname}/api/apigatewaydataservices/v1/token`;
+    this.mdmHost = config?.mdmHost ?? env.IVANTI_MDM_HOST ?? this.hostname;
+    this.mdmUsername = config?.mdmUsername ?? env.IVANTI_MDM_USERNAME ?? "";
+    this.mdmPassword = config?.mdmPassword ?? env.IVANTI_MDM_PASSWORD ?? "";
+    this.mdmPartitionId = config?.mdmPartitionId ?? env.IVANTI_MDM_PARTITION_ID ?? "";
+    this.nztaHost = config?.nztaHost ?? env.IVANTI_NZTA_HOST ?? this.hostname;
+    this.nztaDsid = config?.nztaDsid ?? env.IVANTI_NZTA_DSID ?? "";
     this.debug = config?.debug ?? parseBool(env.IVANTI_DEBUG);
 
     this.http = axios.create({
@@ -144,25 +180,69 @@ export class IvantiAuthManager {
     }
   }
 
+  mdmConfigured(): boolean {
+    return !!(this.mdmHost && this.mdmUsername && this.mdmPassword);
+  }
+
+  nztaConfigured(): boolean {
+    return !!(this.nztaHost && this.nztaDsid);
+  }
+
+  private basicAuthHeader(): string {
+    const creds = `${this.mdmUsername}:${this.mdmPassword}`;
+    return `Basic ${Buffer.from(creds).toString("base64")}`;
+  }
+
+  async getMdmPartitionId(): Promise<string> {
+    if (this.mdmPartitionId) return this.mdmPartitionId;
+    if (this.resolvedMdmPartitionId) return this.resolvedMdmPartitionId;
+    if (!this.mdmConfigured()) throw new Error("Ivanti MDM not configured");
+
+    const url = `https://${this.mdmHost}/api/v1/metadata/tenant`;
+    this.log("GET", url);
+    try {
+      const resp = await this.http.get<unknown>(url, {
+        headers: { Authorization: this.basicAuthHeader() },
+      });
+      const data = resp.data as { dmPartitionId?: string; id?: string; tenantId?: string } | undefined;
+      const id = data?.dmPartitionId || data?.id || data?.tenantId;
+      if (!id) throw new Error("Ivanti MDM tenant metadata did not include dmPartitionId");
+      this.resolvedMdmPartitionId = id;
+      return id;
+    } catch (error) {
+      throw new Error(buildErrorMessage(error));
+    }
+  }
+
   async request<T = unknown>(
     method: string,
     path: string,
     baseUrl: string,
     options: IvantiRequestOptions = {},
   ): Promise<IvantiHttpResponse<T>> {
-    const useInventoryToken =
-      baseUrl.replace(/\/+$/, "") ===
-      `https://${this.hostname}/api/apigatewaydataservices/v1`;
-    const token = useInventoryToken
-      ? await this.getInventoryToken()
-      : await this.getOAuthToken();
+    const authMode =
+      options.authMode ||
+      (baseUrl.replace(/\/+$/, "") ===
+      `https://${this.hostname}/api/apigatewaydataservices/v1`
+        ? "inventory"
+        : "oauth");
 
     const root = baseUrl.replace(/\/+$/, "");
     const url = `${root}${path}`;
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${token}`,
-      ...options.headers,
-    };
+    const headers: Record<string, string> = { ...options.headers };
+
+    if (authMode === "inventory") {
+      headers.Authorization = `Bearer ${await this.getInventoryToken()}`;
+    } else if (authMode === "mdm") {
+      if (!this.mdmConfigured()) throw new Error("Ivanti MDM not configured");
+      headers.Authorization = this.basicAuthHeader();
+    } else if (authMode === "nzta") {
+      if (!this.nztaConfigured()) throw new Error("Ivanti nZTA not configured");
+      headers.Cookie = `DSID=${this.nztaDsid}`;
+    } else {
+      headers.Authorization = `Bearer ${await this.getOAuthToken()}`;
+    }
+
     if (
       options.data != null &&
       typeof options.data === "object" &&
@@ -171,18 +251,32 @@ export class IvantiAuthManager {
       headers["Content-Type"] = "application/json";
     }
 
+    const idempotent = ["GET", "HEAD", "OPTIONS", "PUT", "DELETE"].includes(method.toUpperCase());
+    const maxAttempts = idempotent ? 3 : 1;
+    let lastError: unknown;
+
     this.log(method, url);
-    try {
-      const resp = await this.http.request<T>({
-        method,
-        url,
-        headers,
-        params: options.params,
-        data: options.data,
-      });
-      return { data: resp.data, status: resp.status, headers: resp.headers as Record<string, string> };
-    } catch (error) {
-      throw new Error(buildErrorMessage(error));
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const resp = await this.http.request<T>({
+          method,
+          url,
+          headers,
+          params: options.params,
+          data: options.data,
+        });
+        return { data: resp.data, status: resp.status, headers: resp.headers as Record<string, string> };
+      } catch (error) {
+        lastError = error;
+        if (attempt < maxAttempts && isRetryableError(error)) {
+          const delay = 500 * 2 ** (attempt - 1);
+          this.log(`retry ${attempt}/${maxAttempts} after ${delay}ms`, url);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+        break;
+      }
     }
+    throw new Error(buildErrorMessage(lastError));
   }
 }

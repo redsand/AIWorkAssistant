@@ -13,6 +13,9 @@ import type {
   IvantiCatalogBody,
   IvantiDistributionBody,
   IvantiOnDemandInstallBody,
+  IvantiInstalledSoftwareParams,
+  IvantiMdmGroupsParams,
+  IvantiModule,
 } from "./types";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -148,6 +151,8 @@ export class IvantiClient {
   private botsBaseUrl: string;
   private patchBaseUrl: string;
   private appDistBaseUrl: string;
+  private mdmBaseUrl: string;
+  private nztaBaseUrl: string;
 
   constructor(config?: Partial<IvantiClientConfig>) {
     this.auth = new IvantiAuthManager(config);
@@ -155,15 +160,27 @@ export class IvantiClient {
     const botsHost = config?.botsHost || this.hostname;
     const patchHost = config?.patchHost || this.hostname;
     const appDistHost = config?.appDistHost || this.hostname;
+    const mdmHost = config?.mdmHost || this.hostname;
+    const nztaHost = config?.nztaHost || this.hostname;
 
     this.inventoryBaseUrl = `https://${this.hostname}/api/apigatewaydataservices/v1`;
     this.botsBaseUrl = `https://${botsHost}`;
     this.patchBaseUrl = `https://${patchHost}/api/patch/content/v1`;
     this.appDistBaseUrl = `https://${appDistHost}/api/SwdPackage`;
+    this.mdmBaseUrl = `https://${mdmHost}/api/v1`;
+    this.nztaBaseUrl = `https://${nztaHost}`;
   }
 
   isConfigured(): boolean {
     return this.auth.isConfigured();
+  }
+
+  mdmConfigured(): boolean {
+    return this.auth.mdmConfigured();
+  }
+
+  nztaConfigured(): boolean {
+    return this.auth.nztaConfigured();
   }
 
   private request<T = unknown>(
@@ -174,6 +191,7 @@ export class IvantiClient {
       params?: Record<string, unknown>;
       data?: unknown;
       headers?: Record<string, string>;
+      authMode?: "oauth" | "inventory" | "mdm" | "nzta";
     } = {},
   ): Promise<IvantiHttpResponse<T>> {
     return this.auth.request<T>(method, path, baseUrl, options);
@@ -548,6 +566,38 @@ export class IvantiClient {
     return resp.data;
   }
 
+  async listInstalledSoftware(params: IvantiInstalledSoftwareParams = {}): Promise<unknown> {
+    const { allPages, ...odata } = params;
+    const odataParams: Record<string, unknown> = { ...odata };
+    // Map friendly names to OData query params when no explicit OData param is supplied.
+    const deviceId = odataParams.deviceId;
+    const deviceName = odataParams.deviceName;
+    const packageName = odataParams.packageName;
+    const state = odataParams.state;
+    delete odataParams.deviceId;
+    delete odataParams.deviceName;
+    delete odataParams.packageName;
+    delete odataParams.state;
+
+    if (!odataParams.$filter) {
+      const conditions: string[] = [];
+      if (deviceId) conditions.push(`DiscoveryId eq '${deviceId}'`);
+      if (deviceName) conditions.push(`contains(DeviceName,'${deviceName}')`);
+      if (packageName) conditions.push(`contains(PackageName,'${packageName}')`);
+      if (conditions.length) odataParams.$filter = conditions.join(" and ");
+    }
+    if (state) {
+      odataParams.$filter = odataParams.$filter
+        ? `${odataParams.$filter} and State eq '${state}'`
+        : `State eq '${state}'`;
+    }
+    if (allPages) return this.getAllPagesOData(this.appDistBaseUrl, "/odata/devicePackageStatusExternal", odataParams);
+    const resp = await this.request("GET", "/odata/devicePackageStatusExternal", this.appDistBaseUrl, {
+      params: odataParams,
+    });
+    return resp.data;
+  }
+
   async createCatalog(body: IvantiCatalogBody): Promise<unknown> {
     const resp = await this.request("POST", "/catalog/external", this.appDistBaseUrl, { data: body });
     return resp.data;
@@ -603,10 +653,39 @@ export class IvantiClient {
     return resp.data;
   }
 
+  // ── MDM Cloud (device/user groups) ─────────────────────────────────────────
+
+  async listMdmGroups(params: IvantiMdmGroupsParams = {}): Promise<unknown> {
+    const partitionId = await this.auth.getMdmPartitionId();
+    const type = params.type || "device";
+    const path = type === "user" ? "/group" : "/rule_group";
+    const odata: Record<string, unknown> = { dmPartitionId: partitionId };
+    if (params.$top) odata.$top = params.$top;
+    if (params.$filter) odata.$filter = params.$filter;
+    if (params.$select) odata.$select = params.$select;
+    if (params.$skip) odata.$skip = params.$skip;
+    if (params.$orderby) odata.$orderby = params.$orderby;
+    const resp = await this.request("GET", path, this.mdmBaseUrl, {
+      params: odata,
+      authMode: "mdm",
+    });
+    return resp.data;
+  }
+
+  async getMdmGroup(id: string, type?: "device" | "user"): Promise<unknown> {
+    const partitionId = await this.auth.getMdmPartitionId();
+    const path = type === "user" ? `/group/${encodeURIComponent(id)}` : `/rule_group/${encodeURIComponent(id)}`;
+    const resp = await this.request("GET", path, this.mdmBaseUrl, {
+      params: { dmPartitionId: partitionId },
+      authMode: "mdm",
+    });
+    return resp.data;
+  }
+
   // ── Generic proxy ──────────────────────────────────────────────────────────
 
   async proxy(
-    module: "inventory" | "bots" | "patch" | "appdist",
+    module: IvantiModule,
     method: string,
     path: string,
     params?: Record<string, unknown>,
@@ -617,13 +696,20 @@ export class IvantiClient {
       throw new Error("proxy method must be GET, POST, PUT, PATCH, or DELETE");
     }
     if (!path.startsWith("/")) throw new Error("proxy path must start with /");
-    const baseUrlMap: Record<"inventory" | "bots" | "patch" | "appdist", string> = {
+    const baseUrlMap: Record<IvantiModule, string> = {
       inventory: this.inventoryBaseUrl,
       bots: this.botsBaseUrl,
       patch: this.patchBaseUrl,
       appdist: this.appDistBaseUrl,
+      mdm: this.mdmBaseUrl,
+      nzta: this.nztaBaseUrl,
     };
-    const resp = await this.request(upper, path, baseUrlMap[module], { params, data: body });
+    const authMode = module === "mdm" || module === "nzta" ? module : undefined;
+    const resp = await this.request(upper, path, baseUrlMap[module], {
+      params,
+      data: body,
+      authMode,
+    });
     return resp.data;
   }
 }

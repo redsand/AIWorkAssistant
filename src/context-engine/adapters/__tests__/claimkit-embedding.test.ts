@@ -34,8 +34,7 @@ describe("ClaimKitEmbeddingAdapter", () => {
     expect(adapter.dimensions).toBe(1536);
   });
 
-  it("logs a warning but does not mutate dimensions when result length mismatches", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+  it("refuses embeddings whose length does not match the locked dimension", async () => {
     vi.spyOn(embeddingService, "embed").mockResolvedValue({
       embedding: makeVector(768),
       model: "nomic-embed-text",
@@ -43,14 +42,8 @@ describe("ClaimKitEmbeddingAdapter", () => {
     });
 
     const adapter = new ClaimKitEmbeddingAdapter(1536);
-    const result = await adapter.embed("hello");
-
-    expect(result.length).toBe(768);
+    await expect(adapter.embed("hello")).rejects.toThrow("Dimension mismatch");
     expect(adapter.dimensions).toBe(1536);
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Dimension mismatch"),
-    );
-    warnSpy.mockRestore();
   });
 
   it("defaults to 1536 when no override is provided", () => {

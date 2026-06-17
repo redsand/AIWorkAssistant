@@ -128,6 +128,7 @@ const createSessionSchema = z.object({
 
 const MAX_TOOL_LOOPS = env.MAX_TOOL_LOOPS;
 const JOB_TIMEOUT_MS = env.AGENT_JOB_TIMEOUT_MS;
+const JOB_TIMEOUT_ENABLED = JOB_TIMEOUT_MS > 0;
 
 class ToolLoopLimitError extends Error {
   constructor(limit: number) {
@@ -1158,7 +1159,7 @@ async function runChatJob(
     messages = injectManifest(messages, sessionId);
     messages = ensureFirstNonSystemIsUser(messages);
     warnIfInvalidModelMessages(messages, "stream_initial");
-    if (Date.now() - jobStartTime > JOB_TIMEOUT_MS) {
+    if (JOB_TIMEOUT_ENABLED && Date.now() - jobStartTime > JOB_TIMEOUT_MS) {
       console.warn(`[Chat/Job] Job timeout (${JOB_TIMEOUT_MS}ms) reached before first stream for ${sessionId}`);
       throw new JobTimeoutError(JOB_TIMEOUT_MS);
     }
@@ -1180,7 +1181,7 @@ async function runChatJob(
         console.warn(`[Chat/Job] Tool loop limit (${MAX_TOOL_LOOPS}) reached for ${sessionId}`);
         throw new ToolLoopLimitError(MAX_TOOL_LOOPS);
       }
-      if (Date.now() - jobStartTime > JOB_TIMEOUT_MS) {
+      if (JOB_TIMEOUT_ENABLED && Date.now() - jobStartTime > JOB_TIMEOUT_MS) {
         console.warn(`[Chat/Job] Job timeout (${JOB_TIMEOUT_MS}ms) reached for ${sessionId}`);
         throw new JobTimeoutError(JOB_TIMEOUT_MS);
       }
@@ -1598,7 +1599,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           );
           throw new ToolLoopLimitError(MAX_TOOL_LOOPS);
         }
-        if (Date.now() - jobStartTime > JOB_TIMEOUT_MS) {
+        if (JOB_TIMEOUT_ENABLED && Date.now() - jobStartTime > JOB_TIMEOUT_MS) {
           console.warn(`[Chat] Job timeout (${JOB_TIMEOUT_MS}ms) reached`);
           throw new JobTimeoutError(JOB_TIMEOUT_MS);
         }
