@@ -160,7 +160,10 @@ export class SkillHub {
       throw new Error(`Invalid download URL '${url}'`);
     }
     const basePath = base.pathname.replace(/\/+$/, "");
-    if (target.origin !== base.origin || !target.pathname.startsWith(basePath)) {
+    const underBase =
+      target.pathname === basePath ||
+      target.pathname.startsWith(basePath + "/");
+    if (target.origin !== base.origin || !underBase) {
       throw new Error(
         `Refusing to download from '${url}': must be under hub URL '${this.hubUrl}'`,
       );
