@@ -14,13 +14,51 @@ import type {
 
 // Registry GitHub repo backing the hub. The raw index/skills are read over
 // HTTP via SKILLS_HUB_URL; publishing writes through the GitHub contents API.
-const HUB_REPO_OWNER = "redsand";
-const HUB_REPO_NAME = "aiworkassistant-skills";
-const HUB_REPO_BRANCH = "main";
-const DEFAULT_HUB_URL =
-  "https://raw.githubusercontent.com/redsand/aiworkassistant-skills/main";
+const DEFAULT_HUB_OWNER = "redsand";
+const DEFAULT_HUB_NAME = "aiworkassistant-skills";
+const DEFAULT_HUB_BRANCH = "main";
+const DEFAULT_HUB_URL = `https://raw.githubusercontent.com/${DEFAULT_HUB_OWNER}/${DEFAULT_HUB_NAME}/${DEFAULT_HUB_BRANCH}`;
+
+interface HubRepoRef {
+  owner: string;
+  name: string;
+  branch: string;
+}
+
+/**
+ * Derive the publish target (owner/repo/branch) from the raw hub URL so that
+ * downloads and publishes always hit the same repo. A raw.githubusercontent.com
+ * URL has the shape /<owner>/<repo>/<branch>/...; anything else falls back to
+ * the defaults.
+ */
+function deriveHubRepo(hubUrl: string): HubRepoRef {
+  try {
+    const u = new URL(hubUrl);
+    const parts = u.pathname.split("/").filter(Boolean);
+    if (
+      u.hostname === "raw.githubusercontent.com" &&
+      parts.length >= 3 &&
+      VALID_SEGMENT_RE.test(parts[0]) &&
+      VALID_SEGMENT_RE.test(parts[1])
+    ) {
+      return { owner: parts[0], name: parts[1], branch: parts[2] };
+    }
+  } catch {
+    // fall through to defaults
+  }
+  return {
+    owner: DEFAULT_HUB_OWNER,
+    name: DEFAULT_HUB_NAME,
+    branch: DEFAULT_HUB_BRANCH,
+  };
+}
 
 const VALID_SEGMENT_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
+// Hard cap on a downloaded/published skill body. SKILL.md files are small;
+// anything larger is almost certainly hostile (memory exhaustion) and must be
+// rejected before it is read fully into memory.
+const MAX_SKILL_BYTES = 1024 * 1024; // 1 MB
 
 function sanitizeSegment(segment: string, label: string): string {
   if (
@@ -89,13 +127,18 @@ export class SkillHub {
   private publisher?: HubPublisher;
   private publishEnabled: boolean;
   private timeoutMs: number;
+  private repo: HubRepoRef;
 
   constructor(opts: SkillHubOptions = {}) {
     this._skillsBasePath = opts.skillsBasePath;
-    this.hubUrl = (opts.hubUrl ?? env.SKILLS_HUB_URL ?? DEFAULT_HUB_URL).replace(
-      /\/+$/,
-      "",
-    );
+    this.hubUrl = (
+      opts.hubUrl ??
+      env.SKILLS_HUB_URL ??
+      DEFAULT_HUB_URL
+    ).replace(/\/+$/, "");
+    // Publish target is derived from the hub URL so downloads and publishes
+    // always target the same repo, even when SKILLS_HUB_URL is overridden.
+    this.repo = deriveHubRepo(this.hubUrl);
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch;
     this.publisher = opts.publisher;
     this.publishEnabled = opts.publishEnabled ?? env.SKILLS_HUB_PUBLISH_ENABLED;
@@ -107,7 +150,12 @@ export class SkillHub {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      return await this.fetchImpl(url, { signal: controller.signal });
+      // redirect:"error" so a compromised registry cannot 30x-redirect a
+      // hub-origin URL to an arbitrary internal host, bypassing assertHubOrigin.
+      return await this.fetchImpl(url, {
+        signal: controller.signal,
+        redirect: "error",
+      });
     } catch (e) {
       if ((e as Error)?.name === "AbortError") {
         throw new Error(
@@ -141,10 +189,23 @@ export class SkillHub {
 
   /** Resolve a relative path under skillsBasePath, rejecting any escape. */
   private resolveUnderBase(relativePath: string): string {
-    const base = path.resolve(this.skillsBasePath);
+    const rawBase = path.resolve(this.skillsBasePath);
+    // Resolve symlinks on the base itself so the containment comparison is made
+    // against the real on-disk location.
+    const base = fs.existsSync(rawBase) ? fs.realpathSync(rawBase) : rawBase;
     const resolved = path.resolve(base, relativePath);
     if (resolved !== base && !resolved.startsWith(base + path.sep)) {
       throw new Error("local_path escapes the skills directory");
+    }
+    // path.resolve only collapses ".." lexically; it does NOT follow symlinks.
+    // A symlinked file/dir under base could point outside it, so re-check the
+    // realpath of anything that already exists before trusting it.
+    if (fs.existsSync(resolved)) {
+      const real = fs.realpathSync(resolved);
+      if (real !== base && !real.startsWith(base + path.sep)) {
+        throw new Error("local_path escapes the skills directory");
+      }
+      return real;
     }
     return resolved;
   }
@@ -192,7 +253,8 @@ export class SkillHub {
       category: m.category,
       author: m.author,
       version: m.version,
-      installs: typeof (m as any).installs === "number" ? (m as any).installs : 0,
+      installs:
+        typeof (m as any).installs === "number" ? (m as any).installs : 0,
       rating: typeof (m as any).rating === "number" ? (m as any).rating : 0,
     }));
   }
@@ -230,7 +292,11 @@ export class SkillHub {
     }
 
     if (!manifest) {
-      return { success: false, name, error: `Skill '${name}' not found in hub registry` };
+      return {
+        success: false,
+        name,
+        error: `Skill '${name}' not found in hub registry`,
+      };
     }
 
     return this.installFromManifest(manifest);
@@ -279,7 +345,24 @@ export class SkillHub {
           error: `Failed to download skill '${name}' (HTTP ${res.status})`,
         };
       }
+      // Reject oversized payloads. Check the advertised length first so a
+      // hostile hub cannot stream a multi-GB body before the timeout fires.
+      const advertised = Number(res.headers?.get?.("content-length") ?? "");
+      if (Number.isFinite(advertised) && advertised > MAX_SKILL_BYTES) {
+        return {
+          success: false,
+          name,
+          error: `Skill '${name}' exceeds the ${MAX_SKILL_BYTES}-byte size limit`,
+        };
+      }
       body = await res.text();
+      if (Buffer.byteLength(body, "utf-8") > MAX_SKILL_BYTES) {
+        return {
+          success: false,
+          name,
+          error: `Skill '${name}' exceeds the ${MAX_SKILL_BYTES}-byte size limit`,
+        };
+      }
     } catch (e) {
       return { success: false, name, error: (e as Error).message };
     }
@@ -332,6 +415,16 @@ export class SkillHub {
     }
 
     const body = fs.readFileSync(srcFile, "utf-8");
+
+    // Re-verify the checksum recorded at install time. The quarantine directory
+    // is on disk between install and promote, so the file could have been
+    // tampered with; promoting a mismatched body would defeat the quarantine.
+    if (entry?.checksum && sha256(body) !== entry.checksum) {
+      throw new Error(
+        `Quarantined skill '${name}' failed checksum re-verification; refusing to promote`,
+      );
+    }
+
     const category = entry?.category || parseCategory(body) || "community";
     sanitizeSegment(category, "category");
 
@@ -351,7 +444,9 @@ export class SkillHub {
       entry.status = "promoted";
       entry.category = category;
       entry.promotedPath = `${category}/${name}/SKILL.md`;
-      this.writeIndex(this.readIndex().skills.map((s) => (s.name === name ? entry : s)));
+      this.writeIndex(
+        this.readIndex().skills.map((s) => (s.name === name ? entry : s)),
+      );
     }
   }
 
@@ -372,7 +467,11 @@ export class SkillHub {
 
     const publisher = this.publisher;
     if (!publisher) {
-      return { success: false, name: localPath, error: "No hub publisher configured" };
+      return {
+        success: false,
+        name: localPath,
+        error: "No hub publisher configured",
+      };
     }
 
     // Constrain the path to the skills directory. path.resolve collapses any
@@ -388,7 +487,21 @@ export class SkillHub {
       return { success: false, name: localPath, error: (e as Error).message };
     }
     if (!fs.existsSync(resolved)) {
-      return { success: false, name: localPath, error: `Skill not found at ${localPath}` };
+      return {
+        success: false,
+        name: localPath,
+        error: `Skill not found at ${localPath}`,
+      };
+    }
+
+    // Cap the size before reading so an oversized file is not pushed to the
+    // public registry (and cannot exhaust memory).
+    if (fs.statSync(resolved).size > MAX_SKILL_BYTES) {
+      return {
+        success: false,
+        name: localPath,
+        error: `Skill at ${localPath} exceeds the ${MAX_SKILL_BYTES}-byte size limit`,
+      };
     }
 
     const body = fs.readFileSync(resolved, "utf-8");
@@ -399,7 +512,8 @@ export class SkillHub {
       return {
         success: false,
         name: name || localPath,
-        error: "Skill SKILL.md is missing a name or category in its frontmatter",
+        error:
+          "Skill SKILL.md is missing a name or category in its frontmatter",
       };
     }
 
@@ -457,9 +571,9 @@ export class SkillHub {
     try {
       file = await publisher.getFile(
         "index.json",
-        HUB_REPO_BRANCH,
-        HUB_REPO_OWNER,
-        HUB_REPO_NAME,
+        this.repo.branch,
+        this.repo.owner,
+        this.repo.name,
       );
     } catch (e) {
       // A missing index.json (first publish ever) is expected — start fresh.
@@ -490,9 +604,9 @@ export class SkillHub {
     try {
       const existing = await publisher.getFile(
         filePath,
-        HUB_REPO_BRANCH,
-        HUB_REPO_OWNER,
-        HUB_REPO_NAME,
+        this.repo.branch,
+        this.repo.owner,
+        this.repo.name,
       );
       existingSha = existing.sha;
     } catch (e) {
@@ -507,18 +621,18 @@ export class SkillHub {
           filePath,
           content,
           message,
-          HUB_REPO_BRANCH,
+          this.repo.branch,
           existingSha,
-          HUB_REPO_OWNER,
-          HUB_REPO_NAME,
+          this.repo.owner,
+          this.repo.name,
         )
       : await publisher.createFile(
           filePath,
           content,
           message,
-          HUB_REPO_BRANCH,
-          HUB_REPO_OWNER,
-          HUB_REPO_NAME,
+          this.repo.branch,
+          this.repo.owner,
+          this.repo.name,
         );
     return res?.content?.html_url;
   }
@@ -598,7 +712,9 @@ function isNotFoundError(e: unknown): boolean {
     message?: string;
   };
   if (err?.status === 404 || err?.response?.status === 404) return true;
-  return typeof err?.message === "string" && /\b404\b|not found/i.test(err.message);
+  return (
+    typeof err?.message === "string" && /\b404\b|not found/i.test(err.message)
+  );
 }
 
 /**
@@ -681,7 +797,12 @@ function parseFrontmatterFields(content: string): FrontmatterFields {
     inTags = false;
     if (key === "tags") {
       inTags = true;
-      if (value) fields.tags = value.replace(/[[\]]/g, "").split(",").map((s) => s.trim()).filter(Boolean);
+      if (value)
+        fields.tags = value
+          .replace(/[[\]]/g, "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
       else fields.tags = [];
     } else if (
       key === "name" ||

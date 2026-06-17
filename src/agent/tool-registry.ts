@@ -3464,7 +3464,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       },
     },
     actionType: "skill.hub",
-    riskLevel: "medium",
+    riskLevel: "high",
   },
   {
     name: "soul.manage",

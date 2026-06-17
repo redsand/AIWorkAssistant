@@ -150,13 +150,17 @@ describe("SkillHub", () => {
     });
 
     it("accepts a bare array index", async () => {
-      const h = hub({ fetchImpl: makeFetch({ index: [manifestFor(SKILL_BODY)] }) });
+      const h = hub({
+        fetchImpl: makeFetch({ index: [manifestFor(SKILL_BODY)] }),
+      });
       expect(await h.search("fix")).toHaveLength(1);
     });
 
     it("throws when the index cannot be fetched", async () => {
       const h = hub({ fetchImpl: makeFetch({ indexStatus: 500 }) });
-      await expect(h.search("auth")).rejects.toThrow(/Failed to fetch hub index/);
+      await expect(h.search("auth")).rejects.toThrow(
+        /Failed to fetch hub index/,
+      );
     });
 
     it("drops malformed entries from the remote index (schema validation)", async () => {
@@ -263,6 +267,20 @@ describe("SkillHub", () => {
       expect(result.error).toMatch(/Failed to download/);
     });
 
+    it("rejects an oversized download (size limit)", async () => {
+      const huge = "x".repeat(1024 * 1024 + 1);
+      const manifest = manifestFor(huge); // checksum matches the huge body
+      const index = { skills: [manifest] };
+      const h = hub({ fetchImpl: makeFetch({ index, skillBody: huge }) });
+
+      const result = await h.install("fix-auth");
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/size limit/);
+      expect(
+        fs.existsSync(path.join(baseDir, ".hub", "quarantine", "fix-auth")),
+      ).toBe(false);
+    });
+
     it("refuses a manifest with no checksum (mandatory integrity)", async () => {
       // A blank checksum is also stripped by index validation, so test the
       // guard directly via installFromManifest.
@@ -292,7 +310,8 @@ describe("SkillHub", () => {
 
     it("refuses a downloadUrl on a different origin (SSRF guard)", async () => {
       const manifest = manifestFor(SKILL_BODY);
-      manifest.downloadUrl = "https://evil.example/skills/debugging/fix-auth/SKILL.md";
+      manifest.downloadUrl =
+        "https://evil.example/skills/debugging/fix-auth/SKILL.md";
       const index = { skills: [manifest] };
       const fetchImpl = makeFetch({ index, skillBody: SKILL_BODY });
       const h = hub({ fetchImpl });
@@ -349,7 +368,37 @@ describe("SkillHub", () => {
 
     it("throws when there is nothing to promote", async () => {
       const h = hub({ fetchImpl: makeFetch({ index: { skills: [] } }) });
-      await expect(h.promote("fix-auth")).rejects.toThrow(/No quarantined skill/);
+      await expect(h.promote("fix-auth")).rejects.toThrow(
+        /No quarantined skill/,
+      );
+    });
+
+    it("refuses to promote when the quarantined body fails checksum re-verification", async () => {
+      const index = { skills: [manifestFor(SKILL_BODY)] };
+      const h = hub({ fetchImpl: makeFetch({ index, skillBody: SKILL_BODY }) });
+      await h.install("fix-auth");
+
+      // Tamper with the quarantined file after install.
+      const quarantined = path.join(
+        baseDir,
+        ".hub",
+        "quarantine",
+        "fix-auth",
+        "SKILL.md",
+      );
+      fs.writeFileSync(
+        quarantined,
+        SKILL_BODY + "\n## injected\nmalicious",
+        "utf-8",
+      );
+
+      await expect(h.promote("fix-auth")).rejects.toThrow(
+        /failed checksum re-verification/,
+      );
+      // Must not have been activated.
+      expect(fs.existsSync(path.join(baseDir, "debugging", "fix-auth"))).toBe(
+        false,
+      );
     });
   });
 
@@ -486,6 +535,33 @@ describe("SkillHub", () => {
       expect(publisher.created).toEqual({});
     });
 
+    it("rejects a symlinked SKILL.md that points outside the base", async () => {
+      const outside = path.join(os.tmpdir(), `secret-${Date.now()}.md`);
+      fs.writeFileSync(outside, "TOP SECRET", "utf-8");
+      const skillDir = path.join(baseDir, "debugging", "fix-auth");
+      fs.mkdirSync(skillDir, { recursive: true });
+      const link = path.join(skillDir, "SKILL.md");
+      try {
+        fs.symlinkSync(outside, link);
+      } catch {
+        // Symlink creation not permitted on this platform (e.g. Windows without
+        // developer mode) — the realpath guard is still exercised on platforms
+        // that allow it.
+        fs.rmSync(outside, { force: true });
+        return;
+      }
+      try {
+        const publisher = mockPublisher();
+        const h = hub({ publisher });
+        const result = await h.publish("debugging/fix-auth/SKILL.md");
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/escapes the skills directory/);
+        expect(publisher.created).toEqual({});
+      } finally {
+        fs.rmSync(outside, { force: true });
+      }
+    });
+
     it("fails when no publisher is configured", async () => {
       const skillDir = path.join(baseDir, "debugging", "fix-auth");
       fs.mkdirSync(skillDir, { recursive: true });
@@ -544,6 +620,29 @@ describe("SkillHub", () => {
       expect(result.error).toMatch(/Aborting to avoid clobbering/);
       // The skill file may have been written, but the index must be untouched.
       expect(created["index.json"]).toBeUndefined();
+    });
+
+    it("publishes to the repo derived from the hub URL", async () => {
+      const skillDir = path.join(baseDir, "debugging", "fix-auth");
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(path.join(skillDir, "SKILL.md"), SKILL_BODY, "utf-8");
+
+      const publisher = mockPublisher();
+      const h = new SkillHub({
+        skillsBasePath: baseDir,
+        hubUrl: "https://raw.githubusercontent.com/acme/my-skills/dev",
+        publisher,
+        publishEnabled: true,
+      });
+      const result = await h.publish("debugging/fix-auth/SKILL.md");
+      expect(result.success).toBe(true);
+
+      // createFile(filePath, content, message, branch, owner, repo)
+      const call = (publisher.createFile as ReturnType<typeof vi.fn>).mock
+        .calls[0];
+      expect(call[3]).toBe("dev"); // branch
+      expect(call[4]).toBe("acme"); // owner
+      expect(call[5]).toBe("my-skills"); // repo
     });
 
     it("merges into an existing remote index without dropping entries", async () => {
@@ -616,10 +715,12 @@ function createMockStore(overrides?: Partial<SkillHubStore>): SkillHubStore {
 describe("handleSkillHub", () => {
   let store: ReturnType<typeof createMockStore>;
   let handleSkillHub: ReturnType<typeof createSkillHubHandler>;
+  let audit: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     store = createMockStore();
-    handleSkillHub = createSkillHubHandler(store);
+    audit = vi.fn();
+    handleSkillHub = createSkillHubHandler(store, audit);
   });
 
   it("rejects missing action", async () => {
@@ -668,7 +769,10 @@ describe("handleSkillHub", () => {
     });
 
     it("quarantines and instructs to promote", async () => {
-      const result = await handleSkillHub({ action: "install", name: "fix-auth" });
+      const result = await handleSkillHub({
+        action: "install",
+        name: "fix-auth",
+      });
       expect(result.success).toBe(true);
       expect(store.install).toHaveBeenCalledWith("fix-auth");
       expect(result.message).toContain("promote");
@@ -680,7 +784,10 @@ describe("handleSkillHub", () => {
         name,
         error: "Checksum mismatch",
       }));
-      const result = await handleSkillHub({ action: "install", name: "fix-auth" });
+      const result = await handleSkillHub({
+        action: "install",
+        name: "fix-auth",
+      });
       expect(result.success).toBe(false);
       expect(result.error).toBe("Checksum mismatch");
     });
@@ -694,7 +801,10 @@ describe("handleSkillHub", () => {
     });
 
     it("promotes a skill", async () => {
-      const result = await handleSkillHub({ action: "promote", name: "fix-auth" });
+      const result = await handleSkillHub({
+        action: "promote",
+        name: "fix-auth",
+      });
       expect(result.success).toBe(true);
       expect(store.promote).toHaveBeenCalledWith("fix-auth");
     });
@@ -733,9 +843,68 @@ describe("handleSkillHub", () => {
     });
 
     it("removes a skill", async () => {
-      const result = await handleSkillHub({ action: "remove", name: "fix-auth" });
+      const result = await handleSkillHub({
+        action: "remove",
+        name: "fix-auth",
+      });
       expect(result.success).toBe(true);
       expect(store.remove).toHaveBeenCalledWith("fix-auth");
+    });
+  });
+
+  describe("audit logging", () => {
+    it("audits a successful install", async () => {
+      await handleSkillHub({ action: "install", name: "fix-auth" });
+      expect(audit).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "install", outcome: "success" }),
+      );
+    });
+
+    it("audits a failed install with the error", async () => {
+      store.install = vi.fn(async (name: string) => ({
+        success: false,
+        name,
+        error: "Checksum mismatch",
+      }));
+      await handleSkillHub({ action: "install", name: "fix-auth" });
+      expect(audit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "install",
+          outcome: "failure",
+          details: expect.objectContaining({ error: "Checksum mismatch" }),
+        }),
+      );
+    });
+
+    it("audits promote, publish, and remove", async () => {
+      await handleSkillHub({ action: "promote", name: "fix-auth" });
+      await handleSkillHub({
+        action: "publish",
+        local_path: "debugging/fix-auth/SKILL.md",
+      });
+      await handleSkillHub({ action: "remove", name: "fix-auth" });
+      const actions = audit.mock.calls.map((c) => c[0].action);
+      expect(actions).toEqual(
+        expect.arrayContaining(["promote", "publish", "remove"]),
+      );
+    });
+
+    it("audits a thrown error as a failure", async () => {
+      store.promote = vi.fn(async () => {
+        throw new Error("boom");
+      });
+      const result = await handleSkillHub({ action: "promote", name: "x" });
+      expect(result.success).toBe(false);
+      expect(audit).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "promote", outcome: "failure" }),
+      );
+    });
+
+    it("does not audit read-only actions (search, list)", async () => {
+      store.search = vi.fn(async () => []);
+      await handleSkillHub({ action: "search", query: "auth" });
+      await handleSkillHub({ action: "list" });
+      expect(audit).not.toHaveBeenCalled();
     });
   });
 });
