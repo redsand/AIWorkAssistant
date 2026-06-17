@@ -1,4 +1,4 @@
-import { spawn } from "child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "child_process";
 import { existsSync, mkdirSync } from "fs";
 import { dirname } from "path";
 import { AudioTechnicalMetrics } from "../../musician/analysis-types";
@@ -13,12 +13,11 @@ export function detectFfprobe(): boolean {
   const isWindows = process.platform === "win32";
   const executable = isWindows ? "ffprobe.exe" : "ffprobe";
 
-  try {
-    spawn(executable, ["-version"], { detached: true, stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
+  // spawnSync resolves the process fully (no leaked/detached children) and
+  // reports spawn failures via `.error` instead of an async 'error' event, so
+  // a missing executable or resource exhaustion is detected synchronously.
+  const result = spawnSync(executable, ["-version"], { stdio: "ignore" });
+  return !result.error && result.status === 0;
 }
 
 /**
@@ -30,15 +29,23 @@ export async function runFfprobe(filePath: string): Promise<FfprobeData | null> 
   const executable = isWindows ? "ffprobe.exe" : "ffprobe";
 
   return new Promise((resolve) => {
-    const child = spawn(executable, [
-      "-v",
-      "quiet",
-      "-print_format",
-      "json",
-      "-show_format",
-      "-show_streams",
-      filePath,
-    ]);
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(executable, [
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+        filePath,
+      ]);
+    } catch {
+      // spawn can throw synchronously (e.g. EMFILE under resource pressure);
+      // treat it the same as an ffprobe failure rather than crashing the caller.
+      resolve(null);
+      return;
+    }
 
     let output = "";
     let error = "";
