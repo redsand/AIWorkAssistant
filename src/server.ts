@@ -21,6 +21,7 @@ import { engineeringRoutes } from "./routes/engineering";
 import { agentRunsRoutes } from "./agent-runs/api";
 import { agentRunDatabase } from "./agent-runs/database";
 import { workItemRoutes } from "./routes/work-items";
+import { extractionRoutes } from "./routes/extraction";
 import { detectionRoutes } from "./routes/detection";
 import { ctoRoutes } from "./routes/cto";
 import { personalOsRoutes } from "./routes/personal-os";
@@ -69,6 +70,7 @@ import { SlackAdapter } from "./integrations/gateway/slack-adapter";
 import { DiscordGatewayAdapter } from "./integrations/discord/discord-gateway-adapter";
 import { WhatsAppAdapter } from "./integrations/gateway/whatsapp-adapter";
 import { getProfileManager } from "./profiles/profile-manager";
+import { getConfigProfileManager } from "./config/profile-manager";
 import path from "path";
 
 export async function buildServer() {
@@ -122,6 +124,7 @@ export async function buildServer() {
   await server.register(engineeringRoutes);
   await server.register(agentRunsRoutes, { prefix: "/api" });
   await server.register(workItemRoutes, { prefix: "/api/work-items" });
+  await server.register(extractionRoutes, { prefix: "/api/extraction" });
   await server.register(detectionRoutes, { prefix: "/api" });
   await server.register(ctoRoutes, { prefix: "/api/cto" });
   await server.register(personalOsRoutes, { prefix: "/api/personal-os" });
@@ -283,6 +286,19 @@ async function start() {
       void toolCallCache.connectRedis(redisUrl);
     }
 
+    // ─── Profile systems ───
+    // Two distinct managers coexist on purpose; they are NOT duplicates:
+    //   • profiles/profile-manager (getProfileManager) — per-SESSION runtime
+    //     selection of system prompt + allowed tools. Concurrent chat sessions
+    //     can run under different personalities without a restart. In-memory,
+    //     keyed by sessionId.
+    //   • config/profile-manager (getConfigProfileManager) — on-disk profile
+    //     ISOLATION: each profile owns a separate memories/skills/sessions
+    //     directory tree, selected by the `active` marker and consumed by
+    //     resolvePath(). This is process-global and chosen at boot.
+    // The session manager decides *which prompt/tools* a request uses; the
+    // config manager decides *which directory* all state lands in.
+
     // ─── Profile Manager: initialize profiles ───
     try {
       const pm = getProfileManager();
@@ -290,6 +306,20 @@ async function start() {
       console.log(`[Profiles] Initialized with ${profiles.length} profile(s) (default: ${pm.getDefaultProfileId()})`);
     } catch (err) {
       console.warn("[Profiles] Failed to initialize, using default:", err);
+    }
+
+    // ─── Profile isolation: load the active profile (auto-creates default) ───
+    // getActive() seeds data/profiles/<name>/ and writes the `active` marker.
+    // Sync ACTIVE_PROFILE so resolvePath() routes all subsequent profile-scoped
+    // state (memories, skills, sessions) into the active profile's directory.
+    try {
+      const active = getConfigProfileManager().getActive();
+      process.env.ACTIVE_PROFILE = active.name;
+      console.log(
+        `[Profiles] Active profile: ${active.name} (soul: ${active.hasCustomSoul ? "custom" : "default"}, memory: ${active.hasCustomMemory ? "custom" : "default"}, skills: ${active.skillCount}) at ${active.path}`,
+      );
+    } catch (err) {
+      console.warn("[Profiles] Failed to load active profile:", err);
     }
 
     // ─── ClaimKit init: block server.listen() until init resolves ───

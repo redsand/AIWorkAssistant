@@ -3327,6 +3327,31 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "low",
   },
   {
+    name: "memory.update_entity_md",
+    description:
+      "Update a section of an entity's human-readable relationship file (ENTITY.md). Use this to record how to work with a specific person, customer, or company — e.g. that your boss prefers Slack over email, that a client is in EST, or a key decision made with them. Sections: identity, preferences, interaction_history, key_decisions, notes.",
+    params: {
+      entity_id: {
+        type: "string",
+        description: "The entity to update (entity ID or name).",
+        required: true,
+      },
+      section: {
+        type: "string",
+        description:
+          "Section to update: identity, preferences, interaction_history, key_decisions, notes",
+        required: true,
+      },
+      content: {
+        type: "string",
+        description: "New content for the section",
+        required: true,
+      },
+    },
+    actionType: "memory.update_entity_md",
+    riskLevel: "low",
+  },
+  {
     name: "memory.manage",
     description:
       "Manage the agent's persistent bounded memory (MEMORY.md) and user profile (USER.md). Use 'add' to store new knowledge, 'replace' to update existing entries, 'remove' to delete entries, 'consolidate' to merge related entries into denser versions, or 'status' to check usage. Memory is injected at session start so the agent remembers across sessions.",
@@ -3413,6 +3438,34 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     },
     actionType: "skill.manage",
     riskLevel: "medium",
+  },
+  {
+    name: "skill.hub",
+    description:
+      "Discover, install, and share skills via the community skill hub. Use 'search' to browse the registry, 'install' to download a skill into security quarantine (never auto-loaded), 'promote' to activate a quarantined skill after review, 'list' to see hub-installed skills, 'remove' to delete one, or 'publish' to package a local skill and upload it to the hub. Installed skills are quarantined first so their contents can be reviewed before activation.",
+    params: {
+      action: {
+        type: "string",
+        description:
+          "Action: search, install, promote, publish, list, remove",
+        required: true,
+      },
+      query: {
+        type: "string",
+        description: "Search query (for search)",
+      },
+      name: {
+        type: "string",
+        description: "Skill name (for install/promote/remove)",
+      },
+      local_path: {
+        type: "string",
+        description:
+          "Path to a local skill, e.g. 'debugging/fix-auth/SKILL.md' (for publish)",
+      },
+    },
+    actionType: "skill.hub",
+    riskLevel: "high",
   },
   {
     name: "soul.manage",

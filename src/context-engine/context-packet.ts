@@ -33,7 +33,10 @@ import { soulManager } from "../memory/soul-manager";
 import { skillManager } from "../skills/skill-manager";
 import { reflectionEngine } from "../agent/reflection-engine";
 import { conversationManager } from "../memory/conversation-manager";
-import { buildEntityClaimsSection } from "./entity-claims-injector";
+import { buildEntityClaimsSection, extractEntityIds } from "./entity-claims-injector";
+import { entityMemory } from "../memory/entity-memory";
+import { entityMarkdown } from "../memory/entity-markdown";
+import type { MemoryEntity } from "../memory/entity-types";
 
 export interface RoutingDecision {
   tier: RoutingTier;
@@ -406,6 +409,11 @@ export async function assembleContextPacket(
     console.warn("[EntityClaims] section build failed:", err instanceof Error ? err.message : err);
   }
 
+  // Relationship context (ENTITY.md): human-readable per-person profiles for
+  // entities referenced in the query. Sits alongside structured claims and
+  // gives the agent "relationship memory" (e.g. boss prefers Slack, client EST).
+  const entityProfilesSection = buildEntityMarkdownSection(query);
+
   // ── ClaimKit citation boost (Idea 5: collaborative scoring) ──────────
   // After both retrieval paths have completed, push docs that ClaimKit's
   // claims cite to the top of the compressed set. This is the join point
@@ -766,6 +774,10 @@ export async function assembleContextPacket(
     sections.push(entityClaimsSection);
   }
 
+  if (entityProfilesSection) {
+    sections.push(entityProfilesSection);
+  }
+
   if (claimKitSection) {
     sections.push(claimKitSection);
   }
@@ -825,6 +837,11 @@ export async function assembleContextPacket(
   // fading embedding match RAG might surface for the same query.
   if (entityClaimsEnforced?.content.trim()) {
     messages.push({ role: "system", content: entityClaimsEnforced.content });
+  }
+
+  const entityProfilesEnforced = enforced.find((s) => s.name === "entity_profiles");
+  if (entityProfilesEnforced?.content.trim()) {
+    messages.push({ role: "system", content: entityProfilesEnforced.content });
   }
 
   if (routing.tier === "ck_primary" && claimKitEnforced?.content.trim()) {
@@ -1215,6 +1232,63 @@ function retrieveGraphContext(query: string): string {
   } catch (err) {
     console.warn("[ContextPacket] Graph context retrieval failed:", err instanceof Error ? err.message : err);
     return "";
+  }
+}
+
+/**
+ * Build the relationship-context section from per-entity ENTITY.md files.
+ * Resolves entities referenced in the query (explicit IDs first, then known
+ * person/org names that appear verbatim) and loads their markdown profile.
+ * Budget: ~200 tokens per entity, at most 2 entities per packet.
+ */
+function buildEntityMarkdownSection(query: string): ContextSection | null {
+  try {
+    const PER_ENTITY_TOKENS = 200;
+    const MAX_ENTITIES = 2;
+    const stripControl = (s: string) => s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+
+    const resolved = new Map<string, MemoryEntity>();
+
+    const ids = extractEntityIds(query);
+    if (ids.length > 0) {
+      for (const e of entityMemory.getEntitiesByNormalizedNames(ids)) {
+        resolved.set(e.id, e);
+      }
+    }
+
+    // Name-based resolution: surface known relationships (people, customers,
+    // companies, vendors) whose name appears in the query.
+    const lowerQ = query.toLowerCase();
+    const relationshipTypes = new Set(["person", "customer", "company", "vendor"]);
+    for (const e of entityMemory.listRecentEntities(50)) {
+      if (!relationshipTypes.has(e.type)) continue;
+      if (e.normalizedName.length >= 3 && lowerQ.includes(e.normalizedName)) {
+        resolved.set(e.id, e);
+      }
+    }
+
+    const blocks: string[] = [];
+    for (const entity of resolved.values()) {
+      if (blocks.length >= MAX_ENTITIES) break;
+      const raw = entityMarkdown.readRaw(entity.id);
+      if (!raw || !raw.trim()) continue;
+      const clean = stripControl(raw).trim();
+      const trimmed =
+        estimateTokens(clean) > PER_ENTITY_TOKENS
+          ? clean.substring(0, PER_ENTITY_TOKENS * 4) + "\n…(truncated)"
+          : clean;
+      blocks.push(trimmed);
+    }
+
+    if (blocks.length === 0) return null;
+    const content = "=== RELATIONSHIP CONTEXT (ENTITY.md) ===\n\n" + blocks.join("\n\n---\n\n");
+    return { name: "entity_profiles", content, tokens: estimateTokens(content) };
+  } catch (err) {
+    console.warn(
+      "[ContextPacket] entity markdown section build failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return null;
   }
 }
 

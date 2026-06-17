@@ -54,12 +54,15 @@ import { mcpClient } from "../integrations/mcp";
 import { codebaseIndexer } from "./codebase-indexer";
 import { knowledgeGraph } from "./knowledge-graph";
 import { entityMemory } from "../memory/entity-memory";
+import { entityMarkdown, ENTITY_SECTIONS } from "../memory/entity-markdown";
 import { ingestStructuredClaims } from "../memory/tool-claim-extractor";
 import { createMemoryGetEntityClaimsHandler } from "./handlers/memory-get-entity-claims";
 import { agentMemory } from "../memory/agent-memory";
 import { createMemoryManageHandler } from "./handlers/memory-manage";
 import { skillManager } from "../skills/skill-manager";
 import { createSkillManageHandler } from "./handlers/skill-manage";
+import { SkillHub } from "../skills/skill-hub";
+import { createSkillHubHandler } from "./handlers/skill-hub";
 import { soulManager } from "../memory/soul-manager";
 import { createSoulManageHandler } from "./handlers/soul-manage";
 import { createSessionSearchHandler } from "./handlers/session-search";
@@ -622,6 +625,7 @@ async function handleJiraCloseIssue(
       ],
       riskLevel: "high",
       paramsPreview: { key: params.key, comment: params.comment },
+      warnings: ["Closing a Jira issue may be difficult to reverse. Consider using dryRun first."],
     }) };
   }
   if (!jiraClient.isConfigured()) {
@@ -2396,8 +2400,44 @@ async function handleMemoryAddEntityFact(
   }
 }
 
+async function handleUpdateEntityMd(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const entityId = typeof params.entity_id === "string" ? params.entity_id.trim() : "";
+    const section = typeof params.section === "string" ? params.section.trim() : "";
+    const content = typeof params.content === "string" ? params.content : "";
+    if (!entityId || !section) {
+      return { success: false, error: "entity_id and section are required" };
+    }
+    if (!ENTITY_SECTIONS.includes(section as (typeof ENTITY_SECTIONS)[number])) {
+      return {
+        success: false,
+        error: `Unknown section '${section}'. Valid: ${ENTITY_SECTIONS.join(", ")}`,
+      };
+    }
+    // Prefer the canonical entity name for the file header when the id resolves
+    // to a known entity; fall back to the raw id otherwise.
+    const known = entityMemory.getEntity(entityId);
+    entityMarkdown.updateSection(entityId, section, content, known?.name);
+    return {
+      success: true,
+      data: {
+        message: `Updated '${section}' for entity '${entityId}'`,
+        entityId,
+        section,
+      },
+    };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 const handleMemoryManage = createMemoryManageHandler(agentMemory);
 const handleSkillManage = createSkillManageHandler(skillManager);
+const handleSkillHub = createSkillHubHandler(
+  new SkillHub({ publisher: githubClient }),
+);
 const handleSoulManage = createSoulManageHandler(soulManager);
 
 async function handleCronManage(
@@ -9102,6 +9142,20 @@ async function handleWorkItemsUpdate(
   params: Record<string, unknown>,
   _userId: string,
 ): Promise<ToolCallResult> {
+  if (params.dryRun === true) {
+    return { success: true, dryRun: true, data: dryRunResult({
+      toolName: "work_items.update",
+      summary: `Would update work item ${params.id}`,
+      targetSystem: "work_items",
+      changes: [
+        ...(params.title ? [{ field: "title" as const, to: params.title as string, description: "Update title" }] : []),
+        ...(params.status ? [{ field: "status" as const, to: params.status as string, description: "Update status" }] : []),
+        ...(params.priority ? [{ field: "priority" as const, to: params.priority as string, description: "Update priority" }] : []),
+      ],
+      riskLevel: "medium",
+      paramsPreview: { id: params.id, title: params.title, status: params.status, priority: params.priority },
+    }) };
+  }
   try {
     const id = params.id as string;
     if (!id) return { success: false, error: "id is required" };
@@ -10425,8 +10479,10 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "memory.get_entity_context": handleMemoryGetEntityContext,
   "memory.get_entity_claims": handleMemoryGetEntityClaims,
   "memory.add_entity_fact": handleMemoryAddEntityFact,
+  "memory.update_entity_md": handleUpdateEntityMd,
   "memory.manage": handleMemoryManage,
   "skill.manage": handleSkillManage,
+  "skill.hub": handleSkillHub,
   "soul.manage": handleSoulManage,
   "profile.switch": handleProfileSwitch,
   "profile.list": handleProfileList,
@@ -10492,6 +10548,7 @@ const SYSTEM_TOOLS = new Set([
   "agent.get_aicoder_status",
   "memory.manage",
   "skill.manage",
+  "skill.hub",
   "profile.switch",
   "profile.list",
   "cron.manage",

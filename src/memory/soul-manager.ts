@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { resolvePath } from "../config/env";
 
 export interface SoulManagerResult {
   success: boolean;
@@ -84,7 +85,7 @@ export class SoulManager {
       return process.env.SOUL_PATH;
     }
 
-    return path.join(process.cwd(), "data", "memories");
+    return resolvePath("memories");
   }
 
   private saveDefault(): void {

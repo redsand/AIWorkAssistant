@@ -8,6 +8,7 @@ const { mockListRuns, mockGetRunWithSteps, mockGetStats } = vi.hoisted(() => ({
 
 // Mock all external dependencies before importing dispatcher
 vi.mock("../../../src/config/env", () => ({
+  resolvePath: (rel: string) => rel,
   env: {
     JIRA_BASE_URL: "",
     JIRA_EMAIL: "",

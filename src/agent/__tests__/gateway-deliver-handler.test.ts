@@ -5,6 +5,7 @@ vi.mock("../../config/env", () => ({
     if (prop === "GATEWAY_ENABLED") return true;
     return "";
   }}),
+  resolvePath: (rel: string) => rel,
 }));
 
 vi.mock("../../integrations/gateway/gateway-engine", () => {

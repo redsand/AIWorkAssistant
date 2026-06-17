@@ -60,6 +60,69 @@ export interface SkillManageResult {
   message?: string;
 }
 
+// ── Skill Hub (community marketplace) ─────────────────────────────
+
+export interface SkillManifest {
+  name: string;
+  version: string;
+  author: string;
+  description: string;
+  category: string;
+  tags: string[];
+  checksum: string;
+  downloadUrl: string;
+  homepage?: string;
+  license: string;
+}
+
+export interface HubSearchResult {
+  name: string;
+  description: string;
+  category: string;
+  author: string;
+  version: string;
+  installs: number;
+  rating: number;
+}
+
+export interface InstallResult {
+  success: boolean;
+  name: string;
+  quarantinePath?: string;
+  manifest?: SkillManifest;
+  checksumVerified?: boolean;
+  preview?: string;
+  error?: string;
+}
+
+export interface PublishResult {
+  success: boolean;
+  name: string;
+  manifest?: SkillManifest;
+  url?: string;
+  error?: string;
+}
+
+export type HubSkillStatus = "quarantined" | "promoted";
+
+export interface HubIndexEntry extends SkillManifest {
+  status: HubSkillStatus;
+  installedAt: string;
+  promotedPath?: string;
+}
+
+export interface HubIndex {
+  skills: HubIndexEntry[];
+}
+
+export type SkillHubAction =
+  | "search"
+  | "install"
+  | "promote"
+  | "publish"
+  | "list"
+  | "remove";
+
 export const SKILL_BODY_SECTIONS = [
   "When to Use",
   "Prerequisites",

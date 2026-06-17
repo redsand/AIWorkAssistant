@@ -18,6 +18,7 @@ vi.mock("axios", () => {
 });
 
 vi.mock("../../../src/config/env", () => ({
+  resolvePath: (rel: string) => rel,
   env: {
     GITLAB_BASE_URL: "https://gitlab.test.local",
     GITLAB_TOKEN: "test-token",

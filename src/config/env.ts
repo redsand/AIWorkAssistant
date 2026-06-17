@@ -1,4 +1,6 @@
 import { config } from "dotenv";
+import fs from "fs";
+import path from "path";
 import { z } from "zod";
 
 // Load environment variables from .env file (don't override existing env vars)
@@ -133,10 +135,30 @@ const envSchema = z.object({
 
   // Agent Skills (SKILL.md)
   SKILLS_PATH: z.string().default(""),
+  // Community skill hub registry — raw base URL of the GitHub repo holding
+  // index.json and skills/<category>/<name>/SKILL.md.
+  SKILLS_HUB_URL: z
+    .string()
+    .default(
+      "https://raw.githubusercontent.com/redsand/aiworkassistant-skills/main",
+    ),
+  // Gate for pushing skills to the shared community registry. Off by default so
+  // an agent cannot publish to the public repo without an explicit opt-in.
+  SKILLS_HUB_PUBLISH_ENABLED: z
+    .string()
+    .default("false")
+    .transform((s) => s === "true"),
+  // Timeout (ms) for hub HTTP fetches so a slow/malicious server cannot hang.
+  SKILLS_HUB_TIMEOUT_MS: z.coerce.number().default(15000),
 
   // Agent Profiles
   DEFAULT_PROFILE: z.string().default("default"),
   PROFILES_PATH: z.string().default("data/profiles"),
+
+  // Profile isolation — root for all profile-scoped state and the active profile.
+  // resolvePath() composes these into HERMES_HOME/profiles/{ACTIVE_PROFILE}/<relative>.
+  HERMES_HOME: z.string().default("data"),
+  ACTIVE_PROFILE: z.string().default("default"),
 
   // Audit
   AUDIT_LOG_FILE: z.string().default("./logs/audit.log"),
@@ -558,3 +580,91 @@ export function loadEnv(): Env {
 }
 
 export const env = loadEnv();
+
+/**
+ * Resolve a profile-scoped path. Every subsystem (memory, skills, sessions)
+ * should route file paths through this function instead of hardcoding `data/`,
+ * so that switching the active profile transparently isolates all state.
+ *
+ * Returns `HERMES_HOME/profiles/{ACTIVE_PROFILE}/{relativePath}`.
+ *
+ * Active profile resolution order:
+ *   1. process.env.ACTIVE_PROFILE — runtime override set by the long-running
+ *      server after it loads the active profile.
+ *   2. The `profiles/active` marker file — written by `profile switch`. This is
+ *      what makes CLI commands honor a switch: a one-shot CLI invocation never
+ *      sets the env var, so without reading the marker every CLI command would
+ *      fall back to 'default'.
+ *   3. env.ACTIVE_PROFILE (env schema default) → 'default'.
+ */
+export function resolvePath(relativePath: string): string {
+  const home = process.env.HERMES_HOME || env.HERMES_HOME || "data";
+  const requested =
+    process.env.ACTIVE_PROFILE ||
+    readActiveProfileName(home) ||
+    env.ACTIVE_PROFILE ||
+    "default";
+  return path.join(home, "profiles", safeProfileName(requested), relativePath);
+}
+
+// A plain identifier: letters, digits, dot, underscore, hyphen. Note this
+// pattern alone still matches "." and "..", which are filesystem traversal
+// tokens, so safeProfileName() rejects those explicitly below.
+const PROFILE_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * Normalize an untrusted profile name (from an env var or the on-disk `active`
+ * marker) into a safe directory segment. Anything that isn't a plain identifier
+ * — or is "." / ".." — falls back to "default" so a tampered value can't escape
+ * the profile root and read or clobber another profile's state (which would
+ * silently defeat isolation). "." is the critical case: path.join(home,
+ * "profiles", ".", "memories") collapses to HERMES_HOME/profiles/memories,
+ * escaping the per-profile boundary.
+ */
+export function safeProfileName(requested: string): string {
+  if (
+    !PROFILE_NAME_PATTERN.test(requested) ||
+    requested === "." ||
+    requested === ".."
+  ) {
+    return "default";
+  }
+  return requested;
+}
+
+// Cache the active-marker read, keyed by the marker file's mtime. resolvePath()
+// is called on every memory/skill/session access, so re-reading the file each
+// time adds avoidable sync I/O. A `profile switch` rewrites the marker (bumping
+// mtime), so the cache self-invalidates without an explicit reset.
+let activeMarkerCache:
+  | { file: string; mtimeMs: number; name: string | undefined }
+  | null = null;
+
+/** Read the active profile name from `HERMES_HOME/profiles/active`, if present. */
+function readActiveProfileName(home: string): string | undefined {
+  const activeFile = path.join(home, "profiles", "active");
+  let mtimeMs: number;
+  try {
+    mtimeMs = fs.statSync(activeFile).mtimeMs;
+  } catch {
+    activeMarkerCache = null;
+    return undefined;
+  }
+
+  if (
+    activeMarkerCache &&
+    activeMarkerCache.file === activeFile &&
+    activeMarkerCache.mtimeMs === mtimeMs
+  ) {
+    return activeMarkerCache.name;
+  }
+
+  let name: string | undefined;
+  try {
+    name = fs.readFileSync(activeFile, "utf-8").trim() || undefined;
+  } catch {
+    name = undefined;
+  }
+  activeMarkerCache = { file: activeFile, mtimeMs, name };
+  return name;
+}

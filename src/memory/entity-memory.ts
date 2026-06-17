@@ -12,20 +12,24 @@ import type {
   ExtractedEntities,
   EntityType,
 } from "./entity-types";
+import { EntityMarkdown, entityMarkdown } from "./entity-markdown";
+import type { EntityMarkdownData } from "./entity-markdown";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const DEFAULT_DB_PATH = path.join(DATA_DIR, "entity-memory.db");
 
 class EntityMemory {
   private db: Database.Database;
+  private markdown: EntityMarkdown;
 
-  constructor(dbPath?: string) {
+  constructor(dbPath?: string, markdown?: EntityMarkdown) {
     const dbFile = dbPath ?? DEFAULT_DB_PATH;
     const dir = path.dirname(dbFile);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     this.db = new Database(dbFile);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
+    this.markdown = markdown ?? entityMarkdown;
     this.initSchema();
   }
 
@@ -139,6 +143,7 @@ class EntityMemory {
         input.metadata ? JSON.stringify(input.metadata) : null,
         existing.id as string,
       );
+      this.syncToMarkdown(existing.id as string);
       return this.getEntity(existing.id as string)!;
     }
 
@@ -161,6 +166,7 @@ class EntityMemory {
       now,
       input.metadata ? JSON.stringify(input.metadata) : null,
     );
+    this.syncToMarkdown(id);
     return this.getEntity(id)!;
   }
 
@@ -235,6 +241,7 @@ class EntityMemory {
     if (existing) {
       this.db.prepare("UPDATE memory_entity_facts SET updated_at = ?, confidence = MAX(confidence, ?) WHERE id = ?")
         .run(now, options.confidence ?? 1.0, existing.id);
+      this.syncToMarkdown(entityId);
       return this.mapFact(this.db.prepare("SELECT * FROM memory_entity_facts WHERE id = ?").get(existing.id) as Record<string, unknown>);
     }
 
@@ -254,6 +261,7 @@ class EntityMemory {
     // Bump entity last_seen
     this.db.prepare("UPDATE memory_entities SET last_seen_at = ? WHERE id = ?").run(now, entityId);
 
+    this.syncToMarkdown(entityId);
     return this.mapFact(this.db.prepare("SELECT * FROM memory_entity_facts WHERE id = ?").get(id) as Record<string, unknown>);
   }
 
@@ -315,6 +323,7 @@ class EntityMemory {
       this.db
         .prepare("UPDATE memory_entities SET last_seen_at = ? WHERE id = ?")
         .run(now, entityId);
+      this.syncToMarkdown(entityId);
       return this.mapFact(
         this.db
           .prepare("SELECT * FROM memory_entity_facts WHERE id = ?")
@@ -367,6 +376,7 @@ class EntityMemory {
     });
     txn();
 
+    this.syncToMarkdown(entityId);
     return this.mapFact(
       this.db
         .prepare("SELECT * FROM memory_entity_facts WHERE id = ?")
@@ -556,6 +566,59 @@ class EntityMemory {
     ];
 
     return { entity, facts, links };
+  }
+
+  // ── Markdown projection (ENTITY.md) ────────────────────────────────────────
+
+  /**
+   * Project the entity + its facts/claims into a human-readable ENTITY.md file.
+   * SQLite remains the source of truth; this is a best-effort, non-throwing
+   * projection. The `preferences` and `notes` sections are treated as
+   * human-authored and preserved across syncs (only auto-derivable sections —
+   * identity, interaction history, key decisions — are overwritten).
+   */
+  syncToMarkdown(entityId: string): void {
+    try {
+      const entity = this.getEntity(entityId);
+      if (!entity) return;
+
+      const existing = this.markdown.readEntityMd(entityId);
+      const facts = this.getEntityFacts(entityId);
+
+      // Free-text facts (non-structured) become the interaction-history log.
+      const freeText = facts.filter((f) => !f.attribute);
+      const interactionHistory = freeText
+        .slice(0, 8)
+        .map((f) => `- ${f.fact}`)
+        .join("\n");
+
+      // Current structured claims become the key-decisions / known-state list.
+      const claims = this.getCurrentClaims(entityId);
+      const keyDecisions = claims
+        .map((c) => `- ${c.attribute}: ${c.value}`)
+        .join("\n");
+
+      const identityParts: string[] = [`${entity.name} (${entity.type})`];
+      if (entity.summary) identityParts.push(entity.summary);
+      if (entity.source) identityParts.push(`Source: ${entity.source}`);
+      const identity = identityParts.join("\n");
+
+      const data: EntityMarkdownData = {
+        identity,
+        // Preserve human-authored sections; SQLite has no equivalent fields.
+        preferences: existing?.preferences ?? "",
+        interactionHistory,
+        keyDecisions,
+        notes: existing?.notes ?? "",
+      };
+
+      this.markdown.writeEntityMd(entityId, data, entity.name);
+    } catch (err) {
+      console.warn(
+        `[EntityMemory] syncToMarkdown failed for ${entityId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
   // ── Merge ─────────────────────────────────────────────────────────────────
