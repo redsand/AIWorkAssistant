@@ -1,0 +1,27 @@
+import { FastifyInstance } from "fastify";
+import { z } from "zod";
+import { jitbitSyncService } from "../sync/jitbit-sync-service";
+
+const jitbitSyncInputSchema = z.object({
+  days: z.number().int().min(1).max(90).optional(),
+  categoryId: z.number().int().optional(),
+  companyId: z.number().int().optional(),
+  maxItems: z.number().int().min(1).max(100).optional(),
+});
+
+export async function jitbitSyncRoutes(fastify: FastifyInstance) {
+  fastify.post("/api/sync/jitbit", async (request, reply) => {
+    const parsed = jitbitSyncInputSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: "Validation failed",
+        details: parsed.error.issues,
+      });
+    }
+    return jitbitSyncService.syncFromJitbit(parsed.data);
+  });
+
+  fastify.get("/api/sync/jitbit/status", async () => {
+    return { syncedCount: jitbitSyncService.getSyncedCount() };
+  });
+}
