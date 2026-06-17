@@ -620,6 +620,7 @@ async function handleJiraCloseIssue(
       ],
       riskLevel: "high",
       paramsPreview: { key: params.key, comment: params.comment },
+      warnings: ["Closing a Jira issue may be difficult to reverse. Consider using dryRun first."],
     }) };
   }
   if (!jiraClient.isConfigured()) {
@@ -9060,6 +9061,20 @@ async function handleWorkItemsUpdate(
   params: Record<string, unknown>,
   _userId: string,
 ): Promise<ToolCallResult> {
+  if (params.dryRun === true) {
+    return { success: true, dryRun: true, data: dryRunResult({
+      toolName: "work_items.update",
+      summary: `Would update work item ${params.id}`,
+      targetSystem: "work_items",
+      changes: [
+        ...(params.title ? [{ field: "title" as const, to: params.title as string, description: "Update title" }] : []),
+        ...(params.status ? [{ field: "status" as const, to: params.status as string, description: "Update status" }] : []),
+        ...(params.priority ? [{ field: "priority" as const, to: params.priority as string, description: "Update priority" }] : []),
+      ],
+      riskLevel: "medium",
+      paramsPreview: { id: params.id, title: params.title, status: params.status, priority: params.priority },
+    }) };
+  }
   try {
     const id = params.id as string;
     if (!id) return { success: false, error: "id is required" };
