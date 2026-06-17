@@ -59,6 +59,8 @@ import { agentMemory } from "../memory/agent-memory";
 import { createMemoryManageHandler } from "./handlers/memory-manage";
 import { skillManager } from "../skills/skill-manager";
 import { createSkillManageHandler } from "./handlers/skill-manage";
+import { SkillHub } from "../skills/skill-hub";
+import { createSkillHubHandler } from "./handlers/skill-hub";
 import { soulManager } from "../memory/soul-manager";
 import { createSoulManageHandler } from "./handlers/soul-manage";
 import { createSessionSearchHandler } from "./handlers/session-search";
@@ -2431,6 +2433,9 @@ async function handleUpdateEntityMd(
 
 const handleMemoryManage = createMemoryManageHandler(agentMemory);
 const handleSkillManage = createSkillManageHandler(skillManager);
+const handleSkillHub = createSkillHubHandler(
+  new SkillHub({ publisher: githubClient }),
+);
 const handleSoulManage = createSoulManageHandler(soulManager);
 
 async function handleCronManage(
@@ -9957,6 +9962,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "memory.update_entity_md": handleUpdateEntityMd,
   "memory.manage": handleMemoryManage,
   "skill.manage": handleSkillManage,
+  "skill.hub": handleSkillHub,
   "soul.manage": handleSoulManage,
   "profile.switch": handleProfileSwitch,
   "profile.list": handleProfileList,
@@ -10022,6 +10028,7 @@ const SYSTEM_TOOLS = new Set([
   "agent.get_aicoder_status",
   "memory.manage",
   "skill.manage",
+  "skill.hub",
   "profile.switch",
   "profile.list",
   "cron.manage",

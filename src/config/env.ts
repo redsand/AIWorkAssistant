@@ -135,6 +135,13 @@ const envSchema = z.object({
 
   // Agent Skills (SKILL.md)
   SKILLS_PATH: z.string().default(""),
+  // Community skill hub registry — raw base URL of the GitHub repo holding
+  // index.json and skills/<category>/<name>/SKILL.md.
+  SKILLS_HUB_URL: z
+    .string()
+    .default(
+      "https://raw.githubusercontent.com/redsand/aiworkassistant-skills/main",
+    ),
 
   // Agent Profiles
   DEFAULT_PROFILE: z.string().default("default"),

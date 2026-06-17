@@ -9,7 +9,10 @@ import type {
   SkillSummary,
   SkillCreateParams,
   SkillManageResult,
+  SkillManifest,
+  PublishResult,
 } from "./skill-types";
+import { SkillHub } from "./skill-hub";
 
 const VALID_SEGMENT_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
@@ -35,30 +38,30 @@ function resolveUnderBase(basePath: string, relativePath: string): string {
   return resolved;
 }
 
+export function resolveSkillsBasePath(): string {
+  if (process.env.SKILLS_PATH) {
+    return process.env.SKILLS_PATH;
+  }
+
+  if (process.env.VITEST) {
+    return path.join(
+      os.tmpdir(),
+      "ai-assist-tim-vitest-skills",
+      `${process.env.VITEST_WORKER_ID || "worker"}-${process.pid}`,
+    );
+  }
+
+  return resolvePath("skills");
+}
+
 export class SkillManager {
   private basePath: string;
 
   constructor(basePath?: string) {
-    this.basePath = basePath ?? this.resolveBasePath();
+    this.basePath = basePath ?? resolveSkillsBasePath();
     if (!fs.existsSync(this.basePath)) {
       fs.mkdirSync(this.basePath, { recursive: true });
     }
-  }
-
-  private resolveBasePath(): string {
-    if (process.env.SKILLS_PATH) {
-      return process.env.SKILLS_PATH;
-    }
-
-    if (process.env.VITEST) {
-      return path.join(
-        os.tmpdir(),
-        "ai-assist-tim-vitest-skills",
-        `${process.env.VITEST_WORKER_ID || "worker"}-${process.pid}`,
-      );
-    }
-
-    return resolvePath("skills");
   }
 
   create(params: SkillCreateParams): SkillManageResult {
@@ -339,6 +342,45 @@ export class SkillManager {
 
   getSkillsBasePath(): string {
     return this.basePath;
+  }
+
+  private hub(): SkillHub {
+    return new SkillHub({ skillsBasePath: this.basePath });
+  }
+
+  /** Download a hub skill into quarantine and return the quarantined Skill. */
+  async installFromHub(manifest: SkillManifest): Promise<Skill> {
+    const result = await this.hub().installFromManifest(manifest);
+    if (!result.success || !result.quarantinePath) {
+      throw new Error(result.error || `Failed to install '${manifest.name}'`);
+    }
+    const filePath = path.join(this.basePath, result.quarantinePath);
+    const content = fs.readFileSync(filePath, "utf-8");
+    const fm = parseFrontmatter(content);
+    if (!fm) {
+      throw new Error(`Quarantined skill '${manifest.name}' has invalid frontmatter`);
+    }
+    return { frontmatter: fm, body: extractBody(content), filePath };
+  }
+
+  /** Promote a quarantined skill to active skills and return the loaded Skill. */
+  async promoteFromQuarantine(name: string): Promise<Skill> {
+    const hub = this.hub();
+    await hub.promote(name);
+    const entry = hub.readIndex().skills.find((s) => s.name === name);
+    if (!entry?.promotedPath) {
+      throw new Error(`Skill '${name}' was not promoted`);
+    }
+    const skill = this.loadFull(entry.promotedPath);
+    if (!skill) {
+      throw new Error(`Promoted skill '${name}' could not be loaded`);
+    }
+    return skill;
+  }
+
+  /** Package a local skill and publish it to the hub registry. */
+  async publishToHub(localPath: string): Promise<PublishResult> {
+    return this.hub().publish(localPath);
   }
 
   getSummariesText(): string {

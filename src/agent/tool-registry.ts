@@ -3439,6 +3439,34 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "medium",
   },
   {
+    name: "skill.hub",
+    description:
+      "Discover, install, and share skills via the community skill hub. Use 'search' to browse the registry, 'install' to download a skill into security quarantine (never auto-loaded), 'promote' to activate a quarantined skill after review, 'list' to see hub-installed skills, 'remove' to delete one, or 'publish' to package a local skill and upload it to the hub. Installed skills are quarantined first so their contents can be reviewed before activation.",
+    params: {
+      action: {
+        type: "string",
+        description:
+          "Action: search, install, promote, publish, list, remove",
+        required: true,
+      },
+      query: {
+        type: "string",
+        description: "Search query (for search)",
+      },
+      name: {
+        type: "string",
+        description: "Skill name (for install/promote/remove)",
+      },
+      local_path: {
+        type: "string",
+        description:
+          "Path to a local skill, e.g. 'debugging/fix-auth/SKILL.md' (for publish)",
+      },
+    },
+    actionType: "skill.hub",
+    riskLevel: "medium",
+  },
+  {
     name: "soul.manage",
     description:
       "View, edit, or reset the agent's identity (SOUL.md). Use 'view' to read the current identity, 'edit' to update a specific section (Identity, Style, Avoid, Defaults), 'reset' to restore defaults, or 'personality' to apply a temporary persona overlay for the session. The identity is loaded first in every context packet.",
