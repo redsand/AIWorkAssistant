@@ -22,6 +22,12 @@ class AuditLogger {
   }
 
   async log(entry: AuditEntry): Promise<void> {
+    // Skip all I/O and console output under test. Callers fire this as
+    // fire-and-forget (`void auditLogger.log(...)`), so any async file write or
+    // console output here resolves after the synchronous test has finished and
+    // races vitest worker teardown ("Closing rpc while onUserConsoleLog was pending").
+    if (process.env.VITEST || env.NODE_ENV === "test") return;
+
     const logLine = JSON.stringify(entry) + "\n";
 
     try {

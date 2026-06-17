@@ -135,6 +135,21 @@ const envSchema = z.object({
 
   // Agent Skills (SKILL.md)
   SKILLS_PATH: z.string().default(""),
+  // Community skill hub registry — raw base URL of the GitHub repo holding
+  // index.json and skills/<category>/<name>/SKILL.md.
+  SKILLS_HUB_URL: z
+    .string()
+    .default(
+      "https://raw.githubusercontent.com/redsand/aiworkassistant-skills/main",
+    ),
+  // Gate for pushing skills to the shared community registry. Off by default so
+  // an agent cannot publish to the public repo without an explicit opt-in.
+  SKILLS_HUB_PUBLISH_ENABLED: z
+    .string()
+    .default("false")
+    .transform((s) => s === "true"),
+  // Timeout (ms) for hub HTTP fetches so a slow/malicious server cannot hang.
+  SKILLS_HUB_TIMEOUT_MS: z.coerce.number().default(15000),
 
   // Agent Profiles
   DEFAULT_PROFILE: z.string().default("default"),
@@ -563,7 +578,7 @@ const PROFILE_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
  * "profiles", ".", "memories") collapses to HERMES_HOME/profiles/memories,
  * escaping the per-profile boundary.
  */
-function safeProfileName(requested: string): string {
+export function safeProfileName(requested: string): string {
   if (
     !PROFILE_NAME_PATTERN.test(requested) ||
     requested === "." ||
