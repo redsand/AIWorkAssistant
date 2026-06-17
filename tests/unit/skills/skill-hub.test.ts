@@ -221,6 +221,56 @@ describe("SkillHub", () => {
       expect(result.success).toBe(false);
       expect(result.error).toMatch(/Failed to download/);
     });
+
+    it("refuses a manifest with no checksum (mandatory integrity)", async () => {
+      const manifest = manifestFor(SKILL_BODY);
+      manifest.checksum = "";
+      const index = { skills: [manifest] };
+      const h = hub({ fetchImpl: makeFetch({ index, skillBody: SKILL_BODY }) });
+
+      const result = await h.install("fix-auth");
+      expect(result.success).toBe(false);
+      expect(result.checksumVerified).toBe(false);
+      expect(result.error).toMatch(/missing a checksum/);
+      expect(
+        fs.existsSync(path.join(baseDir, ".hub", "quarantine", "fix-auth")),
+      ).toBe(false);
+    });
+
+    it("refuses a downloadUrl on a different origin (SSRF guard)", async () => {
+      const manifest = manifestFor(SKILL_BODY);
+      manifest.downloadUrl = "https://evil.example/skills/debugging/fix-auth/SKILL.md";
+      const index = { skills: [manifest] };
+      const fetchImpl = makeFetch({ index, skillBody: SKILL_BODY });
+      const h = hub({ fetchImpl });
+
+      const result = await h.install("fix-auth");
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/must be under hub URL/);
+      // The off-origin URL must never be fetched.
+      expect(fetchImpl).not.toHaveBeenCalledWith(manifest.downloadUrl);
+    });
+
+    it("refuses a downloadUrl that escapes the hub path prefix", async () => {
+      const manifest = manifestFor(SKILL_BODY);
+      manifest.downloadUrl = "https://hub.example/other/SKILL.md";
+      const index = { skills: [manifest] };
+      const h = hub({ fetchImpl: makeFetch({ index, skillBody: SKILL_BODY }) });
+
+      const result = await h.install("fix-auth");
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/must be under hub URL/);
+    });
+
+    it("accepts a downloadUrl under the hub origin and path", async () => {
+      const manifest = manifestFor(SKILL_BODY); // downloadUrl is `${HUB_URL}/skills/...`
+      const index = { skills: [manifest] };
+      const h = hub({ fetchImpl: makeFetch({ index, skillBody: SKILL_BODY }) });
+
+      const result = await h.install("fix-auth");
+      expect(result.success).toBe(true);
+      expect(result.checksumVerified).toBe(true);
+    });
   });
 
   // ── promote ───────────────────────────────────────────────────────
@@ -357,6 +407,30 @@ describe("SkillHub", () => {
       const result = await h.publish("nope/missing/SKILL.md");
       expect(result.success).toBe(false);
       expect(result.error).toMatch(/Skill not found/);
+    });
+
+    it("rejects an absolute local_path (arbitrary file read)", async () => {
+      const outside = path.join(os.tmpdir(), `outside-${Date.now()}.md`);
+      fs.writeFileSync(outside, SKILL_BODY, "utf-8");
+      try {
+        const publisher = mockPublisher();
+        const h = hub({ publisher });
+        const result = await h.publish(outside);
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/escapes the skills directory/);
+        expect(publisher.created).toEqual({});
+      } finally {
+        fs.rmSync(outside, { force: true });
+      }
+    });
+
+    it("rejects a traversal local_path that escapes the base", async () => {
+      const publisher = mockPublisher();
+      const h = hub({ publisher });
+      const result = await h.publish("../../../etc/passwd");
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/escapes the skills directory/);
+      expect(publisher.created).toEqual({});
     });
 
     it("fails when no publisher is configured", async () => {

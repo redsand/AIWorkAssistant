@@ -113,6 +113,34 @@ export class SkillHub {
     return path.join(this.hubDir, "index.json");
   }
 
+  /** Resolve a relative path under skillsBasePath, rejecting any escape. */
+  private resolveUnderBase(relativePath: string): string {
+    const base = path.resolve(this.skillsBasePath);
+    const resolved = path.resolve(base, relativePath);
+    if (resolved !== base && !resolved.startsWith(base + path.sep)) {
+      throw new Error("local_path escapes the skills directory");
+    }
+    return resolved;
+  }
+
+  /** Ensure a download URL shares the configured hub's origin and path prefix. */
+  private assertHubOrigin(url: string): void {
+    let target: URL;
+    let base: URL;
+    try {
+      target = new URL(url);
+      base = new URL(this.hubUrl);
+    } catch {
+      throw new Error(`Invalid download URL '${url}'`);
+    }
+    const basePath = base.pathname.replace(/\/+$/, "");
+    if (target.origin !== base.origin || !target.pathname.startsWith(basePath)) {
+      throw new Error(
+        `Refusing to download from '${url}': must be under hub URL '${this.hubUrl}'`,
+      );
+    }
+  }
+
   // ── Registry (remote) ─────────────────────────────────────────────
 
   /** Fetch the registry index and filter manifests locally. */
@@ -194,9 +222,28 @@ export class SkillHub {
       return { success: false, name, error: (e as Error).message };
     }
 
+    // Integrity is mandatory: a manifest without a checksum defeats the
+    // quarantine guarantee, so refuse it outright.
+    if (!manifest.checksum) {
+      return {
+        success: false,
+        name,
+        checksumVerified: false,
+        error: `Refusing to install '${name}': manifest is missing a checksum`,
+      };
+    }
+
     const url =
       manifest.downloadUrl ||
       `${this.hubUrl}/skills/${manifest.category}/${name}/SKILL.md`;
+
+    // Only download from the configured hub origin. A compromised registry
+    // could otherwise point downloadUrl at an arbitrary host (SSRF).
+    try {
+      this.assertHubOrigin(url);
+    } catch (e) {
+      return { success: false, name, error: (e as Error).message };
+    }
 
     let body: string;
     try {
@@ -214,8 +261,7 @@ export class SkillHub {
     }
 
     const actual = sha256(body);
-    const checksumVerified = !manifest.checksum || actual === manifest.checksum;
-    if (!checksumVerified) {
+    if (actual !== manifest.checksum) {
       return {
         success: false,
         name,
@@ -233,7 +279,6 @@ export class SkillHub {
 
     this.upsertIndexEntry({
       ...manifest,
-      checksum: manifest.checksum || actual,
       status: "quarantined",
       installedAt: new Date().toISOString(),
     });
@@ -242,7 +287,7 @@ export class SkillHub {
       success: true,
       name,
       quarantinePath: path.join(".hub", "quarantine", name, "SKILL.md"),
-      manifest: { ...manifest, checksum: manifest.checksum || actual },
+      manifest,
       checksumVerified: true,
       preview: body,
     };
@@ -295,12 +340,17 @@ export class SkillHub {
       return { success: false, name: localPath, error: "No hub publisher configured" };
     }
 
-    let resolved = localPath;
-    if (!path.isAbsolute(resolved)) {
-      resolved = path.join(this.skillsBasePath, localPath);
-    }
-    if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
-      resolved = path.join(resolved, "SKILL.md");
+    // Constrain the path to the skills directory. path.resolve collapses any
+    // "..", absolute, or symlink-ish input, and the containment check then
+    // rejects anything that escapes — preventing arbitrary file reads.
+    let resolved: string;
+    try {
+      resolved = this.resolveUnderBase(localPath);
+      if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+        resolved = this.resolveUnderBase(path.join(localPath, "SKILL.md"));
+      }
+    } catch (e) {
+      return { success: false, name: localPath, error: (e as Error).message };
     }
     if (!fs.existsSync(resolved)) {
       return { success: false, name: localPath, error: `Skill not found at ${localPath}` };

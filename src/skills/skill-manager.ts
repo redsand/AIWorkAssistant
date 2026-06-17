@@ -13,6 +13,7 @@ import type {
   PublishResult,
 } from "./skill-types";
 import { SkillHub } from "./skill-hub";
+import { githubClient } from "../integrations/github/github-client";
 
 const VALID_SEGMENT_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
@@ -345,7 +346,7 @@ export class SkillManager {
   }
 
   private hub(): SkillHub {
-    return new SkillHub({ skillsBasePath: this.basePath });
+    return new SkillHub({ skillsBasePath: this.basePath, publisher: githubClient });
   }
 
   /** Download a hub skill into quarantine and return the quarantined Skill. */
