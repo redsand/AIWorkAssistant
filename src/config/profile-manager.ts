@@ -107,8 +107,10 @@ export class ProfileManager {
    * orphan an existing install's data on upgrade. When the default profile is
    * first scaffolded, copy any legacy directories in so nothing is lost.
    *
-   * Copies (never moves) and never overwrites a file that already exists in the
-   * destination, so it is safe to re-run and leaves the originals untouched.
+   * Copies (never moves) the originals so a downgrade still finds its data.
+   * Idempotent: a destination that already holds files is treated as
+   * already-migrated (or user-owned) and skipped entirely, so repeated runs
+   * never re-copy and cannot resurrect files the user has since deleted.
    */
   private migrateLegacyData(defaultDir: string): void {
     const legacyRoot = path.dirname(this.profilesRoot); // HERMES_HOME
@@ -116,6 +118,10 @@ export class ProfileManager {
       const src = path.join(legacyRoot, sub);
       const dest = path.join(defaultDir, sub);
       if (!fs.existsSync(src) || !fs.statSync(src).isDirectory()) continue;
+      // scaffold() pre-creates an empty dest dir, so existence alone is not a
+      // migration signal — only skip when dest already contains files. This is
+      // the idempotency guard: once data is copied in, a re-run is a no-op.
+      if (this.dirHasFiles(dest)) continue;
       try {
         fs.cpSync(src, dest, {
           recursive: true,
@@ -133,6 +139,25 @@ export class ProfileManager {
         );
       }
     }
+  }
+
+  /** True if a directory exists and contains at least one entry (recursively). */
+  private dirHasFiles(dir: string): boolean {
+    if (!fs.existsSync(dir)) return false;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (this.dirHasFiles(path.join(dir, entry.name))) return true;
+      } else {
+        return true;
+      }
+    }
+    return false;
   }
 
   private readMeta(dir: string): { createdAt: string; lastUsedAt: string } {

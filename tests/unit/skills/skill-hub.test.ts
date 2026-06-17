@@ -825,6 +825,36 @@ describe("handleSkillHub", () => {
       expect(result.success).toBe(true);
       expect(store.publish).toHaveBeenCalledWith("debugging/fix-auth/SKILL.md");
     });
+
+    it("rejects an absolute local_path before forwarding to the hub", async () => {
+      const result = await handleSkillHub({
+        action: "publish",
+        local_path: "/etc/passwd",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/relative path within the skills directory/);
+      expect(store.publish).not.toHaveBeenCalled();
+    });
+
+    it("rejects a traversal local_path before forwarding to the hub", async () => {
+      const result = await handleSkillHub({
+        action: "publish",
+        local_path: "../../../etc/passwd",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/relative path within the skills directory/);
+      expect(store.publish).not.toHaveBeenCalled();
+    });
+
+    it("rejects a traversal segment embedded mid-path", async () => {
+      const result = await handleSkillHub({
+        action: "publish",
+        local_path: "debugging/../../secret/SKILL.md",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/relative path within the skills directory/);
+      expect(store.publish).not.toHaveBeenCalled();
+    });
   });
 
   describe("list", () => {

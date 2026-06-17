@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import path from "path";
 import type {
   HubSearchResult,
   InstallResult,
@@ -39,6 +40,23 @@ const VALID_ACTIONS = [
   "list",
   "remove",
 ] as const;
+
+/**
+ * Reject a publish path that is absolute or contains a ".." segment before it
+ * ever reaches the hub. SkillHub.publish() re-validates against the skills base
+ * with realpath resolution, but rejecting the obvious escapes here keeps the
+ * authoritative check from being the only line of defense (and avoids touching
+ * the filesystem for plainly hostile input).
+ */
+function isUnsafeLocalPath(localPath: string): boolean {
+  if (path.isAbsolute(localPath)) return true;
+  // Normalize so "a/../../etc" style inputs collapse before inspection, then
+  // reject any remaining traversal segment on either separator.
+  const normalized = path.normalize(localPath);
+  return normalized
+    .split(/[\\/]/)
+    .some((segment) => segment === "..");
+}
 
 export interface SkillHubStore {
   search(query: string): Promise<HubSearchResult[]>;
@@ -162,6 +180,13 @@ async function dispatch(
         typeof params.local_path === "string" ? params.local_path : "";
       if (!localPath) {
         return { success: false, error: "local_path is required for publish" };
+      }
+      if (isUnsafeLocalPath(localPath)) {
+        return {
+          success: false,
+          error:
+            "local_path must be a relative path within the skills directory (no absolute paths or '..' segments)",
+        };
       }
       const result = await hub.publish(localPath);
       if (!result.success) {

@@ -578,7 +578,7 @@ const PROFILE_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
  * "profiles", ".", "memories") collapses to HERMES_HOME/profiles/memories,
  * escaping the per-profile boundary.
  */
-function safeProfileName(requested: string): string {
+export function safeProfileName(requested: string): string {
   if (
     !PROFILE_NAME_PATTERN.test(requested) ||
     requested === "." ||

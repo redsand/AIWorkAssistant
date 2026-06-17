@@ -84,6 +84,35 @@ describe("config/ProfileManager", () => {
       expect(fs.existsSync(path.join(legacyMem, "MEMORY.md"))).toBe(true);
     });
 
+    it("is idempotent: a second migration never re-copies into a populated profile", () => {
+      const legacyMem = path.join(rootDir, "memories");
+      fs.mkdirSync(legacyMem, { recursive: true });
+      fs.writeFileSync(path.join(legacyMem, "MEMORY.md"), "legacy fact", "utf-8");
+
+      const pm = makeManager();
+      const active = pm.getActive(); // first run migrates
+      const migratedMem = path.join(active.path, "memories");
+      expect(
+        fs.readFileSync(path.join(migratedMem, "MEMORY.md"), "utf-8"),
+      ).toContain("legacy fact");
+
+      // Add a NEW legacy file, then run migration again. Because the default
+      // profile's memories dir is already populated, the run must be a no-op —
+      // the new legacy file must NOT be copied in (and nothing duplicated).
+      fs.writeFileSync(path.join(legacyMem, "USER.md"), "added later", "utf-8");
+      const before = fs.readdirSync(migratedMem).sort();
+
+      // migrateLegacyData is private; invoke it directly to prove idempotency
+      // independent of the getActive() dir-existence guard.
+      (pm as unknown as { migrateLegacyData(dir: string): void }).migrateLegacyData(
+        active.path,
+      );
+
+      const after = fs.readdirSync(migratedMem).sort();
+      expect(after).toEqual(before);
+      expect(fs.existsSync(path.join(migratedMem, "USER.md"))).toBe(false);
+    });
+
     it("does not overwrite existing default-profile files during migration", () => {
       const legacyMem = path.join(rootDir, "memories");
       fs.mkdirSync(legacyMem, { recursive: true });
