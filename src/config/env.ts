@@ -541,11 +541,18 @@ export const env = loadEnv();
  */
 export function resolvePath(relativePath: string): string {
   const home = process.env.HERMES_HOME || env.HERMES_HOME || "data";
-  const profile =
+  const requested =
     process.env.ACTIVE_PROFILE ||
     readActiveProfileName(home) ||
     env.ACTIVE_PROFILE ||
     "default";
+  // The profile name comes from an env var or the on-disk `active` marker, so
+  // it is untrusted input. Reject anything that isn't a plain identifier so a
+  // value like "../other" can't escape the profile root and read or clobber a
+  // different profile's state, which would silently defeat isolation.
+  const profile = /^[A-Za-z0-9._-]+$/.test(requested) && requested !== ".."
+    ? requested
+    : "default";
   return path.join(home, "profiles", profile, relativePath);
 }
 
