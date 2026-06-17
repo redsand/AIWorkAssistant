@@ -21,7 +21,11 @@ yarn-debug.log*
 yarn-error.log*
 
 # Runtime
-data/
+data/*
+# Track committed eval fixtures while ignoring generated reports/output
+!data/eval/
+data/eval/*
+!data/eval/graph-queries.json
 *.db
 *.db-shm
 *.db-wal
