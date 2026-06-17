@@ -112,6 +112,7 @@ vi.mock("../../config/env", () => ({
     AUDIT_LOG_FILE: "/dev/null",
     AUDIT_LOG_LEVEL: "off",
   },
+  resolvePath: (rel: string) => rel,
 }));
 vi.mock("../provider-settings", () => ({
   providerSettings: { get: vi.fn() },

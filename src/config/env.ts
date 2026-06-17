@@ -1,4 +1,6 @@
 import { config } from "dotenv";
+import fs from "fs";
+import path from "path";
 import { z } from "zod";
 
 // Load environment variables from .env file (don't override existing env vars)
@@ -137,6 +139,11 @@ const envSchema = z.object({
   // Agent Profiles
   DEFAULT_PROFILE: z.string().default("default"),
   PROFILES_PATH: z.string().default("data/profiles"),
+
+  // Profile isolation — root for all profile-scoped state and the active profile.
+  // resolvePath() composes these into HERMES_HOME/profiles/{ACTIVE_PROFILE}/<relative>.
+  HERMES_HOME: z.string().default("data"),
+  ACTIVE_PROFILE: z.string().default("default"),
 
   // Audit
   AUDIT_LOG_FILE: z.string().default("./logs/audit.log"),
@@ -515,3 +522,47 @@ export function loadEnv(): Env {
 }
 
 export const env = loadEnv();
+
+/**
+ * Resolve a profile-scoped path. Every subsystem (memory, skills, sessions)
+ * should route file paths through this function instead of hardcoding `data/`,
+ * so that switching the active profile transparently isolates all state.
+ *
+ * Returns `HERMES_HOME/profiles/{ACTIVE_PROFILE}/{relativePath}`.
+ *
+ * Active profile resolution order:
+ *   1. process.env.ACTIVE_PROFILE — runtime override set by the long-running
+ *      server after it loads the active profile.
+ *   2. The `profiles/active` marker file — written by `profile switch`. This is
+ *      what makes CLI commands honor a switch: a one-shot CLI invocation never
+ *      sets the env var, so without reading the marker every CLI command would
+ *      fall back to 'default'.
+ *   3. env.ACTIVE_PROFILE (env schema default) → 'default'.
+ */
+export function resolvePath(relativePath: string): string {
+  const home = process.env.HERMES_HOME || env.HERMES_HOME || "data";
+  const requested =
+    process.env.ACTIVE_PROFILE ||
+    readActiveProfileName(home) ||
+    env.ACTIVE_PROFILE ||
+    "default";
+  // The profile name comes from an env var or the on-disk `active` marker, so
+  // it is untrusted input. Reject anything that isn't a plain identifier so a
+  // value like "../other" can't escape the profile root and read or clobber a
+  // different profile's state, which would silently defeat isolation.
+  const profile = /^[A-Za-z0-9._-]+$/.test(requested) && requested !== ".."
+    ? requested
+    : "default";
+  return path.join(home, "profiles", profile, relativePath);
+}
+
+/** Read the active profile name from `HERMES_HOME/profiles/active`, if present. */
+function readActiveProfileName(home: string): string | undefined {
+  try {
+    const activeFile = path.join(home, "profiles", "active");
+    const name = fs.readFileSync(activeFile, "utf-8").trim();
+    return name || undefined;
+  } catch {
+    return undefined;
+  }
+}

@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
+import { resolvePath } from "../config/env";
 import type {
   Skill,
   SkillFrontmatter,
@@ -57,7 +58,7 @@ export class SkillManager {
       );
     }
 
-    return path.join(process.cwd(), "data", "skills");
+    return resolvePath("skills");
   }
 
   create(params: SkillCreateParams): SkillManageResult {
