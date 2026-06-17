@@ -46,6 +46,7 @@ const PLATFORM_PREFIX_MAP: Record<string, Platform> = {
   product: "cross-platform",
   hawk_ir: "hawk-ir",
   tenable: "tenable",
+  ivanti: "ivanti",
   discover: "cross-platform",
   code_review: "cross-platform",
   ticket_bridge: "cross-platform",
@@ -8444,6 +8445,384 @@ export function getTools(mode: string): Tool[] {
   }
 }
 
+// ── Ivanti Neurons Cloud ─────────────────────────────────────────────────────
+const IVANTI_TOOLS: Tool[] = [
+  // Inventory: unified lookup + raw OData
+  {
+    name: "ivanti.lookup",
+    description:
+      "Unified search across People & Device Inventory. Returns summarized devices and/or people matching query, IP, hostname, email, or username. Use scope=devices or scope=people to narrow.",
+    params: {
+      query: { type: "string", description: "Free-text search across device and person fields", required: false },
+      scope: { type: "string", description: '"all" (default), "devices", or "people"', required: false },
+      ip: { type: "string", description: "Filter devices by IP address", required: false },
+      hostname: { type: "string", description: "Filter devices by hostname or name", required: false },
+      email: { type: "string", description: "Filter people by email", required: false },
+      user: { type: "string", description: "Filter people by username or name", required: false },
+      limit: { type: "number", description: "Max results per entity type (default 50)", required: false },
+      raw: { type: "boolean", description: "Include full vendor records in each result", required: false },
+    },
+    actionType: "ivanti.inventory.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.list_devices",
+    description:
+      "List devices from the People & Device Inventory API. Supports OData $filter, $top, $select, $skip, and $orderby. Set allPages=true to auto-follow pagination.",
+    params: {
+      $filter: { type: "string", description: "OData filter expression", required: false },
+      $top: { type: "number", description: "Page size", required: false },
+      $select: { type: "string", description: "Comma-separated OData select", required: false },
+      $skip: { type: "number", description: "OData skip", required: false },
+      $orderby: { type: "string", description: "OData orderby", required: false },
+      allPages: { type: "boolean", description: "Follow @odata.nextLink until maxItems", required: false },
+    },
+    actionType: "ivanti.inventory.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.get_device",
+    description: "Fetch a device by id, hostname, or name from Ivanti Inventory.",
+    params: {
+      id: { type: "string", description: "Device DiscoveryId", required: false },
+      hostname: { type: "string", description: "Device hostname", required: false },
+      name: { type: "string", description: "Device name", required: false },
+    },
+    actionType: "ivanti.inventory.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.list_people",
+    description:
+      "List people from the People & Device Inventory API. Supports OData $filter, $top, $select, $skip, and $orderby. Set allPages=true to auto-follow pagination.",
+    params: {
+      $filter: { type: "string", description: "OData filter expression", required: false },
+      $top: { type: "number", description: "Page size", required: false },
+      $select: { type: "string", description: "Comma-separated OData select", required: false },
+      $skip: { type: "number", description: "OData skip", required: false },
+      $orderby: { type: "string", description: "OData orderby", required: false },
+      allPages: { type: "boolean", description: "Follow @odata.nextLink until maxItems", required: false },
+    },
+    actionType: "ivanti.inventory.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.get_person",
+    description: "Fetch a person by id, email, username, or name from Ivanti Inventory.",
+    params: {
+      id: { type: "string", description: "Person DiscoveryId", required: false },
+      email: { type: "string", description: "Email address", required: false },
+      user: { type: "string", description: "Username or name", required: false },
+      name: { type: "string", description: "Display name", required: false },
+    },
+    actionType: "ivanti.inventory.read",
+    riskLevel: "low",
+  },
+
+  // Bots
+  {
+    name: "ivanti.bots.list_on_demand",
+    description: "List all on-demand Neurons Bots available in the tenant.",
+    params: {},
+    actionType: "ivanti.bots.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.bots.get_inputs",
+    description: "Get the inputs required to run a specific Neurons Bot.",
+    params: {
+      botDefinitionId: { type: "string", description: "Bot definition ID", required: true },
+    },
+    actionType: "ivanti.bots.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.bots.run",
+    description:
+      "Run an on-demand Neurons Bot against one or more agents. This executes automation on target devices — requires approval by default.",
+    params: {
+      botDefinitionId: { type: "string", description: "Bot definition ID", required: true },
+      agentIds: { type: "array", description: "Array of agent/device IDs", required: true },
+      inputs: { type: "array", description: "Array of { inputId, inputValue } objects", required: false },
+    },
+    actionType: "ivanti.bots.execute",
+    riskLevel: "high",
+  },
+  {
+    name: "ivanti.bots.get_results",
+    description: "Get the results for a Neurons Bot invocation.",
+    params: {
+      workflowInvocationId: { type: "string", description: "Invocation ID returned by ivanti.bots.run", required: true },
+    },
+    actionType: "ivanti.bots.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.bots.get_log_messages",
+    description: "Get per-device log messages for a Neurons Bot invocation.",
+    params: {
+      workflowInvocationId: { type: "string", description: "Invocation ID", required: true },
+      deviceId: { type: "string", description: "Ivanti device ID", required: true },
+    },
+    actionType: "ivanti.bots.read",
+    riskLevel: "low",
+  },
+
+  // Patch Management
+  {
+    name: "ivanti.patch.list_cves",
+    description: "Query CVE records from Ivanti Patch Management.",
+    params: {
+      Filter: { type: "string", description: "Filter expression", required: false },
+      OrderBy: { type: "string", description: "Sort expression", required: false },
+      PageNumber: { type: "number", description: "Page number", required: false },
+      PageSize: { type: "number", description: "Page size (max 150)", required: false },
+    },
+    actionType: "ivanti.patch.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.patch.list_patches",
+    description:
+      "Query patch metadata from Ivanti Patch Management. Set allPages=true to page through every result.",
+    params: {
+      Filter: { type: "string", description: "Filter expression", required: false },
+      OrderBy: { type: "string", description: "Sort expression", required: false },
+      PageNumber: { type: "number", description: "Page number", required: false },
+      PageSize: { type: "number", description: "Page size (max 150)", required: false },
+      allPages: { type: "boolean", description: "Page through all results", required: false },
+    },
+    actionType: "ivanti.patch.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.patch.list_notifications",
+    description: "Query security bulletins / notifications from Ivanti Patch Management.",
+    params: {
+      Filter: { type: "string", description: "Filter expression", required: false },
+      OrderBy: { type: "string", description: "Sort expression", required: false },
+      PageNumber: { type: "number", description: "Page number", required: false },
+      PageSize: { type: "number", description: "Page size (max 150)", required: false },
+    },
+    actionType: "ivanti.patch.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.patch.list_endpoint_vulnerabilities",
+    description: "Query endpoint vulnerability overview from Ivanti Patch Management.",
+    params: {
+      Filter: { type: "string", description: "Filter expression", required: false },
+      OrderBy: { type: "string", description: "Sort expression", required: false },
+      PageNumber: { type: "number", description: "Page number", required: false },
+      PageSize: { type: "number", description: "Page size (max 150)", required: false },
+    },
+    actionType: "ivanti.patch.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.patch.list_deployment_history",
+    description: "Query patch deployment history from Ivanti Patch Management.",
+    params: {
+      Filter: { type: "string", description: "Filter expression", required: false },
+      OrderBy: { type: "string", description: "Sort expression", required: false },
+      PageNumber: { type: "number", description: "Page number", required: false },
+      PageSize: { type: "number", description: "Page size (max 150)", required: false },
+    },
+    actionType: "ivanti.patch.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.patch.list_patch_groups",
+    description: "Query patch groups from Ivanti Patch Management.",
+    params: {
+      Filter: { type: "string", description: "Filter expression", required: false },
+      OrderBy: { type: "string", description: "Sort expression", required: false },
+      PageNumber: { type: "number", description: "Page number", required: false },
+      PageSize: { type: "number", description: "Page size (max 150)", required: false },
+      allPages: { type: "boolean", description: "Page through all results", required: false },
+    },
+    actionType: "ivanti.patch.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.patch.create_patch_group_from_cves",
+    description: "Convert CVE IDs into an Ivanti patch group.",
+    params: {
+      cveIds: { type: "array", description: "Array of CVE IDs", required: true },
+      patchGroupName: { type: "string", description: "Optional name for the new patch group", required: false },
+      dataUpdateErrorPolicy: { type: "string", description: "Omit | Include | Fail", required: false },
+      onBehalfOf: { type: "string", description: "UPN/email for the x-on-behalf-of header", required: false },
+    },
+    actionType: "ivanti.patch.write",
+    riskLevel: "medium",
+  },
+  {
+    name: "ivanti.patch.update_patch_group_from_cves",
+    description: "Update an existing Ivanti patch group from CVE IDs.",
+    params: {
+      patchGroupId: { type: "string", description: "Patch group ID", required: true },
+      cveIds: { type: "array", description: "Array of CVE IDs", required: true },
+      patchGroupName: { type: "string", description: "Optional name update", required: false },
+      dataUpdateErrorPolicy: { type: "string", description: "Omit | Include | Fail", required: false },
+      onBehalfOf: { type: "string", description: "UPN/email for the x-on-behalf-of header", required: false },
+    },
+    actionType: "ivanti.patch.write",
+    riskLevel: "medium",
+  },
+  {
+    name: "ivanti.patch.get_patch_group_mapping",
+    description: "Get the CVE-to-patch mapping for an Ivanti patch group.",
+    params: {
+      patchGroupId: { type: "string", description: "Patch group ID", required: true },
+    },
+    actionType: "ivanti.patch.read",
+    riskLevel: "low",
+  },
+
+  // App Distribution
+  {
+    name: "ivanti.appdist.list_catalog",
+    description: "List software catalog entries from Ivanti App Distribution.",
+    params: {
+      $filter: { type: "string", description: "OData filter expression", required: false },
+      $top: { type: "number", description: "Page size", required: false },
+      $select: { type: "string", description: "Comma-separated OData select", required: false },
+      $skip: { type: "number", description: "OData skip", required: false },
+      $orderby: { type: "string", description: "OData orderby", required: false },
+      allPages: { type: "boolean", description: "Follow @odata.nextLink until maxItems", required: false },
+    },
+    actionType: "ivanti.appdist.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.appdist.list_device_package_status",
+    description: "List device package deployment status from Ivanti App Distribution.",
+    params: {
+      $filter: { type: "string", description: "OData filter expression", required: false },
+      $top: { type: "number", description: "Page size", required: false },
+      $select: { type: "string", description: "Comma-separated OData select", required: false },
+      $skip: { type: "number", description: "OData skip", required: false },
+      $orderby: { type: "string", description: "OData orderby", required: false },
+      allPages: { type: "boolean", description: "Follow @odata.nextLink until maxItems", required: false },
+    },
+    actionType: "ivanti.appdist.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.appdist.create_catalog",
+    description: "Create a new catalog entry in Ivanti App Distribution.",
+    params: {
+      packageName: { type: "string", description: "Package name", required: true },
+      platform: { type: "string", description: "Platform, e.g. Windows", required: false },
+      version: { type: "string", description: "Version", required: false },
+      publisher: { type: "string", description: "Publisher", required: false },
+      category: { type: "string", description: "Category", required: false },
+      notes: { type: "string", description: "Notes", required: false },
+      showInAnalystView: { type: "boolean", description: "Show in analyst view", required: false },
+    },
+    actionType: "ivanti.appdist.write",
+    riskLevel: "medium",
+  },
+  {
+    name: "ivanti.appdist.update_catalog",
+    description: "Update an existing catalog entry in Ivanti App Distribution.",
+    params: {
+      packageId: { type: "string", description: "Package ID", required: true },
+      packageName: { type: "string", description: "Package name", required: false },
+      platform: { type: "string", description: "Platform", required: false },
+      version: { type: "string", description: "Version", required: false },
+      publisher: { type: "string", description: "Publisher", required: false },
+      category: { type: "string", description: "Category", required: false },
+      notes: { type: "string", description: "Notes", required: false },
+      showInAnalystView: { type: "boolean", description: "Show in analyst view", required: false },
+    },
+    actionType: "ivanti.appdist.write",
+    riskLevel: "medium",
+  },
+  {
+    name: "ivanti.appdist.delete_catalog",
+    description: "Delete a catalog entry (and its revisions/distributions) from Ivanti App Distribution.",
+    params: {
+      packageId: { type: "string", description: "Package ID", required: true },
+    },
+    actionType: "ivanti.appdist.write",
+    riskLevel: "high",
+  },
+  {
+    name: "ivanti.appdist.create_distribution",
+    description: "Create a new software distribution in Ivanti App Distribution.",
+    params: {
+      distributionName: { type: "string", description: "Distribution name", required: true },
+      packageId: { type: "string", description: "Package ID", required: true },
+      revision: { type: "number", description: "Package revision", required: false },
+      platform: { type: "string", description: "Platform", required: false },
+      priority: { type: "number", description: "Priority", required: false },
+      enabled: { type: "boolean", description: "Enabled", required: false },
+      scheduledTime: { type: "string", description: "Scheduled time (ISO 8601)", required: false },
+      targets: { type: "object", description: "{ devices, deviceGroups, ldapGroups }", required: false },
+    },
+    actionType: "ivanti.appdist.write",
+    riskLevel: "medium",
+  },
+  {
+    name: "ivanti.appdist.update_distribution",
+    description: "Update an existing software distribution in Ivanti App Distribution.",
+    params: {
+      distributionId: { type: "string", description: "Distribution ID", required: true },
+      distributionName: { type: "string", description: "Distribution name", required: false },
+      packageId: { type: "string", description: "Package ID", required: false },
+      revision: { type: "number", description: "Package revision", required: false },
+      priority: { type: "number", description: "Priority", required: false },
+      enabled: { type: "boolean", description: "Enabled", required: false },
+      targets: { type: "object", description: "{ devices, deviceGroups, ldapGroups }", required: false },
+    },
+    actionType: "ivanti.appdist.write",
+    riskLevel: "medium",
+  },
+  {
+    name: "ivanti.appdist.get_distribution",
+    description: "Get distributions for a package from Ivanti App Distribution.",
+    params: {
+      packageId: { type: "string", description: "Package ID", required: true },
+    },
+    actionType: "ivanti.appdist.read",
+    riskLevel: "low",
+  },
+  {
+    name: "ivanti.appdist.ondemand_install",
+    description:
+      "Trigger an on-demand install of a package on a specific device via Ivanti App Distribution.",
+    params: {
+      packageId: { type: "string", description: "Package ID", required: true },
+      discoveryId: { type: "string", description: "Device DiscoveryId", required: true },
+      revision: { type: "number", description: "Package revision", required: false },
+      displayName: { type: "string", description: "Display name", required: false },
+    },
+    actionType: "ivanti.appdist.write",
+    riskLevel: "high",
+  },
+
+  // Generic proxy
+  {
+    name: "ivanti.proxy",
+    description:
+      "Generic authenticated proxy to any allowed Ivanti Neurons endpoint. Use only when no specific tool covers the request.",
+    params: {
+      module: {
+        type: "string",
+        description: "inventory, bots, patch, or appdist",
+        required: true,
+      },
+      method: { type: "string", description: "GET, POST, PUT, PATCH, or DELETE", required: true },
+      path: { type: "string", description: "Absolute path under the selected module base URL", required: true },
+      params: { type: "object", description: "Query parameters", required: false },
+      body: { type: "object", description: "Request body", required: false },
+    },
+    actionType: "ivanti.proxy",
+    riskLevel: "medium",
+  },
+];
+
 const TENABLE_REQUEST_PATTERN = /\b(?:tenable|nessus)\b/i;
 const TENABLE_REPORT_REQUEST_PATTERN = /\b(?:report|vulnerab|asset|patch|remediat|monthly|host|severity|critical|high|moderate|low|environment)\b/i;
 
@@ -8630,10 +9009,10 @@ export function getAllToolsForMode(mode: string, sessionId?: string): Tool[] {
   let tools: Tool[];
   switch (mode) {
     case AGENT_MODES.PRODUCTIVITY:
-      tools = [...PROFILE_TOOLS, ...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...GATEWAY_TOOLS, ...PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
+      tools = [...PROFILE_TOOLS, ...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...GATEWAY_TOOLS, ...PRODUCTIVITY_TOOLS, ...IVANTI_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
       break;
     case AGENT_MODES.ENGINEERING:
-      tools = [...PROFILE_TOOLS, ...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...GATEWAY_TOOLS, ...ENGINEERING_TOOLS, ...PRODUCTIVITY_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
+      tools = [...PROFILE_TOOLS, ...AGENT_RUN_TOOLS, ...CRON_TOOLS, ...GATEWAY_TOOLS, ...ENGINEERING_TOOLS, ...PRODUCTIVITY_TOOLS, ...IVANTI_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];
       break;
     case AGENT_MODES.MUSICIAN:
       tools = [...PROFILE_TOOLS, ...AGENT_RUN_TOOLS, ...GATEWAY_TOOLS, ...MUSICIAN_TOOLS, DISCOVER_TOOL_META, FETCH_CACHED_TOOL_META];

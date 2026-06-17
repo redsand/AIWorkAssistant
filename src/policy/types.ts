@@ -16,6 +16,7 @@ export type Platform =
   | 'mcp'
   | 'hawk-ir'
   | 'tenable'
+  | 'ivanti'
   | 'cross-platform';
 
 /**

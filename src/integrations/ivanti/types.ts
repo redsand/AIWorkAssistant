@@ -93,7 +93,7 @@ export interface IvantiODataParams {
   $orderby?: string;
 }
 
-export interface IvantiPatchParams {
+export interface IvantiPatchParams extends Record<string, unknown> {
   Filter?: string;
   OrderBy?: string;
   PageNumber?: number;

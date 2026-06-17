@@ -15,6 +15,8 @@ import { productChiefOfStaff } from "../product/product-chief-of-staff";
 import { hawkIrService } from "../integrations/hawk-ir/hawk-ir-service";
 import { tenableCloudService } from "../integrations/tenable-cloud/tenable-cloud-service";
 import type { TenableAgent, TenableAsset, TenableExportStatus } from "../integrations/tenable-cloud/types";
+import { ivantiService } from "../integrations/ivanti/ivanti-service";
+import type { IvantiPatchParams, IvantiDistributionBody } from "../integrations/ivanti/types";
 import { roadmapDatabase } from "../roadmap/database";
 import { auditLogger } from "../audit/logger";
 import { env } from "../config/env";
@@ -7191,6 +7193,22 @@ function tenableConfigCheck(params: Record<string, unknown>): string | null {
   return null;
 }
 
+function ivantiConfigCheck(): string | null {
+  if (!env.IVANTI_ENABLED) {
+    return "Ivanti Neurons integration is disabled. Set IVANTI_ENABLED=true and configure IVANTI_HOST, IVANTI_TENANT_ID_OR_PATH, IVANTI_CLIENT_ID, and IVANTI_CLIENT_SECRET.";
+  }
+  if (!ivantiService.isConfigured()) {
+    return "Ivanti Neurons not configured. Set IVANTI_HOST, IVANTI_TENANT_ID_OR_PATH, IVANTI_CLIENT_ID, and IVANTI_CLIENT_SECRET.";
+  }
+  return null;
+}
+
+function asArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === "string") return value.split(",").map((s) => s.trim()).filter(Boolean);
+  return [];
+}
+
 function tenableSeverityLabel(vuln: any): string {
   const risk = String(vuln?.plugin?.risk_factor ?? "").toLowerCase();
   if (risk) return risk === "medium" ? "moderate" : risk;
@@ -9500,6 +9518,357 @@ async function handleJiraDeleteSprint(
   };
 }
 
+// ── Ivanti Neurons Handlers ───────────────────────────────────────────────────
+
+async function handleIvantiLookup(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  const result = await ivantiService.lookup({
+    query: params.query as string | undefined,
+    scope: (params.scope as "all" | "devices" | "people") || "all",
+    ip: params.ip as string | undefined,
+    hostname: params.hostname as string | undefined,
+    email: params.email as string | undefined,
+    user: params.user as string | undefined,
+    limit: params.limit as number | undefined,
+    raw: params.raw as boolean | undefined,
+  });
+  return { success: true, data: result };
+}
+
+async function handleIvantiListDevices(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  const result = await ivantiService.listDevices({
+    $filter: params.$filter as string | undefined,
+    $top: params.$top as number | undefined,
+    $select: params.$select as string | undefined,
+    $skip: params.$skip as number | undefined,
+    $orderby: params.$orderby as string | undefined,
+    allPages: params.allPages as boolean | undefined,
+  });
+  return { success: true, data: result };
+}
+
+async function handleIvantiGetDevice(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  const result = await ivantiService.getDevice(
+    params.id as string | undefined,
+    params.hostname as string | undefined,
+    params.name as string | undefined,
+  );
+  return { success: true, data: result };
+}
+
+async function handleIvantiListPeople(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  const result = await ivantiService.listPeople({
+    $filter: params.$filter as string | undefined,
+    $top: params.$top as number | undefined,
+    $select: params.$select as string | undefined,
+    $skip: params.$skip as number | undefined,
+    $orderby: params.$orderby as string | undefined,
+    allPages: params.allPages as boolean | undefined,
+  });
+  return { success: true, data: result };
+}
+
+async function handleIvantiGetPerson(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  const result = await ivantiService.getPerson(
+    params.id as string | undefined,
+    params.email as string | undefined,
+    params.user as string | undefined,
+    params.name as string | undefined,
+  );
+  return { success: true, data: result };
+}
+
+async function handleIvantiListBots(_params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  const result = await ivantiService.listBots();
+  return { success: true, data: result };
+}
+
+async function handleIvantiGetBotInputs(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  if (!params.botDefinitionId) return { success: false, error: "botDefinitionId is required" };
+  const result = await ivantiService.getBotInputs(String(params.botDefinitionId));
+  return { success: true, data: result };
+}
+
+async function handleIvantiRunBot(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  if (!params.botDefinitionId) return { success: false, error: "botDefinitionId is required" };
+  const agentIds = asArray(params.agentIds);
+  if (agentIds.length === 0) return { success: false, error: "agentIds array is required" };
+  const result = await ivantiService.runBot({
+    botDefinitionId: String(params.botDefinitionId),
+    agentIds,
+    inputs: Array.isArray(params.inputs)
+      ? params.inputs.map((i) => {
+          const item = i as Record<string, string>;
+          return { inputId: item.inputId, inputValue: item.inputValue };
+        })
+      : undefined,
+  });
+  return { success: true, data: result };
+}
+
+async function handleIvantiGetBotResults(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  if (!params.workflowInvocationId) return { success: false, error: "workflowInvocationId is required" };
+  const result = await ivantiService.getBotResults(String(params.workflowInvocationId));
+  return { success: true, data: result };
+}
+
+async function handleIvantiGetBotLogMessages(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  if (!params.workflowInvocationId || !params.deviceId) {
+    return { success: false, error: "workflowInvocationId and deviceId are required" };
+  }
+  const result = await ivantiService.getBotLogMessages(
+    String(params.workflowInvocationId),
+    String(params.deviceId),
+  );
+  return { success: true, data: result };
+}
+
+async function handleIvantiPatchRead(
+  params: Record<string, unknown>,
+  method: keyof typeof ivantiService,
+): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  const fn = ivantiService[method] as (p?: IvantiPatchParams) => Promise<unknown>;
+  const result = await fn.call(ivantiService, {
+    Filter: params.Filter as string | undefined,
+    OrderBy: params.OrderBy as string | undefined,
+    PageNumber: params.PageNumber as number | undefined,
+    PageSize: params.PageSize as number | undefined,
+    allPages: params.allPages as boolean | undefined,
+  });
+  return { success: true, data: result };
+}
+
+async function handleIvantiListCves(params: Record<string, unknown>): Promise<ToolCallResult> {
+  return handleIvantiPatchRead(params, "listCves");
+}
+
+async function handleIvantiListPatches(params: Record<string, unknown>): Promise<ToolCallResult> {
+  return handleIvantiPatchRead(params, "listPatches");
+}
+
+async function handleIvantiListNotifications(params: Record<string, unknown>): Promise<ToolCallResult> {
+  return handleIvantiPatchRead(params, "listNotifications");
+}
+
+async function handleIvantiListEndpointVulnerabilities(params: Record<string, unknown>): Promise<ToolCallResult> {
+  return handleIvantiPatchRead(params, "listEndpointVulnerabilities");
+}
+
+async function handleIvantiListDeploymentHistory(params: Record<string, unknown>): Promise<ToolCallResult> {
+  return handleIvantiPatchRead(params, "listDeploymentHistory");
+}
+
+async function handleIvantiListPatchGroups(params: Record<string, unknown>): Promise<ToolCallResult> {
+  return handleIvantiPatchRead(params, "listPatchGroups");
+}
+
+async function handleIvantiListPatchGroupAudit(params: Record<string, unknown>): Promise<ToolCallResult> {
+  return handleIvantiPatchRead(params, "listPatchGroupAudit");
+}
+
+async function handleIvantiCreatePatchGroupFromCves(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  const cveIds = asArray(params.cveIds);
+  if (cveIds.length === 0) return { success: false, error: "cveIds array is required" };
+  const result = await ivantiService.createPatchGroupFromCves(
+    {
+      cveIds,
+      patchGroupName: params.patchGroupName as string | undefined,
+      dataUpdateErrorPolicy: (params.dataUpdateErrorPolicy as "Omit" | "Include" | "Fail") || undefined,
+    },
+    params.onBehalfOf as string | undefined,
+  );
+  return { success: true, data: result };
+}
+
+async function handleIvantiUpdatePatchGroupFromCves(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  if (!params.patchGroupId) return { success: false, error: "patchGroupId is required" };
+  const cveIds = asArray(params.cveIds);
+  if (cveIds.length === 0) return { success: false, error: "cveIds array is required" };
+  const result = await ivantiService.updatePatchGroupFromCves(
+    String(params.patchGroupId),
+    {
+      cveIds,
+      patchGroupName: params.patchGroupName as string | undefined,
+      dataUpdateErrorPolicy: (params.dataUpdateErrorPolicy as "Omit" | "Include" | "Fail") || undefined,
+    },
+    params.onBehalfOf as string | undefined,
+  );
+  return { success: true, data: result };
+}
+
+async function handleIvantiGetPatchGroupMapping(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  if (!params.patchGroupId) return { success: false, error: "patchGroupId is required" };
+  const result = await ivantiService.getPatchGroupMapping(String(params.patchGroupId));
+  return { success: true, data: result };
+}
+
+async function handleIvantiAppDistRead(
+  params: Record<string, unknown>,
+  method: "listAppCatalog" | "listDevicePackageStatus",
+): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  const fn = ivantiService[method];
+  const result = await fn.call(ivantiService, {
+    $filter: params.$filter as string | undefined,
+    $top: params.$top as number | undefined,
+    $select: params.$select as string | undefined,
+    $skip: params.$skip as number | undefined,
+    $orderby: params.$orderby as string | undefined,
+    allPages: params.allPages as boolean | undefined,
+  });
+  return { success: true, data: result };
+}
+
+async function handleIvantiListAppCatalog(params: Record<string, unknown>): Promise<ToolCallResult> {
+  return handleIvantiAppDistRead(params, "listAppCatalog");
+}
+
+async function handleIvantiListDevicePackageStatus(params: Record<string, unknown>): Promise<ToolCallResult> {
+  return handleIvantiAppDistRead(params, "listDevicePackageStatus");
+}
+
+async function handleIvantiCreateCatalog(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  if (!params.packageName) return { success: false, error: "packageName is required" };
+  const result = await ivantiService.createCatalog({
+    packageName: String(params.packageName),
+    platform: params.platform as string | undefined,
+    version: params.version as string | undefined,
+    publisher: params.publisher as string | undefined,
+    category: params.category as string | undefined,
+    notes: params.notes as string | undefined,
+    showInAnalystView: params.showInAnalystView as boolean | undefined,
+  });
+  return { success: true, data: result };
+}
+
+async function handleIvantiUpdateCatalog(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  if (!params.packageId) return { success: false, error: "packageId is required" };
+  const result = await ivantiService.updateCatalog(String(params.packageId), {
+    packageName: params.packageName as string | undefined,
+    platform: params.platform as string | undefined,
+    version: params.version as string | undefined,
+    publisher: params.publisher as string | undefined,
+    category: params.category as string | undefined,
+    notes: params.notes as string | undefined,
+    showInAnalystView: params.showInAnalystView as boolean | undefined,
+  });
+  return { success: true, data: result };
+}
+
+async function handleIvantiDeleteCatalog(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  if (!params.packageId) return { success: false, error: "packageId is required" };
+  const result = await ivantiService.deleteCatalog(String(params.packageId));
+  return { success: true, data: result };
+}
+
+async function handleIvantiCreateDistribution(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  if (!params.distributionName || !params.packageId) {
+    return { success: false, error: "distributionName and packageId are required" };
+  }
+  const result = await ivantiService.createDistribution({
+    distributionName: String(params.distributionName),
+    packageId: String(params.packageId),
+    revision: params.revision as number | undefined,
+    platform: params.platform as string | undefined,
+    priority: params.priority as number | undefined,
+    enabled: params.enabled as boolean | undefined,
+    scheduledTime: params.scheduledTime as string | undefined,
+    targets: params.targets as IvantiDistributionBody["targets"] | undefined,
+  });
+  return { success: true, data: result };
+}
+
+async function handleIvantiUpdateDistribution(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  if (!params.distributionId) return { success: false, error: "distributionId is required" };
+  const result = await ivantiService.updateDistribution(String(params.distributionId), {
+    distributionName: params.distributionName as string | undefined,
+    packageId: params.packageId as string | undefined,
+    revision: params.revision as number | undefined,
+    priority: params.priority as number | undefined,
+    enabled: params.enabled as boolean | undefined,
+    targets: params.targets as IvantiDistributionBody["targets"] | undefined,
+  });
+  return { success: true, data: result };
+}
+
+async function handleIvantiGetDistribution(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  if (!params.packageId) return { success: false, error: "packageId is required" };
+  const result = await ivantiService.getDistributions(String(params.packageId));
+  return { success: true, data: result };
+}
+
+async function handleIvantiOnDemandInstall(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  if (!params.packageId || !params.discoveryId) {
+    return { success: false, error: "packageId and discoveryId are required" };
+  }
+  const result = await ivantiService.onDemandInstall({
+    packageId: String(params.packageId),
+    discoveryId: String(params.discoveryId),
+    revision: params.revision as number | undefined,
+    displayName: params.displayName as string | undefined,
+  });
+  return { success: true, data: result };
+}
+
+async function handleIvantiProxy(params: Record<string, unknown>): Promise<ToolCallResult> {
+  const err = ivantiConfigCheck();
+  if (err) return { success: false, error: err };
+  const module = params.module as "inventory" | "bots" | "patch" | "appdist";
+  if (!module || !["inventory", "bots", "patch", "appdist"].includes(module)) {
+    return { success: false, error: "module must be inventory, bots, patch, or appdist" };
+  }
+  const result = await ivantiService.proxy(
+    module,
+    String(params.method || "GET"),
+    String(params.path),
+    params.params as Record<string, unknown> | undefined,
+    params.body,
+  );
+  return { success: true, data: result };
+}
+
 const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "calendar.list_events": handleCalendarListEvents,
   "calendar.create_focus_block": handleCalendarCreateFocusBlock,
@@ -9805,6 +10174,38 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "tenable.get_container_report": handleTenableGetContainerReport,
   "tenable.get_server_status": handleTenableGetServerStatus,
   "tenable.get_server_properties": handleTenableGetServerProperties,
+
+  // ── Ivanti Neurons Handlers ─────────────────────────────────────────────────
+  "ivanti.lookup": handleIvantiLookup,
+  "ivanti.list_devices": handleIvantiListDevices,
+  "ivanti.get_device": handleIvantiGetDevice,
+  "ivanti.list_people": handleIvantiListPeople,
+  "ivanti.get_person": handleIvantiGetPerson,
+  "ivanti.bots.list_on_demand": handleIvantiListBots,
+  "ivanti.bots.get_inputs": handleIvantiGetBotInputs,
+  "ivanti.bots.run": handleIvantiRunBot,
+  "ivanti.bots.get_results": handleIvantiGetBotResults,
+  "ivanti.bots.get_log_messages": handleIvantiGetBotLogMessages,
+  "ivanti.patch.list_cves": handleIvantiListCves,
+  "ivanti.patch.list_patches": handleIvantiListPatches,
+  "ivanti.patch.list_notifications": handleIvantiListNotifications,
+  "ivanti.patch.list_endpoint_vulnerabilities": handleIvantiListEndpointVulnerabilities,
+  "ivanti.patch.list_deployment_history": handleIvantiListDeploymentHistory,
+  "ivanti.patch.list_patch_groups": handleIvantiListPatchGroups,
+  "ivanti.patch.list_patch_group_audit": handleIvantiListPatchGroupAudit,
+  "ivanti.patch.create_patch_group_from_cves": handleIvantiCreatePatchGroupFromCves,
+  "ivanti.patch.update_patch_group_from_cves": handleIvantiUpdatePatchGroupFromCves,
+  "ivanti.patch.get_patch_group_mapping": handleIvantiGetPatchGroupMapping,
+  "ivanti.appdist.list_catalog": handleIvantiListAppCatalog,
+  "ivanti.appdist.list_device_package_status": handleIvantiListDevicePackageStatus,
+  "ivanti.appdist.create_catalog": handleIvantiCreateCatalog,
+  "ivanti.appdist.update_catalog": handleIvantiUpdateCatalog,
+  "ivanti.appdist.delete_catalog": handleIvantiDeleteCatalog,
+  "ivanti.appdist.create_distribution": handleIvantiCreateDistribution,
+  "ivanti.appdist.update_distribution": handleIvantiUpdateDistribution,
+  "ivanti.appdist.get_distribution": handleIvantiGetDistribution,
+  "ivanti.appdist.ondemand_install": handleIvantiOnDemandInstall,
+  "ivanti.proxy": handleIvantiProxy,
 
   "code_review.github_pr": handleCodeReviewGithubPr,
   "code_review.gitlab_mr": handleCodeReviewGitlabMr,

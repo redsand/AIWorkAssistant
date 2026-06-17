@@ -391,6 +391,26 @@ const envSchema = z.object({
   TENABLE_CLOUD_ACCESS_KEY: z.string().default(""),
   TENABLE_CLOUD_SECRET_KEY: z.string().default(""),
 
+  // Ivanti Neurons Cloud
+  IVANTI_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
+  IVANTI_HOST: z.string().default("nvuprd-sfc.ivanticloud.com"),
+  IVANTI_TENANT_ID_OR_PATH: z.string().default(""),
+  IVANTI_CLIENT_ID: z.string().default(""),
+  IVANTI_CLIENT_SECRET: z.string().default(""),
+  IVANTI_AUTH_URL: z.string().default(""),
+  IVANTI_SCOPE: z.string().default(""),
+  IVANTI_BOTS_HOST: z.string().default(""),
+  IVANTI_PATCH_HOST: z.string().default(""),
+  IVANTI_APPDIST_HOST: z.string().default(""),
+  IVANTI_TIMEOUT: z.coerce.number().default(60_000),
+  IVANTI_DEBUG: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
+
   // Web Push (VAPID)
   VAPID_PUBLIC_KEY: z.string().default(""),
   VAPID_PRIVATE_KEY: z.string().default(""),
