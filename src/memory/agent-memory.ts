@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { resolvePath } from "../config/env";
 
 export interface MemoryEntry {
   key: string;
@@ -60,7 +61,7 @@ export class AgentMemory {
       );
     }
 
-    return path.join(process.cwd(), "data", "memories");
+    return resolvePath("memories");
   }
 
   private loadFile(

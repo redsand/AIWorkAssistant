@@ -1,4 +1,5 @@
 import { config } from "dotenv";
+import path from "path";
 import { z } from "zod";
 
 // Load environment variables from .env file (don't override existing env vars)
@@ -137,6 +138,11 @@ const envSchema = z.object({
   // Agent Profiles
   DEFAULT_PROFILE: z.string().default("default"),
   PROFILES_PATH: z.string().default("data/profiles"),
+
+  // Profile isolation — root for all profile-scoped state and the active profile.
+  // resolvePath() composes these into HERMES_HOME/profiles/{ACTIVE_PROFILE}/<relative>.
+  HERMES_HOME: z.string().default("data"),
+  ACTIVE_PROFILE: z.string().default("default"),
 
   // Audit
   AUDIT_LOG_FILE: z.string().default("./logs/audit.log"),
@@ -515,3 +521,21 @@ export function loadEnv(): Env {
 }
 
 export const env = loadEnv();
+
+/**
+ * Resolve a profile-scoped path. Every subsystem (memory, skills, sessions)
+ * should route file paths through this function instead of hardcoding `data/`,
+ * so that switching the active profile transparently isolates all state.
+ *
+ * Returns `HERMES_HOME/profiles/{ACTIVE_PROFILE}/{relativePath}`.
+ *
+ * Reads from process.env first so a runtime profile switch (which updates
+ * process.env.ACTIVE_PROFILE before subsystems initialize) is honored without
+ * re-parsing the whole env schema.
+ */
+export function resolvePath(relativePath: string): string {
+  const home = process.env.HERMES_HOME || env.HERMES_HOME || "data";
+  const profile =
+    process.env.ACTIVE_PROFILE || env.ACTIVE_PROFILE || "default";
+  return path.join(home, "profiles", profile, relativePath);
+}

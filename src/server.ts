@@ -69,6 +69,7 @@ import { SlackAdapter } from "./integrations/gateway/slack-adapter";
 import { DiscordGatewayAdapter } from "./integrations/discord/discord-gateway-adapter";
 import { WhatsAppAdapter } from "./integrations/gateway/whatsapp-adapter";
 import { getProfileManager } from "./profiles/profile-manager";
+import { getConfigProfileManager } from "./config/profile-manager";
 import path from "path";
 
 export async function buildServer() {
@@ -290,6 +291,20 @@ async function start() {
       console.log(`[Profiles] Initialized with ${profiles.length} profile(s) (default: ${pm.getDefaultProfileId()})`);
     } catch (err) {
       console.warn("[Profiles] Failed to initialize, using default:", err);
+    }
+
+    // ─── Profile isolation: load the active profile (auto-creates default) ───
+    // getActive() seeds data/profiles/<name>/ and writes the `active` marker.
+    // Sync ACTIVE_PROFILE so resolvePath() routes all subsequent profile-scoped
+    // state (memories, skills, sessions) into the active profile's directory.
+    try {
+      const active = getConfigProfileManager().getActive();
+      process.env.ACTIVE_PROFILE = active.name;
+      console.log(
+        `[Profiles] Active profile: ${active.name} (soul: ${active.hasCustomSoul ? "custom" : "default"}, memory: ${active.hasCustomMemory ? "custom" : "default"}, skills: ${active.skillCount}) at ${active.path}`,
+      );
+    } catch (err) {
+      console.warn("[Profiles] Failed to load active profile:", err);
     }
 
     // ─── ClaimKit init: block server.listen() until init resolves ───

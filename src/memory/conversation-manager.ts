@@ -10,6 +10,7 @@ import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import type { ChatMessage } from "../agent/opencode-client";
 import { aiClient } from "../agent/opencode-client";
+import { resolvePath } from "../config/env";
 import { toolCallCache } from "./tool-cache";
 
 export interface Message {
@@ -100,7 +101,7 @@ export class ConversationManager {
       );
     }
 
-    return path.join(process.cwd(), "data", "memories");
+    return resolvePath("sessions");
   }
 
   private initializeStorage() {
