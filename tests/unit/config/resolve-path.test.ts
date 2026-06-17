@@ -78,4 +78,51 @@ describe("resolvePath profile routing", () => {
       path.join(tmpHome, "profiles", "default", "memories"),
     );
   });
+
+  it("rejects '..' and falls back to the default profile", () => {
+    process.env.ACTIVE_PROFILE = "..";
+    expect(resolvePath("memories")).toBe(
+      path.join(tmpHome, "profiles", "default", "memories"),
+    );
+  });
+
+  it("rejects '.' so it cannot collapse out of the profile boundary", () => {
+    // path.join(home, "profiles", ".", "memories") would otherwise resolve to
+    // HERMES_HOME/profiles/memories, escaping the per-profile directory.
+    process.env.ACTIVE_PROFILE = ".";
+    const resolved = resolvePath("memories");
+    expect(resolved).toBe(
+      path.join(tmpHome, "profiles", "default", "memories"),
+    );
+    expect(resolved).not.toBe(path.join(tmpHome, "profiles", "memories"));
+  });
+
+  it("rejects a tampered marker file containing a traversal sequence", () => {
+    fs.writeFileSync(activeFile(), "../escape\n", "utf-8");
+    expect(resolvePath("memories")).toBe(
+      path.join(tmpHome, "profiles", "default", "memories"),
+    );
+  });
+
+  it("rejects names with path separators", () => {
+    process.env.ACTIVE_PROFILE = "a/b";
+    expect(resolvePath("memories")).toBe(
+      path.join(tmpHome, "profiles", "default", "memories"),
+    );
+  });
+
+  it("reads the marker once and serves cached value until it changes (mtime)", () => {
+    fs.writeFileSync(activeFile(), "alpha\n", "utf-8");
+    expect(resolvePath("memories")).toBe(
+      path.join(tmpHome, "profiles", "alpha", "memories"),
+    );
+    // Rewriting the marker bumps mtime, so the cache self-invalidates.
+    fs.writeFileSync(activeFile(), "beta\n", "utf-8");
+    // Force a distinct mtime in case the writes land in the same ms tick.
+    const future = new Date(Date.now() + 1000);
+    fs.utimesSync(activeFile(), future, future);
+    expect(resolvePath("sessions")).toBe(
+      path.join(tmpHome, "profiles", "beta", "sessions"),
+    );
+  });
 });
