@@ -9,6 +9,7 @@ vi.mock("../../../src/config/env", async (importOriginal) => {
       ...actual.env,
       GATEWAY_ENABLED: true,
     },
+    resolvePath: actual.resolvePath,
   };
 });
 

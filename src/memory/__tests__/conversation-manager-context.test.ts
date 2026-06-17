@@ -57,7 +57,7 @@ describe("ConversationManager context messages", () => {
     expect(messages[0].content).toContain("Fallback summary");
     expect(messages.at(-1)?.content).toContain("message 44");
 
-    const summaryPath = path.join(tempDir, "data", "memories", "sessions", `${sessionId}.summary.md`);
+    const summaryPath = path.join(tempDir, "data", "profiles", "default", "memories", "sessions", `${sessionId}.summary.md`);
     expect(fs.existsSync(summaryPath)).toBe(true);
     // Old-message slice is now 45 - 30 = 15.
     expect(fs.readFileSync(summaryPath, "utf-8")).toContain("**Messages:** 15");
@@ -85,7 +85,7 @@ describe("ConversationManager context messages", () => {
     }
     await manager.getSessionMessages(sessionId, true, "engine");
 
-    const summaryPath = path.join(tempDir, "data", "memories", "sessions", `${sessionId}.summary.md`);
+    const summaryPath = path.join(tempDir, "data", "profiles", "default", "memories", "sessions", `${sessionId}.summary.md`);
     // 61 messages → 31 old summarized + 30 recent; summary messageCount = 31
     // (MIN_RECENT_MESSAGES is 30, not 20).
     expect(fs.readFileSync(summaryPath, "utf-8")).toContain("**Messages:** 31");

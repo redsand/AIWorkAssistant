@@ -1,4 +1,5 @@
 import { config } from "dotenv";
+import fs from "fs";
 import path from "path";
 import { z } from "zod";
 
@@ -529,13 +530,32 @@ export const env = loadEnv();
  *
  * Returns `HERMES_HOME/profiles/{ACTIVE_PROFILE}/{relativePath}`.
  *
- * Reads from process.env first so a runtime profile switch (which updates
- * process.env.ACTIVE_PROFILE before subsystems initialize) is honored without
- * re-parsing the whole env schema.
+ * Active profile resolution order:
+ *   1. process.env.ACTIVE_PROFILE — runtime override set by the long-running
+ *      server after it loads the active profile.
+ *   2. The `profiles/active` marker file — written by `profile switch`. This is
+ *      what makes CLI commands honor a switch: a one-shot CLI invocation never
+ *      sets the env var, so without reading the marker every CLI command would
+ *      fall back to 'default'.
+ *   3. env.ACTIVE_PROFILE (env schema default) → 'default'.
  */
 export function resolvePath(relativePath: string): string {
   const home = process.env.HERMES_HOME || env.HERMES_HOME || "data";
   const profile =
-    process.env.ACTIVE_PROFILE || env.ACTIVE_PROFILE || "default";
+    process.env.ACTIVE_PROFILE ||
+    readActiveProfileName(home) ||
+    env.ACTIVE_PROFILE ||
+    "default";
   return path.join(home, "profiles", profile, relativePath);
+}
+
+/** Read the active profile name from `HERMES_HOME/profiles/active`, if present. */
+function readActiveProfileName(home: string): string | undefined {
+  try {
+    const activeFile = path.join(home, "profiles", "active");
+    const name = fs.readFileSync(activeFile, "utf-8").trim();
+    return name || undefined;
+  } catch {
+    return undefined;
+  }
 }

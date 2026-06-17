@@ -101,7 +101,11 @@ export class ConversationManager {
       );
     }
 
-    return resolvePath("sessions");
+    // Preserve the historical `memories/` base (sessions/summaries/etc. are
+    // created as subdirectories below it). Using "memories" — not "sessions" —
+    // keeps the layout consistent with AgentMemory and SoulManager and avoids
+    // silently renaming the storage directory under profile isolation.
+    return resolvePath("memories");
   }
 
   private initializeStorage() {
