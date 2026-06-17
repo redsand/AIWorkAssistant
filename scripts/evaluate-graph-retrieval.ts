@@ -44,7 +44,12 @@ export interface GraphEvalResult {
   graphRetrieved: boolean;
   graphAccuracy: number;
   claimkitVerified: boolean;
-  ragHallucinated: boolean;
+  /**
+   * Whether a RAG-only answer for the query was ungrounded. `null` means the
+   * grounding check could not run (ClaimKit unavailable), which is kept
+   * distinct from `false` so unmeasured queries never inflate the rate.
+   */
+  ragHallucinated: boolean | null;
   latencyMs: number;
 }
 
@@ -172,10 +177,20 @@ export async function checkClaimKitVerified(query: string): Promise<boolean> {
 }
 
 /**
- * Whether a RAG-only answer for the query would be ungrounded. Uses the RAG
- * documents as their own evidence via ClaimKit grounding; if grounding is
- * unavailable, returns null so the report can distinguish "not measured" from
- * "grounded".
+ * Whether a RAG-only answer for the query would be ungrounded.
+ *
+ * This simulates a plain RAG pipeline: retrieve documents, generate an answer
+ * from them, then check whether that *generated* answer is grounded in the
+ * retrieved documents. The generated answer (from ClaimKit's LLM) is distinct
+ * from the evidence (the retrieved documents), so grounding is a real signal —
+ * grounding the documents against themselves would always read as "grounded".
+ *
+ * Returns:
+ *   - `true`  when there are no documents to ground against, or the generated
+ *             answer is not supported by the retrieved documents
+ *   - `false` when the generated answer is supported
+ *   - `null`  when the check could not run (ClaimKit unavailable or produced no
+ *             answer), so callers can distinguish "not measured" from "grounded"
  */
 export async function checkRagHallucinated(query: string): Promise<boolean | null> {
   try {
@@ -186,14 +201,16 @@ export async function checkRagHallucinated(query: string): Promise<boolean | nul
       claimKitAdapter.isAvailable() || (await claimKitAdapter.initialize());
     if (!available) return null;
 
+    // Generate an answer first, then ground it against the retrieved docs.
+    const generated = await claimKitAdapter.query(query);
+    const answer = generated.answer?.trim();
+    if (!answer) return null;
+
     const evidence = hits.map((h) => ({
       title: h.entry.title,
       content: h.entry.content,
     }));
-    const grounding = await claimKitAdapter.ground({
-      text: hits.map((h) => h.entry.content).join("\n"),
-      evidence,
-    });
+    const grounding = await claimKitAdapter.ground({ text: answer, evidence });
     return !grounding.grounded;
   } catch (err) {
     console.warn(
@@ -236,15 +253,27 @@ export function generateReport(results: GraphEvalResult[]): string {
   );
   const graphClaimKitAccuracy = avg(graphClaimKit.map((r) => r.graphAccuracy));
 
-  // graph+RAG: queries where graph retrieved and RAG did not hallucinate.
+  // graph+RAG: queries where graph retrieved and RAG was measured as grounded.
+  // `null` (not measured) is excluded rather than treated as grounded.
   const graphRag = results.filter(
-    (r) => r.graphRetrieved && !r.ragHallucinated,
+    (r) => r.graphRetrieved && r.ragHallucinated === false,
   );
   const graphRagAccuracy = avg(graphRag.map((r) => r.graphAccuracy));
 
-  const ragHallucinated = results.filter((r) => r.ragHallucinated).length;
-  const newHallucinationRate = total === 0 ? 0 : ragHallucinated / total;
-  const hallucinationDelta = RAG_BASELINE_HALLUCINATION_RATE - newHallucinationRate;
+  // Hallucination rate is computed only over queries where grounding actually
+  // ran. Unmeasured (null) queries are excluded so an unavailable ClaimKit
+  // can never masquerade as a 0% rate / false improvement over the baseline.
+  const measuredResults = results.filter((r) => r.ragHallucinated !== null);
+  const measuredCount = measuredResults.length;
+  const ragHallucinatedCount = measuredResults.filter(
+    (r) => r.ragHallucinated === true,
+  ).length;
+  const newHallucinationRate =
+    measuredCount === 0 ? null : ragHallucinatedCount / measuredCount;
+  const hallucinationDelta =
+    newHallucinationRate === null
+      ? null
+      : RAG_BASELINE_HALLUCINATION_RATE - newHallucinationRate;
 
   const lines: string[] = [];
   lines.push("# Graph Retrieval Evaluation Report");
@@ -272,12 +301,21 @@ export function generateReport(results: GraphEvalResult[]): string {
 
   lines.push("## Hallucination Rate");
   lines.push("");
-  lines.push(`- RAG baseline: ${pct(RAG_BASELINE_HALLUCINATION_RATE)}`);
-  lines.push(`- Graph + ClaimKit (measured): ${pct(newHallucinationRate)}`);
-  lines.push(
-    `- Delta vs baseline: ${hallucinationDelta >= 0 ? "-" : "+"}${pct(Math.abs(hallucinationDelta))} ` +
-      `(${hallucinationDelta >= 0 ? "improvement" : "regression"})`,
-  );
+  lines.push(`- RAG baseline (published): ${pct(RAG_BASELINE_HALLUCINATION_RATE)}`);
+  if (newHallucinationRate === null || hallucinationDelta === null) {
+    lines.push(
+      `- Measured RAG hallucination: not measured (ClaimKit grounding unavailable for all ${total} ${total === 1 ? "query" : "queries"})`,
+    );
+    lines.push("- Delta vs baseline: n/a — cannot compare without measured grounding");
+  } else {
+    lines.push(
+      `- Measured RAG hallucination: ${pct(newHallucinationRate)} (${measuredCount}/${total} ${total === 1 ? "query" : "queries"} measured)`,
+    );
+    lines.push(
+      `- Delta vs baseline: ${hallucinationDelta >= 0 ? "-" : "+"}${pct(Math.abs(hallucinationDelta))} ` +
+        `(${hallucinationDelta >= 0 ? "improvement" : "regression"})`,
+    );
+  }
   lines.push("");
 
   lines.push("## Per-Query Results");
@@ -285,10 +323,12 @@ export function generateReport(results: GraphEvalResult[]): string {
   lines.push("| Query | Type | Retrieved | Accuracy | CK Verified | RAG Hallucinated | Latency |");
   lines.push("| --- | --- | --- | --- | --- | --- | --- |");
   for (const r of results) {
+    const hallucinatedCell =
+      r.ragHallucinated === null ? "n/a" : r.ragHallucinated ? "yes" : "no";
     lines.push(
       `| ${r.query.replace(/\|/g, "\\|")} | ${r.type} | ${r.graphRetrieved ? "yes" : "no"} | ` +
         `${pct(r.graphAccuracy)} | ${r.claimkitVerified ? "yes" : "no"} | ` +
-        `${r.ragHallucinated ? "yes" : "no"} | ${r.latencyMs}ms |`,
+        `${hallucinatedCell} | ${r.latencyMs}ms |`,
     );
   }
   lines.push("");
@@ -318,13 +358,17 @@ export function generateReport(results: GraphEvalResult[]): string {
         `Average latency (${avgLatency.toFixed(1)}ms) exceeds the ${GRAPH_LATENCY_TARGET_MS}ms target — consider caching or index tuning.`,
       );
     }
-    if (hallucinationDelta > 0) {
+    if (hallucinationDelta === null) {
       recommendations.push(
-        `Graph + ClaimKit lowered hallucination by ${pct(hallucinationDelta)} vs the RAG baseline — keep the verification layer.`,
+        "Hallucination was not measured (ClaimKit grounding unavailable) — run with live providers before claiming any improvement over the RAG baseline.",
       );
-    } else if (newHallucinationRate > 0) {
+    } else if (hallucinationDelta > 0) {
       recommendations.push(
-        "Graph + ClaimKit did not beat the RAG baseline — investigate grounding before relying on it.",
+        `Measured RAG hallucination is ${pct(hallucinationDelta)} below the published baseline — the ClaimKit grounding layer is helping.`,
+      );
+    } else {
+      recommendations.push(
+        "Measured RAG hallucination did not beat the published baseline — investigate grounding before relying on it.",
       );
     }
   }
@@ -336,12 +380,70 @@ export function generateReport(results: GraphEvalResult[]): string {
   return lines.join("\n");
 }
 
+/**
+ * Read and validate the queries file. Throws an actionable error (rather than
+ * a raw fs/JSON error or a silent type-cast) when the file is missing,
+ * malformed, or has entries that don't match the {@link GraphEvalQuery} shape.
+ */
+export function loadQueries(queriesPath: string): GraphEvalQuery[] {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(queriesPath, "utf-8");
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`Could not read queries file at "${queriesPath}": ${reason}`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`Queries file at "${queriesPath}" is not valid JSON: ${reason}`);
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      `Queries file at "${queriesPath}" must contain a JSON array of queries.`,
+    );
+  }
+
+  return parsed.map((entry, index) => {
+    if (typeof entry !== "object" || entry === null) {
+      throw new Error(`Query at index ${index} must be an object.`);
+    }
+    const candidate = entry as Record<string, unknown>;
+    if (typeof candidate.query !== "string" || candidate.query.trim() === "") {
+      throw new Error(
+        `Query at index ${index} is missing a non-empty "query" string.`,
+      );
+    }
+    if (
+      !Array.isArray(candidate.groundTruth) ||
+      !candidate.groundTruth.every((item) => typeof item === "string")
+    ) {
+      throw new Error(
+        `Query at index ${index} ("${candidate.query}") must have a "groundTruth" array of strings.`,
+      );
+    }
+    if (typeof candidate.type !== "string" || candidate.type.trim() === "") {
+      throw new Error(
+        `Query at index ${index} ("${candidate.query}") is missing a non-empty "type" string.`,
+      );
+    }
+    return {
+      query: candidate.query,
+      groundTruth: candidate.groundTruth as string[],
+      type: candidate.type,
+    };
+  });
+}
+
 export async function evaluateGraphRetrieval(
   queriesPath: string = DEFAULT_QUERIES_PATH,
   reportPath: string = DEFAULT_REPORT_PATH,
 ): Promise<GraphEvalResult[]> {
-  const raw = fs.readFileSync(queriesPath, "utf-8");
-  const queries = JSON.parse(raw) as GraphEvalQuery[];
+  const queries = loadQueries(queriesPath);
 
   const results: GraphEvalResult[] = [];
   for (const q of queries) {
@@ -350,10 +452,9 @@ export async function evaluateGraphRetrieval(
     const graphAccuracy = computeAccuracy(entities, q.groundTruth);
 
     const claimkitVerified = await checkClaimKitVerified(q.query);
-    const ragHallucinatedRaw = await checkRagHallucinated(q.query);
-    // Treat "not measured" (null) as not-hallucinated so the baseline
-    // comparison stays conservative rather than inflating the new rate.
-    const ragHallucinated = ragHallucinatedRaw === true;
+    // Preserve null ("not measured") so the report never treats an unavailable
+    // ClaimKit as a grounded answer.
+    const ragHallucinated = await checkRagHallucinated(q.query);
 
     results.push({
       query: q.query,
