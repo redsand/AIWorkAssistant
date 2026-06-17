@@ -31,6 +31,7 @@ import {
   POLL_MS, MAX_CYCLES, UNIT_TEST_TIMEOUT, INTEGRATION_TEST_TIMEOUT, API_PROVIDER,
 } from "./autonomous-loop/arg-parser";
 import { getProjectConfig as _getProjectConfig } from "./autonomous-loop/project-detect";
+import { parseDependencies } from "./autonomous-loop/dependency-parser";
 import {
   gitRun as _gitRun,
   gitRunWithOutput as _gitRunWithOutput,
@@ -1790,11 +1791,6 @@ async function llmEvaluateTestFailure(testOutput: string, _item: WorkItem): Prom
 
 // --- Dependency resolution ---
 
-const DEPENDENCY_RE = /\b(?:depends\s+on|blocked\s+by|requires|prerequisite\s*:\s*)\s*#(\d+)/gi;
-const JIRA_DEPENDENCY_RE = /\b(?:depends\s+on|blocked\s+by|requires|prerequisite\s*:\s*)\s*:?\s*([A-Z][A-Z0-9]+-\d+(?:\s*,\s*[A-Z][A-Z0-9]+-\d+)*)/gi;
-const DO_NOT_START_UNTIL_RE = /\bdo\s+not\s+start\b[\s\S]{0,160}?\buntil\b[\s\S]{0,80}?([A-Z][A-Z0-9]+-\d+|#\d+)/gi;
-const JIRA_KEY_RE = /\b[A-Z][A-Z0-9]+-\d+\b/g;
-
 function jiraDescriptionToText(value: unknown): string {
   if (!value) return "";
   if (typeof value === "string") return value;
@@ -1807,29 +1803,6 @@ function jiraDescriptionToText(value: unknown): string {
     ].filter(Boolean).join("\n");
   }
   return "";
-}
-
-function parseDependencies(body: string): string[] {
-  const refs = new Set<string>();
-  let match: RegExpExecArray | null;
-  const re = new RegExp(DEPENDENCY_RE.source, DEPENDENCY_RE.flags);
-  while ((match = re.exec(body)) !== null) {
-    refs.add(match[1]);
-  }
-
-  const jiraRe = new RegExp(JIRA_DEPENDENCY_RE.source, JIRA_DEPENDENCY_RE.flags);
-  while ((match = jiraRe.exec(body)) !== null) {
-    const keys = match[1].match(JIRA_KEY_RE) || [];
-    for (const key of keys) refs.add(key.toUpperCase());
-  }
-
-  const doNotStartRe = new RegExp(DO_NOT_START_UNTIL_RE.source, DO_NOT_START_UNTIL_RE.flags);
-  while ((match = doNotStartRe.exec(body)) !== null) {
-    const ref = match[1];
-    refs.add(ref.startsWith("#") ? ref.slice(1) : ref.toUpperCase());
-  }
-
-  return [...refs];
 }
 
 function isDoneStatus(status: string | undefined): boolean {
