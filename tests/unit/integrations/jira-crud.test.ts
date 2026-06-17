@@ -512,6 +512,26 @@ describe("Tool Dispatcher: Jira CRUD", () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain("project and summary are required");
     });
+
+    it("should return a dry-run preview without calling the Jira API", async () => {
+      const createSpy = vi
+        .spyOn(jiraClient, "createIssue")
+        .mockResolvedValue({ key: "PROJ-9", id: "10009" } as any);
+
+      const result = await dispatchToolCall("jira.create_issue", {
+        project: "PROJ",
+        summary: "Preview ticket",
+        issueType: "Task",
+        dryRun: true,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.dryRun).toBe(true);
+      expect((result.data as any).wouldExecute).toBe(true);
+      expect((result.data as any).summary).toContain("Would create Jira issue");
+      expect((result.data as any).riskLevel).toBe("medium");
+      expect(createSpy).not.toHaveBeenCalled();
+    });
   });
 
   describe("jira.update_issue", () => {
@@ -550,6 +570,24 @@ describe("Tool Dispatcher: Jira CRUD", () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain("No fields provided");
+    });
+
+    it("should return a dry-run preview listing only changed fields without calling the API", async () => {
+      const updateSpy = vi
+        .spyOn(jiraClient, "updateIssue")
+        .mockResolvedValue(undefined);
+
+      const result = await dispatchToolCall("jira.update_issue", {
+        key: "PROJ-1",
+        priority: "High",
+        dryRun: true,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.dryRun).toBe(true);
+      const changes = (result.data as any).changes as Array<{ field: string }>;
+      expect(changes.map((c) => c.field)).toEqual(["priority"]);
+      expect(updateSpy).not.toHaveBeenCalled();
     });
   });
 
@@ -637,6 +675,29 @@ describe("Tool Dispatcher: Jira CRUD", () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain("key is required");
+    });
+
+    it("should return a dry-run preview with a high-risk warning and not transition", async () => {
+      const transitionSpy = vi
+        .spyOn(jiraClient, "transitionIssue")
+        .mockResolvedValue(undefined);
+      const getTransitionsSpy = vi
+        .spyOn(jiraClient, "getTransitions")
+        .mockResolvedValue([]);
+
+      const result = await dispatchToolCall("jira.close_issue", {
+        key: "PROJ-1",
+        dryRun: true,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.dryRun).toBe(true);
+      expect((result.data as any).riskLevel).toBe("high");
+      expect((result.data as any).warnings).toEqual([
+        "Closing a Jira issue may be difficult to reverse. Consider using dryRun first.",
+      ]);
+      expect(transitionSpy).not.toHaveBeenCalled();
+      expect(getTransitionsSpy).not.toHaveBeenCalled();
     });
   });
 
