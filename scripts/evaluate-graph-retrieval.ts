@@ -50,6 +50,12 @@ export interface GraphEvalResult {
    * distinct from `false` so unmeasured queries never inflate the rate.
    */
   ragHallucinated: boolean | null;
+  /**
+   * Whether the graph query itself threw. Kept distinct from
+   * `graphRetrieved: false` so a failed query is not silently counted as a
+   * legitimate zero-retrieval result in the frequency/accuracy metrics.
+   */
+  graphError: boolean;
   latencyMs: number;
 }
 
@@ -117,9 +123,11 @@ export function computeAccuracy(retrieved: string[], groundTruth: string[]): num
 export function retrieveGraphEntities(query: string): {
   entities: string[];
   latencyMs: number;
+  error: boolean;
 } {
   const start = Date.now();
   const entities = new Set<string>();
+  let error = false;
 
   try {
     const terms = extractSearchTerms(query);
@@ -142,13 +150,14 @@ export function retrieveGraphEntities(query: string): {
       }
     }
   } catch (err) {
+    error = true;
     console.warn(
       "[GraphEval] graph retrieval failed:",
       err instanceof Error ? err.message : err,
     );
   }
 
-  return { entities: [...entities], latencyMs: Date.now() - start };
+  return { entities: [...entities], latencyMs: Date.now() - start, error };
 }
 
 /**
@@ -225,6 +234,11 @@ function pct(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
 }
 
+/** Escape pipe characters so free-text values don't break markdown tables. */
+function escapeCell(value: string): string {
+  return value.replace(/\|/g, "\\|");
+}
+
 function avg(values: number[]): number {
   return values.length === 0
     ? 0
@@ -242,6 +256,7 @@ export function generateReport(results: GraphEvalResult[]): string {
   const retrievalFrequency = total === 0 ? 0 : retrievedCount / total;
   const avgAccuracy = avg(results.map((r) => r.graphAccuracy));
   const avgLatency = avg(results.map((r) => r.latencyMs));
+  const graphErrorCount = results.filter((r) => r.graphError).length;
 
   // graph-only: accuracy on queries where the graph retrieved anything.
   const retrievedResults = results.filter((r) => r.graphRetrieved);
@@ -288,6 +303,7 @@ export function generateReport(results: GraphEvalResult[]): string {
   lines.push(`- Average accuracy (all queries): ${pct(avgAccuracy)}`);
   lines.push(`- Average graph latency: ${avgLatency.toFixed(1)}ms (target < ${GRAPH_LATENCY_TARGET_MS}ms)`);
   lines.push(`- Latency within target: ${avgLatency <= GRAPH_LATENCY_TARGET_MS ? "yes" : "no"}`);
+  lines.push(`- Graph query errors: ${graphErrorCount}/${total}`);
   lines.push("");
 
   lines.push("## Retrieval Comparison");
@@ -326,7 +342,7 @@ export function generateReport(results: GraphEvalResult[]): string {
     const hallucinatedCell =
       r.ragHallucinated === null ? "n/a" : r.ragHallucinated ? "yes" : "no";
     lines.push(
-      `| ${r.query.replace(/\|/g, "\\|")} | ${r.type} | ${r.graphRetrieved ? "yes" : "no"} | ` +
+      `| ${escapeCell(r.query)} | ${escapeCell(r.type)} | ${r.graphRetrieved ? "yes" : "no"} | ` +
         `${pct(r.graphAccuracy)} | ${r.claimkitVerified ? "yes" : "no"} | ` +
         `${hallucinatedCell} | ${r.latencyMs}ms |`,
     );
@@ -339,6 +355,12 @@ export function generateReport(results: GraphEvalResult[]): string {
   if (total === 0) {
     recommendations.push("No queries were evaluated — add test queries to `data/eval/graph-queries.json`.");
   } else {
+    if (graphErrorCount > 0) {
+      recommendations.push(
+        `Graph retrieval threw on ${graphErrorCount}/${total} ${graphErrorCount === 1 ? "query" : "queries"} — ` +
+          "these are counted as errors, not zero-retrieval; investigate the graph store before trusting frequency/accuracy.",
+      );
+    }
     if (retrievalFrequency < 0.5) {
       recommendations.push(
         "Graph retrieval fired on fewer than half of queries — review seeding/coverage of the knowledge graph.",
@@ -447,7 +469,7 @@ export async function evaluateGraphRetrieval(
 
   const results: GraphEvalResult[] = [];
   for (const q of queries) {
-    const { entities, latencyMs } = retrieveGraphEntities(q.query);
+    const { entities, latencyMs, error: graphError } = retrieveGraphEntities(q.query);
     const graphRetrieved = entities.length > 0;
     const graphAccuracy = computeAccuracy(entities, q.groundTruth);
 
@@ -463,6 +485,7 @@ export async function evaluateGraphRetrieval(
       graphAccuracy,
       claimkitVerified,
       ragHallucinated,
+      graphError,
       latencyMs,
     });
   }
