@@ -3326,7 +3326,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "low",
   },
   {
-    name: "update_entity_md",
+    name: "memory.update_entity_md",
     description:
       "Update a section of an entity's human-readable relationship file (ENTITY.md). Use this to record how to work with a specific person, customer, or company — e.g. that your boss prefers Slack over email, that a client is in EST, or a key decision made with them. Sections: identity, preferences, interaction_history, key_decisions, notes.",
     params: {
@@ -3347,7 +3347,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
         required: true,
       },
     },
-    actionType: "update_entity_md",
+    actionType: "memory.update_entity_md",
     riskLevel: "low",
   },
   {

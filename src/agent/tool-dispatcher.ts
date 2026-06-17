@@ -9954,7 +9954,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "memory.get_entity_context": handleMemoryGetEntityContext,
   "memory.get_entity_claims": handleMemoryGetEntityClaims,
   "memory.add_entity_fact": handleMemoryAddEntityFact,
-  "update_entity_md": handleUpdateEntityMd,
+  "memory.update_entity_md": handleUpdateEntityMd,
   "memory.manage": handleMemoryManage,
   "skill.manage": handleSkillManage,
   "soul.manage": handleSoulManage,
@@ -10085,7 +10085,6 @@ function shouldIndexToolResult(toolName: string, result: unknown): boolean {
     "calendar.", "cron.", "todo.", "memory.", "local.", "lsp.",
     "codebase.", "git.", "workflow.", "session.", "productivity.",
     "personal_os.", "cto.", "product.", "skill.", "soul.",
-    "update_entity_md",
   ]);
   const prefix = toolName.includes(".") ? toolName.split(".")[0] + "." : toolName;
   if (skippedPrefixes.has(prefix) || skippedPrefixes.has(toolName)) return false;

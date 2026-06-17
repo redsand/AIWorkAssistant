@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import os from "node:os";
+import path from "node:path";
 
 const mockClaimKitAdapter = {
   initialize: vi.fn<() => Promise<boolean>>(),
@@ -79,6 +81,8 @@ vi.doMock("../../../src/config/env", () => ({
     KNOWLEDGE_GRAPH_COMMUNITY_LIMIT: 10,
     KNOWLEDGE_GRAPH_CACHE_TTL_MS: 30000,
   },
+  resolvePath: (relativePath: string) =>
+    path.join(os.tmpdir(), "ai-assist-context-packet-test", relativePath),
 }));
 
 vi.doMock("../../../src/agent/prompts", () => ({

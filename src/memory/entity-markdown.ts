@@ -29,7 +29,7 @@ export interface EntityMarkdownData {
   notes: string;
 }
 
-/** Snake-case section identifiers accepted by the update_entity_md tool. */
+/** Snake-case section identifiers accepted by the memory.update_entity_md tool. */
 export const ENTITY_SECTIONS = [
   "identity",
   "preferences",
