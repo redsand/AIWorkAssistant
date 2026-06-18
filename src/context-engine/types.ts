@@ -3,6 +3,38 @@ import type { KGEdgeType } from "../agent/knowledge-graph";
 
 export type ContextMode = "rag" | "engine";
 
+/**
+ * Chunking strategy for code/knowledge ingestion.
+ * - "structural": split on function/class/heading boundaries (token-aware).
+ * - "fixed": legacy character/token sliding window with overlap.
+ */
+export type ChunkStrategy = "structural" | "fixed";
+
+export interface ChunkOptions {
+  strategy: ChunkStrategy;
+  /** Upper bound on a chunk's size, measured in estimated tokens. */
+  maxTokens: number;
+  /** Below this size, structural chunks are merged with adjacent ones. */
+  minTokens: number;
+  /** Token overlap carried between adjacent fixed-strategy chunks. */
+  overlapTokens: number;
+  /** Optional source path, used to build the structural context header. */
+  filePath?: string;
+}
+
+/**
+ * A single chunk produced by the chunker. startLine/endLine are 1-based and
+ * refer to lines in the original (unmodified) source. contextHeader is a
+ * comment line describing the chunk's structural position (file → class →
+ * method, or heading breadcrumb) and is empty when no structure was detected.
+ */
+export interface ContentChunk {
+  content: string;
+  startLine: number;
+  endLine: number;
+  contextHeader: string;
+}
+
 export interface BudgetSlotDefinition {
   name: string;
   priority: number;
