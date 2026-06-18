@@ -6723,6 +6723,55 @@ async function handleHawkIrDeescalateCase(
   return { success: true, data };
 }
 
+async function handleHawkIrCreateCase(
+  params: Record<string, unknown>,
+  _userId: string,
+): Promise<ToolCallResult> {
+  const events = (params.events as any[] | undefined) ?? [];
+  if (params.dryRun === true) {
+    return {
+      success: true,
+      dryRun: true,
+      data: dryRunResult({
+        toolName: "hawk_ir.create_case",
+        summary: `Would create HAWK IR case "${params.name}" with ${events.length} event(s)`,
+        targetSystem: "hawk_ir",
+        changes: [
+          { field: "case", description: `Create new case "${params.name}"` },
+          { field: "risk_level", to: (params.risk_level as string) || "Low", description: "Set case risk level" },
+          { field: "events", to: `${events.length} event(s)`, description: "Attach events to case" },
+          ...(params.tags ? [{ field: "tags" as const, to: (params.tags as string[]).join(", "), description: "Set tags" }] : []),
+          ...(params.category ? [{ field: "category" as const, to: (params.category as string[]).join(", "), description: "Set categories" }] : []),
+          ...(params.mitre ? [{ field: "mitre" as const, to: (params.mitre as string[]).join(", "), description: "Set MITRE ATT&CK techniques" }] : []),
+        ],
+        riskLevel: "medium",
+        paramsPreview: { name: params.name, eventsCount: events.length, risk_level: params.risk_level },
+      }),
+    };
+  }
+
+  if (!hawkIrService.isConfigured()) {
+    return { success: false, error: "HAWK IR client not configured" };
+  }
+
+  try {
+    const data = await hawkIrService.createCase({
+      name: params.name as string,
+      events: events,
+      risk_level: params.risk_level as string | undefined,
+      tags: params.tags as string[] | undefined,
+      category: params.category as string[] | undefined,
+      mitre: params.mitre as string[] | undefined,
+      notes: params.notes as Array<{ owner_name?: string; note: string }> | undefined,
+      owner: params.owner as string | undefined,
+      group_id: params.group_id as string | undefined,
+    });
+    return { success: true, data };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 async function handleHawkIrAddCaseNote(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -10189,6 +10238,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   "hawk_ir.get_risky_open_cases": handleHawkIrGetRiskyOpenCases,
   "hawk_ir.get_escalated_cases": handleHawkIrGetEscalatedCases,
   "hawk_ir.deescalate_case": handleHawkIrDeescalateCase,
+  "hawk_ir.create_case": handleHawkIrCreateCase,
   "hawk_ir.add_case_note": handleHawkIrAddCaseNote,
   "hawk_ir.update_case_status": handleHawkIrUpdateCaseStatus,
   "hawk_ir.update_case_risk": handleHawkIrUpdateCaseRisk,
