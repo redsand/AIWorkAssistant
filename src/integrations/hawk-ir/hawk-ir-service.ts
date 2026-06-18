@@ -20,6 +20,9 @@ import type {
   MonthlySummaryWindow,
   MonthlySummary,
   CaseRiskLevel,
+  CreateCaseEvent,
+  CreateCaseRequest,
+  CreateCaseResponse,
 } from "./types";
 
 const riskPriority: Record<string, number> = { low: 1, medium: 2, moderate: 2, high: 3, critical: 4, informational: 0 };
@@ -190,6 +193,32 @@ export class HawkIrService {
 
   async deescalateCase(caseId: string, reason: string, note?: string): Promise<any> {
     return this.client.deescalateCase(caseId, reason, note);
+  }
+
+  async createCase(params: {
+    name: string;
+    events: CreateCaseEvent[];
+    risk_level?: string;
+    tags?: string[];
+    category?: string[];
+    mitre?: string[];
+    notes?: Array<{ owner_name?: string; note: string }>;
+    owner?: string;
+    group_id?: string;
+  }): Promise<CreateCaseResponse> {
+    const request: CreateCaseRequest = {
+      name: params.name,
+      events: params.events,
+      risk_level: params.risk_level as CreateCaseRequest["risk_level"],
+      tags: params.tags,
+      category: params.category,
+      mitre: params.mitre,
+      notes: params.notes,
+      owner: params.owner,
+      group_id: params.group_id,
+    };
+
+    return this.client.createCase(request);
   }
 
   async getCaseCategories(): Promise<any[]> {

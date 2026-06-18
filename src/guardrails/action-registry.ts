@@ -613,6 +613,25 @@ class GuardrailsRegistry {
       impacts: ["hawk_ir", "security_incidents", "alert_suppression"],
     });
 
+    // HAWK IR case creation
+    this.registerAction({
+      id: "hawk_ir.create_case",
+      category: ActionCategory.SECURITY_CHANGE,
+      riskLevel: RiskLevel.MEDIUM,
+      operation: "hawk_ir.case.create",
+      description: "Create a new HAWK IR case with events",
+      requiresApproval: true,
+      requiresMFA: false,
+      requiresDryRun: false,
+      cooldownPeriod: 10000,
+      rateLimits: { maxPerHour: 20, maxPerDay: 50 },
+      allowedUsers: [],
+      allowedRoles: ["admin", "soc", "analyst"],
+      requiresConfirmation: true,
+      requiresJustification: false,
+      impacts: ["hawk_ir", "security_incidents"],
+    });
+
     // HAWK IR quarantine
     this.registerAction({
       id: "hawk_ir.quarantine_host",
