@@ -127,6 +127,43 @@ export type PreferredSource = "claimkit" | "rag" | "blended";
 export type RoutingTier = "ck_primary" | "rag_primary" | "blended";
 
 /**
+ * ClaimKit-first routing strategy (issue #229), decided by a pre-flight
+ * ClaimKit probe before RAG retrieval runs:
+ * - "rag_first": legacy order — ClaimKit-first routing disabled, probe
+ *   unavailable, or probe threw. RAG retrieval runs as before.
+ * - "claimkit_first_skip_rag": probe answered with high confidence; RAG
+ *   retrieval is skipped entirely and the probe answer is used directly.
+ * - "claimkit_first_parallel": probe was medium confidence; RAG runs in
+ *   parallel with a full ClaimKit query so neither adds serial latency.
+ * - "claimkit_first_fallback": probe was low confidence / not answerable;
+ *   fall back to full RAG + full ClaimKit.
+ */
+export type RoutingStrategy =
+  | "rag_first"
+  | "claimkit_first_skip_rag"
+  | "claimkit_first_parallel"
+  | "claimkit_first_fallback";
+
+/**
+ * Telemetry for the ClaimKit-first routing decision. Recorded on every
+ * packet so the comparison dashboard can show how often RAG was skipped and
+ * the latency delta vs. the old RAG-first path.
+ */
+export interface ClaimKitFirstMetrics {
+  strategy: RoutingStrategy;
+  /** Wall-clock latency of the pre-flight ClaimKit probe (0 when not run). */
+  probeLatencyMs: number;
+  /** True when RAG retrieval was skipped because the probe was high-confidence. */
+  ragSkipped: boolean;
+  /**
+   * Estimated latency change vs. the old RAG-first path. Negative = faster.
+   * When RAG was skipped this is the (estimated) RAG retrieval cost avoided;
+   * when RAG ran it is the probe overhead added on top of the RAG-first path.
+   */
+  latencyDeltaMs: number;
+}
+
+/**
  * A pointer the chat layer uses to back-fill RAG hallucinationRate / grounded
  * onto a live comparison_case row after the agent's response is available.
  *
@@ -169,6 +206,7 @@ export interface ContextPacket {
     compressionRatio: number;
     budgetUtilization: Record<string, number>;
     stageTimings: Record<string, number>;
+    claimkitFirstMetrics: ClaimKitFirstMetrics;
     claimkit: {
       enabled: boolean;
       available: boolean;

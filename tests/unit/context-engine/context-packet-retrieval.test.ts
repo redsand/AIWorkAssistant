@@ -42,6 +42,10 @@ const mockEnv = {
   CLAIMKIT_GAP_FILL_THRESHOLD: 0.3,
   CLAIMKIT_GAP_FILL_MAX_QUERIES: 2,
   CLAIMKIT_LIVE_GROUNDING_RATE: 0,
+  CLAIMKIT_FIRST_ROUTING: false,
+  CLAIMKIT_HIGH_CONFIDENCE_THRESHOLD: 0.8,
+  CLAIMKIT_LOW_CONFIDENCE_THRESHOLD: 0.5,
+  CLAIMKIT_FIRST_PROBE_TIMEOUT_MS: 500,
   KNOWLEDGE_GRAPH_QUERY_ENABLED: true,
   KNOWLEDGE_GRAPH_DOC_LIMIT: 5,
   KNOWLEDGE_GRAPH_COMMUNITY_LIMIT: 10,
@@ -161,6 +165,10 @@ describe("assembleContextPacket retrieval and context sections", () => {
     vi.clearAllMocks();
     mockEnv.RAG_INCLUDE_LOCAL_SOURCES = true;
     mockEnv.CLAIMKIT_ENABLED = false;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = false;
+    mockEnv.CLAIMKIT_HIGH_CONFIDENCE_THRESHOLD = 0.8;
+    mockEnv.CLAIMKIT_LOW_CONFIDENCE_THRESHOLD = 0.5;
+    mockEnv.CLAIMKIT_FIRST_PROBE_TIMEOUT_MS = 500;
     mockClaimKitAdapter.isAvailable.mockReturnValue(false);
     mockClaimKitAdapter.initialize.mockResolvedValue(false);
     mockClaimKitAdapter.getInitError.mockReturnValue(null);
@@ -304,5 +312,105 @@ describe("assembleContextPacket retrieval and context sections", () => {
     expect(docs.content).not.toContain("hidden");
     expect(mockCodebaseSearch).not.toHaveBeenCalled();
     expect(packet.diagnostics.documentsRetrieved).toBe(1);
+  });
+
+  function ckResult(
+    confidence: number,
+    answerability: string,
+    claimCount = 3,
+  ) {
+    return {
+      answer: "ClaimKit structured answer.",
+      citations: [{ claimId: "c1", sourceId: "s1", text: "evidence text" }],
+      confidence,
+      contradictions: [],
+      missingEvidence: [],
+      answerability,
+      metadata: {
+        sourceIds: ["s1", "s2"],
+        claimCount,
+        processingTimeMs: 12,
+        retrievalScore: 0.9,
+      },
+    };
+  }
+
+  it("skips RAG retrieval when the ClaimKit-first probe is high-confidence", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.95, "answerable"));
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Should not be retrieved"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "what is the deploy process",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(packet.diagnostics.claimkitFirstMetrics.strategy).toBe("claimkit_first_skip_rag");
+    expect(packet.diagnostics.claimkitFirstMetrics.ragSkipped).toBe(true);
+    expect(packet.diagnostics.documentsRetrieved).toBe(0);
+    // RAG stores must never be touched on the skip path.
+    expect(mockKnowledgeSearch).not.toHaveBeenCalled();
+    expect(mockCodebaseSearch).not.toHaveBeenCalled();
+    // The probe answer is reused — ClaimKit is queried exactly once.
+    expect(mockClaimKitAdapter.query).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs RAG retrieval when the ClaimKit-first probe is medium-confidence (parallel path)", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.6, "partially-answerable"));
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(packet.diagnostics.claimkitFirstMetrics.strategy).toBe("claimkit_first_parallel");
+    expect(packet.diagnostics.claimkitFirstMetrics.ragSkipped).toBe(false);
+    expect(packet.diagnostics.documentsRetrieved).toBeGreaterThan(0);
+    expect(mockKnowledgeSearch).toHaveBeenCalled();
+  });
+
+  it("falls back to rag_first when the ClaimKit-first probe throws", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockRejectedValue(new Error("probe boom"));
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(packet.diagnostics.claimkitFirstMetrics.strategy).toBe("rag_first");
+    expect(packet.diagnostics.claimkitFirstMetrics.ragSkipped).toBe(false);
+    expect(packet.diagnostics.documentsRetrieved).toBeGreaterThan(0);
+    expect(mockKnowledgeSearch).toHaveBeenCalled();
   });
 });

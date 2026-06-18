@@ -47,6 +47,8 @@ export interface ComparisonCaseRow {
   ck_section_tokens: number | null;
   /** JSON-encoded ConfidenceTrace (Phase 1 calibration telemetry). */
   confidence_trace: string | null;
+  /** ClaimKit-first routing strategy decided for this query (issue #229). */
+  routing_strategy: string | null;
   created_at: string;
 }
 
@@ -247,6 +249,13 @@ export interface SaveCaseInput {
    * stage-level data instead of a final number.
    */
   confidenceTrace?: unknown;
+  /**
+   * ClaimKit-first routing strategy chosen for this query (issue #229):
+   * "rag_first", "claimkit_first_skip_rag", "claimkit_first_parallel", or
+   * "claimkit_first_fallback". Lets the dashboard measure how often RAG was
+   * skipped and the latency impact of each path.
+   */
+  routingStrategy?: string | null;
   rag: {
     contextTokens: number;
     sections: number;

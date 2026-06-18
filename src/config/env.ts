@@ -366,6 +366,26 @@ const envSchema = z.object({
   // Each adds one knowledge-store search; cap small to bound latency.
   CLAIMKIT_GAP_FILL_MAX_QUERIES: z.coerce.number().default(3),
 
+  // ClaimKit-first routing (issue #229). When enabled, a quick pre-flight
+  // ClaimKit probe runs BEFORE RAG retrieval. Based on the probe confidence
+  // the assembler either skips RAG entirely (high confidence), runs RAG in
+  // parallel with a full ClaimKit query (medium), or falls back to full RAG
+  // (low confidence / not answerable). Inverts the old "RAG-first, ClaimKit
+  // supplementary" order to "ClaimKit-first, RAG-fallback".
+  CLAIMKIT_FIRST_ROUTING: z
+    .string()
+    .transform((s) => s === "true")
+    .default("true"),
+  // Skip RAG entirely when the probe confidence is at or above this value.
+  CLAIMKIT_HIGH_CONFIDENCE_THRESHOLD: z.coerce.number().default(0.8),
+  // Run RAG in parallel with a full ClaimKit query when the probe confidence
+  // is at or above this value (but below the high threshold). Below this, fall
+  // back to full RAG + full ClaimKit.
+  CLAIMKIT_LOW_CONFIDENCE_THRESHOLD: z.coerce.number().default(0.5),
+  // Hard cap on the pre-flight ClaimKit probe. Kept small so a slow probe
+  // degrades into "rag_first" rather than adding latency to every query.
+  CLAIMKIT_FIRST_PROBE_TIMEOUT_MS: z.coerce.number().default(500),
+
   // Knowledge graph retrieval controls
   KNOWLEDGE_GRAPH_QUERY_ENABLED: z
     .string()
