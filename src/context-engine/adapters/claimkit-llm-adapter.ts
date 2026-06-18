@@ -31,6 +31,9 @@ import { env } from "../../config/env";
  */
 function isNonRetryableError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
+  // A malformed-JSON response comes back fast and is deterministic — retrying
+  // with the long "provider warming up" backoff just wastes the budget.
+  if (err instanceof SyntaxError) return true;
   const obj = err as Record<string, unknown>;
   const status = typeof obj.status === "number" ? obj.status : undefined;
   if (status !== undefined && status >= 400 && status < 500 && status !== 429) {
