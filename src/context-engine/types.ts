@@ -167,6 +167,19 @@ export interface ClaimKitFirstMetrics {
 }
 
 /**
+ * Telemetry for the query-rewriting pass (issue #230). Recorded on every packet
+ * so the dashboard can show how often rewriting fired, what it extracted, and
+ * that it stayed within the < 100ms budget.
+ */
+export interface QueryRewriteMetrics {
+  enabled: boolean;
+  latencyMs: number;
+  variantCount: number;
+  entityRefCount: number;
+  abbreviationCount: number;
+}
+
+/**
  * A pointer the chat layer uses to back-fill RAG hallucinationRate / grounded
  * onto a live comparison_case row after the agent's response is available.
  *
@@ -210,6 +223,7 @@ export interface ContextPacket {
     budgetUtilization: Record<string, number>;
     stageTimings: Record<string, number>;
     claimkitFirstMetrics: ClaimKitFirstMetrics;
+    queryRewriteMetrics: QueryRewriteMetrics;
     claimkit: {
       enabled: boolean;
       available: boolean;

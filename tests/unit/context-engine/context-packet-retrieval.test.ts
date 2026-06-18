@@ -50,6 +50,8 @@ const mockEnv = {
   KNOWLEDGE_GRAPH_DOC_LIMIT: 5,
   KNOWLEDGE_GRAPH_COMMUNITY_LIMIT: 10,
   KNOWLEDGE_GRAPH_CACHE_TTL_MS: 30000,
+  QUERY_REWRITER_ENABLED: true,
+  QUERY_REWRITE_VARIANT_COUNT: 3,
 };
 
 function installMocks() {
@@ -170,6 +172,8 @@ describe("assembleContextPacket retrieval and context sections", () => {
     mockEnv.CLAIMKIT_HIGH_CONFIDENCE_THRESHOLD = 0.8;
     mockEnv.CLAIMKIT_LOW_CONFIDENCE_THRESHOLD = 0.5;
     mockEnv.CLAIMKIT_FIRST_PROBE_TIMEOUT_MS = 500;
+    mockEnv.QUERY_REWRITER_ENABLED = true;
+    mockEnv.QUERY_REWRITE_VARIANT_COUNT = 3;
     mockClaimKitAdapter.isAvailable.mockReturnValue(false);
     mockClaimKitAdapter.initialize.mockResolvedValue(false);
     mockClaimKitAdapter.getInitError.mockReturnValue(null);
@@ -473,5 +477,96 @@ describe("assembleContextPacket retrieval and context sections", () => {
     expect(packet.diagnostics.claimkitFirstMetrics.ragSkipped).toBe(false);
     expect(packet.diagnostics.documentsRetrieved).toBeGreaterThan(0);
     expect(mockKnowledgeSearch).toHaveBeenCalled();
+  });
+
+  // ── query rewriting reaches retrieval adapters (issue #230) ──────────────
+
+  it("passes the rewritten (filler-stripped, abbreviation-expanded) query to retrieval adapters", async () => {
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "ClaimKit contradiction handling"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    await assembleContextPacket({
+      mode: "engineering",
+      query: "Can you tell me how CK handles errors",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    // The adapter must see the dense rewrite ("ClaimKit handles errors"), not
+    // the raw conversational query.
+    expect(mockKnowledgeSearch).toHaveBeenCalledWith("ClaimKit handles errors", { limit: 10 });
+    expect(mockKnowledgeSearch).not.toHaveBeenCalledWith(
+      "Can you tell me how CK handles errors",
+      expect.anything(),
+    );
+  });
+
+  it("passes the raw query through to retrieval adapters when QUERY_REWRITER_ENABLED is false", async () => {
+    mockEnv.QUERY_REWRITER_ENABLED = false;
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    await assembleContextPacket({
+      mode: "engineering",
+      query: "Can you tell me how CK handles errors",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    // Identity rewrite: the adapter receives the query exactly as typed, and no
+    // variant fan-out occurs (a single primary retrieval).
+    expect(mockKnowledgeSearch).toHaveBeenCalledWith(
+      "Can you tell me how CK handles errors",
+      { limit: 10 },
+    );
+    expect(mockKnowledgeSearch).not.toHaveBeenCalledWith("ClaimKit handles errors", expect.anything());
+    expect(mockKnowledgeSearch).toHaveBeenCalledTimes(1);
+  });
+
+  it("fans variant retrievals out up to QUERY_REWRITE_VARIANT_COUNT (not a hard-coded cap)", async () => {
+    // "how should ..." stays question-shaped after filler removal, so the
+    // rewriter yields three distinct variants. With the cap at 3 the engine must
+    // retrieve all three variants plus the primary (4 searches). A hard-coded
+    // slice(0, 2) would only fire 3.
+    mockEnv.QUERY_REWRITE_VARIANT_COUNT = 3;
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    await assembleContextPacket({
+      mode: "engineering",
+      query: "how should the auth login error be handled",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockKnowledgeSearch).toHaveBeenCalledTimes(4);
+  });
+
+  it("respects a lower QUERY_REWRITE_VARIANT_COUNT for variant fan-out", async () => {
+    mockEnv.QUERY_REWRITE_VARIANT_COUNT = 1;
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    await assembleContextPacket({
+      mode: "engineering",
+      query: "how should the auth login error be handled",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    // Primary + exactly one variant.
+    expect(mockKnowledgeSearch).toHaveBeenCalledTimes(2);
   });
 });

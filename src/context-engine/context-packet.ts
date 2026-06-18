@@ -21,6 +21,7 @@ import type {
   GroundingHandle,
 } from "./types";
 import { claimKitAdapter } from "./adapters/claimkit-adapter";
+import { rewriteQuerySafe, boostEntityMatches, mergeAndDedupe } from "./query-rewriter";
 import { ingestScoredDocumentsForQuery } from "./claimkit-ingestion";
 import { saveLiveComparison } from "../comparison-runs/auto-capture";
 import type { CkStatus } from "../comparison-runs/types";
@@ -270,6 +271,25 @@ export async function assembleContextPacket(
     console.warn(`[ClaimKit] Skipped — ${claimKitAdapter.getInitError()}`);
   }
 
+  // ── Query rewriting (issue #230) ─────────────────────────────────────
+  // Clean conversational filler, expand abbreviations (CK → ClaimKit), and
+  // extract entity references BEFORE anything is embedded. `retrievalQuery` is
+  // the dense, rewritten form sent to every embedding-based retrieval path
+  // (ClaimKit probe/query + RAG stores). The original `query` is kept for
+  // history scoring, comparison logging, and the system prompt so those flows
+  // see exactly what the user typed.
+  const rewritten = rewriteQuerySafe(query);
+  const retrievalQuery = rewritten.rewritten;
+  if (rewritten.rewritten !== query || rewritten.variants.length > 0 || rewritten.entityRefs.length > 0) {
+    // Log only structured counts, never the raw query text — query strings can
+    // carry user PII and should not land in shared log streams.
+    console.log(
+      `[QueryRewriter] rewrote query | chars ${query.length}→${retrievalQuery.length} | ` +
+      `variants=${rewritten.variants.length} | entities=${rewritten.entityRefs.length} | ` +
+      `abbr=${rewritten.abbreviationExpansions.size} | ${rewritten.rewriteLatencyMs}ms`,
+    );
+  }
+
   // ── ClaimKit-first pre-flight probe (issue #229) ─────────────────────
   // Query ClaimKit BEFORE running RAG. A high-confidence probe lets us skip
   // RAG entirely; medium confidence runs both in parallel; low confidence /
@@ -284,7 +304,7 @@ export async function assembleContextPacket(
     const probeStart = Date.now();
     try {
       ckProbe = await withAbortableTimeout(
-        (signal) => claimKitAdapter.query(query, { signal }),
+        (signal) => claimKitAdapter.query(retrievalQuery, { signal }),
         env.CLAIMKIT_FIRST_PROBE_TIMEOUT_MS,
         null,
       );
@@ -317,19 +337,49 @@ export async function assembleContextPacket(
   onProgress?.("Retrieving knowledge sources...");
   const ragStart = Date.now();
 
-  const [docs, selectedMessages] = await Promise.all([
+  let [docs, selectedMessages] = await Promise.all([
     // ClaimKit-first skip: the high-confidence probe already answered, so we
     // pay none of the RAG retrieval cost (embedding lookup, keyword search,
     // graph traversal).
     ragSkipped
       ? Promise.resolve([] as ScoredDocument[])
-      : timeStage("retrieveStoresMs", () => retrieveAllStores(query)),
+      : timeStage("retrieveStoresMs", () => retrieveAllStores(retrievalQuery)),
     Promise.resolve().then(() => {
+      // History relevance scoring uses the ORIGINAL query — message decay is
+      // about what the user actually said, not the embedding-tuned rewrite.
       const scored = scoreMessages(sessionMessages, query);
       const deduped = deduplicateByJaccard(scored);
       return selectMessages(deduped, historySlot.allocatedTokens);
     }),
   ]);
+
+  // ── Query-rewrite augmentation (issue #230) ──────────────────────────
+  // When RAG ran, (a) run parallel retrieval for the top variants and merge
+  // with dedup, then (b) boost docs that mention an extracted entity. Skipped
+  // entirely on the ClaimKit-first skip path (no RAG docs to augment).
+  if (!ragSkipped && (rewritten.variants.length > 0 || rewritten.entityRefs.length > 0)) {
+    await timeStage("queryRewriteAugmentMs", async () => {
+      if (rewritten.variants.length > 0) {
+        const variantResults = await Promise.all(
+          rewritten.variants
+            .slice(0, env.QUERY_REWRITE_VARIANT_COUNT)
+            .map((v, i) =>
+              retrieveAllStores(v).catch((err) => {
+                console.warn(
+                  `[QueryRewriter] variant #${i + 1} retrieval failed:`,
+                  err instanceof Error ? err.message : err,
+                );
+                return [] as ScoredDocument[];
+              }),
+            ),
+        );
+        docs = mergeAndDedupe([docs, ...variantResults]);
+      }
+      if (rewritten.entityRefs.length > 0) {
+        docs = boostEntityMatches(docs, rewritten.entityRefs);
+      }
+    });
+  }
 
   // Per-request latency delta vs. the old RAG-first path (issue #229
   // follow-up). This is computed ONLY from this request's own timings — it
@@ -458,7 +508,7 @@ export async function assembleContextPacket(
       const ckStart = Date.now();
       try {
         claimKitResult = await withAbortableTimeout(
-          (signal) => claimKitAdapter.query(query, { signal }),
+          (signal) => claimKitAdapter.query(retrievalQuery, { signal }),
           env.CLAIMKIT_QUERY_TIMEOUT_MS,
           null,
         );
@@ -1190,6 +1240,13 @@ export async function assembleContextPacket(
         probeLatencyMs,
         ragSkipped,
         latencyDeltaMs,
+      },
+      queryRewriteMetrics: {
+        enabled: env.QUERY_REWRITER_ENABLED,
+        latencyMs: rewritten.rewriteLatencyMs,
+        variantCount: rewritten.variants.length,
+        entityRefCount: rewritten.entityRefs.length,
+        abbreviationCount: rewritten.abbreviationExpansions.size,
       },
       claimkit: {
         enabled: env.CLAIMKIT_ENABLED,
