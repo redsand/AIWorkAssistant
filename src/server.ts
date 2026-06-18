@@ -126,7 +126,7 @@ export async function buildServer() {
   await server.register(agentRunsRoutes, { prefix: "/api" });
   await server.register(workItemRoutes, { prefix: "/api/work-items" });
   await server.register(extractionRoutes, { prefix: "/api/extraction" });
-  await server.register(jitbitSyncRoutes);
+  await server.register(jitbitSyncRoutes, { prefix: "/api/sync" });
   await server.register(detectionRoutes, { prefix: "/api" });
   await server.register(ctoRoutes, { prefix: "/api/cto" });
   await server.register(personalOsRoutes, { prefix: "/api/personal-os" });

@@ -131,6 +131,71 @@ export function isAuthConfigured(): boolean {
   return !!getAuthPassword();
 }
 
+/**
+ * Verify credentials on a single request. Returns true if the request may
+ * proceed; otherwise sends a 401/403 response and returns false. When neither
+ * a password nor an API key is configured, the server runs unprotected and the
+ * request is allowed through.
+ *
+ * Shared by the global onRequest hook and the per-route {@link requireAuth}
+ * guard so both enforce identical credential checks.
+ */
+export function verifyRequestAuth(
+  request: FastifyRequest,
+  reply: FastifyReply,
+): boolean {
+  const authPassword = getAuthPassword();
+  const apiKey = getApiKeyForAuth();
+
+  if (!authPassword && !apiKey) {
+    return true;
+  }
+
+  const authHeader = request.headers["authorization"];
+  const token =
+    authHeader?.replace("Bearer ", "") ||
+    (request.headers["x-api-key"] as string | undefined) ||
+    (request.query as Record<string, string>).apiKey;
+
+  if (!token) {
+    reply.code(401).send({
+      error: "Authentication required",
+      message: "Provide Authorization: Bearer <token> or X-API-Key header.",
+    });
+    return false;
+  }
+
+  const session = validateSessionToken(token);
+  if (session) {
+    request.userId = session.userId;
+    return true;
+  }
+
+  if (apiKey && timingSafeEqual(token, apiKey)) {
+    request.userId = "api-key-user";
+    return true;
+  }
+
+  reply.code(403).send({
+    error: "Forbidden",
+    message: "Invalid or expired credentials.",
+  });
+  return false;
+}
+
+/**
+ * Per-route preHandler that enforces authentication on sensitive endpoints
+ * regardless of the global middleware's path exemptions. Use on routes that
+ * trigger side effects (e.g. external syncs) so the guard is explicit at the
+ * route definition.
+ */
+export async function requireAuth(
+  request: FastifyRequest,
+  reply: FastifyReply,
+): Promise<void> {
+  verifyRequestAuth(request, reply);
+}
+
 export async function authMiddleware(fastify: FastifyInstance) {
   fastify.addHook(
     "onRequest",
@@ -159,41 +224,7 @@ export async function authMiddleware(fastify: FastifyInstance) {
         return;
       }
 
-      const authPassword = getAuthPassword();
-      const apiKey = getApiKeyForAuth();
-
-      if (!authPassword && !apiKey) {
-        return;
-      }
-
-      const authHeader = request.headers["authorization"];
-      const token =
-        authHeader?.replace("Bearer ", "") ||
-        (request.headers["x-api-key"] as string | undefined) ||
-        (request.query as Record<string, string>).apiKey;
-
-      if (!token) {
-        return reply.code(401).send({
-          error: "Authentication required",
-          message: "Provide Authorization: Bearer <token> or X-API-Key header.",
-        });
-      }
-
-      const session = validateSessionToken(token);
-      if (session) {
-        request.userId = session.userId;
-        return;
-      }
-
-      if (apiKey && timingSafeEqual(token, apiKey)) {
-        request.userId = "api-key-user";
-        return;
-      }
-
-      return reply.code(403).send({
-        error: "Forbidden",
-        message: "Invalid or expired credentials.",
-      });
+      verifyRequestAuth(request, reply);
     },
   );
 }

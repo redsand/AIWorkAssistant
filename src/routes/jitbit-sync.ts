@@ -1,6 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { jitbitSyncService } from "../sync/jitbit-sync-service";
+import { requireAuth } from "../middleware/auth";
 
 const jitbitSyncInputSchema = z.object({
   days: z.number().int().min(1).max(90).optional(),
@@ -10,7 +11,7 @@ const jitbitSyncInputSchema = z.object({
 });
 
 export async function jitbitSyncRoutes(fastify: FastifyInstance) {
-  fastify.post("/api/sync/jitbit", async (request, reply) => {
+  fastify.post("/jitbit", { preHandler: requireAuth }, async (request, reply) => {
     const parsed = jitbitSyncInputSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({
@@ -21,7 +22,7 @@ export async function jitbitSyncRoutes(fastify: FastifyInstance) {
     return jitbitSyncService.syncFromJitbit(parsed.data);
   });
 
-  fastify.get("/api/sync/jitbit/status", async () => {
+  fastify.get("/jitbit/status", { preHandler: requireAuth }, async () => {
     return { syncedCount: jitbitSyncService.getSyncedCount() };
   });
 }

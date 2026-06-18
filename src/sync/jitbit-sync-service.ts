@@ -1,6 +1,7 @@
 import type { JitbitSyncInput, JitbitSyncOutput, JitbitTicket } from "./types";
 import { workItemDatabase, WorkItemDatabase } from "../work-items/database";
 import type { WorkItemPriority } from "../work-items/types";
+import { errorLog } from "../observability/error-log";
 
 const JITBIT_SOURCE = "jitbit";
 
@@ -54,8 +55,18 @@ export class JitbitSyncService {
           jitbitTicketId: ticket.id,
           title: ticket.subject,
         });
-      } catch {
+      } catch (error) {
         result.errors++;
+        void errorLog.log({
+          source: "jitbit-sync",
+          category: "create_work_item_failed",
+          message:
+            error instanceof Error
+              ? error.message
+              : `Failed to sync Jitbit ticket ${ticket.id}`,
+          error,
+          context: { jitbitTicketId: ticket.id },
+        });
       }
     }
 

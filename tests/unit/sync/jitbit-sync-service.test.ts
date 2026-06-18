@@ -107,6 +107,32 @@ describe("JitbitSyncService", () => {
       const created = db.getWorkItem(result.items[0].workItemId)!;
       expect(created.description).toBe("No body here");
     });
+
+    it("increments errors and continues when createWorkItem throws", async () => {
+      const failingDb = {
+        findByTicketSource: () => undefined,
+        createWorkItem: (input: { sourceExternalId?: string }) => {
+          if (input.sourceExternalId === "401") {
+            throw new Error("DB write failed");
+          }
+          return { id: `wi-${input.sourceExternalId}` };
+        },
+      } as unknown as WorkItemDatabase;
+      const failingService = new JitbitSyncService(failingDb);
+
+      const result = await failingService.syncTickets([
+        { id: 400, subject: "Succeeds" },
+        { id: 401, subject: "Fails to write" },
+      ]);
+
+      expect(result.synced).toBe(1);
+      expect(result.errors).toBe(1);
+      expect(result.skipped).toBe(0);
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].jitbitTicketId).toBe(400);
+      // The failed ticket must not be recorded as synced.
+      expect(failingService.isAlreadySynced(401)).toBe(false);
+    });
   });
 
   describe("isAlreadySynced", () => {
