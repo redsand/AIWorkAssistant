@@ -280,6 +280,10 @@ const envSchema = z.object({
   RAG_MAX_FILE_SIZE_KB: z.coerce.number().default(256),
   RAG_CHUNK_SIZE: z.coerce.number().default(500),
   RAG_CHUNK_OVERLAP: z.coerce.number().default(50),
+  // Chunking strategy for codebase/knowledge ingestion. "structural" splits on
+  // function/class/heading boundaries (token-aware); "fixed" uses the legacy
+  // sliding-window approach. See src/context-engine/chunker.ts.
+  RAG_CHUNK_STRATEGY: z.enum(["structural", "fixed"]).default("structural"),
 
   // ClaimKit (RAG replacement)
   CLAIMKIT_ENABLED: z

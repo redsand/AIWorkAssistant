@@ -2,6 +2,9 @@ import Database from "better-sqlite3";
 import * as fs from "fs";
 import * as path from "path";
 import { ingestSingleKnowledgeEntry } from "../context-engine/claimkit-ingestion";
+import { chunkContent } from "../context-engine/chunker";
+import { estimateTokens } from "../context-engine/budget";
+import { env } from "../config/env";
 
 export interface KnowledgeEntry {
   id: string;
@@ -15,6 +18,8 @@ export interface KnowledgeEntry {
   createdAt: Date;
   accessedAt: Date;
   accessCount: number;
+  /** Set on sub-chunks split from an oversized entry; references the parent id. */
+  parentId?: string;
 }
 
 export interface SearchResult {
@@ -51,13 +56,25 @@ class KnowledgeStore {
         keywords TEXT DEFAULT '[]',
         created_at TEXT NOT NULL,
         accessed_at TEXT NOT NULL,
-        access_count INTEGER DEFAULT 0
+        access_count INTEGER DEFAULT 0,
+        parent_id TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_knowledge_source ON knowledge(source);
       CREATE INDEX IF NOT EXISTS idx_knowledge_tags ON knowledge(tags);
       CREATE INDEX IF NOT EXISTS idx_knowledge_session ON knowledge(session_id);
     `);
+
+    // Migrate older databases that predate the parent_id column.
+    const cols = this.db.prepare(`PRAGMA table_info(knowledge)`).all() as {
+      name: string;
+    }[];
+    if (!cols.some((c) => c.name === "parent_id")) {
+      this.db.exec(`ALTER TABLE knowledge ADD COLUMN parent_id TEXT`);
+    }
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_knowledge_parent ON knowledge(parent_id)`,
+    );
   }
 
   store(
@@ -71,8 +88,8 @@ class KnowledgeStore {
 
     this.db
       .prepare(
-        `INSERT OR REPLACE INTO knowledge (id, source, title, content, url, file_path, tags, session_id, keywords, created_at, accessed_at, access_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+        `INSERT OR REPLACE INTO knowledge (id, source, title, content, url, file_path, tags, session_id, keywords, created_at, accessed_at, access_count, parent_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)`,
       )
       .run(
         id,
@@ -87,6 +104,13 @@ class KnowledgeStore {
         entry.createdAt.toISOString(),
         now,
       );
+
+    // Large entries (e.g. a scraped web page) are too coarse for precise
+    // retrieval. Split them into heading-aware sub-chunks that reference the
+    // parent so the full entry and its parts both remain searchable.
+    if (estimateTokens(entry.content) > 2 * env.RAG_CHUNK_SIZE) {
+      this.storeSubChunks(id, entry, now);
+    }
 
     ingestSingleKnowledgeEntry({
       id,
@@ -103,6 +127,54 @@ class KnowledgeStore {
     }).catch(err => console.warn(`[KnowledgeStore] Incremental ClaimKit ingestion failed for ${id}:`, err));
 
     return id;
+  }
+
+  // Heading-aware splitting of an oversized entry into child rows. Sub-chunks
+  // carry parent_id so they can be grouped back to the source entry, and are
+  // not re-ingested into ClaimKit (the parent already covers that content).
+  private storeSubChunks(
+    parentId: string,
+    entry: Omit<KnowledgeEntry, "id" | "accessedAt" | "accessCount">,
+    now: string,
+  ): void {
+    const chunks = chunkContent(entry.content, "markdown", {
+      strategy: "structural",
+      maxTokens: env.RAG_CHUNK_SIZE,
+      minTokens: Math.floor(env.RAG_CHUNK_SIZE * 0.3),
+      overlapTokens: env.RAG_CHUNK_OVERLAP,
+    });
+
+    if (chunks.length <= 1) return;
+
+    const insert = this.db.prepare(
+      `INSERT OR REPLACE INTO knowledge (id, source, title, content, url, file_path, tags, session_id, keywords, created_at, accessed_at, access_count, parent_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+    );
+    const tagsJson = JSON.stringify(entry.tags);
+
+    const tx = this.db.transaction(() => {
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        const body = chunk.contextHeader
+          ? `${chunk.contextHeader}\n${chunk.content}`
+          : chunk.content;
+        insert.run(
+          `${parentId}-c${i}`,
+          entry.source,
+          `${entry.title} (part ${i + 1})`,
+          body,
+          entry.url || null,
+          entry.filePath || null,
+          tagsJson,
+          entry.sessionId || null,
+          JSON.stringify(this.extractKeywords(body)),
+          entry.createdAt.toISOString(),
+          now,
+          parentId,
+        );
+      }
+    });
+    tx();
   }
 
   search(
@@ -452,6 +524,7 @@ class KnowledgeStore {
       createdAt: new Date(row.created_at),
       accessedAt: new Date(row.accessed_at),
       accessCount: row.access_count,
+      parentId: row.parent_id || undefined,
     };
   }
 }
