@@ -113,11 +113,16 @@ describe("Workflow API", () => {
       expect(response.json().error).toBe("Approval required");
     });
 
-    it("allows an approval-required action with a distinct x-approver", async () => {
+    it("allows an approval-required action with a distinct, verified approver", async () => {
+      // The approver proves identity with a real session token (auth is mocked
+      // off here so the actor resolves to "unknown" — the approver "reviewer" is
+      // a verified, distinct identity).
+      const { createSessionToken } = await import("../../src/middleware/auth");
+      const reviewerToken = createSessionToken("reviewer");
       const response = await server.inject({
         method: "POST",
         url: "/api/workflow/actions/escalate-hawk-ir-case/execute",
-        headers: { "x-approver": "reviewer" },
+        headers: { "x-approver-token": reviewerToken },
         payload: { caseId: "CASE-1", escalationReason: "active intrusion" },
       });
       expect(response.statusCode).toBe(200);
@@ -125,6 +130,17 @@ describe("Workflow API", () => {
       expect(body.actionId).toBe("escalate-hawk-ir-case");
       expect(body.status).toBe("running");
       expect(body.approvedBy).toBe("reviewer");
+    });
+
+    it("rejects an approval-required action when the approver token is invalid", async () => {
+      const response = await server.inject({
+        method: "POST",
+        url: "/api/workflow/actions/escalate-hawk-ir-case/execute",
+        headers: { "x-approver-token": "bogus-token" },
+        payload: { caseId: "CASE-1", escalationReason: "active intrusion" },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json().error).toBe("Invalid approver credentials");
     });
 
     it("rejects a non-object body", async () => {

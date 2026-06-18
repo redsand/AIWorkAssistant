@@ -4,7 +4,7 @@ import {
   ApprovalRequiredError,
   SelfApprovalError,
 } from "../workflow/workflow-engine";
-import { requireAuth } from "../middleware/auth";
+import { requireAuth, validateSessionToken } from "../middleware/auth";
 
 // Registered under the /api/workflow prefix (see server.ts), matching the
 // prefix-registration pattern used by the other route modules.
@@ -51,16 +51,37 @@ export async function workflowRoutes(fastify: FastifyInstance) {
       }
       const params = (body ?? {}) as Record<string, unknown>;
 
-      // The triggering identity comes from the authenticated session/API key.
-      // Approval for approval-gated actions must come from a *different*
-      // identity supplied via the x-approver header — enforcing separation of
-      // duties so a caller cannot approve their own escalation. The engine
-      // rejects a missing or self-matching approver.
-      const actor = request.userId ?? "unknown";
-      const approver = (request.headers["x-approver"] as string | undefined)?.trim();
-
-      if (!workflowEngine.getAction(id)) {
+      const action = workflowEngine.getAction(id);
+      if (!action) {
         return reply.status(404).send({ error: "Action not found" });
+      }
+
+      // The triggering identity comes from the authenticated session/API key
+      // resolved by requireAuth. When auth is configured, requireAuth always
+      // populates request.userId before allowing the request through; an absent
+      // actor therefore only occurs in fully unprotected dev mode.
+      const actor = request.userId;
+
+      // Approval must come from a *different* identity that proves ownership of
+      // its own session — not a self-asserted name. The approver presents their
+      // session token via x-approver-token; we validate it against the session
+      // store and derive the verified approver identity. A raw header string is
+      // unverifiable and trivially spoofable, so it is never trusted. The engine
+      // then enforces that the approver differs from the actor.
+      let approver: string | undefined;
+      const approverToken = (
+        request.headers["x-approver-token"] as string | undefined
+      )?.trim();
+      if (approverToken) {
+        const approverSession = validateSessionToken(approverToken);
+        if (!approverSession) {
+          return reply.status(403).send({
+            error: "Invalid approver credentials",
+            message:
+              "x-approver-token must be a valid, active session token for the approving identity.",
+          });
+        }
+        approver = approverSession.userId;
       }
 
       try {
@@ -88,7 +109,8 @@ export async function workflowRoutes(fastify: FastifyInstance) {
 
   // GET /executions/:executionId — track a started execution.
   // Authenticated: execution records carry params that may include sensitive
-  // case data (e.g. HAWK IR case IDs and escalation reasons).
+  // case data (e.g. HAWK IR case IDs and escalation reasons), so access is
+  // restricted to the identity that triggered or approved the execution.
   fastify.get(
     "/executions/:executionId",
     { preHandler: requireAuth },
@@ -97,6 +119,21 @@ export async function workflowRoutes(fastify: FastifyInstance) {
       const execution = workflowEngine.getExecution(executionId);
       if (!execution) {
         return reply.status(404).send({ error: "Execution not found" });
+      }
+
+      // Only the triggering actor or the approver may read the record. When auth
+      // is disabled (no userId) the service is in unprotected dev mode and the
+      // ownership check is skipped along with the rest of auth enforcement.
+      const requester = request.userId;
+      if (
+        requester &&
+        execution.triggeredBy !== requester &&
+        execution.approvedBy !== requester
+      ) {
+        return reply.status(403).send({
+          error: "Forbidden",
+          message: "You may only read executions you triggered or approved.",
+        });
       }
       return execution;
     },

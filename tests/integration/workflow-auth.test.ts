@@ -4,6 +4,10 @@ import type { FastifyInstance } from "fastify";
 // Verifies the execute endpoint is guarded: when auth is configured, an
 // unauthenticated caller must not be able to trigger workflow actions.
 let server: FastifyInstance;
+// A real, validated session token for a *distinct* approver identity. The
+// approver must prove ownership of its own session rather than asserting a name
+// via a header, so the tests mint a genuine token via createSessionToken.
+let approverToken: string;
 
 describe("Workflow API authentication", () => {
   beforeAll(async () => {
@@ -17,6 +21,9 @@ describe("Workflow API authentication", () => {
     const { buildServer } = await import("../../src/server");
     server = await buildServer();
     await server.ready();
+
+    const { createSessionToken } = await import("../../src/middleware/auth");
+    approverToken = createSessionToken("second-reviewer");
   }, 180000);
 
   afterAll(async () => {
@@ -36,7 +43,7 @@ describe("Workflow API authentication", () => {
     const response = await server.inject({
       method: "POST",
       url: "/api/workflow/actions/escalate-hawk-ir-case/execute",
-      headers: { "x-approver": "reviewer" },
+      headers: { "x-approver-token": approverToken },
       payload: { caseId: "CASE-1", escalationReason: "active intrusion" },
     });
     expect(response.statusCode).toBe(401);
@@ -53,24 +60,49 @@ describe("Workflow API authentication", () => {
     expect(response.json().status).toBe("running");
   });
 
-  it("rejects self-approval: the authenticated actor cannot be the approver", async () => {
-    // The API-key identity resolves to "api-key-user"; naming the same identity
-    // as approver is self-approval and must be refused.
+  it("rejects an unverified approver: a self-asserted header cannot stand in for a session", async () => {
+    // An arbitrary, unauthenticated approver token must be refused. The approver
+    // identity is derived only from a validated session — a spoofed value can
+    // never satisfy the separation-of-duties gate.
     const response = await server.inject({
       method: "POST",
       url: "/api/workflow/actions/escalate-hawk-ir-case/execute",
-      headers: { "x-api-key": "test-api-key", "x-approver": "api-key-user" },
+      headers: {
+        "x-api-key": "test-api-key",
+        "x-approver-token": "not-a-real-session-token",
+      },
+      payload: { caseId: "CASE-1", escalationReason: "active intrusion" },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json().error).toBe("Invalid approver credentials");
+  });
+
+  it("rejects self-approval: the authenticated actor cannot be the approver", async () => {
+    // The actor authenticates as a session for "api-key-user"; presenting that
+    // same identity's session token as approver is self-approval and refused.
+    const { createSessionToken } = await import("../../src/middleware/auth");
+    const selfToken = createSessionToken("api-key-user");
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/workflow/actions/escalate-hawk-ir-case/execute",
+      headers: {
+        "x-api-key": "test-api-key",
+        "x-approver-token": selfToken,
+      },
       payload: { caseId: "CASE-1", escalationReason: "active intrusion" },
     });
     expect(response.statusCode).toBe(403);
     expect(response.json().error).toBe("Self-approval not allowed");
   });
 
-  it("allows an approval-gated action when a distinct approver signs off", async () => {
+  it("allows an approval-gated action when a distinct, verified approver signs off", async () => {
     const response = await server.inject({
       method: "POST",
       url: "/api/workflow/actions/escalate-hawk-ir-case/execute",
-      headers: { "x-api-key": "test-api-key", "x-approver": "second-reviewer" },
+      headers: {
+        "x-api-key": "test-api-key",
+        "x-approver-token": approverToken,
+      },
       payload: { caseId: "CASE-1", escalationReason: "active intrusion" },
     });
     expect(response.statusCode).toBe(200);
@@ -109,5 +141,49 @@ describe("Workflow API authentication", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(Array.isArray(response.json().actions)).toBe(true);
+  });
+
+  it("lets the triggering actor read their own execution record", async () => {
+    const { createSessionToken } = await import("../../src/middleware/auth");
+    const aliceToken = createSessionToken("alice");
+
+    const start = await server.inject({
+      method: "POST",
+      url: "/api/workflow/actions/daily-standup-prep/execute",
+      headers: { "x-api-key": aliceToken },
+      payload: {},
+    });
+    expect(start.statusCode).toBe(200);
+    const { id } = start.json();
+
+    const read = await server.inject({
+      method: "GET",
+      url: `/api/workflow/executions/${id}`,
+      headers: { "x-api-key": aliceToken },
+    });
+    expect(read.statusCode).toBe(200);
+    expect(read.json().id).toBe(id);
+  });
+
+  it("forbids a different identity from reading someone else's execution", async () => {
+    const { createSessionToken } = await import("../../src/middleware/auth");
+    const aliceToken = createSessionToken("alice");
+    const malloryToken = createSessionToken("mallory");
+
+    const start = await server.inject({
+      method: "POST",
+      url: "/api/workflow/actions/daily-standup-prep/execute",
+      headers: { "x-api-key": aliceToken },
+      payload: {},
+    });
+    const { id } = start.json();
+
+    const read = await server.inject({
+      method: "GET",
+      url: `/api/workflow/executions/${id}`,
+      headers: { "x-api-key": malloryToken },
+    });
+    expect(read.statusCode).toBe(403);
+    expect(read.json().error).toBe("Forbidden");
   });
 });
