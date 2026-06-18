@@ -285,6 +285,19 @@ const envSchema = z.object({
   // sliding-window approach. See src/context-engine/chunker.ts.
   RAG_CHUNK_STRATEGY: z.enum(["structural", "fixed"]).default("structural"),
 
+  // Query rewriting (issue #230). When enabled, the raw user query is cleaned
+  // (conversational filler removed, abbreviations expanded, entities extracted)
+  // before it is embedded for retrieval. Purely synchronous heuristics, no LLM,
+  // so it adds negligible latency. Set to false to pass the raw query through.
+  QUERY_REWRITER_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("true"),
+  // Number of alternative query formulations generated for ambiguous queries.
+  // The top variants are run as parallel retrievals and merged/deduped with the
+  // primary result. 0 disables variant generation.
+  QUERY_REWRITE_VARIANT_COUNT: z.coerce.number().default(3),
+
   // ClaimKit (RAG replacement)
   CLAIMKIT_ENABLED: z
     .string()
