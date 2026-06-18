@@ -46,12 +46,6 @@ export interface RoutingDecision {
   routingReason: string;
 }
 
-// Most-recently-observed RAG retrieval latency (ms). Used to estimate the
-// time saved when a high-confidence ClaimKit probe lets us skip RAG (issue
-// #229). Seeded to 0 so the first-ever skip reports no estimated savings
-// rather than a fabricated number.
-let recentRagRetrievalMs = 0;
-
 const INSUFFICIENT_EVIDENCE_PATTERNS = [
   "insufficient evidence to answer this question",
   "the available evidence is insufficient",
@@ -337,12 +331,16 @@ export async function assembleContextPacket(
     }),
   ]);
 
-  // Estimate the latency change vs. the old RAG-first path (negative = faster).
-  // When RAG was skipped, the savings is the most-recently-observed RAG
-  // retrieval cost; when RAG ran, the probe added its own latency on top.
-  const ragRetrievalMs = stageTimings.retrieveStoresMs ?? 0;
-  if (!ragSkipped) recentRagRetrievalMs = ragRetrievalMs;
-  const latencyDeltaMs = ragSkipped ? -recentRagRetrievalMs : probeLatencyMs;
+  // Per-request latency delta vs. the old RAG-first path (issue #229
+  // follow-up). This is computed ONLY from this request's own timings — it
+  // never reads another request's RAG latency, so a skip on request B can't
+  // report request A's (stale, unrelated) RAG cost.
+  //   - RAG ran: the only added cost vs. the old path is the probe.
+  //   - RAG skipped: RAG did not run this request, so there is no avoided-RAG
+  //     cost measurable inline. The dashboard derives skip savings in
+  //     aggregate by comparing rag_time_ms across skip vs. non-skip cohorts
+  //     (routing_strategy is persisted on each comparison_case row).
+  const latencyDeltaMs = ragSkipped ? 0 : probeLatencyMs;
 
   const historyTokens = selectedMessages.reduce((sum, s) => sum + s.tokens, 0);
 
@@ -431,41 +429,67 @@ export async function assembleContextPacket(
       }
     }
     stageTimings.claimkitSeedMs = Date.now() - seedStart;
-    onProgress?.("Querying knowledge graph...");
-    const ckStart = Date.now();
-    try {
-      claimKitResult = await withAbortableTimeout(
-        (signal) => claimKitAdapter.query(query, { signal }),
-        env.CLAIMKIT_QUERY_TIMEOUT_MS,
-        null,
+
+    // ClaimKit-first parallel/fallback: the pre-flight probe already queried
+    // ClaimKit against the same claim store. Re-querying only returns
+    // something new when seeding was AWAITED — that is the one case where the
+    // store changed between the probe and now (freshly ingested RAG-derived
+    // claims). When seeding is fire-and-forget (CLAIMKIT_AWAIT_SEED=false, the
+    // default) a second query would race the un-awaited ingest and reproduce
+    // the probe's result, so we reuse the probe and skip the redundant call.
+    // A null probe means routing fell back to rag_first (probe disabled or
+    // threw); there we have no probe result and must run a real query.
+    const canReuseProbe =
+      ckProbe !== null &&
+      routingStrategy !== "rag_first" &&
+      !env.CLAIMKIT_AWAIT_SEED;
+    if (canReuseProbe) {
+      const reused = ckProbe!;
+      claimKitResult = reused;
+      ckMs = probeLatencyMs;
+      stageTimings.claimkitQueryMs = ckMs;
+      ckStatus = reused.metadata.claimCount === 0 ? "no_claims" : "answered";
+      const symbol = reused.answerability === "answerable" ? "✅" : reused.answerability === "partially-answerable" ? "⚠️" : "❌";
+      console.log(
+        `[ClaimKit] ${symbol} ${reused.answerability} | confidence=${(reused.confidence * 100).toFixed(0)}% | claims=${reused.metadata.claimCount} | sources=${reused.metadata.sourceIds.length} | score=${reused.metadata.retrievalScore.toFixed(2)} | ${ckMs}ms (probe reused, ${routingStrategy})`,
       );
-      ckMs = Date.now() - ckStart;
-      stageTimings.claimkitQueryMs = ckMs;
-      if (!claimKitResult) {
-        ckStatus = "timeout";
-        console.warn(`[ClaimKit] Query timed out after ${ckMs}ms (limit: ${env.CLAIMKIT_QUERY_TIMEOUT_MS}ms)`);
-      } else {
-        ckStatus = claimKitResult.metadata.claimCount === 0 ? "no_claims" : "answered";
-        const symbol = claimKitResult.answerability === "answerable" ? "✅" : claimKitResult.answerability === "partially-answerable" ? "⚠️" : "❌";
-        console.log(
-          `[ClaimKit] ${symbol} ${claimKitResult.answerability} | confidence=${(claimKitResult.confidence * 100).toFixed(0)}% | claims=${claimKitResult.metadata.claimCount} | sources=${claimKitResult.metadata.sourceIds.length} | score=${claimKitResult.metadata.retrievalScore.toFixed(2)} | ${ckMs}ms`,
+    } else {
+      onProgress?.("Querying knowledge graph...");
+      const ckStart = Date.now();
+      try {
+        claimKitResult = await withAbortableTimeout(
+          (signal) => claimKitAdapter.query(query, { signal }),
+          env.CLAIMKIT_QUERY_TIMEOUT_MS,
+          null,
         );
-        if (claimKitResult.confidence < 0.1) {
+        ckMs = Date.now() - ckStart;
+        stageTimings.claimkitQueryMs = ckMs;
+        if (!claimKitResult) {
+          ckStatus = "timeout";
+          console.warn(`[ClaimKit] Query timed out after ${ckMs}ms (limit: ${env.CLAIMKIT_QUERY_TIMEOUT_MS}ms)`);
+        } else {
+          ckStatus = claimKitResult.metadata.claimCount === 0 ? "no_claims" : "answered";
+          const symbol = claimKitResult.answerability === "answerable" ? "✅" : claimKitResult.answerability === "partially-answerable" ? "⚠️" : "❌";
           console.log(
-            `[ClaimKit:DEBUG] query="${query.substring(0, 120)}" | ` +
-            `sources=${claimKitResult.metadata.sourceIds.length} | ` +
-            `retrievalScore=${claimKitResult.metadata.retrievalScore.toFixed(3)} | ` +
-            `answer=${claimKitResult.answer.substring(0, 200)} | ` +
-            `missingEvidence=[${claimKitResult.missingEvidence.slice(0, 5).join(", ")}] | ` +
-            `citations=[${claimKitResult.citations.slice(0, 3).map(c => c.sourceId).join(", ")}]`,
+            `[ClaimKit] ${symbol} ${claimKitResult.answerability} | confidence=${(claimKitResult.confidence * 100).toFixed(0)}% | claims=${claimKitResult.metadata.claimCount} | sources=${claimKitResult.metadata.sourceIds.length} | score=${claimKitResult.metadata.retrievalScore.toFixed(2)} | ${ckMs}ms`,
           );
+          if (claimKitResult.confidence < 0.1) {
+            console.log(
+              `[ClaimKit:DEBUG] query="${query.substring(0, 120)}" | ` +
+              `sources=${claimKitResult.metadata.sourceIds.length} | ` +
+              `retrievalScore=${claimKitResult.metadata.retrievalScore.toFixed(3)} | ` +
+              `answer=${claimKitResult.answer.substring(0, 200)} | ` +
+              `missingEvidence=[${claimKitResult.missingEvidence.slice(0, 5).join(", ")}] | ` +
+              `citations=[${claimKitResult.citations.slice(0, 3).map(c => c.sourceId).join(", ")}]`,
+            );
+          }
         }
+      } catch (err) {
+        ckMs = Date.now() - ckStart;
+        ckStatus = "error";
+        stageTimings.claimkitQueryMs = ckMs;
+        console.warn("[ClaimKit] Query failed:", err);
       }
-    } catch (err) {
-      ckMs = Date.now() - ckStart;
-      ckStatus = "error";
-      stageTimings.claimkitQueryMs = ckMs;
-      console.warn("[ClaimKit] Query failed:", err);
     }
   }
 

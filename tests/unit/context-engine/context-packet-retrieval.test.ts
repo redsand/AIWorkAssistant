@@ -166,6 +166,7 @@ describe("assembleContextPacket retrieval and context sections", () => {
     mockEnv.RAG_INCLUDE_LOCAL_SOURCES = true;
     mockEnv.CLAIMKIT_ENABLED = false;
     mockEnv.CLAIMKIT_FIRST_ROUTING = false;
+    mockEnv.CLAIMKIT_AWAIT_SEED = false;
     mockEnv.CLAIMKIT_HIGH_CONFIDENCE_THRESHOLD = 0.8;
     mockEnv.CLAIMKIT_LOW_CONFIDENCE_THRESHOLD = 0.5;
     mockEnv.CLAIMKIT_FIRST_PROBE_TIMEOUT_MS = 500;
@@ -387,6 +388,66 @@ describe("assembleContextPacket retrieval and context sections", () => {
     expect(packet.diagnostics.claimkitFirstMetrics.ragSkipped).toBe(false);
     expect(packet.diagnostics.documentsRetrieved).toBeGreaterThan(0);
     expect(mockKnowledgeSearch).toHaveBeenCalled();
+  });
+
+  it("falls back to full RAG when the ClaimKit-first probe is low-confidence", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CLAIMKIT_AWAIT_SEED = false;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    // Low confidence + answerable → claimkit_first_fallback: RAG must run and
+    // the probe result is reused (no redundant second query when seed is not
+    // awaited).
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.3, "answerable"));
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(packet.diagnostics.claimkitFirstMetrics.strategy).toBe("claimkit_first_fallback");
+    expect(packet.diagnostics.claimkitFirstMetrics.ragSkipped).toBe(false);
+    expect(packet.diagnostics.claimkitFirstMetrics.latencyDeltaMs).toBeGreaterThanOrEqual(0);
+    expect(packet.diagnostics.documentsRetrieved).toBeGreaterThan(0);
+    expect(mockKnowledgeSearch).toHaveBeenCalled();
+    // Probe reused: ClaimKit queried exactly once even though RAG also ran.
+    expect(mockClaimKitAdapter.query).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-queries ClaimKit after seeding when CLAIMKIT_AWAIT_SEED is enabled", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CLAIMKIT_AWAIT_SEED = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.6, "answerable"));
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(packet.diagnostics.claimkitFirstMetrics.strategy).toBe("claimkit_first_parallel");
+    // Awaited seeding can change the claim store between probe and query, so a
+    // fresh full query runs on top of the probe (probe + full = 2 calls).
+    expect(mockClaimKitAdapter.query).toHaveBeenCalledTimes(2);
+
+    mockEnv.CLAIMKIT_AWAIT_SEED = false;
   });
 
   it("falls back to rag_first when the ClaimKit-first probe throws", async () => {

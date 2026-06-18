@@ -156,9 +156,12 @@ export interface ClaimKitFirstMetrics {
   /** True when RAG retrieval was skipped because the probe was high-confidence. */
   ragSkipped: boolean;
   /**
-   * Estimated latency change vs. the old RAG-first path. Negative = faster.
-   * When RAG was skipped this is the (estimated) RAG retrieval cost avoided;
-   * when RAG ran it is the probe overhead added on top of the RAG-first path.
+   * Per-request latency delta vs. the old RAG-first path, computed only from
+   * this request's own timings (never another request's RAG latency).
+   * When RAG ran this is the probe overhead added on top of the RAG-first
+   * path. When RAG was skipped it is 0 — no avoided-RAG cost is measurable
+   * inline, so the dashboard derives skip savings in aggregate by comparing
+   * rag_time_ms across skip vs. non-skip cohorts (keyed on routing_strategy).
    */
   latencyDeltaMs: number;
 }
