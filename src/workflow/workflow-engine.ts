@@ -5,6 +5,7 @@ import type {
 } from "./types.js";
 import { builtinActions } from "./builtin-actions.js";
 import { v4 as uuidv4 } from "uuid";
+import { auditLogger } from "../audit/logger.js";
 
 /**
  * Thrown when an action with `approvalRequired: true` is executed without an
@@ -23,6 +24,8 @@ const MAX_EXECUTIONS = 1000;
 
 export interface ExecuteOptions {
   approved?: boolean;
+  /** Authenticated identity invoking (and, when approved, approving) the action. */
+  actor?: string;
 }
 
 export class WorkflowEngine {
@@ -68,10 +71,20 @@ export class WorkflowEngine {
     // execution record is not aliased to a reference the caller still holds.
     params = { ...params };
 
+    const actor = options.actor ?? "unknown";
+
     // Enforce the approval guardrail before doing any work. Actions flagged
     // with `approvalRequired` (e.g. the medium-risk security escalation) must
     // not run unless the caller has supplied an explicit approval.
     if (action.approvalRequired && !options.approved) {
+      void auditLogger.log({
+        id: uuidv4(),
+        timestamp: new Date(),
+        action: "workflow.execute.denied",
+        actor,
+        details: { actionId, riskLevel: action.riskLevel, reason: "approval-required" },
+        severity: "warn",
+      });
       throw new ApprovalRequiredError(actionId);
     }
 
@@ -114,10 +127,26 @@ export class WorkflowEngine {
       startedAt: new Date().toISOString(),
       stepResults: [],
       params,
+      triggeredBy: actor,
+      approvedBy: action.approvalRequired ? actor : undefined,
     };
 
     this.pruneExecutions();
     this.executions.set(execution.id, execution);
+
+    void auditLogger.log({
+      id: uuidv4(),
+      timestamp: new Date(),
+      action: "workflow.execute.started",
+      actor,
+      details: {
+        executionId: execution.id,
+        actionId,
+        riskLevel: action.riskLevel,
+        approvalRequired: action.approvalRequired,
+      },
+      severity: action.riskLevel === "low" ? "info" : "warn",
+    });
 
     // Actual step execution is handled by the agent orchestration layer, which
     // drives the execution to a terminal state via completeExecution /
@@ -143,6 +172,14 @@ export class WorkflowEngine {
     if (stepResults.length > 0) {
       execution.stepResults = stepResults;
     }
+    void auditLogger.log({
+      id: uuidv4(),
+      timestamp: new Date(),
+      action: "workflow.execute.completed",
+      actor: execution.triggeredBy ?? "unknown",
+      details: { executionId, actionId: execution.actionId },
+      severity: "info",
+    });
     return execution;
   }
 
@@ -169,6 +206,14 @@ export class WorkflowEngine {
         error,
       },
     ];
+    void auditLogger.log({
+      id: uuidv4(),
+      timestamp: new Date(),
+      action: "workflow.execute.failed",
+      actor: execution.triggeredBy ?? "unknown",
+      details: { executionId, actionId: execution.actionId, error },
+      severity: "error",
+    });
     return execution;
   }
 

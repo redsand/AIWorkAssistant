@@ -51,4 +51,38 @@ describe("Workflow API authentication", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().status).toBe("running");
   });
+
+  it("rejects an unauthenticated request to list actions", async () => {
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/workflow/actions",
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("rejects an unauthenticated request for a single action definition", async () => {
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/workflow/actions/escalate-hawk-ir-case",
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("rejects an unauthenticated request to read an execution record", async () => {
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/workflow/executions/any-id",
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("allows reading actions with a valid API key", async () => {
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/workflow/actions",
+      headers: { "x-api-key": "test-api-key" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(Array.isArray(response.json().actions)).toBe(true);
+  });
 });

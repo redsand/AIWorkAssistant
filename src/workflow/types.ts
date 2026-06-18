@@ -50,6 +50,10 @@ export interface WorkflowExecution {
     duration?: number;
   }>;
   params: Record<string, unknown>;
+  /** Authenticated identity that triggered the execution. */
+  triggeredBy?: string;
+  /** Authenticated identity that approved an approval-gated execution. */
+  approvedBy?: string;
 }
 
 export interface WorkflowListOutput {

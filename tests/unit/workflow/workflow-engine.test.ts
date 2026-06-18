@@ -246,6 +246,50 @@ describe("WorkflowEngine", () => {
     });
   });
 
+  describe("execution pruning", () => {
+    it("caps retained executions at MAX_EXECUTIONS, evicting the oldest", async () => {
+      // The cap is 1000; assert the store never exceeds it and the earliest
+      // execution is evicted once the cap is reached.
+      const first = await engine.execute("daily-standup-prep", {});
+      const store = (
+        engine as unknown as { executions: Map<string, unknown> }
+      ).executions;
+      const MAX = 1000;
+      for (let i = store.size; i < MAX; i++) {
+        await engine.execute("daily-standup-prep", {});
+      }
+      expect(store.size).toBe(MAX);
+      // First entry is still present at exactly the cap.
+      expect(engine.getExecution(first.id)).toBeDefined();
+      // One more insert evicts the oldest (the first execution).
+      await engine.execute("daily-standup-prep", {});
+      expect(store.size).toBe(MAX);
+      expect(engine.getExecution(first.id)).toBeUndefined();
+    });
+  });
+
+  describe("identity binding", () => {
+    it("records the actor that triggered and approved an action", async () => {
+      const execution = await engine.execute(
+        "escalate-hawk-ir-case",
+        { caseId: "CASE-9", escalationReason: "lateral movement" },
+        { approved: true, actor: "alice" },
+      );
+      expect(execution.triggeredBy).toBe("alice");
+      expect(execution.approvedBy).toBe("alice");
+    });
+
+    it("does not set approvedBy for actions that do not require approval", async () => {
+      const execution = await engine.execute(
+        "daily-standup-prep",
+        {},
+        { actor: "bob" },
+      );
+      expect(execution.triggeredBy).toBe("bob");
+      expect(execution.approvedBy).toBeUndefined();
+    });
+  });
+
   describe("getExecution", () => {
     it("retrieves a previously created execution", async () => {
       const execution = await engine.execute("daily-standup-prep", {});
