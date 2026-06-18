@@ -112,14 +112,27 @@ class ComparisonRunDatabase {
       { col: "confidence_trace", def: "TEXT" },
       // ClaimKit-first routing strategy (issue #229): which of the three
       // ClaimKit-first paths (or rag_first) was chosen for this query. Lets
-      // the dashboard measure RAG-skip rate and per-path latency.
+      // the dashboard measure RAG-skip rate and per-path latency. Additive &
+      // nullable, so rolling the application code back is safe — older INSERTs
+      // simply omit the column and SQLite stores NULL. Rolling the schema
+      // forward is idempotent (the ALTER below no-ops once the column exists).
       { col: "routing_strategy", def: "TEXT" },
     ];
     for (const { col, def } of migrations) {
       try {
         this.db.exec(`ALTER TABLE comparison_cases ADD COLUMN ${col} ${def}`);
-      } catch {
-        // Column already exists — skip
+      } catch (err) {
+        // Re-running on an already-migrated DB throws "duplicate column name",
+        // which is expected and safe to ignore. Any OTHER failure (locked DB,
+        // disk error, corruption) would leave the column missing while
+        // createRun still binds it positionally — surface it loudly here
+        // rather than silently proceeding into broken INSERTs later.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!/duplicate column name/i.test(msg)) {
+          throw new Error(
+            `[ComparisonRunDatabase] migration failed adding column "${col}": ${msg}`,
+          );
+        }
       }
     }
 
