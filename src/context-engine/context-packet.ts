@@ -281,8 +281,10 @@ export async function assembleContextPacket(
   const rewritten = rewriteQuerySafe(query);
   const retrievalQuery = rewritten.rewritten;
   if (rewritten.rewritten !== query || rewritten.variants.length > 0 || rewritten.entityRefs.length > 0) {
+    // Log only structured counts, never the raw query text — query strings can
+    // carry user PII and should not land in shared log streams.
     console.log(
-      `[QueryRewriter] "${query.substring(0, 60)}" → "${retrievalQuery.substring(0, 60)}" | ` +
+      `[QueryRewriter] rewrote query | chars ${query.length}→${retrievalQuery.length} | ` +
       `variants=${rewritten.variants.length} | entities=${rewritten.entityRefs.length} | ` +
       `abbr=${rewritten.abbreviationExpansions.size} | ${rewritten.rewriteLatencyMs}ms`,
     );
@@ -361,10 +363,10 @@ export async function assembleContextPacket(
         const variantResults = await Promise.all(
           rewritten.variants
             .slice(0, env.QUERY_REWRITE_VARIANT_COUNT)
-            .map((v) =>
+            .map((v, i) =>
               retrieveAllStores(v).catch((err) => {
                 console.warn(
-                  `[QueryRewriter] variant retrieval failed for "${v.substring(0, 60)}":`,
+                  `[QueryRewriter] variant #${i + 1} retrieval failed:`,
                   err instanceof Error ? err.message : err,
                 );
                 return [] as ScoredDocument[];

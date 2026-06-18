@@ -296,7 +296,7 @@ const envSchema = z.object({
   // Number of alternative query formulations generated for ambiguous queries.
   // The top variants are run as parallel retrievals and merged/deduped with the
   // primary result. 0 disables variant generation.
-  QUERY_REWRITE_VARIANT_COUNT: z.coerce.number().default(3),
+  QUERY_REWRITE_VARIANT_COUNT: z.coerce.number().int().min(0).default(3),
 
   // ClaimKit (RAG replacement)
   CLAIMKIT_ENABLED: z
