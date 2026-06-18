@@ -3,8 +3,8 @@ import type { WorkflowAction } from "./types.js";
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
     Object.freeze(value);
-    for (const key of Object.keys(value as Record<string, unknown>)) {
-      deepFreeze((value as Record<string, unknown>)[key]);
+    for (const key of Reflect.ownKeys(value as object)) {
+      deepFreeze((value as Record<string | symbol, unknown>)[key]);
     }
   }
   return value;

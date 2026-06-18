@@ -1,9 +1,11 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import {
   WorkflowEngine,
   ApprovalRequiredError,
+  SelfApprovalError,
 } from "../../../src/workflow/workflow-engine";
 import { builtinActions } from "../../../src/workflow/builtin-actions";
+import { auditLogger } from "../../../src/audit/logger";
 
 describe("WorkflowEngine", () => {
   let engine: WorkflowEngine;
@@ -110,7 +112,7 @@ describe("WorkflowEngine", () => {
   });
 
   describe("approvalRequired enforcement", () => {
-    it("blocks execution of an approval-required action when not approved", async () => {
+    it("blocks execution of an approval-required action when no approver is named", async () => {
       await expect(
         engine.execute("escalate-hawk-ir-case", {
           caseId: "CASE-1",
@@ -119,14 +121,24 @@ describe("WorkflowEngine", () => {
       ).rejects.toBeInstanceOf(ApprovalRequiredError);
     });
 
-    it("blocks when approved is explicitly false", async () => {
+    it("blocks when the approver is blank", async () => {
       await expect(
         engine.execute(
           "escalate-hawk-ir-case",
           { caseId: "CASE-1", escalationReason: "active intrusion" },
-          { approved: false },
+          { actor: "alice", approver: "   " },
         ),
       ).rejects.toBeInstanceOf(ApprovalRequiredError);
+    });
+
+    it("rejects self-approval (approver same as triggering actor)", async () => {
+      await expect(
+        engine.execute(
+          "escalate-hawk-ir-case",
+          { caseId: "CASE-1", escalationReason: "active intrusion" },
+          { actor: "alice", approver: "alice" },
+        ),
+      ).rejects.toBeInstanceOf(SelfApprovalError);
     });
 
     it("does not create an execution when approval is missing", async () => {
@@ -143,14 +155,30 @@ describe("WorkflowEngine", () => {
       expect(anyExecution.size).toBe(0);
     });
 
-    it("allows execution when approved is true", async () => {
+    it("does not create an execution on self-approval", async () => {
+      await engine
+        .execute(
+          "escalate-hawk-ir-case",
+          { caseId: "CASE-1", escalationReason: "active intrusion" },
+          { actor: "alice", approver: "alice" },
+        )
+        .catch(() => undefined);
+      const store = (
+        engine as unknown as { executions: Map<string, unknown> }
+      ).executions;
+      expect(store.size).toBe(0);
+    });
+
+    it("allows execution when a distinct approver signs off", async () => {
       const execution = await engine.execute(
         "escalate-hawk-ir-case",
         { caseId: "CASE-1", escalationReason: "active intrusion" },
-        { approved: true },
+        { actor: "alice", approver: "bob" },
       );
       expect(execution.actionId).toBe("escalate-hawk-ir-case");
       expect(execution.status).toBe("running");
+      expect(execution.triggeredBy).toBe("alice");
+      expect(execution.approvedBy).toBe("bob");
     });
 
     it("does not require approval for low-risk actions", async () => {
@@ -171,9 +199,15 @@ describe("WorkflowEngine", () => {
         engine.execute(
           "escalate-hawk-ir-case",
           { caseId: 123, escalationReason: "reason" },
-          { approved: true },
+          { actor: "alice", approver: "bob" },
         ),
       ).rejects.toThrow(/expected string, got number/);
+    });
+
+    it("rejects NaN for a number parameter (typeof NaN is 'number')", async () => {
+      await expect(
+        engine.execute("triage-support-ticket", { ticketId: NaN }),
+      ).rejects.toThrow(/expected a finite number/);
     });
 
     it("rejects a boolean parameter supplied as a string", async () => {
@@ -269,14 +303,14 @@ describe("WorkflowEngine", () => {
   });
 
   describe("identity binding", () => {
-    it("records the actor that triggered and approved an action", async () => {
+    it("records the distinct trigger and approver identities", async () => {
       const execution = await engine.execute(
         "escalate-hawk-ir-case",
         { caseId: "CASE-9", escalationReason: "lateral movement" },
-        { approved: true, actor: "alice" },
+        { actor: "alice", approver: "carol" },
       );
       expect(execution.triggeredBy).toBe("alice");
-      expect(execution.approvedBy).toBe("alice");
+      expect(execution.approvedBy).toBe("carol");
     });
 
     it("does not set approvedBy for actions that do not require approval", async () => {
@@ -287,6 +321,66 @@ describe("WorkflowEngine", () => {
       );
       expect(execution.triggeredBy).toBe("bob");
       expect(execution.approvedBy).toBeUndefined();
+    });
+  });
+
+  describe("snapshot isolation", () => {
+    it("returns a clone from execute so the stored record cannot be mutated", async () => {
+      const execution = await engine.execute("daily-standup-prep", {});
+      (execution as unknown as { status: string }).status = "tampered";
+      expect(engine.getExecution(execution.id)?.status).toBe("running");
+    });
+
+    it("returns a clone from getExecution", async () => {
+      const execution = await engine.execute("daily-standup-prep", {});
+      const fetched = engine.getExecution(execution.id)!;
+      (fetched.params as Record<string, unknown>).injected = true;
+      expect(engine.getExecution(execution.id)?.params.injected).toBeUndefined();
+    });
+
+    it("returns a clone from completeExecution", async () => {
+      const execution = await engine.execute("daily-standup-prep", {});
+      const completed = engine.completeExecution(execution.id)!;
+      (completed as unknown as { status: string }).status = "tampered";
+      expect(engine.getExecution(execution.id)?.status).toBe("completed");
+    });
+  });
+
+  describe("audit logging", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("logs a started entry when an approval-gated action runs", async () => {
+      const logSpy = vi.spyOn(auditLogger, "log").mockResolvedValue();
+      await engine.execute(
+        "escalate-hawk-ir-case",
+        { caseId: "CASE-2", escalationReason: "exfil" },
+        { actor: "alice", approver: "bob" },
+      );
+      const actions = logSpy.mock.calls.map((c) => c[0].action);
+      expect(actions).toContain("workflow.execute.started");
+      const started = logSpy.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.action === "workflow.execute.started")!;
+      // Medium-risk escalation is recorded at warn severity with the approver.
+      expect(started.severity).toBe("warn");
+      expect(started.details).toMatchObject({ approvedBy: "bob" });
+    });
+
+    it("logs a denied entry on self-approval", async () => {
+      const logSpy = vi.spyOn(auditLogger, "log").mockResolvedValue();
+      await engine
+        .execute(
+          "escalate-hawk-ir-case",
+          { caseId: "CASE-3", escalationReason: "exfil" },
+          { actor: "alice", approver: "alice" },
+        )
+        .catch(() => undefined);
+      const denied = logSpy.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.action === "workflow.execute.denied");
+      expect(denied?.details).toMatchObject({ reason: "self-approval" });
     });
   });
 

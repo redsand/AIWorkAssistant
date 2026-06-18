@@ -103,7 +103,7 @@ describe("Workflow API", () => {
       expect(response.statusCode).toBe(404);
     });
 
-    it("blocks an approval-required action without approval", async () => {
+    it("blocks an approval-required action without an approver", async () => {
       const response = await server.inject({
         method: "POST",
         url: "/api/workflow/actions/escalate-hawk-ir-case/execute",
@@ -113,16 +113,28 @@ describe("Workflow API", () => {
       expect(response.json().error).toBe("Approval required");
     });
 
-    it("allows an approval-required action when approve=true", async () => {
+    it("allows an approval-required action with a distinct x-approver", async () => {
       const response = await server.inject({
         method: "POST",
-        url: "/api/workflow/actions/escalate-hawk-ir-case/execute?approve=true",
+        url: "/api/workflow/actions/escalate-hawk-ir-case/execute",
+        headers: { "x-approver": "reviewer" },
         payload: { caseId: "CASE-1", escalationReason: "active intrusion" },
       });
       expect(response.statusCode).toBe(200);
       const body = response.json();
       expect(body.actionId).toBe("escalate-hawk-ir-case");
       expect(body.status).toBe("running");
+      expect(body.approvedBy).toBe("reviewer");
+    });
+
+    it("rejects a non-object body", async () => {
+      const response = await server.inject({
+        method: "POST",
+        url: "/api/workflow/actions/daily-standup-prep/execute",
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify("not-an-object"),
+      });
+      expect(response.statusCode).toBe(400);
     });
 
     it("returns 400 when a parameter has the wrong type", async () => {

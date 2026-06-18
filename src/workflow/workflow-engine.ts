@@ -8,8 +8,8 @@ import { v4 as uuidv4 } from "uuid";
 import { auditLogger } from "../audit/logger.js";
 
 /**
- * Thrown when an action with `approvalRequired: true` is executed without an
- * explicit approval. Callers (the HTTP route) map this to a 403 so the failure
+ * Thrown when an action with `approvalRequired: true` is executed without a
+ * named approver. Callers (the HTTP route) map this to a 403 so the failure
  * is distinguishable from a 400 parameter-validation error.
  */
 export class ApprovalRequiredError extends Error {
@@ -19,13 +19,50 @@ export class ApprovalRequiredError extends Error {
   }
 }
 
+/**
+ * Thrown when the approver of an approval-required action is the same identity
+ * that triggered it. Approval-gated actions enforce separation of duties: the
+ * caller cannot approve their own request. Mapped to a 403 by the HTTP route.
+ */
+export class SelfApprovalError extends Error {
+  constructor(actionId: string) {
+    super(`Approval must come from a different identity than the requester: ${actionId}`);
+    this.name = "SelfApprovalError";
+  }
+}
+
 // Cap retained executions so the in-memory store cannot grow unbounded.
 const MAX_EXECUTIONS = 1000;
 
 export interface ExecuteOptions {
-  approved?: boolean;
-  /** Authenticated identity invoking (and, when approved, approving) the action. */
+  /** Authenticated identity invoking the action. */
   actor?: string;
+  /**
+   * Identity that approves an approval-gated action. Must be present and
+   * distinct from {@link ExecuteOptions.actor} for `approvalRequired` actions
+   * (separation of duties); ignored for actions that do not require approval.
+   */
+  approver?: string;
+}
+
+// Deep clone so callers never receive a reference to the live stored execution
+// and cannot mutate tracked engine state. structuredClone is available on the
+// Node runtime this service targets.
+function snapshot(execution: WorkflowExecution): WorkflowExecution {
+  return structuredClone(execution);
+}
+
+// Map an action's risk level to an audit severity so high-risk actions are
+// distinguishable from medium ones in the audit trail.
+function riskSeverity(riskLevel: WorkflowAction["riskLevel"]): "info" | "warn" | "error" {
+  switch (riskLevel) {
+    case "high":
+      return "error";
+    case "medium":
+      return "warn";
+    default:
+      return "info";
+  }
 }
 
 export class WorkflowEngine {
@@ -72,20 +109,35 @@ export class WorkflowEngine {
     params = { ...params };
 
     const actor = options.actor ?? "unknown";
+    const approver = options.approver?.trim() || undefined;
 
     // Enforce the approval guardrail before doing any work. Actions flagged
     // with `approvalRequired` (e.g. the medium-risk security escalation) must
-    // not run unless the caller has supplied an explicit approval.
-    if (action.approvalRequired && !options.approved) {
-      void auditLogger.log({
-        id: uuidv4(),
-        timestamp: new Date(),
-        action: "workflow.execute.denied",
-        actor,
-        details: { actionId, riskLevel: action.riskLevel, reason: "approval-required" },
-        severity: "warn",
-      });
-      throw new ApprovalRequiredError(actionId);
+    // not run unless a distinct approver has signed off — separation of duties
+    // means the triggering identity cannot approve its own request.
+    if (action.approvalRequired) {
+      if (!approver) {
+        void auditLogger.log({
+          id: uuidv4(),
+          timestamp: new Date(),
+          action: "workflow.execute.denied",
+          actor,
+          details: { actionId, riskLevel: action.riskLevel, reason: "approval-required" },
+          severity: "warn",
+        });
+        throw new ApprovalRequiredError(actionId);
+      }
+      if (approver === actor) {
+        void auditLogger.log({
+          id: uuidv4(),
+          timestamp: new Date(),
+          action: "workflow.execute.denied",
+          actor,
+          details: { actionId, riskLevel: action.riskLevel, reason: "self-approval", approver },
+          severity: "warn",
+        });
+        throw new SelfApprovalError(actionId);
+      }
     }
 
     for (const p of action.params) {
@@ -105,6 +157,13 @@ export class WorkflowEngine {
           if (actualType !== p.type) {
             throw new Error(
               `Invalid type for ${p.name}: expected ${p.type}, got ${actualType}`,
+            );
+          }
+          // typeof NaN === "number"; reject non-finite numbers so a NaN value
+          // cannot slip through the number type check.
+          if (p.type === "number" && !Number.isFinite(value as number)) {
+            throw new Error(
+              `Invalid value for ${p.name}: expected a finite number`,
             );
           }
         }
@@ -128,7 +187,7 @@ export class WorkflowEngine {
       stepResults: [],
       params,
       triggeredBy: actor,
-      approvedBy: action.approvalRequired ? actor : undefined,
+      approvedBy: action.approvalRequired ? approver : undefined,
     };
 
     this.pruneExecutions();
@@ -144,15 +203,16 @@ export class WorkflowEngine {
         actionId,
         riskLevel: action.riskLevel,
         approvalRequired: action.approvalRequired,
+        approvedBy: execution.approvedBy,
       },
-      severity: action.riskLevel === "low" ? "info" : "warn",
+      severity: riskSeverity(action.riskLevel),
     });
 
     // Actual step execution is handled by the agent orchestration layer, which
     // drives the execution to a terminal state via completeExecution /
-    // failExecution. The engine validates, plans, and tracks execution.
-
-    return execution;
+    // failExecution. The engine validates, plans, and tracks execution. Return a
+    // snapshot so the caller cannot mutate the tracked record.
+    return snapshot(execution);
   }
 
   /**
@@ -180,7 +240,7 @@ export class WorkflowEngine {
       details: { executionId, actionId: execution.actionId },
       severity: "info",
     });
-    return execution;
+    return snapshot(execution);
   }
 
   /**
@@ -214,11 +274,12 @@ export class WorkflowEngine {
       details: { executionId, actionId: execution.actionId, error },
       severity: "error",
     });
-    return execution;
+    return snapshot(execution);
   }
 
   getExecution(executionId: string): WorkflowExecution | undefined {
-    return this.executions.get(executionId);
+    const execution = this.executions.get(executionId);
+    return execution ? snapshot(execution) : undefined;
   }
 
   // Evict the oldest executions once the store reaches its cap. Map preserves

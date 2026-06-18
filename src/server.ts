@@ -151,7 +151,7 @@ export async function buildServer() {
   await server.register(repoDashboardRoutes, { prefix: "/api/repo-dashboard" });
   await server.register(kanbanRoutes, { prefix: "/api/kanban" });
   await server.register(errorsRoutes, { prefix: "/api" });
-  await server.register(workflowRoutes);
+  await server.register(workflowRoutes, { prefix: "/api/workflow" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 

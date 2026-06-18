@@ -35,7 +35,8 @@ describe("Workflow API authentication", () => {
   it("rejects an unauthenticated execute even for an approval-gated action", async () => {
     const response = await server.inject({
       method: "POST",
-      url: "/api/workflow/actions/escalate-hawk-ir-case/execute?approve=true",
+      url: "/api/workflow/actions/escalate-hawk-ir-case/execute",
+      headers: { "x-approver": "reviewer" },
       payload: { caseId: "CASE-1", escalationReason: "active intrusion" },
     });
     expect(response.statusCode).toBe(401);
@@ -50,6 +51,30 @@ describe("Workflow API authentication", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json().status).toBe("running");
+  });
+
+  it("rejects self-approval: the authenticated actor cannot be the approver", async () => {
+    // The API-key identity resolves to "api-key-user"; naming the same identity
+    // as approver is self-approval and must be refused.
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/workflow/actions/escalate-hawk-ir-case/execute",
+      headers: { "x-api-key": "test-api-key", "x-approver": "api-key-user" },
+      payload: { caseId: "CASE-1", escalationReason: "active intrusion" },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json().error).toBe("Self-approval not allowed");
+  });
+
+  it("allows an approval-gated action when a distinct approver signs off", async () => {
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/workflow/actions/escalate-hawk-ir-case/execute",
+      headers: { "x-api-key": "test-api-key", "x-approver": "second-reviewer" },
+      payload: { caseId: "CASE-1", escalationReason: "active intrusion" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().approvedBy).toBe("second-reviewer");
   });
 
   it("rejects an unauthenticated request to list actions", async () => {
