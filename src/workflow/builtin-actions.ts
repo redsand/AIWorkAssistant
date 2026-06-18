@@ -138,6 +138,15 @@ const actions: WorkflowAction[] = [
         onError: "stop",
         outputKey: "workItem",
       },
+      {
+        tool: "hawk_ir.add_note",
+        params: {
+          caseId: "{{caseId}}",
+          note: "Escalated via AIWorkAssistant (work item {{workItem.id}}): {{escalationReason}}",
+        },
+        onError: "continue",
+        outputKey: "caseNote",
+      },
     ],
     tags: ["hawk-ir", "escalation", "security"],
     version: "1.0.0",
