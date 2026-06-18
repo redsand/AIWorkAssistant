@@ -64,6 +64,52 @@ export interface MemorySummary {
   metadata: Record<string, unknown>;
 }
 
+/**
+ * Collapse near-duplicate strings so a directive pin doesn't contain four
+ * copies of "use payload field if direct match fails". Compares normalized
+ * forms (lowercased, whitespace-collapsed) with a Jaccard-on-word-shingles
+ * similarity score above 0.55, which catches paraphrases like
+ *   "use payload field if direct match fails"
+ *   "if the field is not found default to payload"
+ *   "you are using fields that do not exist; default to payload"
+ * The most recent instance wins (assumed to be the most refined form).
+ */
+function dedupeNearDuplicates<T extends { timestamp: Date; content: string }>(
+  items: T[],
+  threshold = 0.55,
+): T[] {
+  const norm = (s: string) =>
+    s.toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const shingles = (s: string): Set<string> => {
+    const words = norm(s).split(" ").filter((w) => w.length >= 3);
+    const set = new Set<string>();
+    for (let i = 0; i < words.length - 1; i++) set.add(`${words[i]} ${words[i + 1]}`);
+    if (set.size === 0) for (const w of words) set.add(w);
+    return set;
+  };
+  const jaccard = (a: Set<string>, b: Set<string>): number => {
+    if (a.size === 0 || b.size === 0) return 0;
+    let inter = 0;
+    for (const x of a) if (b.has(x)) inter++;
+    return inter / (a.size + b.size - inter);
+  };
+  // Walk newest-first; for each candidate, drop any older one that overlaps.
+  const reversed = [...items].reverse();
+  const kept: { item: T; shingles: Set<string> }[] = [];
+  for (const item of reversed) {
+    const sh = shingles(item.content);
+    let dup = false;
+    for (const k of kept) {
+      if (jaccard(sh, k.shingles) >= threshold) { dup = true; break; }
+    }
+    if (!dup) kept.push({ item, shingles: sh });
+  }
+  return kept.map((k) => k.item).reverse();
+}
+
 export class ConversationManager {
   private sessions: Map<string, ConversationSession> = new Map();
   private memoryBasePath: string;
@@ -80,12 +126,59 @@ export class ConversationManager {
   // Ollama (kimi-k2.6:cloud) has ~120k token limit (~300k chars).
   private readonly MAX_CONTEXT_TOOL_CHARS = 50_000;
   private readonly MAX_CONTEXT_MESSAGE_CHARS = 30_000;
-  private readonly SESSION_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
+  // How long an active session survives without activity before it's evicted
+  // from active/ and won't rehydrate on server start. Default 7 days so a
+  // user investigation that pauses overnight (or over a weekend) doesn't
+  // silently disappear. Set via SESSION_TIMEOUT_HOURS for production tuning;
+  // 0 disables eviction entirely (keep everything forever — rely on manual
+  // delete for cleanup).
+  private readonly SESSION_TIMEOUT_MS = (() => {
+    const raw = process.env.SESSION_TIMEOUT_HOURS;
+    if (raw === undefined || raw === "") return 7 * 24 * 60 * 60 * 1000;
+    const hours = Number(raw);
+    if (!Number.isFinite(hours) || hours < 0) return 7 * 24 * 60 * 60 * 1000;
+    if (hours === 0) return Number.POSITIVE_INFINITY;
+    return hours * 60 * 60 * 1000;
+  })();
 
   constructor() {
+    // Force the profile manager to run BEFORE we mkdir the memory subdirs.
+    // ProfileManager.getActive() is what triggers the legacy-data migration
+    // for the default profile. If initializeStorage() runs first it pre-
+    // creates data/profiles/default/memories/{active,sessions,...}, which used
+    // to make the migration's "destination already populated" guard skip
+    // forever (losing the user's chats from the pre-isolation layout).
+    // Migration is now marker-gated, but ordering still matters so the
+    // copied files land BEFORE we open sessions.db in initFTS5.
+    this.ensureProfileScaffold();
     this.memoryBasePath = this.resolveMemoryBasePath();
     this.initializeStorage();
     this.startCleanupTask();
+  }
+
+  /**
+   * Trigger profile-manager initialization so it can scaffold the active
+   * profile directory and run any legacy-data migration BEFORE we touch the
+   * memory path. Skipped in tests and when an explicit memory path is set —
+   * in those modes the memory dir is not inside the profile structure, so
+   * touching the real profile root would be a side effect leaking into
+   * unrelated tests/installations.
+   */
+  private ensureProfileScaffold(): void {
+    if (process.env.CONVERSATION_MEMORY_PATH) return;
+    if (process.env.VITEST) return;
+    try {
+      // Lazy require avoids a top-level import cycle: profile-manager imports
+      // ../config/env which is also touched by this module's imports.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getConfigProfileManager } = require("../config/profile-manager");
+      getConfigProfileManager().getActive();
+    } catch (err) {
+      console.warn(
+        "[MemoryManager] Profile pre-init failed (continuing — migration may be deferred):",
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
   private resolveMemoryBasePath(): string {
@@ -247,7 +340,23 @@ export class ConversationManager {
       throw new Error(`Session ${sessionId} not found`);
     }
 
-    const content = message.content;
+    // Strip stray <think>...</think> blocks from assistant content. Reasoning
+    // models (Qwen, kimi, DeepSeek-R1) sometimes leak the closing </think>
+    // tag (or the full paired block) into their visible content because their
+    // reasoning channel is also emitted inside the same content stream.
+    // Observed in session 926107f7 msg #47: "...Let me compile the final
+    // summary.</think>## HAWK IR Findings..." — the </think> leaked through
+    // the provider's reasoning-content extraction and the user saw it
+    // verbatim. Stripping at the conversation boundary catches every path
+    // without per-provider duplication.
+    let content = message.content;
+    if (message.role === "assistant" && typeof content === "string" && content.includes("</think>")) {
+      content = content
+        .replace(/<think>[\s\S]*?<\/think>/gi, "") // paired block
+        .replace(/<\/think>/gi, "")                 // stray closing tag
+        .replace(/^<think>/i, "")                   // stray opening tag at start
+        .replace(/^\s+/, "");                       // tidy leading whitespace
+    }
 
     const messageWithTimestamp: Message = {
       ...message,
@@ -293,6 +402,240 @@ export class ConversationManager {
     }
 
     return null;
+  }
+
+  /**
+   * Return non-trivial user messages from a session, chronologically, so
+   * callers can pin them as a persistent system-prompt addendum that
+   * survives both the conversation-manager truncation (last-30-messages)
+   * and the provider's aggressive prune (system + last 6 + most-recent user).
+   *
+   * Without pinning, directives like "use payload field if direct match fails"
+   * or "the time is wrong, 14:10:45 UTC = 08:10:45 AM Central" silently age
+   * out of context after ~30 turns and the user has to repeat themselves
+   * (observed in session 926107f7: user repeated the payload-field directive
+   * 4+ times across 400+ messages because each correction was pruned away).
+   *
+   * Trivial messages are filtered (continue / yes / k / short acks) so the
+   * pin contains only actual instructions, not throat-clearing.
+   */
+  getUserDirectives(
+    sessionId: string,
+    opts: { charBudget?: number } = {},
+  ): Array<{ timestamp: Date; content: string }> {
+    const session = this.getSession(sessionId);
+    if (!session) return [];
+    const budget = opts.charBudget ?? 12_000;
+
+    const trivialPattern =
+      /^(continue|keep going|go on|proceed|next|more|yes|y|yeah|yep|ok|okay|k|sure|fine|right|correct|good|great|nice|thanks|thx|ty|np|done|cool|alright|👍|done\.|👀|see above)[.!?\s]*$/i;
+
+    const filtered = session.messages
+      .filter((m) => m.role === "user")
+      .map((m) => ({ timestamp: m.timestamp, content: m.content.trim() }))
+      .filter((m) => m.content.length > 20 && !trivialPattern.test(m.content));
+
+    // De-duplicate near-identical directives so the pin doesn't contain four
+    // copies of "use payload field if direct match fails". The most recent
+    // instance wins (collapses to its timestamp); earlier ones are dropped.
+    const deduped = dedupeNearDuplicates(filtered);
+
+    // Apply char budget: oldest evicted first so the most recent directives
+    // (which usually supersede earlier ones) are always retained.
+    let total = 0;
+    const kept: Array<{ timestamp: Date; content: string }> = [];
+    for (let i = deduped.length - 1; i >= 0; i--) {
+      const entry = deduped[i];
+      const cost = entry.content.length + 40; // +40 for timestamp/bullet overhead
+      if (total + cost > budget && kept.length > 0) break;
+      kept.unshift(entry);
+      total += cost;
+    }
+    return kept;
+  }
+
+  /**
+   * Persist healed tool-message content back to the session so the heal
+   * survives subsequent reads. rehydrateCachedToolResults rewrites truncated
+   * tool messages in-memory; without this method those rewrites had to be
+   * re-computed on every load, which depended on the live cache surviving.
+   *
+   * Updates by tool_call_id. Silently ignores entries with no match so
+   * stale heal maps don't error out.
+   */
+  healToolMessages(
+    sessionId: string,
+    healed: Map<string, string>,
+  ): number {
+    if (healed.size === 0) return 0;
+    const session = this.getSession(sessionId);
+    if (!session) return 0;
+    let healedCount = 0;
+    for (const msg of session.messages) {
+      if (msg.role !== "tool") continue;
+      const id = msg.tool_call_id;
+      if (!id) continue;
+      const newContent = healed.get(id);
+      if (newContent === undefined || newContent === msg.content) continue;
+      msg.content = newContent;
+      healedCount++;
+    }
+    if (healedCount > 0) {
+      session.updatedAt = new Date();
+      this.saveActiveSession(session);
+      console.log(`[MemoryManager] Healed ${healedCount} tool message(s) in session ${sessionId}`);
+    }
+    return healedCount;
+  }
+
+  /**
+   * Detect user-stated timezone or location and return as a sticky list.
+   * Heuristic — only matches user messages that explicitly mention a timezone
+   * abbreviation, a UTC offset, or a city/state. Pinned separately from
+   * directives because timezone confusion was the #1 hallucination source in
+   * session 926107f7 (model used MST when El Paso in June is MDT).
+   */
+  getLocationFacts(sessionId: string): Array<{ timestamp: Date; content: string }> {
+    const session = this.getSession(sessionId);
+    if (!session) return [];
+
+    const tzPattern = /\b(UTC|GMT|EST|EDT|CST|CDT|MST|MDT|PST|PDT|AKST|AKDT|HST|AST|ADT|NST|NDT|UTC[+-]\d{1,2}(:\d{2})?|GMT[+-]\d{1,2}(:\d{2})?)\b/;
+    // Common US cities/states that imply a timezone or signal location
+    // changes. Add freely — false positives are cheap (one extra pin entry).
+    const locationPattern = /\b(El Paso|New York|Los Angeles|Chicago|Dallas|Denver|Boston|Seattle|Portland|Miami|Atlanta|Houston|Phoenix|Honolulu|Anchorage|San Francisco|Texas|California|Colorado|Florida|Eastern|Central|Mountain|Pacific|Alaska|Hawaii|UK|Britain|London|Paris|Berlin|Tokyo|Sydney|Mumbai|Delhi|Singapore|Toronto|Vancouver)\b/i;
+    const timeStatementPattern = /\bit['']?s\s+\d{1,2}[:.]?\d{0,2}\s*(am|pm)?\b/i;
+
+    return session.messages
+      .filter((m) => m.role === "user")
+      .map((m) => ({ timestamp: m.timestamp, content: m.content.trim() }))
+      .filter((m) =>
+        tzPattern.test(m.content) ||
+        locationPattern.test(m.content) ||
+        timeStatementPattern.test(m.content)
+      )
+      // Keep the last 6 — usually enough to capture corrections without
+      // bloating the pin with every passing time mention.
+      .slice(-6);
+  }
+
+  /**
+   * Best-effort timezone inference from user-stated facts. Returns the most
+   * recently stated timezone (with UTC offset for current month) so the time
+   * anchor can show the user's local time alongside UTC.
+   *
+   * Coverage is intentionally narrow — only abbreviations the user has typed.
+   * Anything else returns null and the time anchor only shows UTC.
+   */
+  getInferredTimezone(sessionId: string): { label: string; offsetMinutes: number } | null {
+    const session = this.getSession(sessionId);
+    if (!session) return null;
+    const isUSDST = (() => {
+      const m = new Date().getUTCMonth();
+      return m >= 2 && m <= 10; // March through November, approximately
+    })();
+    // Order matters — DST variants take precedence when DST is active.
+    const tzMap: Array<{ label: string; offsetMinutes: number; dst?: boolean; std?: boolean }> = [
+      { label: "CDT", offsetMinutes: -5 * 60, dst: true },
+      { label: "CST", offsetMinutes: -6 * 60, std: true },
+      { label: "EDT", offsetMinutes: -4 * 60, dst: true },
+      { label: "EST", offsetMinutes: -5 * 60, std: true },
+      { label: "MDT", offsetMinutes: -6 * 60, dst: true },
+      { label: "MST", offsetMinutes: -7 * 60, std: true },
+      { label: "PDT", offsetMinutes: -7 * 60, dst: true },
+      { label: "PST", offsetMinutes: -8 * 60, std: true },
+    ];
+
+    // Walk user messages newest-first so the latest correction wins.
+    const users = session.messages.filter((m) => m.role === "user");
+    for (let i = users.length - 1; i >= 0; i--) {
+      const c = users[i].content;
+      // Exact abbreviation match first (e.g. "9:04am CDT", "Central Time").
+      for (const tz of tzMap) {
+        if (new RegExp(`\\b${tz.label}\\b`).test(c)) {
+          // Only use std vs dst if it matches current DST state — otherwise
+          // try the variant.
+          if ((tz.dst && isUSDST) || (tz.std && !isUSDST)) return { label: tz.label, offsetMinutes: tz.offsetMinutes };
+        }
+      }
+      // City/state fallbacks
+      if (/\b(El Paso|Albuquerque|Denver|Colorado|New Mexico|Mountain)\b/i.test(c)) {
+        return isUSDST
+          ? { label: "MDT", offsetMinutes: -6 * 60 }
+          : { label: "MST", offsetMinutes: -7 * 60 };
+      }
+      if (/\b(Chicago|Dallas|Houston|Texas|Central(?:\s+Time)?)\b/i.test(c)) {
+        return isUSDST
+          ? { label: "CDT", offsetMinutes: -5 * 60 }
+          : { label: "CST", offsetMinutes: -6 * 60 };
+      }
+      if (/\b(New York|Boston|Atlanta|Miami|Eastern(?:\s+Time)?)\b/i.test(c)) {
+        return isUSDST
+          ? { label: "EDT", offsetMinutes: -4 * 60 }
+          : { label: "EST", offsetMinutes: -5 * 60 };
+      }
+      if (/\b(Los Angeles|San Francisco|Seattle|Portland|California|Pacific(?:\s+Time)?)\b/i.test(c)) {
+        return isUSDST
+          ? { label: "PDT", offsetMinutes: -7 * 60 }
+          : { label: "PST", offsetMinutes: -8 * 60 };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Extract claims the user has explicitly confirmed. Heuristic — looks for
+   * user messages that start with a confirmation token ("yes", "correct",
+   * "confirmed", "right") and pairs them with the immediately-preceding
+   * assistant content. Without this, the model contradicts its own findings
+   * (session 926107f7 #913: "'Per Hunt, this is the user's workstation.'
+   * This was per you in our chat. Is this not true?")
+   */
+  getEstablishedFacts(
+    sessionId: string,
+    opts: { maxFacts?: number; maxCharsPerFact?: number } = {},
+  ): Array<{ timestamp: Date; content: string }> {
+    const session = this.getSession(sessionId);
+    if (!session) return [];
+    const maxFacts = opts.maxFacts ?? 20;
+    const maxCharsPerFact = opts.maxCharsPerFact ?? 280;
+
+    const confirmPattern =
+      /^(yes|yep|yeah|correct|that['']?s correct|right|that['']?s right|confirmed|exactly|precisely|true|that['']?s true|good|perfect|exactly right|i confirm)[.!?,\s]/i;
+
+    const facts: Array<{ timestamp: Date; content: string }> = [];
+    const msgs = session.messages;
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i];
+      if (m.role !== "user") continue;
+      if (!confirmPattern.test(m.content.trim())) continue;
+
+      // Find the immediately preceding assistant message with non-empty content.
+      let j = i - 1;
+      while (j >= 0 && (msgs[j].role !== "assistant" || !msgs[j].content.trim())) j--;
+      if (j < 0) continue;
+      const assistantText = msgs[j].content.trim();
+
+      // Take the LAST meaningful sentence (or first sentence as fallback).
+      // Often the headline finding is at the start of the response; but
+      // sometimes it's at the end — take the longest of the first 3 sentences.
+      const sentences = assistantText
+        .split(/(?<=[.!?])\s+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 20);
+      const candidate = sentences
+        .slice(0, 3)
+        .sort((a, b) => b.length - a.length)[0];
+      if (!candidate) continue;
+
+      facts.push({
+        timestamp: m.timestamp,
+        content: candidate.length > maxCharsPerFact
+          ? candidate.slice(0, maxCharsPerFact) + "…"
+          : candidate,
+      });
+    }
+    // Keep the most recent N facts so the pin stays compact.
+    return facts.slice(-maxFacts);
   }
 
   /**

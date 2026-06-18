@@ -315,6 +315,11 @@ export class OllamaProvider extends AIProvider {
             requestBody,
             {
               responseType: "stream",
+              // Without signal here, cancellation never reaches the HTTP socket
+              // and the aiRequestLimiter slot stays held for the full upstream
+              // response (observed: 48 minutes for a stale ollama run in
+              // session 926107f7, blocking subsequent requests).
+              signal: request.signal,
             },
           );
           break; // success — exit retry loop

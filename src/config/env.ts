@@ -317,7 +317,14 @@ const envSchema = z.object({
   CLAIMKIT_INIT_TIMEOUT_MS: z.coerce.number().default(5000),
   CLAIMKIT_LLM_MODEL: z.string().default(""),
   // Per-attempt timeout for each ClaimKit LLM call.
-  CLAIMKIT_LLM_TIMEOUT_MS: z.coerce.number().default(60000),
+  // Default 300s matches the slow-provider ceiling used by the Ollama/OpenAI
+  // adapters. ClaimKit init/query paths can wait this long per attempt rather
+  // than aborting early and falling back to the memory adapter.
+  CLAIMKIT_LLM_TIMEOUT_MS: z.coerce.number().default(300_000),
+  // First-attempt timeout can be longer than retries. Set to 0 to use
+  // CLAIMKIT_LLM_TIMEOUT_MS for every attempt. Useful when cold-start or
+  // model-loading dominates the first call.
+  CLAIMKIT_LLM_INITIAL_TIMEOUT_MS: z.coerce.number().default(0),
   // Total elapsed budget across all ClaimKit LLM attempts. 0 = no global ceiling.
   CLAIMKIT_LLM_TOTAL_TIMEOUT_MS: z.coerce.number().default(0),
   CLAIMKIT_LLM_MAX_ATTEMPTS: z.coerce.number().default(5),

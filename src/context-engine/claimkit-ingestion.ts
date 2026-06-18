@@ -439,13 +439,21 @@ export async function ingestKnowledgeStore(): Promise<IngestionStats> {
     ? allDocuments
     : allDocuments.filter((d) => d.source !== "file_read");
   stats.total = documents.length;
+  console.log(`[ClaimKit Ingestion] Knowledge store: ${documents.length} candidate document(s)`);
   if (documents.length < allDocuments.length) {
     console.log(
       `[ClaimKit Ingestion] Skipping ${allDocuments.length - documents.length} file_read entries (RAG_INCLUDE_LOCAL_SOURCES=false)`,
     );
   }
 
-  for (const doc of documents) {
+  let lastProgressAt = start;
+  for (let i = 0; i < documents.length; i++) {
+    const doc = documents[i];
+    const elapsed = Date.now() - start;
+    if (elapsed - (Date.now() - lastProgressAt) >= 10_000 || i === documents.length - 1) {
+      console.log(`[ClaimKit Ingestion] Knowledge store progress: ${i + 1}/${documents.length} (${stats.ingested} ingested, ${stats.skipped} skipped, ${stats.errors} errors) — ${elapsed}ms elapsed`);
+      lastProgressAt = elapsed;
+    }
     try {
       const key = `knowledge:${doc.id}`;
       const text = `${doc.title}\n\n${doc.content}`;
@@ -488,8 +496,16 @@ export async function ingestGraphStore(): Promise<IngestionStats> {
   const nodes: KGNode[] = knowledgeGraph.getAllNodes();
   const edges: KGEdge[] = knowledgeGraph.getAllEdges();
   stats.total = nodes.length + edges.length;
+  console.log(`[ClaimKit Ingestion] Graph: ${nodes.length} node(s) + ${edges.length} edge(s)`);
 
-  for (const node of nodes) {
+  let lastProgressAt = start;
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    const elapsed = Date.now() - start;
+    if (elapsed - (Date.now() - lastProgressAt) >= 10_000 || i === nodes.length - 1) {
+      console.log(`[ClaimKit Ingestion] Graph node progress: ${i + 1}/${nodes.length} (${stats.ingested} ingested, ${stats.skipped} skipped, ${stats.errors} errors) — ${elapsed}ms elapsed`);
+      lastProgressAt = elapsed;
+    }
     try {
       const key = `graph-node:${node.id}`;
       const text = `Entity: ${node.title} (${node.type})\n${node.content}\nContext: ${node.context ?? "N/A"}\nStatus: ${node.status}`;
@@ -513,7 +529,13 @@ export async function ingestGraphStore(): Promise<IngestionStats> {
     }
   }
 
-  for (const edge of edges) {
+  for (let i = 0; i < edges.length; i++) {
+    const edge = edges[i];
+    const elapsed = Date.now() - start;
+    if (elapsed - (Date.now() - lastProgressAt) >= 10_000 || i === edges.length - 1) {
+      console.log(`[ClaimKit Ingestion] Graph edge progress: ${i + 1}/${edges.length} (${stats.ingested} ingested, ${stats.skipped} skipped, ${stats.errors} errors) — ${elapsed}ms elapsed`);
+      lastProgressAt = elapsed;
+    }
     try {
       const key = `graph-edge:${edge.id}`;
       const sourceNode = knowledgeGraph.getNode(edge.sourceId);

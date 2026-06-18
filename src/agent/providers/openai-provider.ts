@@ -280,6 +280,9 @@ export class OpenAIProvider extends AIProvider {
         try {
           response = await this.client.post("/chat/completions", requestBody, {
             responseType: "stream",
+            // Forward request.signal so cancellation aborts the inflight
+            // stream and frees the aiRequestLimiter slot.
+            signal: request.signal,
           });
           break;
         } catch (error) {

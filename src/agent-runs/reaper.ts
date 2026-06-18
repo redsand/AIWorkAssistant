@@ -26,6 +26,20 @@ const REAPER_INTERVAL_MS = 60 * 1000; // run once per minute
 
 let reaperTimer: NodeJS.Timeout | null = null;
 
+type OnReapCallback = (sessionIds: string[]) => void;
+let onReapCallback: OnReapCallback | null = null;
+
+/**
+ * Register a callback invoked with the session_ids that were just reaped.
+ * Chat routes use this to also abort the in-memory ProcessingJob, releasing
+ * its aiRequestLimiter slot — the DB update alone doesn't reach the inflight
+ * provider HTTP call, so without this hook a slot stays held until the socket
+ * dies (observed: 48 minutes in session 926107f7).
+ */
+export function setOnReapCallback(cb: OnReapCallback | null): void {
+  onReapCallback = cb;
+}
+
 export function startStaleAgentRunReaper(): void {
   if (reaperTimer) return;
   const staleAfterMs = getStaleAfterMs();
@@ -37,9 +51,12 @@ export function startStaleAgentRunReaper(): void {
     try {
       const threshold = getStaleAfterMs();
       if (threshold === 0) return; // disabled mid-flight
-      const reaped = agentRunDatabase.reapStaleRunningRuns(threshold);
-      if (reaped > 0) {
-        console.log(`[AgentRunReaper] marked ${reaped} stuck run(s) as failed (no activity for ${threshold / 1000}s)`);
+      const { count, sessionIds } = agentRunDatabase.reapStaleRunningRuns(threshold);
+      if (count > 0) {
+        console.log(`[AgentRunReaper] marked ${count} stuck run(s) as failed (no activity for ${threshold / 1000}s)`);
+        if (onReapCallback && sessionIds.length > 0) {
+          try { onReapCallback(sessionIds); } catch (e) { console.error("[AgentRunReaper] onReap callback failed:", e); }
+        }
       }
     } catch (err) {
       console.error("[AgentRunReaper] reap failed:", err);

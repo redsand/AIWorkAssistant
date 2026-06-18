@@ -390,6 +390,11 @@ export class ZaiProvider extends AIProvider {
     let rateLimitedSince: number | null = null;
     const rateLimitBudgetMs = env.AI_RATE_LIMIT_MAX_WAIT_MS;
     let rateLimitAttempt = 0;
+    // Captured when an overflow-retry is requested. The recursive
+    // chatStreamInternal call MUST happen after the for-loop's inner finally
+    // releases the limiter slot — otherwise the recursive acquire() can
+    // deadlock (parent holds the only slot, child waits forever).
+    let pendingOverflowRetry: ChatRequest | null = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -412,7 +417,14 @@ export class ZaiProvider extends AIProvider {
             response = await this.client.post(
               "/chat/completions",
               requestBody,
-              { responseType: "stream", validateStatus: () => true },
+              {
+                responseType: "stream",
+                validateStatus: () => true,
+                // Forward request.signal so cancellation aborts the inflight
+                // stream and frees the aiRequestLimiter slot. Same gap as in
+                // ollama-provider that caused slot leaks on stale runs.
+                signal: request.signal,
+              },
             );
           } finally {
             zaiRateLimiter.release();
@@ -436,11 +448,10 @@ export class ZaiProvider extends AIProvider {
                 console.warn(
                   `[Z.ai API] Retrying stream with aggressive pruning: ${request.messages.length} → ${repairedMessages.length} messages (target: ${targetMax} tokens)`,
                 );
-                yield* this.chatStreamInternal(
-                  { ...request, messages: repairedMessages },
-                  true,
-                );
-                return;
+                pendingOverflowRetry = { ...request, messages: repairedMessages };
+                // break exits the for loop after the inner finally releases
+                // the slot; the recursive yield* runs below at function scope.
+                break;
               }
               throw new Error(
                 `Z.ai API context length exceeded for model '${this.config.model}'. ${errorBody}`,
@@ -594,6 +605,14 @@ export class ZaiProvider extends AIProvider {
         }
         throw lastError;
       }
+    }
+
+    // Overflow-retry recursion runs here, AFTER the for-loop's inner finally
+    // has released the limiter slot. Recursing inside the try/finally above
+    // would deadlock the limiter (parent holds slot, child waits).
+    if (pendingOverflowRetry) {
+      yield* this.chatStreamInternal(pendingOverflowRetry, true);
+      return;
     }
 
     throw new Error(

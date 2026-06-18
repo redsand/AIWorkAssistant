@@ -92,6 +92,10 @@ async function withLlmTimeout<T>(
 ): Promise<T> {
   const maxAttempts = env.CLAIMKIT_LLM_MAX_ATTEMPTS;
   const baseMs = env.CLAIMKIT_LLM_TIMEOUT_MS;
+  const initialMs =
+    env.CLAIMKIT_LLM_INITIAL_TIMEOUT_MS > 0
+      ? env.CLAIMKIT_LLM_INITIAL_TIMEOUT_MS
+      : baseMs;
   const totalBudgetMs = env.CLAIMKIT_LLM_TOTAL_TIMEOUT_MS;
   const budgetEnabled = totalBudgetMs > 0;
   const startedAt = Date.now();
@@ -106,11 +110,12 @@ async function withLlmTimeout<T>(
       break;
     }
 
-    // Cap each attempt at the remaining total budget when a ceiling is set.
-    let timeoutMs = baseMs;
+    // First attempt can use a longer initial timeout (e.g. cold model load).
+    // Subsequent retries use the standard per-attempt timeout.
+    let timeoutMs = attempt === 1 ? initialMs : baseMs;
     if (budgetEnabled) {
       const remaining = totalBudgetMs - elapsed;
-      timeoutMs = Math.min(baseMs, remaining);
+      timeoutMs = Math.min(timeoutMs, remaining);
       if (timeoutMs < 1000) break; // Not enough time for a meaningful attempt.
     }
 
@@ -136,9 +141,10 @@ async function withLlmTimeout<T>(
         console.warn(`[ClaimKit LLM] Attempt ${attempt}/${maxAttempts} failed:`, err instanceof Error ? err.message : err);
       }
       if (attempt >= maxAttempts) break;
-      // Small sleep with jitter before the next attempt — give the provider
-      // a moment to recover and avoid synchronized retry storms.
-      await sleepWithJitter(500);
+      // Wait longer between retries on slow providers. A provider that just
+      // spent 60s-300s before failing is likely still warming up or queueing;
+      // a 5-15s pause is more useful than the old 500ms jitter.
+      await sleepWithJitter(Math.min(15_000, Math.max(5_000, baseMs / 4)));
     } finally {
       clearTimeout(timer);
     }

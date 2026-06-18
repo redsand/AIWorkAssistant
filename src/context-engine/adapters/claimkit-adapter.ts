@@ -136,6 +136,7 @@ export class ClaimKitAdapter {
     try {
       // Settle the embedding provider BEFORE creating stores so the
       // vector dimension matches what will actually be used at query time.
+      console.log(`[ClaimKit] Probing embedding provider (${env.EMBEDDING_PROVIDER || "auto"} / ${env.EMBEDDING_MODEL || "default"})…`);
       const embeddingReady = await embeddingService.isAvailable();
       if (!embeddingReady) {
         this.initError = "Embedding service unavailable — no providers responded";
@@ -148,7 +149,9 @@ export class ClaimKitAdapter {
       }
       const actualDimensions = probeResult.embedding.length;
       const settledProvider = embeddingService.getProviderInfo();
+      console.log(`[ClaimKit] Embedding provider ready: ${settledProvider.provider}/${settledProvider.model} (${actualDimensions}d)`);
 
+      console.log(`[ClaimKit] Creating LLM adapter: ${env.CLAIMKIT_LLM_PROVIDER}`);
       let llm: LLMAdapter;
       if (env.CLAIMKIT_LLM_PROVIDER === "memory") {
         llm = new MemoryLLMAdapter();
@@ -179,6 +182,7 @@ export class ClaimKitAdapter {
       const embeddings = new ClaimKitEmbeddingAdapter(actualDimensions);
 
       let stores: Stores;
+      console.log(`[ClaimKit] Connecting stores (redis=${Boolean(env.CLAIMKIT_REDIS_URL)})…`);
       const redisUrl = env.CLAIMKIT_REDIS_URL;
 
       if (redisUrl) {

@@ -239,10 +239,18 @@ export async function buildServer() {
   return server;
 }
 
+function logStartupPhase(phase: string, detail?: string) {
+  const stamp = new Date().toISOString();
+  const extra = detail ? ` — ${detail}` : "";
+  console.log(`[Startup ${stamp}] ${phase}${extra}`);
+}
+
 async function start() {
+  logStartupPhase("Building server");
   const server = await buildServer();
 
   try {
+    logStartupPhase("Applying persisted provider selection");
     providerSettings.applyPersistedSelection();
     const port = env.PORT;
     const host = "0.0.0.0";
@@ -300,10 +308,11 @@ async function start() {
     // config manager decides *which directory* all state lands in.
 
     // ─── Profile Manager: initialize profiles ───
+    logStartupPhase("Initializing session profile manager");
     try {
       const pm = getProfileManager();
       const profiles = pm.listProfiles();
-      console.log(`[Profiles] Initialized with ${profiles.length} profile(s) (default: ${pm.getDefaultProfileId()})`);
+      logStartupPhase("Profile manager ready", `${profiles.length} profile(s), default: ${pm.getDefaultProfileId()}`);
     } catch (err) {
       console.warn("[Profiles] Failed to initialize, using default:", err);
     }
@@ -312,11 +321,13 @@ async function start() {
     // getActive() seeds data/profiles/<name>/ and writes the `active` marker.
     // Sync ACTIVE_PROFILE so resolvePath() routes all subsequent profile-scoped
     // state (memories, skills, sessions) into the active profile's directory.
+    logStartupPhase("Loading active config profile");
     try {
       const active = getConfigProfileManager().getActive();
       process.env.ACTIVE_PROFILE = active.name;
-      console.log(
-        `[Profiles] Active profile: ${active.name} (soul: ${active.hasCustomSoul ? "custom" : "default"}, memory: ${active.hasCustomMemory ? "custom" : "default"}, skills: ${active.skillCount}) at ${active.path}`,
+      logStartupPhase(
+        "Active profile loaded",
+        `${active.name} (soul: ${active.hasCustomSoul ? "custom" : "default"}, memory: ${active.hasCustomMemory ? "custom" : "default"}, skills: ${active.skillCount})`,
       );
     } catch (err) {
       console.warn("[Profiles] Failed to load active profile:", err);
@@ -325,10 +336,10 @@ async function start() {
     // ─── ClaimKit init: block server.listen() until init resolves ───
     // CLAIMKIT_REQUIRE_INIT=true (default) → process.exit(1) on failure
     // CLAIMKIT_REQUIRE_INIT=false → log warning, continue with CK disabled (60s retry backoff)
-    console.log(`[ClaimKit] CLAIMKIT_ENABLED raw env: ${JSON.stringify(process.env.CLAIMKIT_ENABLED)}, parsed: ${env.CLAIMKIT_ENABLED}`);
+    logStartupPhase("ClaimKit init", `enabled=${env.CLAIMKIT_ENABLED}, provider=${env.CLAIMKIT_LLM_PROVIDER}, blockOnIngestion=${env.CLAIMKIT_BLOCK_ON_INGESTION}`);
     let ckInitialized = false;
     if (env.CLAIMKIT_ENABLED) {
-      console.log("[ClaimKit] Initializing (blocking startup)…");
+      logStartupPhase("ClaimKit initializing");
       try {
         ckInitialized = await claimKitAdapter.initialize();
         if (ckInitialized) {
@@ -369,7 +380,7 @@ async function start() {
     // CLAIMKIT_BLOCK_ON_INGESTION=true (default) → await full ingestion before listen
     // CLAIMKIT_BLOCK_ON_INGESTION=false → fire-and-forget after listen (set below)
     if (ckInitialized && env.CLAIMKIT_BLOCK_ON_INGESTION) {
-      console.log("[ClaimKit] Ingesting stores (blocking)…");
+      logStartupPhase("ClaimKit ingestion", "blocking startup");
       try {
         const [knowledge, graph] = await Promise.all([
           ingestKnowledgeStore(),
@@ -400,6 +411,7 @@ async function start() {
     // On Windows, tsx watch restarts can hit EADDRINUSE for a brief window
     // while the OS releases the previous child's TCP socket. Retry a few
     // times before giving up so tsx watch restarts succeed reliably.
+    logStartupPhase("Binding server", `port=${port}`);
     for (let attempt = 1; attempt <= 5; attempt++) {
       try {
         await server.listen({ port, host });

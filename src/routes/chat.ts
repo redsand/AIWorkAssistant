@@ -16,7 +16,7 @@ import { todoManager } from "../agent/todo-manager";
 import { knowledgeStore } from "../agent/knowledge-store";
 import { knowledgeGraph } from "../agent/knowledge-graph";
 import { codebaseIndexer } from "../agent/codebase-indexer";
-import { dispatchToolCall, resolveToolName, recordAndCheckIdenticalCall } from "../agent/tool-dispatcher";
+import { dispatchToolCall, resolveToolName, recordAndCheckIdenticalCall, recordToolResultEmpty } from "../agent/tool-dispatcher";
 import { toolCallCache } from "../memory/tool-cache";
 import { AGENT_MODES } from "../config/constants";
 import type { Tool, ChatMessage } from "../agent/opencode-client";
@@ -28,6 +28,7 @@ import { conversationManager } from "../memory/conversation-manager";
 import { env } from "../config/env";
 import { agentRunDatabase } from "../agent-runs/database";
 import { sanitizeValue } from "../agent-runs/sanitizer";
+import { setOnReapCallback } from "../agent-runs/reaper";
 import { zaiRateLimiter } from "../agent/providers/zai-rate-limiter";
 import { providerSettings } from "../agent/provider-settings";
 import { runProviderPreflight } from "../agent/provider-preflight";
@@ -200,11 +201,30 @@ interface ProcessingJob {
   runId?: string | null;
   cancelled: boolean;
   cancelReason?: string;
+  // Signals provider HTTP calls (ollama/zai/opencode streaming) to abort.
+  // Without this, cancellation only set `cancelled=true` and was checked
+  // between tool-loop iterations; an inflight streaming POST stayed alive
+  // (and held its aiRequestLimiter slot) until the upstream closed the
+  // socket — observed leaking slots for 48m in session 926107f7.
+  abortController: AbortController;
   events: Array<{ event: string; data: unknown }>;
   subscribers: Set<(event: string, data: unknown) => void>;
 }
 
 const processingJobs = new Map<string, ProcessingJob>();
+
+// Register a hook so the agent-run reaper can also abort the in-memory job
+// when it marks a run stale. Without this, the DB row flips to 'failed' but
+// the inflight provider HTTP call keeps running and its aiRequestLimiter slot
+// stays held until the upstream socket closes (root cause of session
+// 926107f7's "queued for 120s but no slot opened" errors).
+setOnReapCallback((sessionIds) => {
+  for (const sid of sessionIds) {
+    const job = processingJobs.get(sid);
+    if (!job || job.status !== "processing") continue;
+    cancelProcessingJob(sid, "Reaped by stale-run sweeper");
+  }
+});
 
 // Persists which tool categories have been discovered per session so they are
 // pre-expanded on subsequent requests instead of requiring a repeat tools.discover call.
@@ -307,10 +327,15 @@ function getOrCreateJob(sessionId: string): ProcessingJob {
       startedAt: new Date(),
       lastActivityAt: new Date(),
       cancelled: false,
+      abortController: new AbortController(),
       events: [],
       subscribers: new Set(),
     };
     processingJobs.set(sessionId, job);
+  } else if (job.abortController.signal.aborted) {
+    // Reuse the job slot but replace the spent controller so a brand-new
+    // run starts with a fresh signal.
+    job.abortController = new AbortController();
   }
   return job;
 }
@@ -348,6 +373,11 @@ function cancelProcessingJob(
   job.status = "failed";
   job.completedAt = new Date();
   job.lastActivityAt = new Date();
+  // Abort any inflight provider HTTP call so the limiter slot is released
+  // immediately. Without this, a stalled streaming request keeps its slot
+  // until the upstream closes the socket (observed: 48 minutes for a stale
+  // ollama run, which blocked subsequent requests with "queued for 120s").
+  try { job.abortController.abort(reason); } catch (e) { console.error("[Chat] abortController.abort failed", e); }
 
   if (job.runId) {
     try { agentRunDatabase.cancelRun(job.runId, reason); } catch (e) { console.error("[AgentRuns]", e); }
@@ -446,15 +476,46 @@ function stringifyToolResultForContext(result: unknown): string {
 }
 
 function stringifyToolResultForMemory(toolName: string, result: unknown): string {
-  const content = JSON.stringify(compactToolResultForMemory(toolName, result));
+  const compacted = compactToolResultForMemory(toolName, result);
+  const content = JSON.stringify(compacted);
   // 16K cap is large enough that typical fetch_cached results (10-15KB
   // jira issues, github PR details, etc.) survive without mid-JSON truncation.
   // Previous 4K cap was producing unparseable JSON that the model misread
   // as "data was pruned" — see compactToolResultForMemory for context.
-  // Truly massive results (>16K) still get truncated, but the rehydration
-  // pass on session reload restores them from toolCallCache when available.
   const maxChars = 16_000;
   if (content.length <= maxChars) return content;
+
+  // OVERSIZED: previously we truncated mid-JSON and appended a sentinel.
+  // That broke JSON.parse on session reload, so rehydrateCachedToolResults
+  // silently skipped — observed in session 926107f7: 89 messages, 13MB of
+  // data permanently lost from the model's view even though the Redis cache
+  // still had every result.
+  //
+  // Now: if the result carries a cache ref, persist a TINY valid-JSON
+  // pointer ({_cached_from_ref, _oversized}). rehydrateCachedToolResults
+  // then finds the ref and restores the full payload from the live cache.
+  // Storage stays small AND the model gets full fidelity on next load.
+  let ref: string | undefined;
+  if (compacted && typeof compacted === "object") {
+    const obj = compacted as Record<string, unknown>;
+    if (typeof obj._cached_from_ref === "string") ref = obj._cached_from_ref;
+    else if (typeof obj._cached_ref === "string") ref = obj._cached_ref;
+    else if (obj.data && typeof obj.data === "object") {
+      const d = obj.data as Record<string, unknown>;
+      if (typeof d._cached_ref === "string") ref = d._cached_ref;
+      else if (typeof d.ref === "string") ref = d.ref;
+    }
+  }
+  if (ref) {
+    return JSON.stringify({
+      _cached_from_ref: ref,
+      _oversized: true,
+      _original_bytes: content.length,
+      _note: `Tool result (${content.length} bytes) too large for inline storage. Live data is in the session cache and will be rehydrated on next load via ref ${ref}.`,
+    });
+  }
+  // No ref recoverable — fall back to the legacy truncate behavior so
+  // rehydration at least sees a sentinel suffix it can recognize.
   return `${content.substring(0, maxChars)}\n...[tool result compacted for session memory: ${content.length - maxChars} chars omitted]`;
 }
 
@@ -683,6 +744,11 @@ async function rehydrateCachedToolResults(
 
   let rehydratedCount = 0;
   let missingCount = 0;
+  let salvageCount = 0;
+  // Heal map: tool_call_id → new content. Persisted back to session.json at
+  // the end so subsequent loads don't have to redo the salvage work and
+  // remain readable even if the Redis entry later expires.
+  const healMap = new Map<string, string>();
 
   const result = messages.map((msg) => {
     if (msg.role !== "tool" || typeof msg.content !== "string") return msg;
@@ -691,6 +757,31 @@ async function rehydrateCachedToolResults(
     try {
       parsed = JSON.parse(msg.content);
     } catch {
+      // Salvage path for legacy "tool result compacted for session memory"
+      // truncations that left invalid JSON. If the truncated prefix still
+      // contains a recognizable cache ref, restore the full result from
+      // cache. Recovers the 13MB of data lost in session 926107f7 (and any
+      // similar long sessions) on next load.
+      const refMatch = msg.content.match(/"_cached_from_ref"\s*:\s*"(tc-[A-Za-z0-9]+)"/)
+        || msg.content.match(/"_cached_ref"\s*:\s*"(tc-[A-Za-z0-9]+)"/)
+        || msg.content.match(/"ref"\s*:\s*"(tc-[A-Za-z0-9]+)"/);
+      if (refMatch) {
+        const entry = toolCallCache.getByRef(refMatch[1]);
+        if (entry && entry.result && typeof entry.result === "object") {
+          rehydratedCount++;
+          salvageCount++;
+          const healed = JSON.stringify({
+            _cached_from_ref: entry.ref,
+            _cached_from_tool: entry.toolName,
+            _cached_at: new Date(entry.calledAt).toISOString(),
+            _salvaged_from_truncated: true,
+            ...(entry.result as Record<string, unknown>),
+          });
+          if (msg.tool_call_id) healMap.set(msg.tool_call_id, healed);
+          return { ...msg, content: healed };
+        }
+        missingCount++;
+      }
       return msg;
     }
     if (!parsed || typeof parsed !== "object") return msg;
@@ -702,15 +793,19 @@ async function rehydrateCachedToolResults(
       const entry = toolCallCache.getByRef(parsed._cached_from_ref);
       if (entry && entry.result && typeof entry.result === "object") {
         rehydratedCount++;
-        return {
-          ...msg,
-          content: JSON.stringify({
-            _cached_from_ref: entry.ref,
-            _cached_from_tool: entry.toolName,
-            _cached_at: new Date(entry.calledAt).toISOString(),
-            ...(entry.result as Record<string, unknown>),
-          }),
-        };
+        const healed = JSON.stringify({
+          _cached_from_ref: entry.ref,
+          _cached_from_tool: entry.toolName,
+          _cached_at: new Date(entry.calledAt).toISOString(),
+          ...(entry.result as Record<string, unknown>),
+        });
+        // Only heal-to-disk if the persisted form was the tiny pointer
+        // (oversized stub). Don't bloat session.json by inlining 400KB
+        // when the original was already there.
+        if (parsed._oversized === true && msg.tool_call_id) {
+          healMap.set(msg.tool_call_id, healed);
+        }
+        return { ...msg, content: healed };
       }
       missingCount++;
       return msg;
@@ -759,8 +854,18 @@ async function rehydrateCachedToolResults(
   if (rehydratedCount > 0 || missingCount > 0) {
     console.log(
       `[Chat] Rehydrated ${rehydratedCount} fetch_cached result(s)` +
+        (salvageCount > 0 ? ` (${salvageCount} salvaged from truncated)` : "") +
         (missingCount > 0 ? `; ${missingCount} cache miss(es) — entries may have expired` : ""),
     );
+  }
+  // Persist healed tool messages so the salvage work survives subsequent
+  // loads even if the Redis cache entries later expire.
+  if (healMap.size > 0) {
+    try {
+      conversationManager.healToolMessages(sessionId, healMap);
+    } catch (err) {
+      console.warn(`[Chat] heal-to-disk failed for session ${sessionId}:`, err instanceof Error ? err.message : err);
+    }
   }
   return result;
 }
@@ -830,6 +935,21 @@ async function dispatchToolCallCached(
           `Tool call succeeded. Full result (${entry.resultSize} bytes, ${entry.resultSummary}) is in the session cache. ` +
           `To read it, call tools.fetch_cached({ref:"${entry.ref}"}). Treat the fetched data as authoritative.`,
       };
+    } else if (
+      contextValue &&
+      typeof contextValue === "object" &&
+      !Array.isArray(contextValue) &&
+      !(contextValue as Record<string, unknown>)._cached_ref
+    ) {
+      // Result was under the LARGE_RESULT_THRESHOLD (so kept inline) but is
+      // still cacheable. Inject _cached_ref at top-level so the persistence
+      // path can recover the full data on reload even if storage truncation
+      // cuts mid-JSON. Closes the 16–50K gap where a 30KB hawk_ir.search_logs
+      // would persist as old-shape truncation with no ref to salvage.
+      contextValue = {
+        ...(contextValue as Record<string, unknown>),
+        _cached_ref: entry.ref,
+      };
     }
   }
 
@@ -858,6 +978,233 @@ function injectManifest(messages: ChatMessage[], sessionId: string | null | unde
   return [
     ...stripped.slice(0, insertAt),
     { role: "system", content: manifest },
+    ...stripped.slice(insertAt),
+  ];
+}
+
+// Marker so the previous turn's pin can be stripped and replaced. Must match
+// the prefix recognized by providers' pruneToContextWindow protection list.
+export const USER_DIRECTIVES_MARKER = "=== PINNED USER DIRECTIVES (chronological) ===";
+
+/**
+ * Pin all non-trivial user messages as a system-prompt addendum so directives
+ * survive the conversation-manager's last-30-messages truncation AND the
+ * provider's aggressive prune. Without this, corrections older than ~30 turns
+ * are invisible to the model and the user has to repeat themselves
+ * (observed in session 926107f7: same correction issued 4+ times).
+ *
+ * Mirrors the injectManifest shape: strip any prior pin, append fresh one.
+ */
+export function injectUserDirectives(messages: ChatMessage[], sessionId: string | null | undefined): ChatMessage[] {
+  if (!sessionId) return messages;
+  const stripped = messages.filter(
+    (m) => !(m.role === "system" && typeof m.content === "string" && m.content.startsWith(USER_DIRECTIVES_MARKER)),
+  );
+  const directives = conversationManager.getUserDirectives(sessionId);
+  if (directives.length === 0) return stripped;
+
+  const lines = directives.map((d) => {
+    const time = d.timestamp instanceof Date
+      ? d.timestamp.toISOString().slice(11, 19) + " UTC"
+      : String(d.timestamp);
+    // Keep each directive on one line for compact rendering. Newlines in
+    // multi-line user messages become " · " separators.
+    const oneLine = d.content.replace(/\s+/g, " ").trim();
+    return `- [${time}] ${oneLine}`;
+  });
+
+  const block = [
+    USER_DIRECTIVES_MARKER,
+    "These are the user's instructions and corrections from this session, in",
+    "chronological order. Treat them as authoritative; they supersede anything",
+    "you may have inferred from earlier truncated context. Later directives",
+    "override earlier ones if they conflict.",
+    "",
+    ...lines,
+  ].join("\n");
+
+  const firstNonSystemIdx = stripped.findIndex((m) => m.role !== "system");
+  const insertAt = firstNonSystemIdx === -1 ? stripped.length : firstNonSystemIdx;
+  return [
+    ...stripped.slice(0, insertAt),
+    { role: "system", content: block },
+    ...stripped.slice(insertAt),
+  ];
+}
+
+// ─── Time anchor ────────────────────────────────────────────────────────
+// Inject current time as a system message every turn so the model has a
+// concrete temporal anchor instead of guessing from training-data drift.
+// Session 926107f7 had the user correct the model's time 5+ times — first on
+// DST (MST vs MDT for El Paso in June), then on absolute time ("it is 9:04am
+// CDT, not yesterday afternoon").
+export const TIME_ANCHOR_MARKER = "=== CURRENT TIME (refreshed each turn) ===";
+
+const DAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+
+function buildTimeAnchor(userLocalTz?: { label: string; offsetMinutes: number } | null): string {
+  const now = new Date();
+  const utcIso = now.toISOString();
+  const dayUtc = DAY_NAMES[now.getUTCDay()];
+  const lines = [
+    TIME_ANCHOR_MARKER,
+    `UTC: ${utcIso}`,
+    `Day (UTC): ${dayUtc}`,
+  ];
+  if (userLocalTz) {
+    const localMs = now.getTime() + userLocalTz.offsetMinutes * 60_000;
+    const local = new Date(localMs);
+    const yyyy = local.getUTCFullYear();
+    const mm = String(local.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(local.getUTCDate()).padStart(2, "0");
+    const hh = String(local.getUTCHours()).padStart(2, "0");
+    const mi = String(local.getUTCMinutes()).padStart(2, "0");
+    const dayLocal = DAY_NAMES[local.getUTCDay()];
+    lines.push(`User local: ${yyyy}-${mm}-${dd} ${hh}:${mi} ${userLocalTz.label} (${dayLocal})`);
+  }
+  lines.push("");
+  lines.push("All timestamps in your responses MUST be expressed in UTC unless the");
+  lines.push("user explicitly asks for a different zone. When converting, show your");
+  lines.push("work (e.g., '2026-06-18T14:24:37Z = 08:24:37 MDT'). Do not assume the");
+  lines.push("current date from training data — use the time above.");
+  return lines.join("\n");
+}
+
+export function injectTimeAnchor(messages: ChatMessage[], sessionId: string | null | undefined): ChatMessage[] {
+  const stripped = messages.filter(
+    (m) => !(m.role === "system" && typeof m.content === "string" && m.content.startsWith(TIME_ANCHOR_MARKER)),
+  );
+  const tz = sessionId ? conversationManager.getInferredTimezone(sessionId) : null;
+  const block = buildTimeAnchor(tz);
+  const firstNonSystemIdx = stripped.findIndex((m) => m.role !== "system");
+  const insertAt = firstNonSystemIdx === -1 ? stripped.length : firstNonSystemIdx;
+  return [
+    ...stripped.slice(0, insertAt),
+    { role: "system", content: block },
+    ...stripped.slice(insertAt),
+  ];
+}
+
+// ─── Timezone / location pin ────────────────────────────────────────────
+// Extracts user-stated timezone or location and pins it separately so the
+// model can't ignore it as one bullet among many directives.
+export const USER_LOCATION_MARKER = "=== USER LOCATION / TIMEZONE (sticky) ===";
+
+export function injectUserLocation(messages: ChatMessage[], sessionId: string | null | undefined): ChatMessage[] {
+  if (!sessionId) return messages;
+  const stripped = messages.filter(
+    (m) => !(m.role === "system" && typeof m.content === "string" && m.content.startsWith(USER_LOCATION_MARKER)),
+  );
+  const facts = conversationManager.getLocationFacts(sessionId);
+  if (facts.length === 0) return stripped;
+  const block = [
+    USER_LOCATION_MARKER,
+    "What the user has told you about their location and timezone. Always honor",
+    "the most recent statement when it conflicts with earlier ones.",
+    "",
+    ...facts.map((f) => `- [${f.timestamp.toISOString().slice(11, 19)} UTC] ${f.content.replace(/\s+/g, " ").trim()}`),
+  ].join("\n");
+  const firstNonSystemIdx = stripped.findIndex((m) => m.role !== "system");
+  const insertAt = firstNonSystemIdx === -1 ? stripped.length : firstNonSystemIdx;
+  return [
+    ...stripped.slice(0, insertAt),
+    { role: "system", content: block },
+    ...stripped.slice(insertAt),
+  ];
+}
+
+// ─── Evidence discipline (report mode) ──────────────────────────────────
+// When the user asks for a report / write-up / summary, inject strong
+// anti-hallucination guidance. Session 926107f7 showed the model fabricating
+// claims like "the malicious IP did not authenticate to other Hunt mailboxes"
+// when it had not actually searched for that. Anti-hallucination prompts only
+// fire on report-style turns to avoid being noise during normal tool use.
+export const EVIDENCE_DISCIPLINE_MARKER = "=== EVIDENCE DISCIPLINE (report mode active) ===";
+
+const REPORT_INTENT_PATTERNS = [
+  /\b(comprehensive\s+)?report\b/i,
+  /\b(write|wrote)\s+up\b/i,
+  /\bsummari[sz]e\b/i,
+  /\b(final|incident)\s+summary\b/i,
+  /\btimeline\s+(of|report)\b/i,
+  /\bwalk\s*through\b/i,
+];
+
+function isReportIntent(text: string | undefined): boolean {
+  if (!text) return false;
+  return REPORT_INTENT_PATTERNS.some((p) => p.test(text));
+}
+
+export function injectEvidenceDiscipline(messages: ChatMessage[], sessionId: string | null | undefined): ChatMessage[] {
+  const stripped = messages.filter(
+    (m) => !(m.role === "system" && typeof m.content === "string" && m.content.startsWith(EVIDENCE_DISCIPLINE_MARKER)),
+  );
+  // Trigger on the most recent user message — if they're asking for a report
+  // right now, the discipline applies to this turn's output.
+  const lastUserText = (() => {
+    if (!sessionId) return undefined;
+    const session = conversationManager.getSession(sessionId);
+    if (!session) return undefined;
+    for (let i = session.messages.length - 1; i >= 0; i--) {
+      if (session.messages[i].role === "user") return session.messages[i].content;
+    }
+    return undefined;
+  })();
+  if (!isReportIntent(lastUserText)) return stripped;
+
+  const block = [
+    EVIDENCE_DISCIPLINE_MARKER,
+    "The user has asked for a report or summary. Apply STRICT evidence",
+    "discipline to this turn's output:",
+    "",
+    "1. Every factual claim MUST cite a specific tool call in this session OR",
+    "   a prior user-confirmed statement. Pin tc-xxx refs next to each claim.",
+    "2. NEVER make negative assertions (e.g. 'the IP did not authenticate",
+    "   elsewhere') unless you have explicitly queried for that scope AND the",
+    "   query returned empty. Use 'not investigated' instead of 'did not happen'.",
+    "3. Do not extrapolate from one tool result to a broader claim. If a single",
+    "   query returned 3 events, report exactly 3 events, not 'all events'.",
+    "4. Quote message IDs, IPs, timestamps, and bearer tokens VERBATIM from",
+    "   tool results. Do not abbreviate or reformat.",
+    "5. If you are not 100% certain about a claim, mark it explicitly as",
+    "   '[UNVERIFIED]' and recommend the next query that would verify it.",
+    "6. Distinguish 'I queried X and found Y' from 'X happened'.",
+  ].join("\n");
+  const firstNonSystemIdx = stripped.findIndex((m) => m.role !== "system");
+  const insertAt = firstNonSystemIdx === -1 ? stripped.length : firstNonSystemIdx;
+  return [
+    ...stripped.slice(0, insertAt),
+    { role: "system", content: block },
+    ...stripped.slice(insertAt),
+  ];
+}
+
+// ─── Established facts (user-confirmed claims) ──────────────────────────
+// When the user explicitly confirms an assistant claim, that claim becomes a
+// permanent anchor. Without this, the model contradicts its own prior
+// findings (session 926107f7 #913: "'Per Hunt, this is the user's
+// workstation.' This was per you in our chat. Is this not true?")
+export const ESTABLISHED_FACTS_MARKER = "=== ESTABLISHED FACTS (confirmed by user) ===";
+
+export function injectEstablishedFacts(messages: ChatMessage[], sessionId: string | null | undefined): ChatMessage[] {
+  if (!sessionId) return messages;
+  const stripped = messages.filter(
+    (m) => !(m.role === "system" && typeof m.content === "string" && m.content.startsWith(ESTABLISHED_FACTS_MARKER)),
+  );
+  const facts = conversationManager.getEstablishedFacts(sessionId);
+  if (facts.length === 0) return stripped;
+  const block = [
+    ESTABLISHED_FACTS_MARKER,
+    "These are claims you made earlier that the user explicitly confirmed.",
+    "Treat them as ground truth — do NOT contradict them in subsequent turns.",
+    "",
+    ...facts.map((f) => `- [${f.timestamp.toISOString().slice(0, 19)} UTC] ${f.content.replace(/\s+/g, " ").trim().slice(0, 280)}`),
+  ].join("\n");
+  const firstNonSystemIdx = stripped.findIndex((m) => m.role !== "system");
+  const insertAt = firstNonSystemIdx === -1 ? stripped.length : firstNonSystemIdx;
+  return [
+    ...stripped.slice(0, insertAt),
+    { role: "system", content: block },
     ...stripped.slice(insertAt),
   ];
 }
@@ -938,7 +1285,7 @@ async function streamChatIteration(
 
   emitJobEvent(sessionId, "response_start", {});
 
-  const gen = aiClient.chatStream({ messages, tools, temperature: 0.7, top_p: 0.95, model });
+  const gen = aiClient.chatStream({ messages, tools, temperature: 0.7, top_p: 0.95, model, signal: job.abortController.signal });
   for await (const event of gen) {
     assertJobActive(job);
     if (typeof event === "string") {
@@ -1121,6 +1468,12 @@ async function runChatJob(
   job.startedAt = new Date();
   job.lastActivityAt = new Date();
   job.completedAt = undefined;
+  // A previous run on this job may have aborted the controller (or none was
+  // ever created if the job was constructed by code that predates this
+  // field). Either way, hand the new run a fresh signal.
+  if (!job.abortController || job.abortController.signal.aborted) {
+    job.abortController = new AbortController();
+  }
 
   const originalUserQuery = originalUserQueryOverride ?? messages.find((m) => m.role === "user")?.content ?? "Unknown query";
 
@@ -1157,6 +1510,11 @@ async function runChatJob(
     messages = repairConversationState(messages);
     messages = repairOrphanedToolCalls(messages);
     messages = injectManifest(messages, sessionId);
+    messages = injectUserDirectives(messages, sessionId);
+    messages = injectEstablishedFacts(messages, sessionId);
+    messages = injectEvidenceDiscipline(messages, sessionId);
+    messages = injectUserLocation(messages, sessionId);
+    messages = injectTimeAnchor(messages, sessionId);
     messages = ensureFirstNonSystemIsUser(messages);
     warnIfInvalidModelMessages(messages, "stream_initial");
     if (JOB_TIMEOUT_ENABLED && Date.now() - jobStartTime > JOB_TIMEOUT_MS) {
@@ -1207,6 +1565,11 @@ async function runChatJob(
       });
 
       const allToolResults: Record<string, unknown> = {};
+      // Per-tool-call nudges from recordToolResultEmpty. Appended to the
+      // stringified tool result the model sees on the next iteration, so a
+      // flailing search (e.g. 91 hawk_ir.search_logs in session 926107f7)
+      // gets a clear "stop and pivot" signal instead of silently looping.
+      const toolStreakNudges: Record<string, string> = {};
       const spawnCalls = parsedToolCalls.filter((tc) => tc.name === "agent.spawn");
       const regularCalls = parsedToolCalls.filter((tc) => tc.name !== "agent.spawn");
 
@@ -1223,6 +1586,11 @@ async function runChatJob(
         assertJobActive(job);
         const toolDuration = Date.now() - toolStart;
         allToolResults[tc.id] = cached ? contextValue : compactToolResultForContext(contextValue);
+        const streak = recordToolResultEmpty(sessionId, canonicalName, result);
+        if (streak.nudge) {
+          toolStreakNudges[tc.id] = streak.nudge;
+          console.warn(`[Chat] empty-streak nudge for ${canonicalName} in session ${sessionId}: ${streak.nudge}`);
+        }
         try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: canonicalName, content: { preview: JSON.stringify(result).slice(0, 400) }, success: (result as any).success !== false, errorMessage: (result as any).error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
         emitJobEvent(sessionId, "tool_result", { id: tc.id, result: cached ? contextValue : result });
         if (canonicalName.startsWith("todo.")) emitJobEvent(sessionId, "todo_changed", { action: canonicalName });
@@ -1278,17 +1646,26 @@ async function runChatJob(
       messages = [
         ...messages,
         { role: "assistant", content, tool_calls: toolCalls },
-        ...parsedToolCalls.map((tc) => ({
-          role: "tool" as const,
-          content: stringifyToolResultForContext(allToolResults[tc.id]),
-          name: resolveToolName(tc.name),
-          tool_call_id: tc.id,
-        })),
+        ...parsedToolCalls.map((tc) => {
+          const base = stringifyToolResultForContext(allToolResults[tc.id]);
+          const nudge = toolStreakNudges[tc.id];
+          return {
+            role: "tool" as const,
+            content: nudge ? `${base}\n\n[GUARDRAIL] ${nudge}` : base,
+            name: resolveToolName(tc.name),
+            tool_call_id: tc.id,
+          };
+        }),
       ];
       messages = aiClient.pruneMessages(messages, expandedTools.length > 0 ? expandedTools : tools || undefined) as ChatMessage[];
       messages = repairConversationState(messages);
       messages = repairOrphanedToolCalls(messages);
       messages = injectManifest(messages, sessionId);
+      messages = injectUserDirectives(messages, sessionId);
+      messages = injectEstablishedFacts(messages, sessionId);
+      messages = injectEvidenceDiscipline(messages, sessionId);
+      messages = injectUserLocation(messages, sessionId);
+      messages = injectTimeAnchor(messages, sessionId);
       messages = ensureFirstNonSystemIsUser(messages);
 
       warnIfInvalidModelMessages(messages, "stream_tool_loop");
@@ -1565,6 +1942,11 @@ export async function chatRoutes(fastify: FastifyInstance) {
       messages = repairConversationState(messages);
       messages = repairOrphanedToolCalls(messages);
       messages = injectManifest(messages, sessionId);
+      messages = injectUserDirectives(messages, sessionId);
+      messages = injectEstablishedFacts(messages, sessionId);
+      messages = injectEvidenceDiscipline(messages, sessionId);
+      messages = injectUserLocation(messages, sessionId);
+      messages = injectTimeAnchor(messages, sessionId);
       messages = ensureFirstNonSystemIsUser(messages);
 
       warnIfInvalidModelMessages(messages, "chat_initial");
@@ -1660,6 +2042,18 @@ export async function chatRoutes(fastify: FastifyInstance) {
           const toolDuration = Date.now() - toolStart;
           const contextResult = cached ? contextValue : compactToolResultForContext(contextValue);
           allToolResults[tc.id] = contextResult;
+          if (sessionId) {
+            const streak = recordToolResultEmpty(sessionId, canonicalName, result);
+            if (streak.nudge) {
+              // Wrap the result with the nudge so the model sees it on the
+              // next iteration. Same approach as the streaming endpoint.
+              const wrap = (typeof contextResult === "object" && contextResult)
+                ? { ...(contextResult as object), _streak_nudge: streak.nudge }
+                : { _value: contextResult, _streak_nudge: streak.nudge };
+              allToolResults[tc.id] = wrap;
+              console.warn(`[Chat] empty-streak nudge for ${canonicalName} in session ${sessionId}: ${streak.nudge}`);
+            }
+          }
 
           try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_result", toolName: canonicalName, content: { preview: JSON.stringify(result).slice(0, 400) }, success: (result as any).success !== false, errorMessage: (result as any).error, durationMs: toolDuration, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
 
@@ -1714,6 +2108,11 @@ export async function chatRoutes(fastify: FastifyInstance) {
         messages = repairConversationState(messages);
         messages = repairOrphanedToolCalls(messages);
         messages = injectManifest(messages, sessionId);
+        messages = injectUserDirectives(messages, sessionId);
+        messages = injectEstablishedFacts(messages, sessionId);
+        messages = injectEvidenceDiscipline(messages, sessionId);
+        messages = injectUserLocation(messages, sessionId);
+        messages = injectTimeAnchor(messages, sessionId);
         messages = ensureFirstNonSystemIsUser(messages);
 
         warnIfInvalidModelMessages(messages, "chat_tool_loop");
@@ -1856,6 +2255,32 @@ export async function chatRoutes(fastify: FastifyInstance) {
       let sessionId = body.sessionId;
       const activeJob = sessionId ? processingJobs.get(sessionId) : null;
 
+      // Duplicate-message detection: if the client submits the same text as
+      // the last user message within 60 seconds, treat it as a resend. This
+      // prevents the "user typed the same question twice because they didn't
+      // see a response" pattern (session 926107f7 msg #732/#733) from
+      // cancelling an in-flight job or doubling work.
+      if (
+        sessionId &&
+        !body.resend &&
+        typeof body.message === "string" &&
+        body.message.trim().length > 0
+      ) {
+        const existing = conversationManager.getSession(sessionId);
+        if (existing) {
+          const lastUser = [...existing.messages].reverse().find((m) => m.role === "user");
+          if (lastUser && lastUser.content.trim() === body.message.trim()) {
+            const ageMs = Date.now() - lastUser.timestamp.getTime();
+            if (ageMs < 60_000) {
+              console.warn(
+                `[Chat/Stream] Duplicate user message within ${Math.round(ageMs / 1000)}s — treating as resend (session ${sessionId})`,
+              );
+              body.resend = true;
+            }
+          }
+        }
+      }
+
       if (activeJob?.status === "processing") {
         if (!body.resend) {
           // A brand-new message submission while a job is running: cancel the
@@ -1954,6 +2379,13 @@ export async function chatRoutes(fastify: FastifyInstance) {
       job.cancelled = false;
       job.cancelReason = undefined;
       job.runId = undefined;
+      // If we just reused a job whose controller was previously aborted (by a
+      // superseded run), swap in a fresh controller. getOrCreateJob does this
+      // when the slot is new, but resetting here covers the "reuse on resend"
+      // path where the same job object was kept but a prior cancel fired.
+      if (job.abortController.signal.aborted) {
+        job.abortController = new AbortController();
+      }
       const subscriber = (event: string, data: unknown) => {
         sendEvent(event, data);
         if (event === "done" || event === "error") {

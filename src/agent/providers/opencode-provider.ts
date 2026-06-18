@@ -268,6 +268,9 @@ export class OpenCodeProvider extends AIProvider {
             requestBody,
             {
               responseType: "stream",
+              // Forward request.signal so cancellation aborts the inflight
+              // stream and frees the aiRequestLimiter slot.
+              signal: request.signal,
             },
           );
           break;

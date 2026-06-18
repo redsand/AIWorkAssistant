@@ -10946,6 +10946,83 @@ export function recordAndCheckIdenticalCall(
   return checkIdenticalCallGuardrail(sessionKey, resolved, params);
 }
 
+// ─── Empty-result streak guardrail ───────────────────────────────────
+// The identical-call guardrail only fires on byte-identical params. Models
+// flailing across slight query variants (e.g. session 926107f7 fired 91
+// hawk_ir.search_logs across 86 unique param sets, most returning empty data)
+// slip past it entirely. This guard tracks consecutive empty results for the
+// same (session, tool) and tells the model to pivot when it has clearly
+// stopped making progress. A non-empty result resets the streak.
+
+const EMPTY_STREAK_THRESHOLD = parseInt(process.env.EMPTY_TOOL_STREAK_LIMIT || "6", 10);
+const MAX_EMPTY_STREAK_SESSIONS = 1000;
+
+// sessionKey -> toolName -> consecutive empty count.
+const emptyStreakLog = new Map<string, Map<string, number>>();
+
+function trimEmptyStreakMemory(): void {
+  if (emptyStreakLog.size <= MAX_EMPTY_STREAK_SESSIONS) return;
+  const oldest = emptyStreakLog.keys().next().value;
+  if (oldest !== undefined) emptyStreakLog.delete(oldest);
+}
+
+function isEmptyResult(result: unknown): boolean {
+  if (!result || typeof result !== "object") return false;
+  const r = result as Record<string, unknown>;
+  // The HAWK IR / Splunk / Jira shape: { success: true, data: [] }
+  if (Array.isArray(r.data) && (r.data as unknown[]).length === 0) return true;
+  // Some tools return { results: [] } or { items: [] } or { records: [] }.
+  for (const k of ["results", "items", "records", "hits"]) {
+    const v = (r as Record<string, unknown>)[k];
+    if (Array.isArray(v) && v.length === 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Call after each tool dispatch. Returns a nudge string when the same tool
+ * has produced empty results too many times in a row for this session, so
+ * the caller can append it to the tool result the model will see next turn.
+ */
+export function recordToolResultEmpty(
+  sessionKey: string,
+  toolName: string,
+  result: unknown,
+): { nudge?: string } {
+  const resolved = resolveToolName(toolName);
+  // Discovery-style tools naturally return empty when nothing's found and
+  // shouldn't nudge a pivot on their own.
+  if (resolved === "tools.discover" || resolved === "tools.fetch_cached") {
+    return {};
+  }
+  const empty = isEmptyResult(result);
+  const map = emptyStreakLog.get(sessionKey) ?? new Map<string, number>();
+  const prev = map.get(resolved) ?? 0;
+  const next = empty ? prev + 1 : 0;
+  map.set(resolved, next);
+  emptyStreakLog.set(sessionKey, map);
+  trimEmptyStreakMemory();
+  if (next >= EMPTY_STREAK_THRESHOLD) {
+    // Reset so we don't nudge on every subsequent empty — give the model a
+    // clean window to pivot before scolding again.
+    map.set(resolved, 0);
+    return {
+      nudge:
+        `'${resolved}' has returned an empty result ${next} times in a row for this session. ` +
+        `Stop and either (a) summarize what you have already learned and ask the user, ` +
+        `or (b) switch to a different tool or broaden your scope. Continuing to query ` +
+        `${resolved} with similar parameters is unlikely to help.`,
+    };
+  }
+  return {};
+}
+
+/** Test/maintenance hook — clears empty-streak counters. */
+export function resetEmptyStreakGuardrail(sessionKey?: string): void {
+  if (sessionKey) emptyStreakLog.delete(sessionKey);
+  else emptyStreakLog.clear();
+}
+
 const userToolCounters = new Map<string, number>();
 const MEMORY_NUDGE_INTERVAL = 15;
 const MAX_COUNTER_ENTRIES = 1000;

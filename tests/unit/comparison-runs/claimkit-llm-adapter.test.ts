@@ -238,7 +238,9 @@ describe("AIProviderLLMAdapter", () => {
       expect(result).toHaveLength(0);
     });
 
-    it("falls back to MemoryLLMAdapter when LLM call fails", async () => {
+    // The retry budget (5 attempts × 15s sleep cap with CLAIMKIT_LLM_TIMEOUT_MS
+    // at 300s) means the fallback path takes ~75s minimum to exhaust.
+    it("falls back to MemoryLLMAdapter when LLM call fails", { timeout: 120_000 }, async () => {
       mockChat.mockRejectedValue(new Error("LLM unavailable"));
       const fallbackClaims = [
         {
@@ -323,7 +325,9 @@ describe("AIProviderLLMAdapter", () => {
       expect(userMsg.content).toContain("[confidence: 0.95]");
     });
 
-    it("falls back to MemoryLLMAdapter when LLM call fails", async () => {
+    // The retry budget (5 attempts × 15s sleep cap with CLAIMKIT_LLM_TIMEOUT_MS
+    // at 300s) means the fallback path takes ~75s minimum to exhaust.
+    it("falls back to MemoryLLMAdapter when LLM call fails", { timeout: 120_000 }, async () => {
       mockChat.mockRejectedValue(new Error("timeout"));
       const fallbackResult = {
         answer: "fallback answer",
@@ -386,7 +390,9 @@ describe("AIProviderLLMAdapter", () => {
       expect(result[0].severity).toBe("high");
     });
 
-    it("falls back to MemoryLLMAdapter when LLM call fails", async () => {
+    // The retry budget (5 attempts × 15s sleep cap with CLAIMKIT_LLM_TIMEOUT_MS
+    // at 300s) means the fallback path takes ~75s minimum to exhaust.
+    it("falls back to MemoryLLMAdapter when LLM call fails", { timeout: 120_000 }, async () => {
       mockChat.mockRejectedValue(new Error("fail"));
       mockFallbackDetectContradictions.mockResolvedValue([]);
 
@@ -444,7 +450,9 @@ describe("AIProviderLLMAdapter", () => {
       expect(result.assertions).toHaveLength(1);
     });
 
-    it("falls back to MemoryLLMAdapter when LLM call fails", async () => {
+    // The retry budget (5 attempts × 15s sleep cap with CLAIMKIT_LLM_TIMEOUT_MS
+    // at 300s) means the fallback path takes ~75s minimum to exhaust.
+    it("falls back to MemoryLLMAdapter when LLM call fails", { timeout: 120_000 }, async () => {
       mockChat.mockRejectedValue(new Error("fail"));
       const fallbackResult = {
         verified: false,

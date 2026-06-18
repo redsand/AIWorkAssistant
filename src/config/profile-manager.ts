@@ -104,24 +104,28 @@ export class ProfileManager {
    * Before profiles existed, state lived directly under HERMES_HOME:
    * `data/memories/` (MEMORY.md, USER.md, SOUL.md) and `data/skills/`. With
    * isolation those paths became `data/profiles/default/...`, which would
-   * orphan an existing install's data on upgrade. When the default profile is
-   * first scaffolded, copy any legacy directories in so nothing is lost.
+   * orphan an existing install's data on upgrade.
    *
-   * Copies (never moves) the originals so a downgrade still finds its data.
-   * Idempotent: a destination that already holds files is treated as
-   * already-migrated (or user-owned) and skipped entirely, so repeated runs
-   * never re-copy and cannot resurrect files the user has since deleted.
+   * Idempotent via a marker file (`.migrated_from_legacy_v1`). The previous
+   * implementation skipped when `dirHasFiles(dest)` was true, but
+   * conversationManager (a module-scoped singleton) pre-creates
+   * `data/profiles/default/memories/sessions.db` on import — that pre-empted
+   * the guard and the migration silently did nothing, stranding the user's
+   * chats. Observed: session 926107f7 lost 12 active chats this way.
+   *
+   * Uses force=false so anything written into the destination after the
+   * marker is preserved on re-run (cannot resurrect files the user deleted).
    */
   private migrateLegacyData(defaultDir: string): void {
+    const marker = path.join(defaultDir, ".migrated_from_legacy_v1");
+    if (fs.existsSync(marker)) return;
+
     const legacyRoot = path.dirname(this.profilesRoot); // HERMES_HOME
+    let copiedAny = false;
     for (const sub of ["memories", "skills"]) {
       const src = path.join(legacyRoot, sub);
       const dest = path.join(defaultDir, sub);
       if (!fs.existsSync(src) || !fs.statSync(src).isDirectory()) continue;
-      // scaffold() pre-creates an empty dest dir, so existence alone is not a
-      // migration signal — only skip when dest already contains files. This is
-      // the idempotency guard: once data is copied in, a re-run is a no-op.
-      if (this.dirHasFiles(dest)) continue;
       try {
         fs.cpSync(src, dest, {
           recursive: true,
@@ -132,6 +136,7 @@ export class ProfileManager {
         console.log(
           `[ProfileManager] Migrated legacy ${src} → ${dest} (originals left in place)`,
         );
+        copiedAny = true;
       } catch (err) {
         console.warn(
           `[ProfileManager] Failed to migrate legacy ${src}:`,
@@ -139,25 +144,22 @@ export class ProfileManager {
         );
       }
     }
-  }
 
-  /** True if a directory exists and contains at least one entry (recursively). */
-  private dirHasFiles(dir: string): boolean {
-    if (!fs.existsSync(dir)) return false;
-    let entries: fs.Dirent[];
+    // Always drop the marker so the next boot is a no-op. Even when nothing
+    // was copied (fresh install with no legacy data), we want to declare the
+    // legacy-import phase done rather than re-walk the legacy paths forever.
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return false;
+      fs.writeFileSync(
+        marker,
+        `Marker written ${new Date().toISOString()} — copiedAny=${copiedAny}\n` +
+          `Delete this file to force a re-import from ${legacyRoot}/{memories,skills}.\n`,
+      );
+    } catch (err) {
+      console.warn(
+        "[ProfileManager] Failed to write migration marker (migration will re-run):",
+        err instanceof Error ? err.message : err,
+      );
     }
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        if (this.dirHasFiles(path.join(dir, entry.name))) return true;
-      } else {
-        return true;
-      }
-    }
-    return false;
   }
 
   private readMeta(dir: string): { createdAt: string; lastUsedAt: string } {
@@ -320,13 +322,16 @@ export class ProfileManager {
       // Auto-create the requested profile (default on a fresh install).
       fs.mkdirSync(dir, { recursive: true });
       this.scaffold(dir);
-      // Pull a pre-isolation install's data into the default profile so an
-      // upgrade does not strand existing memories/skills.
-      if (name === DEFAULT_PROFILE_NAME) {
-        this.migrateLegacyData(dir);
-      }
-      this.writeActiveName(name);
-    } else if (!fs.existsSync(this.activeFilePath())) {
+    }
+    // Run legacy migration UNCONDITIONALLY for the default profile (idempotent
+    // via .migrated_from_legacy_v1). Previously this lived inside the
+    // !exists branch, so when anything pre-created data/profiles/default/
+    // (e.g. ConversationManager's mkdirSync(memoryBasePath, recursive)) the
+    // migration was skipped forever — losing the user's prior chats.
+    if (name === DEFAULT_PROFILE_NAME) {
+      this.migrateLegacyData(dir);
+    }
+    if (!fs.existsSync(this.activeFilePath())) {
       this.writeActiveName(name);
     }
 

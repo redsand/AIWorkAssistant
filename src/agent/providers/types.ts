@@ -279,6 +279,27 @@ export abstract class AIProvider {
     return recent;
   }
 
+  // System messages whose content starts with one of these markers are
+  // pinned: they carry the live session manifest or the user's running
+  // directives, both of which are rebuilt each turn from authoritative state
+  // (toolCallCache / conversation-manager). Dropping or truncating them
+  // forces the model to re-derive context that we already know, and is the
+  // root cause of "model forgot what I told it 30 turns ago" behavior.
+  // Must match the markers in src/routes/chat.ts.
+  private static readonly PINNED_SYSTEM_PREFIXES = [
+    "=== TOOL CALLS ALREADY EXECUTED THIS SESSION ===",
+    "=== PINNED USER DIRECTIVES (chronological) ===",
+    "=== CURRENT TIME (refreshed each turn) ===",
+    "=== USER LOCATION / TIMEZONE (sticky) ===",
+    "=== EVIDENCE DISCIPLINE (report mode active) ===",
+    "=== ESTABLISHED FACTS (confirmed by user) ===",
+  ];
+
+  protected isPinnedSystemMessage(m: ChatMessage): boolean {
+    if (m.role !== "system" || typeof m.content !== "string") return false;
+    return AIProvider.PINNED_SYSTEM_PREFIXES.some((p) => m.content.startsWith(p));
+  }
+
   private ensureFirstNonSystemIsUser(messages: ChatMessage[]): ChatMessage[] {
     const firstNonSystemIdx = messages.findIndex((m) => m.role !== "system");
     if (
@@ -329,6 +350,7 @@ export abstract class AIProvider {
     );
 
     const pruned = messages.map((m) => {
+      if (this.isPinnedSystemMessage(m)) return m; // never truncate pins
       if (m.role === "tool" && m.content.length > MAX_TOOL_RESULT_CHARS) {
         return {
           ...m,
@@ -352,17 +374,24 @@ export abstract class AIProvider {
     if (pruned.length <= 4) return pruned;
 
     const system = pruned[0];
+    // Pinned system messages (manifest, user directives) live at positions
+    // 1..n in our normal layout. They were rebuilt this turn from live state
+    // and dropping them defeats the whole point of pinning. Carry them
+    // forward into `kept` after system[0] and before the truncation note.
+    const pinned = pruned.filter((m, i) => i !== 0 && this.isPinnedSystemMessage(m));
     const userMsg = [...pruned].reverse().find((m) => m.role === "user");
     const recentCount = Math.min(pruned.length - 2, 6);
     const recent = this.extractRecentMessages(pruned, recentCount).filter(
-      (m) => m !== userMsg,
+      (m) => m !== userMsg && !this.isPinnedSystemMessage(m),
     );
+    const droppedCount = pruned.length - 2 - pinned.length - recent.length - (userMsg ? 1 : 0);
 
     const kept: ChatMessage[] = [
       system,
+      ...pinned,
       {
         role: "system",
-        content: `[Earlier conversation truncated — ${pruned.length - recentCount - 2} messages removed to fit context window of ${messageBudget} tokens]`,
+        content: `[Earlier conversation truncated — ${Math.max(0, droppedCount)} messages removed to fit context window of ${messageBudget} tokens]`,
       },
       ...(userMsg ? [userMsg] : []),
       ...recent,
@@ -404,6 +433,7 @@ export abstract class AIProvider {
     const perMsgChars = Math.max(400, perMsgBudget * CHARS_PER_TOKEN);
     const shrunk = kept.map((m, i) => {
       if (i === 0 || m === userMsg || protectedIndices.has(i)) return m;
+      if (this.isPinnedSystemMessage(m)) return m;
       if (m.content.length > perMsgChars) {
         return { ...m, content: m.content.substring(0, perMsgChars) + "\n...[truncated — use fetch_cached if full result needed]" };
       }
@@ -434,8 +464,9 @@ export abstract class AIProvider {
     const toolTokens = tools ? this.estimateTokens([], tools) : 0;
     const messageBudget = Math.max(1000, safeLimit - toolTokens);
 
-    // Step 1: truncate all tool/assistant messages to 20k chars
+    // Step 1: truncate all tool/assistant messages to 20k chars (skip pins)
     const truncated = messages.map((m) => {
+      if (this.isPinnedSystemMessage(m)) return m;
       if ((m.role === "tool" || m.role === "assistant") && m.content.length > 20000) {
         return { ...m, content: m.content.substring(0, 20000) + "\n...[truncated]" };
       }
@@ -445,19 +476,22 @@ export abstract class AIProvider {
     let estimated = this.estimateTokens(truncated);
     if (estimated <= messageBudget) return truncated;
 
-    // Step 2: keep system + last 6 messages + user
+    // Step 2: keep system + pinned system msgs + last 6 + user
     if (truncated.length > 4) {
       const system = truncated[0];
+      const pinned = truncated.filter((m, i) => i !== 0 && this.isPinnedSystemMessage(m));
       const userMsg = [...truncated].reverse().find((m) => m.role === "user");
       const recentCount = Math.min(truncated.length - 2, 6);
       const recent = this.extractRecentMessages(truncated, recentCount).filter(
-        (m) => m !== userMsg,
+        (m) => m !== userMsg && !this.isPinnedSystemMessage(m),
       );
+      const droppedCount = truncated.length - 2 - pinned.length - recent.length - (userMsg ? 1 : 0);
       const kept: ChatMessage[] = [
         system,
+        ...pinned,
         {
           role: "system" as const,
-          content: `[Earlier conversation truncated — ${truncated.length - recentCount - 2} messages removed]`,
+          content: `[Earlier conversation truncated — ${Math.max(0, droppedCount)} messages removed]`,
         },
         ...(userMsg ? [userMsg] : []),
         ...recent,
@@ -466,11 +500,12 @@ export abstract class AIProvider {
       estimated = this.estimateTokens(kept);
       if (estimated <= messageBudget) return kept;
 
-      // Step 3: truncate remaining messages proportionally
+      // Step 3: truncate remaining messages proportionally (skip pins)
       const perMsgBudget = Math.floor(messageBudget * 0.4 / kept.length);
       const perMsgChars = Math.max(200, perMsgBudget * CHARS_PER_TOKEN);
       const shrunk = kept.map((m, i) => {
         if (i === 0 || m === userMsg) return m;
+        if (this.isPinnedSystemMessage(m)) return m;
         if (m.content.length > perMsgChars) {
           return { ...m, content: m.content.substring(0, perMsgChars) + "\n...[truncated]" };
         }
@@ -480,9 +515,10 @@ export abstract class AIProvider {
       estimated = this.estimateTokens(shrunk);
       if (estimated <= messageBudget) return shrunk;
 
-      // Step 4: emergency — all non-system/user messages to 1000 chars
+      // Step 4: emergency — all non-system/user messages to 1000 chars (skip pins)
       return shrunk.map((m, i) => {
         if (i === 0 || m === userMsg) return m;
+        if (this.isPinnedSystemMessage(m)) return m;
         if (m.content.length > 1000) {
           return { ...m, content: m.content.substring(0, 1000) + "\n...[truncated]" };
         }

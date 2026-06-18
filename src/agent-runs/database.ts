@@ -241,10 +241,23 @@ class AgentRunDatabase {
    * stopped responding without ever calling completeRun / failRun, so
    * the dashboard showed them as "running" indefinitely.
    *
-   * Returns the number of rows reaped.
+   * Returns the number of rows reaped and the distinct session_ids that
+   * were affected. The caller uses sessionIds to also abort the in-memory
+   * ProcessingJob — without that, the AbortController never fires and the
+   * aiRequestLimiter slot held by the stalled provider call leaks until the
+   * upstream socket closes.
    */
-  reapStaleRunningRuns(staleAfterMs: number): number {
+  reapStaleRunningRuns(staleAfterMs: number): { count: number; sessionIds: string[] } {
     const cutoffIso = new Date(Date.now() - staleAfterMs).toISOString();
+    // Snapshot session_ids BEFORE the UPDATE so we know who to abort.
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT session_id FROM agent_runs
+         WHERE status = 'running' AND last_activity_at < ? AND session_id IS NOT NULL`,
+      )
+      .all(cutoffIso) as Array<{ session_id: string }>;
+    const sessionIds = rows.map((r) => r.session_id).filter((s): s is string => !!s);
+
     const result = this.db
       .prepare(
         `UPDATE agent_runs
@@ -255,7 +268,7 @@ class AgentRunDatabase {
          WHERE status = 'running' AND last_activity_at < ?`,
       )
       .run(Math.round(staleAfterMs / 1000), new Date().toISOString(), new Date().toISOString(), cutoffIso);
-    return result.changes;
+    return { count: result.changes, sessionIds };
   }
 
   cancelRun(id: string, errorMessage = "Run cancelled by user"): void {

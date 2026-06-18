@@ -119,6 +119,13 @@ vi.mock("../../src/memory/conversation-manager", () => ({
       mocks.sessionMessages = mocks.sessionMessages.slice(0, checkpoint);
     }),
     getRelevantMemories: vi.fn(() => []),
+    // Pinning helpers added 2026-06-18 — return empty so the inject* helpers
+    // become no-ops in this mocked environment.
+    getUserDirectives: vi.fn(() => []),
+    getLocationFacts: vi.fn(() => []),
+    getInferredTimezone: vi.fn(() => null),
+    getEstablishedFacts: vi.fn(() => []),
+    healToolMessages: vi.fn(() => 0),
   },
 }));
 
