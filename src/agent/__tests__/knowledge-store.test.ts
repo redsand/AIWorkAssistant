@@ -1,6 +1,6 @@
 // Verifies knowledge-store splits oversized entries into heading-aware
 // sub-chunks that reference the parent via parent_id (issue #228).
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import * as fs from "fs";
 import * as os from "os";
@@ -14,21 +14,10 @@ vi.mock("../../context-engine/claimkit-ingestion", () => ({
   ingestSingleKnowledgeEntry: vi.fn(async () => {}),
 }));
 
-import { knowledgeStore, KnowledgeStore } from "../knowledge-store";
+import { KnowledgeStore } from "../knowledge-store";
 import { env } from "../../config/env";
 import { estimateTokens } from "../../context-engine/budget";
 import { ingestSingleKnowledgeEntry } from "../../context-engine/claimkit-ingestion";
-
-const createdIds: string[] = [];
-
-afterEach(() => {
-  for (const id of createdIds.splice(0)) {
-    // Remove the parent and any sub-chunks it spawned.
-    for (const e of knowledgeStore.getAllEntries()) {
-      if (e.id === id || e.parentId === id) knowledgeStore.deleteEntry(e.id);
-    }
-  }
-});
 
 // Builds markdown content guaranteed to exceed 2x the configured chunk size.
 // Sized by estimated tokens — the same unit store() uses for its split
@@ -60,6 +49,23 @@ function markdownWithSections(count: number): string {
 }
 
 describe("knowledgeStore.store — oversized entry chunking", () => {
+  // Use an isolated store on a throwaway temp DB rather than the production
+  // singleton so the suite never pollutes data/knowledge.db.
+  let tmpDir: string;
+  let knowledgeStore: KnowledgeStore;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "knowledge-store-"));
+    knowledgeStore = new KnowledgeStore(path.join(tmpDir, "knowledge.db"));
+  });
+
+  afterEach(() => {
+    knowledgeStore.close();
+    if (tmpDir && fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("splits a large entry into parent-referencing sub-chunks", () => {
     const id = knowledgeStore.store({
       source: "web_page",
@@ -68,7 +74,6 @@ describe("knowledgeStore.store — oversized entry chunking", () => {
       tags: ["docs"],
       createdAt: new Date(),
     });
-    createdIds.push(id);
 
     const children = knowledgeStore
       .getAllEntries()
@@ -92,7 +97,6 @@ describe("knowledgeStore.store — oversized entry chunking", () => {
       tags: ["docs"],
       createdAt: new Date(),
     });
-    createdIds.push(id);
 
     // Sanity: this entry was large enough to produce sub-chunks.
     const children = knowledgeStore
@@ -116,7 +120,6 @@ describe("knowledgeStore.store — oversized entry chunking", () => {
       tags: ["docs"],
       createdAt: new Date(),
     });
-    createdIds.push(id);
 
     // "filler"/"documentation"/"section" appear in the parent's full content
     // and in every sub-chunk, so without dedup both would match this query.
@@ -142,7 +145,6 @@ describe("knowledgeStore.store — oversized entry chunking", () => {
       tags: [],
       createdAt: new Date(),
     });
-    createdIds.push(id);
 
     const children = knowledgeStore
       .getAllEntries()
@@ -160,7 +162,6 @@ describe("knowledgeStore.store — oversized entry chunking", () => {
       tags: ["docs"],
       createdAt: new Date(),
     });
-    createdIds.push(stableId);
 
     const firstChildren = knowledgeStore
       .getAllEntries()
@@ -209,7 +210,6 @@ describe("knowledgeStore.store — oversized entry chunking", () => {
       tags: [],
       createdAt: new Date(),
     });
-    createdIds.push(stableId);
 
     expect(
       knowledgeStore.getAllEntries().filter((e) => e.parentId === stableId)
