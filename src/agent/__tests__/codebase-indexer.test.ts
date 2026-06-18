@@ -73,6 +73,46 @@ describe("codebaseIndexer.addFile — structure-aware chunking", () => {
     expect(square[0].content).toContain("class Square");
   });
 
+  it("keeps each function body intact in a multi-function file (no mid-body split)", () => {
+    const file = writeFile(
+      "multi.ts",
+      [
+        "export function alpha(x: number): number {",
+        "  const alphaMarker = x * 2;",
+        "  return alphaMarker + 1;",
+        "}",
+        "",
+        "export function beta(y: number): number {",
+        "  const betaMarker = y * 3;",
+        "  return betaMarker + 2;",
+        "}",
+        "",
+        "export function gamma(z: number): number {",
+        "  const gammaMarker = z * 4;",
+        "  return gammaMarker + 3;",
+        "}",
+      ].join("\n"),
+    );
+
+    codebaseIndexer.addFile(file, tmpRoot);
+
+    // For each function, the chunk holding its signature must also hold its
+    // body marker. If the chunker had sliced mid-body, the marker would land in
+    // a different chunk than the signature.
+    const fns: Array<[string, string]> = [
+      ["function alpha", "alphaMarker"],
+      ["function beta", "betaMarker"],
+      ["function gamma", "gammaMarker"],
+    ];
+    for (const [sig, marker] of fns) {
+      const hits = codebaseIndexer.search(marker, { filePath: "multi.ts" });
+      expect(hits.length).toBeGreaterThan(0);
+      const chunk = hits.find((h) => h.content.includes(sig));
+      expect(chunk).toBeDefined();
+      expect(chunk!.content).toContain(marker);
+    }
+  });
+
   it("returns valid 1-based line ranges for chunks", () => {
     const file = writeFile(
       "lines.ts",

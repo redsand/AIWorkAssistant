@@ -162,7 +162,7 @@ export class KnowledgeStore {
     now: string,
   ): void {
     const chunks = chunkContent(entry.content, "markdown", {
-      strategy: "structural",
+      strategy: env.RAG_CHUNK_STRATEGY,
       maxTokens: env.RAG_CHUNK_SIZE,
       minTokens: Math.floor(env.RAG_CHUNK_SIZE * 0.3),
       overlapTokens: env.RAG_CHUNK_OVERLAP,
@@ -283,7 +283,22 @@ export class KnowledgeStore {
 
     scored.sort((a, b) => b.score - a.score);
 
-    const results = scored.slice(0, limit);
+    // Collapse parent/child duplicates. A split entry is represented twice in
+    // the table: the full parent row and its heading-aware sub-chunks (which
+    // carry parent_id). Both can match the same query, so without this a single
+    // logical document would surface multiple times. Keying by parentId ?? id
+    // and keeping the first (highest-scoring) hit per root yields one result per
+    // document while preferring the most precise matching unit.
+    const seenRoots = new Set<string>();
+    const deduped: SearchResult[] = [];
+    for (const r of scored) {
+      const rootId = r.entry.parentId ?? r.entry.id;
+      if (seenRoots.has(rootId)) continue;
+      seenRoots.add(rootId);
+      deduped.push(r);
+    }
+
+    const results = deduped.slice(0, limit);
 
     for (const r of results) {
       this.db

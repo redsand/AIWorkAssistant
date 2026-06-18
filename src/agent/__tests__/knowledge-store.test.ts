@@ -1,12 +1,23 @@
 // Verifies knowledge-store splits oversized entries into heading-aware
 // sub-chunks that reference the parent via parent_id (issue #228).
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+
+// Mock ClaimKit ingestion so we can assert exactly which entries get pushed to
+// the claim store (parents only — sub-chunks must be excluded). The factory
+// returns a vi.fn() resolving immediately; store() fires it and ignores the
+// promise, so a no-op resolve is sufficient.
+vi.mock("../../context-engine/claimkit-ingestion", () => ({
+  ingestSingleKnowledgeEntry: vi.fn(async () => {}),
+}));
+
 import { knowledgeStore, KnowledgeStore } from "../knowledge-store";
 import { env } from "../../config/env";
+import { estimateTokens } from "../../context-engine/budget";
+import { ingestSingleKnowledgeEntry } from "../../context-engine/claimkit-ingestion";
 
 const createdIds: string[] = [];
 
@@ -20,19 +31,21 @@ afterEach(() => {
 });
 
 // Builds markdown content guaranteed to exceed 2x the configured chunk size.
+// Sized by estimated tokens — the same unit store() uses for its split
+// threshold — so the entry reliably triggers chunking regardless of
+// CHARS_PER_TOKEN (a char-based target silently under-shoots if that constant
+// changes).
 function bigMarkdown(): string {
   const para = "This is filler content for a documentation section. ".repeat(20);
-  const targetChars = env.RAG_CHUNK_SIZE * 1.8 * 3; // ~3x chunk size in chars
+  const targetTokens = env.RAG_CHUNK_SIZE * 3; // comfortably above the 2x split threshold
   const sections: string[] = [];
+  const assemble = () => `# Document Title\n${sections.join("\n")}`;
   let i = 0;
-  let total = 0;
-  while (total < targetChars) {
-    const section = `## Section ${i}\n${para}\n`;
-    sections.push(section);
-    total += section.length;
+  while (estimateTokens(assemble()) < targetTokens) {
+    sections.push(`## Section ${i}\n${para}\n`);
     i++;
   }
-  return `# Document Title\n${sections.join("\n")}`;
+  return assemble();
 }
 
 // Builds markdown with an explicit number of headed sections so test cases can
@@ -66,6 +79,59 @@ describe("knowledgeStore.store — oversized entry chunking", () => {
     expect(children.every((c) => c.title.startsWith("Large Doc (part "))).toBe(true);
     // At least one sub-chunk carries a heading breadcrumb context header.
     expect(children.some((c) => c.content.includes("Section"))).toBe(true);
+  });
+
+  it("ingests only the parent into ClaimKit, never the sub-chunks", () => {
+    const mockIngest = vi.mocked(ingestSingleKnowledgeEntry);
+    mockIngest.mockClear();
+
+    const id = knowledgeStore.store({
+      source: "web_page",
+      title: "Ingest Doc",
+      content: bigMarkdown(),
+      tags: ["docs"],
+      createdAt: new Date(),
+    });
+    createdIds.push(id);
+
+    // Sanity: this entry was large enough to produce sub-chunks.
+    const children = knowledgeStore
+      .getAllEntries()
+      .filter((e) => e.parentId === id);
+    expect(children.length).toBeGreaterThan(1);
+
+    // ClaimKit ingestion is called exactly once — for the parent — and with
+    // none of the `${id}-cN` sub-chunk ids.
+    expect(mockIngest).toHaveBeenCalledTimes(1);
+    expect(mockIngest.mock.calls[0][0].id).toBe(id);
+    const ingestedIds = mockIngest.mock.calls.map((c) => c[0].id);
+    expect(ingestedIds.some((iid) => iid.startsWith(`${id}-c`))).toBe(false);
+  });
+
+  it("does not return both a parent entry and its sub-chunks for one query", () => {
+    const id = knowledgeStore.store({
+      source: "web_page",
+      title: "Dedup Doc",
+      content: bigMarkdown(),
+      tags: ["docs"],
+      createdAt: new Date(),
+    });
+    createdIds.push(id);
+
+    // "filler"/"documentation"/"section" appear in the parent's full content
+    // and in every sub-chunk, so without dedup both would match this query.
+    const results = knowledgeStore.search("filler documentation section", {
+      limit: 50,
+    });
+
+    const roots = results.map((r) => r.entry.parentId ?? r.entry.id);
+    // Each logical document (root id) surfaces at most once.
+    expect(new Set(roots).size).toBe(roots.length);
+
+    // Specifically, the parent and its own children never co-occur.
+    const hasParent = results.some((r) => r.entry.id === id);
+    const hasChild = results.some((r) => r.entry.parentId === id);
+    expect(hasParent && hasChild).toBe(false);
   });
 
   it("does not split a small entry", () => {
