@@ -46,6 +46,7 @@ import { recipeRoutes } from "./routes/recipes";
 import { repoDashboardRoutes } from "./routes/repo-dashboard";
 import { kanbanRoutes } from "./routes/kanban";
 import { errorsRoutes } from "./routes/errors";
+import { workflowRoutes } from "./routes/workflow";
 import { claimKitAdapter } from "./context-engine/adapters/claimkit-adapter";
 import { comparisonRoutes } from "./comparison-runs/api";
 import { evalCalibrationRoutes } from "./eval/calibration/api";
@@ -150,6 +151,7 @@ export async function buildServer() {
   await server.register(repoDashboardRoutes, { prefix: "/api/repo-dashboard" });
   await server.register(kanbanRoutes, { prefix: "/api/kanban" });
   await server.register(errorsRoutes, { prefix: "/api" });
+  await server.register(workflowRoutes, { prefix: "/api/workflow" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 
