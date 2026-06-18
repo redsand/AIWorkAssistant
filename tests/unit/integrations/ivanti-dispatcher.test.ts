@@ -48,6 +48,7 @@ vi.mock("../../../src/config/env", () => ({
     ENABLE_CALENDAR_WRITE: false,
     ENABLE_JIRA_TRANSITIONS: true,
   },
+  resolvePath: (rel: string) => rel,
 }));
 
 vi.mock("../../../src/integrations/ivanti/ivanti-service", () => {

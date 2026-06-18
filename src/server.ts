@@ -22,6 +22,7 @@ import { agentRunsRoutes } from "./agent-runs/api";
 import { agentRunDatabase } from "./agent-runs/database";
 import { workItemRoutes } from "./routes/work-items";
 import { extractionRoutes } from "./routes/extraction";
+import { jitbitSyncRoutes } from "./routes/jitbit-sync";
 import { detectionRoutes } from "./routes/detection";
 import { ctoRoutes } from "./routes/cto";
 import { personalOsRoutes } from "./routes/personal-os";
@@ -125,6 +126,7 @@ export async function buildServer() {
   await server.register(agentRunsRoutes, { prefix: "/api" });
   await server.register(workItemRoutes, { prefix: "/api/work-items" });
   await server.register(extractionRoutes, { prefix: "/api/extraction" });
+  await server.register(jitbitSyncRoutes, { prefix: "/api/sync" });
   await server.register(detectionRoutes, { prefix: "/api" });
   await server.register(ctoRoutes, { prefix: "/api/cto" });
   await server.register(personalOsRoutes, { prefix: "/api/personal-os" });
