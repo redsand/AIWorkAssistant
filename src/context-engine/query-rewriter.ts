@@ -32,8 +32,6 @@ export interface RewrittenQuery {
 }
 
 export interface QueryContext {
-  /** Optional free-text project context (unused by heuristics today). */
-  projectContext?: string;
   /** Project-specific abbreviations layered on top of the built-in map. */
   customAbbreviations?: Map<string, string>;
 }

@@ -278,7 +278,7 @@ export async function assembleContextPacket(
   // (ClaimKit probe/query + RAG stores). The original `query` is kept for
   // history scoring, comparison logging, and the system prompt so those flows
   // see exactly what the user typed.
-  const rewritten = rewriteQuerySafe(query, { projectContext: undefined });
+  const rewritten = rewriteQuerySafe(query);
   const retrievalQuery = rewritten.rewritten;
   if (rewritten.rewritten !== query || rewritten.variants.length > 0 || rewritten.entityRefs.length > 0) {
     console.log(
@@ -359,7 +359,17 @@ export async function assembleContextPacket(
     await timeStage("queryRewriteAugmentMs", async () => {
       if (rewritten.variants.length > 0) {
         const variantResults = await Promise.all(
-          rewritten.variants.slice(0, 2).map((v) => retrieveAllStores(v).catch(() => [] as ScoredDocument[])),
+          rewritten.variants
+            .slice(0, env.QUERY_REWRITE_VARIANT_COUNT)
+            .map((v) =>
+              retrieveAllStores(v).catch((err) => {
+                console.warn(
+                  `[QueryRewriter] variant retrieval failed for "${v.substring(0, 60)}":`,
+                  err instanceof Error ? err.message : err,
+                );
+                return [] as ScoredDocument[];
+              }),
+            ),
         );
         docs = mergeAndDedupe([docs, ...variantResults]);
       }
