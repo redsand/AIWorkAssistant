@@ -63,6 +63,11 @@ export class WorkflowEngine {
       throw new Error(`Workflow action not found: ${actionId}`);
     }
 
+    // Work on a copy so applying defaults never mutates the caller's object
+    // (the route passes request.body straight through) and the stored
+    // execution record is not aliased to a reference the caller still holds.
+    params = { ...params };
+
     // Enforce the approval guardrail before doing any work. Actions flagged
     // with `approvalRequired` (e.g. the medium-risk security escalation) must
     // not run unless the caller has supplied an explicit approval.
