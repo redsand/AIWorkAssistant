@@ -555,22 +555,35 @@ class CodebaseIndexer {
     });
 
     const now = new Date().toISOString();
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
+    // Build CodeChunk objects the same way indexCodebase does so both insert
+    // paths stay consistent: the structural context header is prepended into
+    // the stored content (and thus into the extracted keywords) identically.
+    const codeChunks: CodeChunk[] = chunks.map((chunk, i) => {
       const storedContent = chunk.contextHeader
         ? `${chunk.contextHeader}\n${chunk.content}`
         : chunk.content;
-      const chunkId = `chunk-${this.hashString(`${relativePath}:${chunk.startLine}:${i}`)}`;
-      const keywords = this.extractKeywords(storedContent);
+      return {
+        id: `chunk-${this.hashString(`${relativePath}:${chunk.startLine}:${i}`)}`,
+        filePath: relativePath,
+        startLine: chunk.startLine,
+        endLine: chunk.endLine,
+        content: storedContent,
+        contextHeader: chunk.contextHeader,
+        language,
+        embedding: null,
+        keywords: this.extractKeywords(storedContent),
+      };
+    });
 
+    for (const chunk of codeChunks) {
       insertStmt.run(
-        chunkId,
-        relativePath,
+        chunk.id,
+        chunk.filePath,
         chunk.startLine,
         chunk.endLine,
-        storedContent,
-        language,
-        JSON.stringify(keywords),
+        chunk.content,
+        chunk.language,
+        JSON.stringify(chunk.keywords),
         null,
         now,
         null,

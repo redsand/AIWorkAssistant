@@ -28,16 +28,20 @@ export interface SearchResult {
   matchType: "tag" | "keyword" | "exact";
 }
 
-class KnowledgeStore {
+export class KnowledgeStore {
   private db: Database.Database;
 
-  constructor() {
-    const dataDir = path.resolve(process.cwd(), "data");
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
+  // dbPath is injectable for tests (e.g. to exercise schema migration against a
+  // pre-existing database); production uses the default data/knowledge.db.
+  constructor(dbPath?: string) {
+    const resolvedPath =
+      dbPath ?? path.join(path.resolve(process.cwd(), "data"), "knowledge.db");
+    const dir = path.dirname(resolvedPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
     }
 
-    this.db = new Database(path.join(dataDir, "knowledge.db"));
+    this.db = new Database(resolvedPath);
     this.db.pragma("journal_mode = WAL");
     this.initSchema();
   }
@@ -78,39 +82,57 @@ class KnowledgeStore {
   }
 
   store(
-    entry: Omit<KnowledgeEntry, "id" | "accessedAt" | "accessCount">,
+    entry: Omit<KnowledgeEntry, "id" | "accessedAt" | "accessCount"> & {
+      /** Provide a stable id to update (re-store) an existing entry in place. */
+      id?: string;
+    },
   ): string {
-    const id = `kn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const id =
+      entry.id ?? `kn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const keywords = this.extractKeywords(entry.content);
     const tagsJson = JSON.stringify(entry.tags);
     const keywordsJson = JSON.stringify(keywords);
     const now = new Date().toISOString();
 
-    this.db
-      .prepare(
-        `INSERT OR REPLACE INTO knowledge (id, source, title, content, url, file_path, tags, session_id, keywords, created_at, accessed_at, access_count, parent_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)`,
-      )
-      .run(
-        id,
-        entry.source,
-        entry.title,
-        entry.content,
-        entry.url || null,
-        entry.filePath || null,
-        tagsJson,
-        entry.sessionId || null,
-        keywordsJson,
-        entry.createdAt.toISOString(),
-        now,
-      );
+    // Persist the parent row, drop any sub-chunks from a previous version of
+    // this entry, and (re)create sub-chunks atomically. Doing this in one
+    // transaction guarantees we never leave a parent without its children, nor
+    // orphaned children if re-storing produces fewer (or zero) chunks.
+    const persist = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `INSERT OR REPLACE INTO knowledge (id, source, title, content, url, file_path, tags, session_id, keywords, created_at, accessed_at, access_count, parent_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)`,
+        )
+        .run(
+          id,
+          entry.source,
+          entry.title,
+          entry.content,
+          entry.url || null,
+          entry.filePath || null,
+          tagsJson,
+          entry.sessionId || null,
+          keywordsJson,
+          entry.createdAt.toISOString(),
+          now,
+        );
 
-    // Large entries (e.g. a scraped web page) are too coarse for precise
-    // retrieval. Split them into heading-aware sub-chunks that reference the
-    // parent so the full entry and its parts both remain searchable.
-    if (estimateTokens(entry.content) > 2 * env.RAG_CHUNK_SIZE) {
-      this.storeSubChunks(id, entry, now);
-    }
+      // Remove sub-chunks left over from any prior version of this entry so a
+      // re-store with smaller content (or content that no longer needs
+      // splitting) cannot leave stale children behind.
+      this.db
+        .prepare(`DELETE FROM knowledge WHERE parent_id = ?`)
+        .run(id);
+
+      // Large entries (e.g. a scraped web page) are too coarse for precise
+      // retrieval. Split them into heading-aware sub-chunks that reference the
+      // parent so the full entry and its parts both remain searchable.
+      if (estimateTokens(entry.content) > 2 * env.RAG_CHUNK_SIZE) {
+        this.storeSubChunks(id, entry, now);
+      }
+    });
+    persist();
 
     ingestSingleKnowledgeEntry({
       id,
@@ -132,6 +154,8 @@ class KnowledgeStore {
   // Heading-aware splitting of an oversized entry into child rows. Sub-chunks
   // carry parent_id so they can be grouped back to the source entry, and are
   // not re-ingested into ClaimKit (the parent already covers that content).
+  // Callers run this inside a transaction that has already cleared any prior
+  // sub-chunks for parentId.
   private storeSubChunks(
     parentId: string,
     entry: Omit<KnowledgeEntry, "id" | "accessedAt" | "accessCount">,
@@ -152,29 +176,26 @@ class KnowledgeStore {
     );
     const tagsJson = JSON.stringify(entry.tags);
 
-    const tx = this.db.transaction(() => {
-      for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        const body = chunk.contextHeader
-          ? `${chunk.contextHeader}\n${chunk.content}`
-          : chunk.content;
-        insert.run(
-          `${parentId}-c${i}`,
-          entry.source,
-          `${entry.title} (part ${i + 1})`,
-          body,
-          entry.url || null,
-          entry.filePath || null,
-          tagsJson,
-          entry.sessionId || null,
-          JSON.stringify(this.extractKeywords(body)),
-          entry.createdAt.toISOString(),
-          now,
-          parentId,
-        );
-      }
-    });
-    tx();
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const body = chunk.contextHeader
+        ? `${chunk.contextHeader}\n${chunk.content}`
+        : chunk.content;
+      insert.run(
+        `${parentId}-c${i}`,
+        entry.source,
+        `${entry.title} (part ${i + 1})`,
+        body,
+        entry.url || null,
+        entry.filePath || null,
+        tagsJson,
+        entry.sessionId || null,
+        JSON.stringify(this.extractKeywords(body)),
+        entry.createdAt.toISOString(),
+        now,
+        parentId,
+      );
+    }
   }
 
   search(
@@ -358,6 +379,12 @@ class KnowledgeStore {
       oldestEntry: oldest?.d || null,
       newestEntry: newest?.d || null,
     };
+  }
+
+  // Releases the underlying SQLite handle. Mainly for tests that open a store
+  // on a temp database and need to delete the file afterward.
+  close(): void {
+    this.db.close();
   }
 
   deleteEntry(id: string): boolean {
