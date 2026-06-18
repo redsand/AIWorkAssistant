@@ -17,6 +17,7 @@ import type {
   ScoredDocument,
   PreferredSource,
   RoutingTier,
+  RoutingStrategy,
   GroundingHandle,
 } from "./types";
 import { claimKitAdapter } from "./adapters/claimkit-adapter";
@@ -44,6 +45,12 @@ export interface RoutingDecision {
   overallWinner: "rag" | "claimkit" | "tie";
   routingReason: string;
 }
+
+// Most-recently-observed RAG retrieval latency (ms). Used to estimate the
+// time saved when a high-confidence ClaimKit probe lets us skip RAG (issue
+// #229). Seeded to 0 so the first-ever skip reports no estimated savings
+// rather than a fabricated number.
+let recentRagRetrievalMs = 0;
 
 const INSUFFICIENT_EVIDENCE_PATTERNS = [
   "insufficient evidence to answer this question",
@@ -94,6 +101,38 @@ export function determineRoutingTier(ckResult: ClaimKitQueryResult | null, ckUna
   }
 
   return { tier: "blended", preferredSource: "blended", overallWinner: "tie", routingReason: "uncertain" };
+}
+
+/**
+ * Decide the ClaimKit-first routing strategy from a pre-flight probe (issue
+ * #229). Confidence drives the choice; a non-answerable probe always falls
+ * back to full RAG regardless of confidence so a confidently-wrong "I can't
+ * answer" never skips retrieval.
+ *
+ * - Routing disabled / no probe → "rag_first" (legacy order).
+ * - not_answerable → "claimkit_first_fallback".
+ * - confidence ≥ HIGH threshold → "claimkit_first_skip_rag".
+ * - confidence ≥ LOW threshold → "claimkit_first_parallel".
+ * - otherwise → "claimkit_first_fallback".
+ */
+export function determineRoutingStrategy(
+  ckProbe: ClaimKitQueryResult | null,
+): RoutingStrategy {
+  if (!env.CLAIMKIT_FIRST_ROUTING) return "rag_first";
+  if (!ckProbe) return "rag_first";
+
+  const answerable =
+    ckProbe.answerability === "answerable" ||
+    ckProbe.answerability === "partially-answerable";
+  if (!answerable) return "claimkit_first_fallback";
+
+  if (ckProbe.confidence >= env.CLAIMKIT_HIGH_CONFIDENCE_THRESHOLD) {
+    return "claimkit_first_skip_rag";
+  }
+  if (ckProbe.confidence >= env.CLAIMKIT_LOW_CONFIDENCE_THRESHOLD) {
+    return "claimkit_first_parallel";
+  }
+  return "claimkit_first_fallback";
 }
 
 async function withTimeout<T>(
@@ -237,6 +276,38 @@ export async function assembleContextPacket(
     console.warn(`[ClaimKit] Skipped — ${claimKitAdapter.getInitError()}`);
   }
 
+  // ── ClaimKit-first pre-flight probe (issue #229) ─────────────────────
+  // Query ClaimKit BEFORE running RAG. A high-confidence probe lets us skip
+  // RAG entirely; medium confidence runs both in parallel; low confidence /
+  // not-answerable falls back to full RAG. The probe is hard-capped so a slow
+  // ClaimKit degrades into "rag_first" rather than adding latency. Any error
+  // also degrades to "rag_first".
+  let routingStrategy: RoutingStrategy = "rag_first";
+  let ckProbe: ClaimKitQueryResult | null = null;
+  let probeLatencyMs = 0;
+  if (env.CLAIMKIT_FIRST_ROUTING && env.CLAIMKIT_ENABLED && claimKitAvailable) {
+    onProgress?.("Probing structured claims...");
+    const probeStart = Date.now();
+    try {
+      ckProbe = await withAbortableTimeout(
+        (signal) => claimKitAdapter.query(query, { signal }),
+        env.CLAIMKIT_FIRST_PROBE_TIMEOUT_MS,
+        null,
+      );
+    } catch (err) {
+      ckProbe = null;
+      console.warn("[ContextPacket] ClaimKit-first probe failed:", err instanceof Error ? err.message : err);
+    }
+    probeLatencyMs = Date.now() - probeStart;
+    stageTimings.claimkitProbeMs = probeLatencyMs;
+    routingStrategy = determineRoutingStrategy(ckProbe);
+    console.log(
+      `[ContextPacket] ${routingStrategy} | probe_confidence=${ckProbe ? (ckProbe.confidence * 100).toFixed(0) + "%" : "—"} | ` +
+      `probe_answerability=${ckProbe?.answerability ?? "—"} | probe=${probeLatencyMs}ms`,
+    );
+  }
+  const ragSkipped = routingStrategy === "claimkit_first_skip_rag";
+
   const baseSystemPrompt = getSystemPrompt(mode, query, "engine");
   const systemTokens = estimateTokens(baseSystemPrompt);
   // Pre-V2 only: memory/skills/soul/reflections were not budgeted, so the code
@@ -253,13 +324,25 @@ export async function assembleContextPacket(
   const ragStart = Date.now();
 
   const [docs, selectedMessages] = await Promise.all([
-    timeStage("retrieveStoresMs", () => retrieveAllStores(query)),
+    // ClaimKit-first skip: the high-confidence probe already answered, so we
+    // pay none of the RAG retrieval cost (embedding lookup, keyword search,
+    // graph traversal).
+    ragSkipped
+      ? Promise.resolve([] as ScoredDocument[])
+      : timeStage("retrieveStoresMs", () => retrieveAllStores(query)),
     Promise.resolve().then(() => {
       const scored = scoreMessages(sessionMessages, query);
       const deduped = deduplicateByJaccard(scored);
       return selectMessages(deduped, historySlot.allocatedTokens);
     }),
   ]);
+
+  // Estimate the latency change vs. the old RAG-first path (negative = faster).
+  // When RAG was skipped, the savings is the most-recently-observed RAG
+  // retrieval cost; when RAG ran, the probe added its own latency on top.
+  const ragRetrievalMs = stageTimings.retrieveStoresMs ?? 0;
+  if (!ragSkipped) recentRagRetrievalMs = ragRetrievalMs;
+  const latencyDeltaMs = ragSkipped ? -recentRagRetrievalMs : probeLatencyMs;
 
   const historyTokens = selectedMessages.reduce((sum, s) => sum + s.tokens, 0);
 
@@ -302,6 +385,22 @@ export async function assembleContextPacket(
   } else if (!claimKitAvailable) {
     ckStatus = "disabled";
     console.warn("[ClaimKit] Skipped — not initialized (run `claimkit ingest` to populate stores)");
+  } else if (ragSkipped) {
+    // ClaimKit-first skip path: the high-confidence pre-flight probe already
+    // answered. Reuse it directly — no document seeding (we have no RAG docs)
+    // and no second ClaimKit query.
+    claimKitResult = ckProbe;
+    ckMs = probeLatencyMs;
+    stageTimings.claimkitQueryMs = ckMs;
+    ckStatus = claimKitResult
+      ? (claimKitResult.metadata.claimCount === 0 ? "no_claims" : "answered")
+      : "timeout";
+    if (claimKitResult) {
+      const symbol = claimKitResult.answerability === "answerable" ? "✅" : claimKitResult.answerability === "partially-answerable" ? "⚠️" : "❌";
+      console.log(
+        `[ClaimKit] ${symbol} ${claimKitResult.answerability} | confidence=${(claimKitResult.confidence * 100).toFixed(0)}% | claims=${claimKitResult.metadata.claimCount} | sources=${claimKitResult.metadata.sourceIds.length} | score=${claimKitResult.metadata.retrievalScore.toFixed(2)} | ${ckMs}ms (probe, RAG skipped)`,
+      );
+    }
   } else {
     onProgress?.("Extracting knowledge claims...");
     const seedStart = Date.now();
@@ -624,6 +723,9 @@ export async function assembleContextPacket(
       gapFillDocsAdded,
       entityClaimsInjected: entityClaimsInjectedCount,
       contradictionsFlagged: contradictionsFlaggedCount,
+      // ClaimKit-first routing strategy (issue #229) so the dashboard can
+      // measure RAG-skip rate and latency delta vs. the old RAG-first path.
+      routingStrategy,
     });
 
     // Stash the case ID + compressed RAG evidence so chat.ts can run live
@@ -1059,6 +1161,12 @@ export async function assembleContextPacket(
           : 1,
       budgetUtilization,
       stageTimings,
+      claimkitFirstMetrics: {
+        strategy: routingStrategy,
+        probeLatencyMs,
+        ragSkipped,
+        latencyDeltaMs,
+      },
       claimkit: {
         enabled: env.CLAIMKIT_ENABLED,
         available: claimKitAvailable,
