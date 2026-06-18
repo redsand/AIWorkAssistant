@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { WorkflowEngine } from "../../../src/workflow/workflow-engine";
+import {
+  WorkflowEngine,
+  ApprovalRequiredError,
+} from "../../../src/workflow/workflow-engine";
 import { builtinActions } from "../../../src/workflow/builtin-actions";
 
 describe("WorkflowEngine", () => {
@@ -103,6 +106,143 @@ describe("WorkflowEngine", () => {
       );
       const ok = await local.execute("constrained", { mode: "a" });
       expect(ok.status).toBe("running");
+    });
+  });
+
+  describe("approvalRequired enforcement", () => {
+    it("blocks execution of an approval-required action when not approved", async () => {
+      await expect(
+        engine.execute("escalate-hawk-ir-case", {
+          caseId: "CASE-1",
+          escalationReason: "active intrusion",
+        }),
+      ).rejects.toBeInstanceOf(ApprovalRequiredError);
+    });
+
+    it("blocks when approved is explicitly false", async () => {
+      await expect(
+        engine.execute(
+          "escalate-hawk-ir-case",
+          { caseId: "CASE-1", escalationReason: "active intrusion" },
+          { approved: false },
+        ),
+      ).rejects.toBeInstanceOf(ApprovalRequiredError);
+    });
+
+    it("does not create an execution when approval is missing", async () => {
+      await engine
+        .execute("escalate-hawk-ir-case", {
+          caseId: "CASE-1",
+          escalationReason: "active intrusion",
+        })
+        .catch(() => undefined);
+      // A blocked action must not leave a tracked execution behind.
+      const anyExecution = (
+        engine as unknown as { executions: Map<string, unknown> }
+      ).executions;
+      expect(anyExecution.size).toBe(0);
+    });
+
+    it("allows execution when approved is true", async () => {
+      const execution = await engine.execute(
+        "escalate-hawk-ir-case",
+        { caseId: "CASE-1", escalationReason: "active intrusion" },
+        { approved: true },
+      );
+      expect(execution.actionId).toBe("escalate-hawk-ir-case");
+      expect(execution.status).toBe("running");
+    });
+
+    it("does not require approval for low-risk actions", async () => {
+      const execution = await engine.execute("daily-standup-prep", {});
+      expect(execution.status).toBe("running");
+    });
+  });
+
+  describe("parameter type validation", () => {
+    it("rejects a number parameter supplied as a string", async () => {
+      await expect(
+        engine.execute("triage-support-ticket", { ticketId: "not-a-number" }),
+      ).rejects.toThrow(/expected number, got string/);
+    });
+
+    it("rejects a string parameter supplied as a number", async () => {
+      await expect(
+        engine.execute(
+          "escalate-hawk-ir-case",
+          { caseId: 123, escalationReason: "reason" },
+          { approved: true },
+        ),
+      ).rejects.toThrow(/expected string, got number/);
+    });
+
+    it("rejects a boolean parameter supplied as a string", async () => {
+      const local = new WorkflowEngine();
+      (local as unknown as { actions: Map<string, unknown> }).actions.set(
+        "flagged",
+        {
+          id: "flagged",
+          name: "Flagged",
+          description: "test",
+          category: "maintenance",
+          riskLevel: "low",
+          params: [
+            {
+              name: "dryRun",
+              description: "dry run flag",
+              type: "boolean",
+              required: true,
+            },
+          ],
+          steps: [],
+          tags: [],
+          version: "1.0.0",
+          approvalRequired: false,
+        },
+      );
+      await expect(
+        local.execute("flagged", { dryRun: "true" }),
+      ).rejects.toThrow(/expected boolean, got string/);
+      const ok = await local.execute("flagged", { dryRun: true });
+      expect(ok.status).toBe("running");
+    });
+
+    it("accepts a correctly typed parameter", async () => {
+      const execution = await engine.execute("triage-support-ticket", {
+        ticketId: 42,
+      });
+      expect(execution.status).toBe("running");
+    });
+  });
+
+  describe("execution status transitions", () => {
+    it("transitions a running execution to completed", async () => {
+      const execution = await engine.execute("daily-standup-prep", {});
+      expect(execution.status).toBe("running");
+      expect(execution.completedAt).toBeUndefined();
+
+      const completed = engine.completeExecution(execution.id);
+      expect(completed?.status).toBe("completed");
+      expect(completed?.completedAt).toBeTruthy();
+      expect(engine.getExecution(execution.id)?.status).toBe("completed");
+    });
+
+    it("transitions a running execution to failed", async () => {
+      const execution = await engine.execute("triage-support-ticket", {
+        ticketId: 7,
+      });
+      expect(execution.status).toBe("running");
+
+      const failed = engine.failExecution(execution.id, "step failed");
+      expect(failed?.status).toBe("failed");
+      expect(failed?.completedAt).toBeTruthy();
+      expect(failed?.stepResults.at(-1)?.error).toBe("step failed");
+      expect(engine.getExecution(execution.id)?.status).toBe("failed");
+    });
+
+    it("returns undefined when transitioning an unknown execution", () => {
+      expect(engine.completeExecution("missing")).toBeUndefined();
+      expect(engine.failExecution("missing", "err")).toBeUndefined();
     });
   });
 

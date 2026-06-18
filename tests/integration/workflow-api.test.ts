@@ -7,6 +7,9 @@ vi.mock("../../src/middleware/auth", async (importOriginal) => {
     ...actual,
     isAuthConfigured: () => false,
     getApiKeyForAuth: () => "",
+    // Bypass the per-route guard here — these tests exercise workflow logic.
+    // Auth enforcement is covered separately in workflow-auth.test.ts.
+    requireAuth: async () => {},
   };
 });
 
@@ -98,6 +101,38 @@ describe("Workflow API", () => {
         payload: {},
       });
       expect(response.statusCode).toBe(404);
+    });
+
+    it("blocks an approval-required action without approval", async () => {
+      const response = await server.inject({
+        method: "POST",
+        url: "/api/workflow/actions/escalate-hawk-ir-case/execute",
+        payload: { caseId: "CASE-1", escalationReason: "active intrusion" },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json().error).toBe("Approval required");
+    });
+
+    it("allows an approval-required action when approve=true", async () => {
+      const response = await server.inject({
+        method: "POST",
+        url: "/api/workflow/actions/escalate-hawk-ir-case/execute?approve=true",
+        payload: { caseId: "CASE-1", escalationReason: "active intrusion" },
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.actionId).toBe("escalate-hawk-ir-case");
+      expect(body.status).toBe("running");
+    });
+
+    it("returns 400 when a parameter has the wrong type", async () => {
+      const response = await server.inject({
+        method: "POST",
+        url: "/api/workflow/actions/triage-support-ticket/execute",
+        payload: { ticketId: "not-a-number" },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().message).toMatch(/expected number/);
     });
   });
 
