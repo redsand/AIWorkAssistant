@@ -1,9 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
 import { determineRoutingTier } from "../context-packet";
 import { createBudget, estimateTokens, enforceBudget } from "../budget";
-import type { ContextSection, AllocatedBudget } from "../types";
+import type { ContextSection, AllocatedBudget, ScoredDocument } from "../types";
 import { DEFAULT_SLOT_DEFINITIONS, V2_SLOT_DEFINITIONS, CHARS_PER_TOKEN } from "../types";
 import type { ClaimKitQueryResult } from "../adapters/claimkit-adapter";
+import { rewriteQuerySafe, identityRewrite, mergeAndDedupe, boostEntityMatches } from "../query-rewriter";
 
 // ── determineRoutingTier ──────────────────────────────────────────────────
 
@@ -453,6 +454,79 @@ describe("memory sanitization for prompt injection prevention", () => {
 
     const markdown = "§ key1\n_added: date\n**bold** and _italic_\n- list item";
     expect(sanitizeForPrompt(markdown)).toBe(markdown);
+  });
+});
+
+// ── query rewriting before retrieval (issue #230) ──────────────────────────
+
+describe("query rewrite flow in context packet", () => {
+  function rawDoc(id: string, overrides: Partial<ScoredDocument> = {}): ScoredDocument {
+    return {
+      id,
+      source: "knowledge",
+      content: "",
+      title: id,
+      score: 1,
+      baseScore: 1,
+      importanceScore: 0,
+      recencyScore: 0,
+      trustScore: 0,
+      claimKitBoost: 0,
+      tokens: 1,
+      metadata: {},
+      ...overrides,
+    };
+  }
+
+  it("produces a rewritten retrieval query that drops filler and expands abbreviations", () => {
+    // Mirrors the Phase-0 step assembleContextPacket performs before retrieval.
+    const rewritten = rewriteQuerySafe("Can you tell me how CK handles contradictions");
+    const retrievalQuery = rewritten.rewritten;
+    expect(retrievalQuery).toContain("ClaimKit");
+    expect(retrievalQuery.toLowerCase()).not.toContain("can you tell me");
+    // Original is preserved for comparison logging / history scoring.
+    expect(rewritten.original).toBe("Can you tell me how CK handles contradictions");
+  });
+
+  it("emits queryRewriteMetrics-shaped data from the rewrite result", () => {
+    const rewritten = rewriteQuerySafe("what is the status of IR-42");
+    const metrics = {
+      enabled: true,
+      latencyMs: rewritten.rewriteLatencyMs,
+      variantCount: rewritten.variants.length,
+      entityRefCount: rewritten.entityRefs.length,
+      abbreviationCount: rewritten.abbreviationExpansions.size,
+    };
+    expect(metrics.entityRefCount).toBeGreaterThan(0);
+    expect(metrics.latencyMs).toBeLessThan(100);
+  });
+
+  it("merges variant retrieval results with the primary set (Phase 2)", () => {
+    const primary = [rawDoc("a", { score: 0.3 }), rawDoc("b", { score: 0.6 })];
+    const variant = [rawDoc("a", { score: 0.5 }), rawDoc("c", { score: 0.4 })];
+    const merged = mergeAndDedupe([primary, variant]);
+    expect(merged.map((d) => d.id).sort()).toEqual(["a", "b", "c"]);
+    // Highest score for the duplicate id wins.
+    expect(merged.find((d) => d.id === "a")?.score).toBe(0.5);
+  });
+
+  it("boosts docs matching extracted entity references (Phase 3)", () => {
+    const rewritten = rewriteQuerySafe("what is the status of IR-42");
+    const docs = [
+      rawDoc("relevant", { score: 0.2, content: "the IR-42 incident is open" }),
+      rawDoc("other", { score: 0.4, content: "unrelated" }),
+    ];
+    const boosted = boostEntityMatches(docs, rewritten.entityRefs);
+    expect(boosted[0].id).toBe("relevant");
+  });
+
+  it("passes the raw query through unchanged on the disabled/identity path", () => {
+    // When QUERY_REWRITER_ENABLED is false, rewriteQuerySafe returns the
+    // identity rewrite — the retrieval query equals the original.
+    const r = identityRewrite("Can you tell me how CK works");
+    expect(r.rewritten).toBe("Can you tell me how CK works");
+    expect(r.variants).toEqual([]);
+    expect(r.entityRefs).toEqual([]);
   });
 });
 

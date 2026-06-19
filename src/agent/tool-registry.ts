@@ -5425,6 +5425,58 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "low",
   },
   {
+    name: "hawk_ir.create_case",
+    description:
+      "Create a new HAWK IR case with at least one event. Use this when you need to manually create a security incident case, for example when escalating an alert from a Jitbit ticket or other external source. Every case MUST include at least one event JSON document.",
+    params: {
+      name: {
+        type: "string",
+        description:
+          'Case name (1-500 chars). Should be descriptive, e.g. "Entra Identity Protection Risk State Set — user@domain.com"',
+        required: true,
+      },
+      events: {
+        type: "array",
+        description:
+          "Array of event documents (at least 1 required). Each event must have an alert_name. Recognized event fields: event_id (string), alert_name (string, required), date_added (ISO 8601), ip_src, ip_dst, vendor_name, product_name, userPrincipalName, resource_name (strings), weight, count (numbers), blocked (boolean), riskLevel, riskState (strings). Extra fields are passed through.",
+        required: true,
+      },
+      risk_level: {
+        type: "string",
+        description: "Case risk level: Informational, Low, Moderate, High, Critical. Default: Low",
+        required: false,
+      },
+      tags: {
+        type: "array",
+        description: "Tags for the case (array of strings)",
+        required: false,
+      },
+      category: {
+        type: "array",
+        description: 'Categories (array of strings, e.g. ["Cloud Security"])',
+        required: false,
+      },
+      mitre: {
+        type: "array",
+        description: 'MITRE ATT&CK technique IDs (array of strings, e.g. ["T1078"])',
+        required: false,
+      },
+      notes: {
+        type: "array",
+        description:
+          'Initial notes to add to the case. Each note is an object with "note" (string) and optional "owner_name" (string).',
+        required: false,
+      },
+      dryRun: {
+        type: "boolean",
+        description: "Preview what would happen without executing",
+        required: false,
+      },
+    },
+    actionType: "hawk_ir.create_case",
+    riskLevel: "medium",
+  },
+  {
     name: "hawk_ir.quarantine_host",
     description:
       "Quarantine a host/IP in HAWK IR. Blocks network access for the specified target and associates it with a case. Critical risk — requires MFA, approval, and dry run.",

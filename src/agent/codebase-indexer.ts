@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { env } from "../config/env";
 import { embeddingService, cosineSimilarity } from "./embedding-service";
+import { chunkContent } from "../context-engine/chunker";
 
 export interface IndexedFile {
   path: string;
@@ -16,6 +17,7 @@ interface CodeChunk {
   startLine: number;
   endLine: number;
   content: string;
+  contextHeader: string;
   language: string;
   embedding: number[] | null;
   keywords: string[];
@@ -226,43 +228,30 @@ class CodebaseIndexer {
         deleteFileStmt.run(relativePath);
         const language = this.detectLanguage(filePath);
 
-        // Pre-compute cumulative char offsets for O(log n) line lookup
-        const lines = content.split("\n");
-        const lineOffsets: number[] = new Array(lines.length + 1);
-        lineOffsets[0] = 0;
-        for (let i = 0; i < lines.length; i++) {
-          lineOffsets[i + 1] = lineOffsets[i] + lines[i].length + 1;
-        }
+        const chunks = chunkContent(content, language, {
+          strategy: env.RAG_CHUNK_STRATEGY,
+          maxTokens: chunkSize,
+          minTokens: Math.floor(chunkSize * 0.3),
+          overlapTokens: chunkOverlap,
+          filePath: relativePath,
+        });
 
-        const charToLine = (pos: number): number => {
-          let lo = 0, hi = lines.length;
-          while (lo < hi) {
-            const mid = (lo + hi) >> 1;
-            if (lineOffsets[mid + 1] <= pos) lo = mid + 1;
-            else hi = mid;
-          }
-          return lo + 1;
-        };
-
-        let charPos = 0;
-        while (charPos < content.length) {
-          const end = Math.min(charPos + chunkSize, content.length);
-          const chunkContent = content.substring(charPos, end);
-          const startLine = charToLine(charPos);
-          const endLine = charToLine(end - 1);
-
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i];
+          const storedContent = chunk.contextHeader
+            ? `${chunk.contextHeader}\n${chunk.content}`
+            : chunk.content;
           pendingChunks.push({
-            id: `chunk-${this.hashString(`${relativePath}:${charPos}`)}`,
+            id: `chunk-${this.hashString(`${relativePath}:${chunk.startLine}:${i}`)}`,
             filePath: relativePath,
-            startLine,
-            endLine,
-            content: chunkContent,
+            startLine: chunk.startLine,
+            endLine: chunk.endLine,
+            content: storedContent,
+            contextHeader: chunk.contextHeader,
             language,
             embedding: null,
-            keywords: this.extractKeywords(chunkContent),
+            keywords: this.extractKeywords(storedContent),
           });
-
-          charPos += chunkSize - chunkOverlap;
         }
 
         await drainPending();
@@ -548,7 +537,6 @@ class CodebaseIndexer {
 
     const chunkSize = env.RAG_CHUNK_SIZE;
     const chunkOverlap = env.RAG_CHUNK_OVERLAP;
-    const lines = content.split("\n");
 
     const insertStmt = this.db.prepare(`
       INSERT OR REPLACE INTO code_chunks (id, file_path, start_line, end_line, content, language, keywords, embedding, indexed_at, file_hash)
@@ -558,42 +546,48 @@ class CodebaseIndexer {
     const existingChunks = this.db.prepare(`DELETE FROM code_chunks WHERE file_path = ?`);
     existingChunks.run(relativePath);
 
-    let charPos = 0;
-    while (charPos < content.length) {
-      const end = Math.min(charPos + chunkSize, content.length);
-      const chunkContent = content.substring(charPos, end);
+    const chunks = chunkContent(content, language, {
+      strategy: env.RAG_CHUNK_STRATEGY,
+      maxTokens: chunkSize,
+      minTokens: Math.floor(chunkSize * 0.3),
+      overlapTokens: chunkOverlap,
+      filePath: relativePath,
+    });
 
-      let startLine = 1;
-      let endLine = 1;
-      let charsCounted = 0;
-      for (let i = 0; i < lines.length; i++) {
-        charsCounted += lines[i].length + 1;
-        if (charsCounted >= charPos && startLine === 1) {
-          startLine = i + 1;
-        }
-        if (charsCounted >= end) {
-          endLine = i + 1;
-          break;
-        }
-      }
-
-      const chunkId = `chunk-${this.hashString(`${relativePath}:${charPos}`)}`;
-      const keywords = this.extractKeywords(chunkContent);
-
-      insertStmt.run(
-        chunkId,
-        relativePath,
-        startLine,
-        endLine,
-        chunkContent,
+    const now = new Date().toISOString();
+    // Build CodeChunk objects the same way indexCodebase does so both insert
+    // paths stay consistent: the structural context header is prepended into
+    // the stored content (and thus into the extracted keywords) identically.
+    const codeChunks: CodeChunk[] = chunks.map((chunk, i) => {
+      const storedContent = chunk.contextHeader
+        ? `${chunk.contextHeader}\n${chunk.content}`
+        : chunk.content;
+      return {
+        id: `chunk-${this.hashString(`${relativePath}:${chunk.startLine}:${i}`)}`,
+        filePath: relativePath,
+        startLine: chunk.startLine,
+        endLine: chunk.endLine,
+        content: storedContent,
+        contextHeader: chunk.contextHeader,
         language,
-        JSON.stringify(keywords),
+        embedding: null,
+        keywords: this.extractKeywords(storedContent),
+      };
+    });
+
+    for (const chunk of codeChunks) {
+      insertStmt.run(
+        chunk.id,
+        chunk.filePath,
+        chunk.startLine,
+        chunk.endLine,
+        chunk.content,
+        chunk.language,
+        JSON.stringify(chunk.keywords),
         null,
-        new Date().toISOString(),
+        now,
         null,
       );
-
-      charPos += chunkSize - chunkOverlap;
     }
 
     const file: IndexedFile = { path: relativePath, language, content };

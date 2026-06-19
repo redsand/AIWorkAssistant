@@ -61,6 +61,54 @@ describe("ComparisonRunDatabase — diagnostic fields", () => {
       expect(c.winner_reason).toBe("low_confidence");
     });
 
+    it("persists and reads back the ClaimKit-first routing_strategy", () => {
+      const run = db.createRun({
+        source: "live",
+        description: "routing strategy persistence",
+        cases: [
+          {
+            query: "what is the deploy process",
+            category: "direct_fact",
+            overallWinner: "claimkit",
+            winnerReason: "high_confidence",
+            rag: { contextTokens: 0, sections: 0, processingTimeMs: 4 },
+            claimkit: {
+              confidence: 0.95,
+              answerability: "answerable",
+              claimCount: 3,
+              processingTimeMs: 40,
+              contradictions: 0,
+            },
+            routingStrategy: "claimkit_first_skip_rag",
+          },
+        ],
+      });
+
+      expect(run.cases[0].routing_strategy).toBe("claimkit_first_skip_rag");
+
+      // Survives a fresh read from disk (not just the in-memory create result).
+      const reloaded = db.getRun(run.id);
+      expect(reloaded!.cases[0].routing_strategy).toBe("claimkit_first_skip_rag");
+    });
+
+    it("stores null routing_strategy when the case omits it", () => {
+      const run = db.createRun({
+        source: "live",
+        cases: [
+          {
+            query: "test",
+            category: "direct_fact",
+            overallWinner: "rag",
+            winnerReason: "ck_unavailable",
+            rag: { contextTokens: 100, sections: 1, processingTimeMs: 10 },
+            claimkit: null,
+          },
+        ],
+      });
+
+      expect(run.cases[0].routing_strategy).toBeNull();
+    });
+
     it("stores nulls for optional diagnostic fields when claimkit is null", () => {
       const run = db.createRun({
         source: "live",

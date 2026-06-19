@@ -311,6 +311,56 @@ describe("HawkIrClient", () => {
         expect.objectContaining({ headers: expect.any(Object) }),
       );
     });
+
+    it("createCase POSTs to /api/cases with the request body", async () => {
+      const { client, mockPost } = createMockedClient();
+
+      vi.mocked(axios.post).mockResolvedValueOnce({
+        data: { status: true },
+        headers: { "set-cookie": ["hawk_session=cc1; Path=/"] },
+      });
+
+      const responseCase = { rid: "700:1", name: "Risky sign-in" };
+      mockPost.mockResolvedValueOnce({ data: { status: true, case: responseCase } });
+
+      const request = {
+        name: "Risky sign-in",
+        events: [{ alert_name: "Entra risk" }],
+        risk_level: "High" as const,
+      };
+
+      const result = await client.createCase(request);
+      expect(result).toEqual({ status: true, case: responseCase });
+      expect(mockPost).toHaveBeenCalledWith(
+        "/api/cases",
+        request,
+        expect.objectContaining({ headers: expect.any(Object) }),
+      );
+    });
+
+    it("createCase rejects when name is missing", async () => {
+      const { client, mockPost } = createMockedClient();
+      await expect(
+        client.createCase({ name: "  ", events: [{ alert_name: "x" }] }),
+      ).rejects.toThrow("Case name is required");
+      expect(mockPost).not.toHaveBeenCalled();
+    });
+
+    it("createCase rejects when events are empty", async () => {
+      const { client, mockPost } = createMockedClient();
+      await expect(
+        client.createCase({ name: "Case", events: [] }),
+      ).rejects.toThrow("At least one event is required");
+      expect(mockPost).not.toHaveBeenCalled();
+    });
+
+    it("createCase rejects when an event has no alert_name", async () => {
+      const { client, mockPost } = createMockedClient();
+      await expect(
+        client.createCase({ name: "Case", events: [{ alert_name: "" } as any] }),
+      ).rejects.toThrow("Each event must have an alert_name");
+      expect(mockPost).not.toHaveBeenCalled();
+    });
   });
 
   // === WebSocket message format tests ===

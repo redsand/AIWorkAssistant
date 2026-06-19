@@ -42,10 +42,16 @@ const mockEnv = {
   CLAIMKIT_GAP_FILL_THRESHOLD: 0.3,
   CLAIMKIT_GAP_FILL_MAX_QUERIES: 2,
   CLAIMKIT_LIVE_GROUNDING_RATE: 0,
+  CLAIMKIT_FIRST_ROUTING: false,
+  CLAIMKIT_HIGH_CONFIDENCE_THRESHOLD: 0.8,
+  CLAIMKIT_LOW_CONFIDENCE_THRESHOLD: 0.5,
+  CLAIMKIT_FIRST_PROBE_TIMEOUT_MS: 500,
   KNOWLEDGE_GRAPH_QUERY_ENABLED: true,
   KNOWLEDGE_GRAPH_DOC_LIMIT: 5,
   KNOWLEDGE_GRAPH_COMMUNITY_LIMIT: 10,
   KNOWLEDGE_GRAPH_CACHE_TTL_MS: 30000,
+  QUERY_REWRITER_ENABLED: true,
+  QUERY_REWRITE_VARIANT_COUNT: 3,
 };
 
 function installMocks() {
@@ -161,6 +167,13 @@ describe("assembleContextPacket retrieval and context sections", () => {
     vi.clearAllMocks();
     mockEnv.RAG_INCLUDE_LOCAL_SOURCES = true;
     mockEnv.CLAIMKIT_ENABLED = false;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = false;
+    mockEnv.CLAIMKIT_AWAIT_SEED = false;
+    mockEnv.CLAIMKIT_HIGH_CONFIDENCE_THRESHOLD = 0.8;
+    mockEnv.CLAIMKIT_LOW_CONFIDENCE_THRESHOLD = 0.5;
+    mockEnv.CLAIMKIT_FIRST_PROBE_TIMEOUT_MS = 500;
+    mockEnv.QUERY_REWRITER_ENABLED = true;
+    mockEnv.QUERY_REWRITE_VARIANT_COUNT = 3;
     mockClaimKitAdapter.isAvailable.mockReturnValue(false);
     mockClaimKitAdapter.initialize.mockResolvedValue(false);
     mockClaimKitAdapter.getInitError.mockReturnValue(null);
@@ -304,5 +317,256 @@ describe("assembleContextPacket retrieval and context sections", () => {
     expect(docs.content).not.toContain("hidden");
     expect(mockCodebaseSearch).not.toHaveBeenCalled();
     expect(packet.diagnostics.documentsRetrieved).toBe(1);
+  });
+
+  function ckResult(
+    confidence: number,
+    answerability: string,
+    claimCount = 3,
+  ) {
+    return {
+      answer: "ClaimKit structured answer.",
+      citations: [{ claimId: "c1", sourceId: "s1", text: "evidence text" }],
+      confidence,
+      contradictions: [],
+      missingEvidence: [],
+      answerability,
+      metadata: {
+        sourceIds: ["s1", "s2"],
+        claimCount,
+        processingTimeMs: 12,
+        retrievalScore: 0.9,
+      },
+    };
+  }
+
+  it("skips RAG retrieval when the ClaimKit-first probe is high-confidence", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.95, "answerable"));
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Should not be retrieved"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "what is the deploy process",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(packet.diagnostics.claimkitFirstMetrics.strategy).toBe("claimkit_first_skip_rag");
+    expect(packet.diagnostics.claimkitFirstMetrics.ragSkipped).toBe(true);
+    expect(packet.diagnostics.documentsRetrieved).toBe(0);
+    // RAG stores must never be touched on the skip path.
+    expect(mockKnowledgeSearch).not.toHaveBeenCalled();
+    expect(mockCodebaseSearch).not.toHaveBeenCalled();
+    // The probe answer is reused — ClaimKit is queried exactly once.
+    expect(mockClaimKitAdapter.query).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs RAG retrieval when the ClaimKit-first probe is medium-confidence (parallel path)", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.6, "partially-answerable"));
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(packet.diagnostics.claimkitFirstMetrics.strategy).toBe("claimkit_first_parallel");
+    expect(packet.diagnostics.claimkitFirstMetrics.ragSkipped).toBe(false);
+    expect(packet.diagnostics.documentsRetrieved).toBeGreaterThan(0);
+    expect(mockKnowledgeSearch).toHaveBeenCalled();
+  });
+
+  it("falls back to full RAG when the ClaimKit-first probe is low-confidence", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CLAIMKIT_AWAIT_SEED = false;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    // Low confidence + answerable → claimkit_first_fallback: RAG must run and
+    // the probe result is reused (no redundant second query when seed is not
+    // awaited).
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.3, "answerable"));
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(packet.diagnostics.claimkitFirstMetrics.strategy).toBe("claimkit_first_fallback");
+    expect(packet.diagnostics.claimkitFirstMetrics.ragSkipped).toBe(false);
+    expect(packet.diagnostics.claimkitFirstMetrics.latencyDeltaMs).toBeGreaterThanOrEqual(0);
+    expect(packet.diagnostics.documentsRetrieved).toBeGreaterThan(0);
+    expect(mockKnowledgeSearch).toHaveBeenCalled();
+    // Probe reused: ClaimKit queried exactly once even though RAG also ran.
+    expect(mockClaimKitAdapter.query).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-queries ClaimKit after seeding when CLAIMKIT_AWAIT_SEED is enabled", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CLAIMKIT_AWAIT_SEED = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.6, "answerable"));
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(packet.diagnostics.claimkitFirstMetrics.strategy).toBe("claimkit_first_parallel");
+    // Awaited seeding can change the claim store between probe and query, so a
+    // fresh full query runs on top of the probe (probe + full = 2 calls).
+    expect(mockClaimKitAdapter.query).toHaveBeenCalledTimes(2);
+
+    mockEnv.CLAIMKIT_AWAIT_SEED = false;
+  });
+
+  it("falls back to rag_first when the ClaimKit-first probe throws", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockRejectedValue(new Error("probe boom"));
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(packet.diagnostics.claimkitFirstMetrics.strategy).toBe("rag_first");
+    expect(packet.diagnostics.claimkitFirstMetrics.ragSkipped).toBe(false);
+    expect(packet.diagnostics.documentsRetrieved).toBeGreaterThan(0);
+    expect(mockKnowledgeSearch).toHaveBeenCalled();
+  });
+
+  // ── query rewriting reaches retrieval adapters (issue #230) ──────────────
+
+  it("passes the rewritten (filler-stripped, abbreviation-expanded) query to retrieval adapters", async () => {
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "ClaimKit contradiction handling"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    await assembleContextPacket({
+      mode: "engineering",
+      query: "Can you tell me how CK handles errors",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    // The adapter must see the dense rewrite ("ClaimKit handles errors"), not
+    // the raw conversational query.
+    expect(mockKnowledgeSearch).toHaveBeenCalledWith("ClaimKit handles errors", { limit: 10 });
+    expect(mockKnowledgeSearch).not.toHaveBeenCalledWith(
+      "Can you tell me how CK handles errors",
+      expect.anything(),
+    );
+  });
+
+  it("passes the raw query through to retrieval adapters when QUERY_REWRITER_ENABLED is false", async () => {
+    mockEnv.QUERY_REWRITER_ENABLED = false;
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    await assembleContextPacket({
+      mode: "engineering",
+      query: "Can you tell me how CK handles errors",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    // Identity rewrite: the adapter receives the query exactly as typed, and no
+    // variant fan-out occurs (a single primary retrieval).
+    expect(mockKnowledgeSearch).toHaveBeenCalledWith(
+      "Can you tell me how CK handles errors",
+      { limit: 10 },
+    );
+    expect(mockKnowledgeSearch).not.toHaveBeenCalledWith("ClaimKit handles errors", expect.anything());
+    expect(mockKnowledgeSearch).toHaveBeenCalledTimes(1);
+  });
+
+  it("fans variant retrievals out up to QUERY_REWRITE_VARIANT_COUNT (not a hard-coded cap)", async () => {
+    // "how should ..." stays question-shaped after filler removal, so the
+    // rewriter yields three distinct variants. With the cap at 3 the engine must
+    // retrieve all three variants plus the primary (4 searches). A hard-coded
+    // slice(0, 2) would only fire 3.
+    mockEnv.QUERY_REWRITE_VARIANT_COUNT = 3;
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    await assembleContextPacket({
+      mode: "engineering",
+      query: "how should the auth login error be handled",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockKnowledgeSearch).toHaveBeenCalledTimes(4);
+  });
+
+  it("respects a lower QUERY_REWRITE_VARIANT_COUNT for variant fan-out", async () => {
+    mockEnv.QUERY_REWRITE_VARIANT_COUNT = 1;
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    await assembleContextPacket({
+      mode: "engineering",
+      query: "how should the auth login error be handled",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    // Primary + exactly one variant.
+    expect(mockKnowledgeSearch).toHaveBeenCalledTimes(2);
   });
 });

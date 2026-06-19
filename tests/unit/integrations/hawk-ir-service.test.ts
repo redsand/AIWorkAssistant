@@ -97,8 +97,57 @@ describe("HawkIrService write operations", () => {
       deleteIgnoreLabel: vi.fn().mockResolvedValue({ status: true }),
       getCaseCategories: vi.fn().mockResolvedValue(["False Positive"]),
       getCaseLabels: vi.fn().mockResolvedValue({ categories: [], ignoreLabels: [] }),
+      createCase: vi.fn().mockResolvedValue({ status: true, case: { rid: "700:1", name: "New Case" } }),
     } as unknown as HawkIrClient;
     service = new HawkIrService(mockClient);
+  });
+
+  describe("createCase", () => {
+    it("constructs a CreateCaseRequest and delegates to client", async () => {
+      const result = await service.createCase({
+        name: "Entra Risk State Set",
+        events: [{ alert_name: "Risky sign-in" }],
+        risk_level: "High",
+        tags: ["entra"],
+        category: ["Cloud Security"],
+        mitre: ["T1078"],
+        notes: [{ note: "Escalated from Jitbit", owner_name: "Tim" }],
+        owner: "soc-user",
+        group_id: "g1",
+      });
+
+      expect(mockClient.createCase).toHaveBeenCalledWith({
+        name: "Entra Risk State Set",
+        events: [{ alert_name: "Risky sign-in" }],
+        risk_level: "High",
+        tags: ["entra"],
+        category: ["Cloud Security"],
+        mitre: ["T1078"],
+        notes: [{ note: "Escalated from Jitbit", owner_name: "Tim" }],
+        owner: "soc-user",
+        group_id: "g1",
+      });
+      expect(result).toEqual({ status: true, case: { rid: "700:1", name: "New Case" } });
+    });
+
+    it("passes through undefined optional fields", async () => {
+      await service.createCase({
+        name: "Minimal Case",
+        events: [{ alert_name: "Alert" }],
+      });
+
+      expect(mockClient.createCase).toHaveBeenCalledWith({
+        name: "Minimal Case",
+        events: [{ alert_name: "Alert" }],
+        risk_level: undefined,
+        tags: undefined,
+        category: undefined,
+        mitre: undefined,
+        notes: undefined,
+        owner: undefined,
+        group_id: undefined,
+      });
+    });
   });
 
   describe("addCaseNote", () => {

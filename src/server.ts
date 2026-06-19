@@ -22,6 +22,7 @@ import { agentRunsRoutes } from "./agent-runs/api";
 import { agentRunDatabase } from "./agent-runs/database";
 import { workItemRoutes } from "./routes/work-items";
 import { extractionRoutes } from "./routes/extraction";
+import { jitbitSyncRoutes } from "./routes/jitbit-sync";
 import { detectionRoutes } from "./routes/detection";
 import { ctoRoutes } from "./routes/cto";
 import { personalOsRoutes } from "./routes/personal-os";
@@ -46,6 +47,7 @@ import { repoDashboardRoutes } from "./routes/repo-dashboard";
 import { kanbanRoutes } from "./routes/kanban";
 import { reportRoutes } from "./routes/reports";
 import { errorsRoutes } from "./routes/errors";
+import { workflowRoutes } from "./routes/workflow";
 import { claimKitAdapter } from "./context-engine/adapters/claimkit-adapter";
 import { comparisonRoutes } from "./comparison-runs/api";
 import { evalCalibrationRoutes } from "./eval/calibration/api";
@@ -126,6 +128,7 @@ export async function buildServer() {
   await server.register(agentRunsRoutes, { prefix: "/api" });
   await server.register(workItemRoutes, { prefix: "/api/work-items" });
   await server.register(extractionRoutes, { prefix: "/api/extraction" });
+  await server.register(jitbitSyncRoutes, { prefix: "/api/sync" });
   await server.register(detectionRoutes, { prefix: "/api" });
   await server.register(ctoRoutes, { prefix: "/api/cto" });
   await server.register(personalOsRoutes, { prefix: "/api/personal-os" });
@@ -150,6 +153,7 @@ export async function buildServer() {
   await server.register(kanbanRoutes, { prefix: "/api/kanban" });
   await server.register(reportRoutes, { prefix: "/api/reports" });
   await server.register(errorsRoutes, { prefix: "/api" });
+  await server.register(workflowRoutes, { prefix: "/api/workflow" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 

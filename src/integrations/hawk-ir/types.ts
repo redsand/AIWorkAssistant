@@ -284,3 +284,58 @@ export interface MonthlySummary {
   /** Field used for the groupBy breakdown. */
   groupByField: string;
 }
+
+// === Create Case Types ===
+
+export interface CreateCaseEvent {
+  event_id?: string;
+  alert_name: string;
+  date_added?: string;
+  ts?: number;
+  ip_src?: string;
+  ip_dst?: string;
+  src_port?: number;
+  dest_port?: number;
+  network_protocol?: string;
+  vendor_name?: string;
+  product_name?: string;
+  product_source?: string;
+  userDisplayName?: string;
+  userPrincipalName?: string;
+  resource_name?: string;
+  resource_address?: string;
+  os_type_name?: string;
+  class_type?: string;
+  class_name?: string;
+  hid?: string;
+  priority?: number;
+  weight?: number;
+  count?: number;
+  blocked?: boolean;
+  technique?: string[];
+  tags?: string[];
+  correlation_username?: string;
+  riskLevel?: string;
+  riskState?: string;
+  [key: string]: unknown;
+}
+
+export interface CreateCaseRequest {
+  name: string;
+  events: CreateCaseEvent[];
+  risk_level?: "Informational" | "Low" | "Moderate" | "High" | "Critical";
+  group_id?: string;
+  tags?: string[];
+  category?: string[];
+  mitre?: string[];
+  notes?: Array<{
+    owner_name?: string;
+    note: string;
+  }>;
+  owner?: string;
+}
+
+export interface CreateCaseResponse {
+  status: boolean;
+  case: HawkCase;
+}

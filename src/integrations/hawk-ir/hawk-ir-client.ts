@@ -19,6 +19,8 @@ import type {
   HawkArtefactsParams,
   HawkDashboard,
   HawkDashboardRunResult,
+  CreateCaseRequest,
+  CreateCaseResponse,
 } from "./types";
 
 export interface HawkNode {
@@ -322,6 +324,20 @@ export class HawkIrClient {
 
   async deescalateCase(caseId: string, reason: string, note?: string): Promise<any> {
     return this.httpPost(`/api/cases/deescalate/${caseId.replace(/^#/, "")}`, { reason, note });
+  }
+
+  async createCase(request: CreateCaseRequest): Promise<CreateCaseResponse> {
+    if (!request.name || request.name.trim().length === 0) {
+      throw new Error("Case name is required");
+    }
+    if (!request.events || request.events.length === 0) {
+      throw new Error("At least one event is required");
+    }
+    if (request.events.some((e) => !e.alert_name)) {
+      throw new Error("Each event must have an alert_name");
+    }
+
+    return this.httpPost<CreateCaseResponse>("/api/cases", request);
   }
 
   // === Case Management (WebSocket) ===

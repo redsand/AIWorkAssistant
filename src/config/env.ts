@@ -280,6 +280,23 @@ const envSchema = z.object({
   RAG_MAX_FILE_SIZE_KB: z.coerce.number().default(256),
   RAG_CHUNK_SIZE: z.coerce.number().default(500),
   RAG_CHUNK_OVERLAP: z.coerce.number().default(50),
+  // Chunking strategy for codebase/knowledge ingestion. "structural" splits on
+  // function/class/heading boundaries (token-aware); "fixed" uses the legacy
+  // sliding-window approach. See src/context-engine/chunker.ts.
+  RAG_CHUNK_STRATEGY: z.enum(["structural", "fixed"]).default("structural"),
+
+  // Query rewriting (issue #230). When enabled, the raw user query is cleaned
+  // (conversational filler removed, abbreviations expanded, entities extracted)
+  // before it is embedded for retrieval. Purely synchronous heuristics, no LLM,
+  // so it adds negligible latency. Set to false to pass the raw query through.
+  QUERY_REWRITER_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("true"),
+  // Number of alternative query formulations generated for ambiguous queries.
+  // The top variants are run as parallel retrievals and merged/deduped with the
+  // primary result. 0 disables variant generation.
+  QUERY_REWRITE_VARIANT_COUNT: z.coerce.number().int().min(0).default(3),
 
   // ClaimKit (RAG replacement)
   CLAIMKIT_ENABLED: z
@@ -361,6 +378,26 @@ const envSchema = z.object({
   // Max missing-evidence items to use as second-pass RAG queries per turn.
   // Each adds one knowledge-store search; cap small to bound latency.
   CLAIMKIT_GAP_FILL_MAX_QUERIES: z.coerce.number().default(3),
+
+  // ClaimKit-first routing (issue #229). When enabled, a quick pre-flight
+  // ClaimKit probe runs BEFORE RAG retrieval. Based on the probe confidence
+  // the assembler either skips RAG entirely (high confidence), runs RAG in
+  // parallel with a full ClaimKit query (medium), or falls back to full RAG
+  // (low confidence / not answerable). Inverts the old "RAG-first, ClaimKit
+  // supplementary" order to "ClaimKit-first, RAG-fallback".
+  CLAIMKIT_FIRST_ROUTING: z
+    .string()
+    .transform((s) => s === "true")
+    .default("true"),
+  // Skip RAG entirely when the probe confidence is at or above this value.
+  CLAIMKIT_HIGH_CONFIDENCE_THRESHOLD: z.coerce.number().default(0.8),
+  // Run RAG in parallel with a full ClaimKit query when the probe confidence
+  // is at or above this value (but below the high threshold). Below this, fall
+  // back to full RAG + full ClaimKit.
+  CLAIMKIT_LOW_CONFIDENCE_THRESHOLD: z.coerce.number().default(0.5),
+  // Hard cap on the pre-flight ClaimKit probe. Kept small so a slow probe
+  // degrades into "rag_first" rather than adding latency to every query.
+  CLAIMKIT_FIRST_PROBE_TIMEOUT_MS: z.coerce.number().default(500),
 
   // Knowledge graph retrieval controls
   KNOWLEDGE_GRAPH_QUERY_ENABLED: z

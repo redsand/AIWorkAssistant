@@ -110,12 +110,29 @@ class ComparisonRunDatabase {
       // timings. Lets the dashboard show "why did this query score 0.05?"
       // with a real breakdown instead of a final number.
       { col: "confidence_trace", def: "TEXT" },
+      // ClaimKit-first routing strategy (issue #229): which of the three
+      // ClaimKit-first paths (or rag_first) was chosen for this query. Lets
+      // the dashboard measure RAG-skip rate and per-path latency. Additive &
+      // nullable, so rolling the application code back is safe — older INSERTs
+      // simply omit the column and SQLite stores NULL. Rolling the schema
+      // forward is idempotent (the ALTER below no-ops once the column exists).
+      { col: "routing_strategy", def: "TEXT" },
     ];
     for (const { col, def } of migrations) {
       try {
         this.db.exec(`ALTER TABLE comparison_cases ADD COLUMN ${col} ${def}`);
-      } catch {
-        // Column already exists — skip
+      } catch (err) {
+        // Re-running on an already-migrated DB throws "duplicate column name",
+        // which is expected and safe to ignore. Any OTHER failure (locked DB,
+        // disk error, corruption) would leave the column missing while
+        // createRun still binds it positionally — surface it loudly here
+        // rather than silently proceeding into broken INSERTs later.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!/duplicate column name/i.test(msg)) {
+          throw new Error(
+            `[ComparisonRunDatabase] migration failed adding column "${col}": ${msg}`,
+          );
+        }
       }
     }
 
@@ -156,6 +173,7 @@ class ComparisonRunDatabase {
           contradictions_flagged INTEGER,
           ck_section_tokens INTEGER,
           confidence_trace TEXT,
+          routing_strategy TEXT,
           created_at TEXT NOT NULL,
           FOREIGN KEY (run_id) REFERENCES comparison_runs(id) ON DELETE CASCADE
         );
@@ -167,6 +185,7 @@ class ComparisonRunDatabase {
                  ck_status, ck_included_in_context,
                  rag_hallucination_rate, rag_grounded,
                  NULL, NULL, NULL, NULL,
+                 NULL,
                  NULL,
                  NULL,
                  created_at
@@ -200,8 +219,9 @@ class ComparisonRunDatabase {
           entity_claims_injected, contradictions_flagged,
           ck_section_tokens,
           confidence_trace,
+          routing_strategy,
           created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     const txn = this.db.transaction(() => {
@@ -236,6 +256,7 @@ class ComparisonRunDatabase {
           c.contradictionsFlagged ?? null,
           c.ckSectionTokens ?? null,
           c.confidenceTrace ? JSON.stringify(c.confidenceTrace) : null,
+          c.routingStrategy ?? null,
           now,
         );
       }
@@ -933,6 +954,7 @@ class ComparisonRunDatabase {
       rag_grounded: row.rag_grounded != null ? Boolean(row.rag_grounded) : null,
       ck_section_tokens: row.ck_section_tokens as number | null,
       confidence_trace: (row.confidence_trace as string | null) ?? null,
+      routing_strategy: (row.routing_strategy as string | null) ?? null,
       created_at: row.created_at as string,
     };
   }

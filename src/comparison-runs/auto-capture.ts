@@ -104,6 +104,8 @@ export function saveLiveComparison(params: {
   ckSectionTokens?: number | null;
   /** Phase 1: per-stage confidence trace from ClaimKit (any JSON-serializable shape). */
   confidenceTrace?: unknown;
+  /** ClaimKit-first routing strategy chosen for this query (issue #229). */
+  routingStrategy?: string | null;
   db?: ComparisonRunDatabase;
 }): { caseId: string } | null {
   try {
@@ -128,6 +130,7 @@ export function saveLiveComparison(params: {
           contradictionsFlagged: params.contradictionsFlagged,
           ckSectionTokens: params.ckSectionTokens,
           confidenceTrace: params.confidenceTrace,
+          routingStrategy: params.routingStrategy,
           rag: {
             contextTokens: params.ragTokens,
             sections: params.ragSections,

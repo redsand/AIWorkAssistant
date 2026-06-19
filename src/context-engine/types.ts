@@ -3,6 +3,38 @@ import type { KGEdgeType } from "../agent/knowledge-graph";
 
 export type ContextMode = "rag" | "engine";
 
+/**
+ * Chunking strategy for code/knowledge ingestion.
+ * - "structural": split on function/class/heading boundaries (token-aware).
+ * - "fixed": legacy character/token sliding window with overlap.
+ */
+export type ChunkStrategy = "structural" | "fixed";
+
+export interface ChunkOptions {
+  strategy: ChunkStrategy;
+  /** Upper bound on a chunk's size, measured in estimated tokens. */
+  maxTokens: number;
+  /** Below this size, structural chunks are merged with adjacent ones. */
+  minTokens: number;
+  /** Token overlap carried between adjacent fixed-strategy chunks. */
+  overlapTokens: number;
+  /** Optional source path, used to build the structural context header. */
+  filePath?: string;
+}
+
+/**
+ * A single chunk produced by the chunker. startLine/endLine are 1-based and
+ * refer to lines in the original (unmodified) source. contextHeader is a
+ * comment line describing the chunk's structural position (file → class →
+ * method, or heading breadcrumb) and is empty when no structure was detected.
+ */
+export interface ContentChunk {
+  content: string;
+  startLine: number;
+  endLine: number;
+  contextHeader: string;
+}
+
 export interface BudgetSlotDefinition {
   name: string;
   priority: number;
@@ -95,6 +127,59 @@ export type PreferredSource = "claimkit" | "rag" | "blended";
 export type RoutingTier = "ck_primary" | "rag_primary" | "blended";
 
 /**
+ * ClaimKit-first routing strategy (issue #229), decided by a pre-flight
+ * ClaimKit probe before RAG retrieval runs:
+ * - "rag_first": legacy order — ClaimKit-first routing disabled, probe
+ *   unavailable, or probe threw. RAG retrieval runs as before.
+ * - "claimkit_first_skip_rag": probe answered with high confidence; RAG
+ *   retrieval is skipped entirely and the probe answer is used directly.
+ * - "claimkit_first_parallel": probe was medium confidence; RAG runs in
+ *   parallel with a full ClaimKit query so neither adds serial latency.
+ * - "claimkit_first_fallback": probe was low confidence / not answerable;
+ *   fall back to full RAG + full ClaimKit.
+ */
+export type RoutingStrategy =
+  | "rag_first"
+  | "claimkit_first_skip_rag"
+  | "claimkit_first_parallel"
+  | "claimkit_first_fallback";
+
+/**
+ * Telemetry for the ClaimKit-first routing decision. Recorded on every
+ * packet so the comparison dashboard can show how often RAG was skipped and
+ * the latency delta vs. the old RAG-first path.
+ */
+export interface ClaimKitFirstMetrics {
+  strategy: RoutingStrategy;
+  /** Wall-clock latency of the pre-flight ClaimKit probe (0 when not run). */
+  probeLatencyMs: number;
+  /** True when RAG retrieval was skipped because the probe was high-confidence. */
+  ragSkipped: boolean;
+  /**
+   * Per-request latency delta vs. the old RAG-first path, computed only from
+   * this request's own timings (never another request's RAG latency).
+   * When RAG ran this is the probe overhead added on top of the RAG-first
+   * path. When RAG was skipped it is 0 — no avoided-RAG cost is measurable
+   * inline, so the dashboard derives skip savings in aggregate by comparing
+   * rag_time_ms across skip vs. non-skip cohorts (keyed on routing_strategy).
+   */
+  latencyDeltaMs: number;
+}
+
+/**
+ * Telemetry for the query-rewriting pass (issue #230). Recorded on every packet
+ * so the dashboard can show how often rewriting fired, what it extracted, and
+ * that it stayed within the < 100ms budget.
+ */
+export interface QueryRewriteMetrics {
+  enabled: boolean;
+  latencyMs: number;
+  variantCount: number;
+  entityRefCount: number;
+  abbreviationCount: number;
+}
+
+/**
  * A pointer the chat layer uses to back-fill RAG hallucinationRate / grounded
  * onto a live comparison_case row after the agent's response is available.
  *
@@ -137,6 +222,8 @@ export interface ContextPacket {
     compressionRatio: number;
     budgetUtilization: Record<string, number>;
     stageTimings: Record<string, number>;
+    claimkitFirstMetrics: ClaimKitFirstMetrics;
+    queryRewriteMetrics: QueryRewriteMetrics;
     claimkit: {
       enabled: boolean;
       available: boolean;

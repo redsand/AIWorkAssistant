@@ -431,6 +431,12 @@ export const DEFAULT_POLICIES: PolicyRule[] = [
     defaultResult: "approval_required",
     description: "Delete HAWK IR suppression/ignore label",
   },
+  {
+    pattern: "hawk_ir.create_case",
+    riskLevel: "medium",
+    defaultResult: "approval_required",
+    description: "Creating a HAWK IR case requires approval — it creates a new security incident record",
+  },
 
   // ===== ROADMAP: ALL ALLOWED =====
   {
