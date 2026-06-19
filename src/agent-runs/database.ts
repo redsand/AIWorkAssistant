@@ -86,9 +86,13 @@ class AgentRunDatabase {
     this.ensureColumn("agent_runs", "branch", "TEXT");
     this.ensureColumn("agent_runs", "agent_type", "TEXT");
     this.ensureColumn("agent_runs", "provider", "TEXT");
+    // pid: the OS process id that started this run. Lets us detect
+    // cross-process zombies at boot without any time threshold.
+    this.ensureColumn("agent_runs", "pid", "INTEGER");
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_agent_runs_last_activity_at ON agent_runs(last_activity_at);
       CREATE INDEX IF NOT EXISTS idx_agent_runs_issue ON agent_runs(issue_platform, issue_repo, issue_id);
+      CREATE INDEX IF NOT EXISTS idx_agent_runs_pid ON agent_runs(pid);
     `);
     this.db
       .prepare(
@@ -141,10 +145,11 @@ class AgentRunDatabase {
   startRun(params: AgentRunCreateParams): AgentRun {
     const id = uuidv4();
     const now = new Date().toISOString();
+    const pid = process.pid;
     this.db
       .prepare(
-        `INSERT INTO agent_runs (id, session_id, user_id, mode, provider, model, status, started_at, last_activity_at, issue_id, issue_platform, issue_repo, worktree_path, branch, agent_type)
-         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO agent_runs (id, session_id, user_id, mode, provider, model, status, started_at, last_activity_at, issue_id, issue_platform, issue_repo, worktree_path, branch, agent_type, pid)
+         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -161,6 +166,7 @@ class AgentRunDatabase {
         params.worktreePath ?? null,
         params.branch ?? null,
         params.agentType ?? null,
+        pid,
       );
 
     return {
@@ -186,6 +192,7 @@ class AgentRunDatabase {
       worktreePath: params.worktreePath ?? null,
       branch: params.branch ?? null,
       agentType: params.agentType ?? null,
+      pid,
     };
   }
 
@@ -247,6 +254,53 @@ class AgentRunDatabase {
    * aiRequestLimiter slot held by the stalled provider call leaks until the
    * upstream socket closes.
    */
+  /**
+   * Wipe zombie runs left behind by prior server processes.
+   *
+   * Any 'running' row whose pid differs from the current process (or whose pid
+   * is NULL because it predates the migration) is dead by definition — the
+   * prior process is gone and so is its in-memory ProcessingJob and
+   * aiRequestLimiter slot. This is purely a cross-process detection and is NOT
+   * gated on AICODER_STALE_TIMEOUT_MINUTES: there's no policy decision here.
+   *
+   * Call this at server startup BEFORE the periodic reaper begins, so the
+   * dashboard and slot accounting reflect reality immediately.
+   *
+   * Returns affected row count and the distinct session_ids — symmetric with
+   * reapStaleRunningRuns so the caller can fire onReapCallback, although on
+   * startup there are no in-memory jobs to abort (the prior process owned
+   * them) so the session-id list is mostly informational at boot.
+   */
+  markZombieRunsFromPriorProcess(): { count: number; sessionIds: string[] } {
+    const currentPid = process.pid;
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT session_id FROM agent_runs
+         WHERE status = 'running'
+           AND (pid IS NULL OR pid != ?)
+           AND session_id IS NOT NULL`,
+      )
+      .all(currentPid) as Array<{ session_id: string }>;
+    const sessionIds = rows
+      .map((r) => r.session_id)
+      .filter((s): s is string => !!s);
+
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE agent_runs
+         SET status = 'failed',
+             error_message = COALESCE(error_message, 'Zombie run from prior process (pid mismatch)'),
+             completed_at = ?,
+             cancelled_at = COALESCE(cancelled_at, ?),
+             last_activity_at = ?
+         WHERE status = 'running'
+           AND (pid IS NULL OR pid != ?)`,
+      )
+      .run(now, now, now, currentPid);
+    return { count: result.changes, sessionIds };
+  }
+
   reapStaleRunningRuns(staleAfterMs: number): { count: number; sessionIds: string[] } {
     const cutoffIso = new Date(Date.now() - staleAfterMs).toISOString();
     // Snapshot session_ids BEFORE the UPDATE so we know who to abort.
@@ -512,6 +566,7 @@ class AgentRunDatabase {
       worktreePath: (row.worktree_path as string | null) ?? null,
       branch: (row.branch as string | null) ?? null,
       agentType: (row.agent_type as string | null) ?? null,
+      pid: (row.pid as number | null) ?? null,
     };
   }
 

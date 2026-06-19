@@ -436,6 +436,86 @@ describe("AgentRunDatabase", () => {
     });
   });
 
+  describe("markZombieRunsFromPriorProcess", () => {
+    it("kills 'running' rows whose pid differs from current process", () => {
+      const me = process.pid;
+      const r1 = db.startRun({ userId: "u", mode: "chat" });
+      // Manually rewrite the row to simulate a prior-process zombie.
+      const raw = new Database(path.join(tmpDir, "test.db"));
+      raw.prepare("UPDATE agent_runs SET pid = ? WHERE id = ?").run(me + 9999, r1.id);
+      raw.close();
+
+      const before = db.getRun(r1.id);
+      expect(before?.status).toBe("running");
+
+      const result = db.markZombieRunsFromPriorProcess();
+      expect(result.count).toBe(1);
+
+      const after = db.getRun(r1.id);
+      expect(after?.status).toBe("failed");
+      expect(after?.errorMessage).toContain("Zombie");
+      expect(after?.completedAt).toBeTruthy();
+    });
+
+    it("kills 'running' rows where pid is NULL (pre-migration legacy rows)", () => {
+      const r1 = db.startRun({ userId: "u", mode: "chat" });
+      const raw = new Database(path.join(tmpDir, "test.db"));
+      raw.prepare("UPDATE agent_runs SET pid = NULL WHERE id = ?").run(r1.id);
+      raw.close();
+
+      const result = db.markZombieRunsFromPriorProcess();
+      expect(result.count).toBe(1);
+      expect(db.getRun(r1.id)?.status).toBe("failed");
+    });
+
+    it("does NOT kill rows whose pid matches the current process", () => {
+      const live = db.startRun({ userId: "u", mode: "chat" });
+      // Sanity: startRun should have populated pid with process.pid.
+      expect(live.pid).toBe(process.pid);
+
+      const result = db.markZombieRunsFromPriorProcess();
+      expect(result.count).toBe(0);
+      expect(db.getRun(live.id)?.status).toBe("running");
+    });
+
+    it("ignores AICODER_STALE_TIMEOUT_MINUTES — boot-time wipe is unconditional", () => {
+      const oldEnv = process.env.AICODER_STALE_TIMEOUT_MINUTES;
+      process.env.AICODER_STALE_TIMEOUT_MINUTES = "0";
+
+      const r1 = db.startRun({ userId: "u", mode: "chat" });
+      const raw = new Database(path.join(tmpDir, "test.db"));
+      raw.prepare("UPDATE agent_runs SET pid = NULL WHERE id = ?").run(r1.id);
+      raw.close();
+
+      // markStaleRunsAsFailed would respect the env=0 disable and skip this row;
+      // markZombieRunsFromPriorProcess must not.
+      expect(db.markStaleRunsAsFailed()).toBe(0);
+      const result = db.markZombieRunsFromPriorProcess();
+      expect(result.count).toBe(1);
+
+      process.env.AICODER_STALE_TIMEOUT_MINUTES = oldEnv;
+    });
+
+    it("collects distinct session_ids for the onReap callback", () => {
+      const r1 = db.startRun({ userId: "u", mode: "chat", sessionId: "s-a" });
+      const r2 = db.startRun({ userId: "u", mode: "chat", sessionId: "s-a" });
+      const r3 = db.startRun({ userId: "u", mode: "chat", sessionId: "s-b" });
+      const r4 = db.startRun({ userId: "u", mode: "chat", sessionId: null });
+      const raw = new Database(path.join(tmpDir, "test.db"));
+      raw.prepare("UPDATE agent_runs SET pid = NULL").run();
+      raw.close();
+
+      const result = db.markZombieRunsFromPriorProcess();
+      expect(result.count).toBe(4);
+      const sortedSessions = [...result.sessionIds].sort();
+      expect(sortedSessions).toEqual(["s-a", "s-b"]);
+
+      for (const id of [r1.id, r2.id, r3.id, r4.id]) {
+        expect(db.getRun(id)?.status).toBe("failed");
+      }
+    });
+  });
+
   describe("schema migration", () => {
     it("should add reliability columns to an existing database", () => {
       db.close();

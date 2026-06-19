@@ -462,7 +462,27 @@ async function start() {
       })();
     }
 
-    // Mark stale agent runs as failed on startup (crashed/restarted mid-run)
+    // Unconditional cross-process zombie wipe. Any 'running' row from a prior
+    // PID is dead by definition (the previous process — and its in-memory
+    // ProcessingJob and aiRequestLimiter slot — is gone). This runs ahead of
+    // the threshold-gated markStaleRunsAsFailed because there's no policy
+    // decision to make at boot: those rows cannot be live. Without this,
+    // setting AICODER_STALE_TIMEOUT_MINUTES=0 to suppress in-process reaping
+    // also suppressed the boot wipe, leaving zombies in 'running' forever.
+    const zombieResult = agentRunDatabase.markZombieRunsFromPriorProcess();
+    if (zombieResult.count > 0) {
+      console.log(
+        `🧹 Wiped ${zombieResult.count} zombie agent run(s) from prior process` +
+          (zombieResult.sessionIds.length > 0
+            ? ` (sessions: ${zombieResult.sessionIds.slice(0, 5).join(", ")}${zombieResult.sessionIds.length > 5 ? `, +${zombieResult.sessionIds.length - 5} more` : ""})`
+            : ""),
+      );
+    }
+
+    // Mark stale agent runs as failed on startup (in-process threshold sweep).
+    // This catches runs that hung within the *current* PID, gated on
+    // AICODER_STALE_TIMEOUT_MINUTES so long-running supervised work isn't
+    // killed prematurely. Cross-process zombies are already handled above.
     const staleCount = agentRunDatabase.markStaleRunsAsFailed();
     if (staleCount > 0) {
       console.log(`🧹 Marked ${staleCount} stale agent run(s) as failed`);

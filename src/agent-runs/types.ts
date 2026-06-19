@@ -21,6 +21,14 @@ export interface AgentRun {
   worktreePath: string | null;
   branch: string | null;
   agentType: string | null;
+  /**
+   * OS process id that created this run. Used to detect zombies on startup:
+   * any 'running' row whose pid != current process.pid is, by definition, dead
+   * — the prior process is gone and so is its in-memory ProcessingJob and
+   * aiRequestLimiter slot. Older rows (pre-pid migration) are pid=null and
+   * also treated as zombies on the next startup.
+   */
+  pid: number | null;
 }
 
 export interface AgentRunStep {
