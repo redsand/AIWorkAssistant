@@ -291,8 +291,29 @@ class AgentRunDatabase {
   }
 
   markStaleRunsAsFailed(olderThanMinutes?: number): number {
-    const envValue = Number(env.AICODER_STALE_TIMEOUT_MINUTES);
-    const threshold = olderThanMinutes ?? (Number.isNaN(envValue) ? 120 : envValue);
+    // Read AICODER_STALE_TIMEOUT_MINUTES from LIVE process.env only — the
+    // zod-frozen `env` object is captured at module-import time and won't
+    // reflect runtime changes. dotenv populates process.env at startup, so
+    // production behavior is unchanged; tests can flip the value at runtime.
+    const rawEnv = process.env.AICODER_STALE_TIMEOUT_MINUTES;
+    const envValue = rawEnv !== undefined && rawEnv !== "" ? Number(rawEnv) : NaN;
+    // Three layers of resolution:
+    //   1. Explicit caller-supplied threshold wins.
+    //   2. Env=0 means DISABLED (matches reaper.ts semantics). Without this
+    //      check, a 0-threshold reaps every running row immediately on every
+    //      sweep — observed killing chat jobs after ~21s when a user set
+    //      AICODER_STALE_TIMEOUT_MINUTES=0 expecting it to disable reaping.
+    //   3. NaN/missing falls back to 120 minutes.
+    let threshold: number;
+    if (olderThanMinutes !== undefined) {
+      threshold = olderThanMinutes;
+    } else if (Number.isNaN(envValue)) {
+      threshold = 120;
+    } else if (envValue <= 0) {
+      return 0; // disabled — no rows reaped
+    } else {
+      threshold = envValue;
+    }
     const cutoff = new Date(
       Date.now() - threshold * 60 * 1000,
     ).toISOString();

@@ -390,10 +390,13 @@ const envSchema = z.object({
     .transform((s) => s === "true")
     .default("true"),
 
-  // Dedicated Ollama provider for ClaimKit (isolates LLM calls from main chat)
+  // Dedicated Ollama provider for ClaimKit (isolates LLM calls from main chat).
+  // CLAIMKIT_OLLAMA_MODEL defaults to "" so the adapter falls back to OLLAMA_MODEL
+  // (the model the user has actually selected). The previous "llama3" default
+  // produced "model not found" errors when the user runs anything else.
   CLAIMKIT_OLLAMA_API_URL: z.string().url().default("http://localhost:11434"),
   CLAIMKIT_OLLAMA_API_KEY: z.string().default(""),
-  CLAIMKIT_OLLAMA_MODEL: z.string().default("llama3"),
+  CLAIMKIT_OLLAMA_MODEL: z.string().default(""),
 
   // Nightly calendar planning
   NIGHTLY_PLAN_ENABLED: z
@@ -526,6 +529,21 @@ const envSchema = z.object({
     .default("false"),
   AICODER_MODEL: z.string().default(""),
   FIN_SIGNAL: z.string().default("FIN"),
+
+  // Issue autorepair — when convergence detection flags a stuck coder/reviewer
+  // loop, automatically run a gap-analysis + ticket-rewrite pipeline instead of
+  // immediately escalating to a human. See src/autonomous-loop/ticket-autorepair/.
+  AUTOREPAIR_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("true"),
+  // Max autorepair attempts per ticket. Once exhausted, escalate to human.
+  AUTOREPAIR_MAX_PER_ITEM: z.coerce.number().default(2),
+  // Model used for the gap-analysis and ticket-rewrite LLM calls. Empty
+  // (default) inherits AICODER_MODEL / current provider.
+  AUTOREPAIR_MODEL: z.string().default(""),
+  // Per-call timeout for autorepair LLM steps.
+  AUTOREPAIR_TIMEOUT_MS: z.coerce.number().default(300_000),
 
   // Reviewer agent (src/reviewer.ts)
   REVIEW_REPOS: z.string().default(""),

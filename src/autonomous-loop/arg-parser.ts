@@ -61,6 +61,10 @@ Options:
   --dry-run-push        Show what would be pushed without actually pushing (for debugging)
   --force-done          Override review gate — allow Done transition with unresolved findings (audited)
   --cleanup-merged      One-shot sweep: delete every local ai/* branch already merged into base and exit
+  --autorepair-status <key>  Print autorepair gate state for an issue and exit
+  --autorepair-release <key> Manually release a PAUSED/ESCALATED autorepair gate and exit
+  --autorepair-clear <key>   Wipe the autorepair gate file for an issue and exit
+  --no-autorepair       Disable autorepair for this run (always escalate to human on convergence)
   --help                Show this help
 
 Remote config (fetches everything else from AIWorkAssistant):
@@ -181,6 +185,13 @@ export const MODEL = ARGV.model || (AGENT === "codex" && !API_PROVIDER && !USE_O
 export const OLLAMA_URL = process.env.OLLAMA_API_URL || "http://localhost:11434";
 export const TARGET_ISSUE_KEY = ARGV.issue || null;
 export const PUBLISH_BRANCH = ARGV.publish || null;
+
+// Autorepair CLI commands. When set, aicoder runs the command and exits
+// instead of starting a work cycle. See src/autonomous-loop/ticket-autorepair/.
+export const AUTOREPAIR_STATUS_KEY = ARGV["autorepair-status"] || null;
+export const AUTOREPAIR_RELEASE_KEY = ARGV["autorepair-release"] || null;
+export const AUTOREPAIR_CLEAR_KEY = ARGV["autorepair-clear"] || null;
+export const AUTOREPAIR_DISABLED = "no-autorepair" in ARGV;
 export const BASE_BRANCH_CANDIDATES = [
   ARGV.base || process.env.AICODER_BASE_BRANCH,
   "main",

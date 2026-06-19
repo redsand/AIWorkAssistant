@@ -382,16 +382,42 @@ describe("AgentRunDatabase", () => {
       expect(count).toBe(2);
     });
 
-    it("should use default 120-minute threshold", () => {
-      const run = db.startRun({ userId: "user1", mode: "chat" });
+    it("should use default 120-minute threshold when env unset", () => {
+      // markStaleRunsAsFailed (no arg) reads AICODER_STALE_TIMEOUT_MINUTES.
+      // The user's process may have it set to 0 (= disabled) — temporarily
+      // clear it for this test so the default 120-minute behavior is observed.
+      const prior = process.env.AICODER_STALE_TIMEOUT_MINUTES;
+      delete process.env.AICODER_STALE_TIMEOUT_MINUTES;
+      try {
+        const run = db.startRun({ userId: "user1", mode: "chat" });
+        const dbAny = db as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } };
+        const oldDate = new Date(Date.now() - 121 * 60 * 1000).toISOString();
+        dbAny.db.prepare("UPDATE agent_runs SET started_at = ?, last_activity_at = ? WHERE id = ?").run(oldDate, oldDate, run.id);
+        const count = db.markStaleRunsAsFailed();
+        expect(count).toBe(1);
+      } finally {
+        if (prior === undefined) delete process.env.AICODER_STALE_TIMEOUT_MINUTES;
+        else process.env.AICODER_STALE_TIMEOUT_MINUTES = prior;
+      }
+    });
 
-      // 121 minutes old — just over default threshold
-      const dbAny = db as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } };
-      const oldDate = new Date(Date.now() - 121 * 60 * 1000).toISOString();
-      dbAny.db.prepare("UPDATE agent_runs SET started_at = ?, last_activity_at = ? WHERE id = ?").run(oldDate, oldDate, run.id);
-
-      const count = db.markStaleRunsAsFailed();
-      expect(count).toBe(1);
+    it("should treat AICODER_STALE_TIMEOUT_MINUTES=0 as DISABLED (return 0)", () => {
+      // Added 2026-06-18: previously env=0 was interpreted as a 0-minute
+      // threshold and reaped every running row instantly. Now it disables
+      // reaping entirely, matching the reaper.ts semantics.
+      const prior = process.env.AICODER_STALE_TIMEOUT_MINUTES;
+      process.env.AICODER_STALE_TIMEOUT_MINUTES = "0";
+      try {
+        const run = db.startRun({ userId: "user1", mode: "chat" });
+        const dbAny = db as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } };
+        const oldDate = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+        dbAny.db.prepare("UPDATE agent_runs SET started_at = ?, last_activity_at = ? WHERE id = ?").run(oldDate, oldDate, run.id);
+        const count = db.markStaleRunsAsFailed();
+        expect(count).toBe(0);
+      } finally {
+        if (prior === undefined) delete process.env.AICODER_STALE_TIMEOUT_MINUTES;
+        else process.env.AICODER_STALE_TIMEOUT_MINUTES = prior;
+      }
     });
 
     it("should not mark runs within threshold with custom value", () => {

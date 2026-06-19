@@ -16,6 +16,7 @@ import { recordGateFindings } from "./autonomous-loop/review-gate-state";
 import { formatConvergenceReport, initConvergenceState, recordRoundFindings, checkConvergence, DEFAULT_CONVERGENCE_CONFIG } from "./autonomous-loop/convergence";
 import { loadConvergenceState } from "./autonomous-loop/convergence-state";
 import { closeSourceIssue } from "./autonomous-loop/close-source-issue";
+import { isGatePaused as isAutorepairPaused, isGateEscalated as isAutorepairEscalated } from "./autonomous-loop/autorepair-gate";
 import { conversationManager } from "./memory/conversation-manager";
 
 // ── ANSI color helpers ──────────────────────────────────────────────────────
@@ -834,6 +835,22 @@ async function pollMergeRequests(
 
     for (const mr of mrs) {
       if (!mr.author.includes("ai") && !mr.title.startsWith("[AI]")) continue;
+
+      // Autorepair gate: when the gate for this MR's linked issue is PAUSED
+      // (autorepair in flight) or ESCALATED (human required), the reviewer
+      // stands down on this MR. Without this both agents keep grinding on a
+      // ticket we already know is broken.
+      const linkedIssueKey = vcs.extractLinkedIssueKey(mr.body) || vcs.extractIssueKeyFromBranch(mr.sourceBranch);
+      if (linkedIssueKey) {
+        if (isAutorepairPaused(linkedIssueKey)) {
+          log.skip(`MR !${mr.number} (issue ${linkedIssueKey}) — autorepair gate PAUSED; reviewer standing down`);
+          continue;
+        }
+        if (isAutorepairEscalated(linkedIssueKey)) {
+          log.skip(`MR !${mr.number} (issue ${linkedIssueKey}) — autorepair gate ESCALATED; human required, skipping`);
+          continue;
+        }
+      }
 
       const mrKey = `${target.source}:${target.name}/${mr.number}`;
       if (reviewedMRs.has(mrKey)) {

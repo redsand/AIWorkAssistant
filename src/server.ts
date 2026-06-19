@@ -44,6 +44,7 @@ import { musicianRoutes } from "./routes/musician";
 import { recipeRoutes } from "./routes/recipes";
 import { repoDashboardRoutes } from "./routes/repo-dashboard";
 import { kanbanRoutes } from "./routes/kanban";
+import { reportRoutes } from "./routes/reports";
 import { errorsRoutes } from "./routes/errors";
 import { claimKitAdapter } from "./context-engine/adapters/claimkit-adapter";
 import { comparisonRoutes } from "./comparison-runs/api";
@@ -147,6 +148,7 @@ export async function buildServer() {
   await server.register(evalCalibrationRoutes, { prefix: "/api/eval-calibration" });
   await server.register(repoDashboardRoutes, { prefix: "/api/repo-dashboard" });
   await server.register(kanbanRoutes, { prefix: "/api/kanban" });
+  await server.register(reportRoutes, { prefix: "/api/reports" });
   await server.register(errorsRoutes, { prefix: "/api" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);

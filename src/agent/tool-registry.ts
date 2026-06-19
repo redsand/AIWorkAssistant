@@ -4054,6 +4054,50 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
     riskLevel: "low",
   },
 
+  // ==================== Reports ====================
+  {
+    name: "reports.generate",
+    description:
+      "Generate an editable, downloadable report from a chat session. Produces Word (.docx — editable), Markdown (.md — editable), HTML (.html — view in browser), and optionally PDF (requires puppeteer). Use the 'incident-response' template for security/IR investigations (auto-extracts timeline, IOCs, evidence refs, gaps). Use 'generic' for any other session. The report is saved to disk and returns a downloadUrl per format.",
+    params: {
+      sessionId: {
+        type: "string",
+        description: "The chat session ID to build the report from.",
+        required: true,
+      },
+      template: {
+        type: "string",
+        description: "Template id: 'incident-response' (default) or 'generic'.",
+        required: false,
+      },
+      formats: {
+        type: "array",
+        description: "Formats to render. Any subset of: markdown, docx, pdf, html. Default: [markdown, docx].",
+        required: false,
+      },
+      title: { type: "string", description: "Report title override.", required: false },
+      subtitle: { type: "string", description: "Report subtitle (often customer name).", required: false },
+      customer: { type: "string", description: "Customer/org name displayed on cover.", required: false },
+      author: { type: "string", description: "Author label on cover.", required: false },
+      localTimezone: { type: "string", description: "Display timezone for local-time columns (e.g. 'MDT (UTC-6)').", required: false },
+    },
+    actionType: "reports.generate",
+    riskLevel: "low",
+  },
+  {
+    name: "reports.list",
+    description:
+      "List previously generated reports. Filter by sessionId or template. Returns id, title, template, formats, total bytes, generated/created timestamps.",
+    params: {
+      sessionId: { type: "string", description: "Filter by chat session.", required: false },
+      template: { type: "string", description: "Filter by template id.", required: false },
+      limit: { type: "number", description: "Max results. Default 100, max 500.", required: false },
+      offset: { type: "number", description: "Pagination offset.", required: false },
+    },
+    actionType: "reports.list",
+    riskLevel: "low",
+  },
+
   // ==================== System Tools ====================
   {
     name: "system.get_time",

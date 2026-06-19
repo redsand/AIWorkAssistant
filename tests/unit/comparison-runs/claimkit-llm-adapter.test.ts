@@ -114,7 +114,9 @@ describe("AIProviderLLMAdapter", () => {
       );
     });
 
-    it("throws if response is not valid JSON", async () => {
+    // Retry budget (CLAIMKIT_LLM_TIMEOUT_MS at 300s + 15s sleeps × 5 attempts)
+    // pushes this past vitest's 5s default.
+    it("throws if response is not valid JSON", { timeout: 120_000 }, async () => {
       mockChat.mockResolvedValue({
         content: "not json at all",
         model: "test-model",

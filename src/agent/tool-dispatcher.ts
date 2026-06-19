@@ -3223,6 +3223,80 @@ async function handleListApprovals(
   }
 }
 
+async function handleReportsGenerate(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    const sessionId = String(params.sessionId ?? params.session_id ?? "");
+    if (!sessionId) {
+      return { success: false, error: "sessionId is required" };
+    }
+    const template = String(params.template ?? "incident-response") as "incident-response" | "generic";
+    const formatsRaw = params.formats ?? ["markdown", "docx"];
+    const formats = Array.isArray(formatsRaw)
+      ? (formatsRaw as string[]).map((s) => String(s))
+      : [String(formatsRaw)];
+    const allowed = new Set(["markdown", "docx", "pdf", "html"]);
+    const validFormats = formats.filter((f) => allowed.has(f)) as Array<"markdown" | "docx" | "pdf" | "html">;
+    if (validFormats.length === 0) {
+      return { success: false, error: `No valid formats requested. Allowed: ${[...allowed].join(", ")}` };
+    }
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { buildAndPersist } = require("../reports/report-builder");
+    const result = await buildAndPersist({
+      sessionId,
+      template,
+      formats: validFormats,
+      title: params.title ? String(params.title) : undefined,
+      subtitle: params.subtitle ? String(params.subtitle) : undefined,
+      customer: params.customer ? String(params.customer) : undefined,
+      author: params.author ? String(params.author) : undefined,
+      localTimezone: params.localTimezone ? String(params.localTimezone) : undefined,
+    });
+    return {
+      success: true,
+      data: {
+        reportId: result.reportId,
+        title: result.metadata.title,
+        template: result.metadata.template,
+        files: result.files.map((f: { format: string; bytes: number; path: string }) => ({
+          format: f.format,
+          bytes: f.bytes,
+          path: f.path,
+          downloadUrl: `/api/reports/${result.reportId}/download/${f.format}`,
+        })),
+        warnings: result.warnings,
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+async function handleReportsList(
+  params: Record<string, unknown>,
+): Promise<ToolCallResult> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { listReports } = require("../reports/storage");
+    const rows = listReports({
+      sessionId: params.sessionId ? String(params.sessionId) : undefined,
+      template: params.template ? String(params.template) : undefined,
+      limit: params.limit ? Number(params.limit) : undefined,
+      offset: params.offset ? Number(params.offset) : undefined,
+    });
+    return { success: true, data: { reports: rows } };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
 async function handleSystemGetTime(
   _params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -10453,6 +10527,10 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
 
   "tools.discover": handleDiscoverTools,
   "tools.fetch_cached": handleToolsFetchCached,
+
+  // Reports — generate editable / deliverable documents from a chat session
+  "reports.generate": handleReportsGenerate,
+  "reports.list": handleReportsList,
 
   "codex.run": handleCodexRun,
   "todo.create_list": handleTodoCreateList,

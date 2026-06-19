@@ -118,9 +118,12 @@ describe("ClaimKit environment variables", () => {
       expect(env.CLAIMKIT_OLLAMA_API_KEY).toBe("");
     });
 
-    it("should default CLAIMKIT_OLLAMA_MODEL to llama3", () => {
+    it("should default CLAIMKIT_OLLAMA_MODEL to empty (inherits OLLAMA_MODEL)", () => {
+      // Changed 2026-06-18: an empty default lets the adapter fall back to the
+      // user's main OLLAMA_MODEL instead of hard-failing with 'llama3 not found'
+      // for users running anything else.
       const env = loadEnv();
-      expect(env.CLAIMKIT_OLLAMA_MODEL).toBe("llama3");
+      expect(env.CLAIMKIT_OLLAMA_MODEL).toBe("");
     });
 
     it("should default CLAIMKIT_REQUIRE_INIT to true (strict mode)", () => {

@@ -156,23 +156,25 @@ export class ClaimKitAdapter {
       if (env.CLAIMKIT_LLM_PROVIDER === "memory") {
         llm = new MemoryLLMAdapter();
       } else if (env.CLAIMKIT_LLM_PROVIDER === "ollama") {
+        // Fall back to the user's main OLLAMA_MODEL when no ClaimKit-specific
+        // override is set, so users don't have to set two env vars to keep
+        // their preferred model. Previously this defaulted to "llama3" and
+        // hard-failed for any user not running llama3.
+        const ckModel = env.CLAIMKIT_OLLAMA_MODEL || env.OLLAMA_MODEL;
         const dedicatedProvider = new OllamaProvider({
           apiKey: env.CLAIMKIT_OLLAMA_API_KEY,
           baseUrl: env.CLAIMKIT_OLLAMA_API_URL,
-          model: env.CLAIMKIT_OLLAMA_MODEL,
+          model: ckModel,
           temperature: env.OLLAMA_TEMPERATURE,
           topP: 0.9,
           maxRetries: 2,
           timeout: 300000,
           maxContextTokens: getEffectiveContextLimit(
-            env.CLAIMKIT_OLLAMA_MODEL,
+            ckModel,
             env.OLLAMA_MAX_CONTEXT_TOKENS,
           ),
         });
-        llm = new AIProviderLLMAdapter(
-          dedicatedProvider,
-          env.CLAIMKIT_OLLAMA_MODEL,
-        );
+        llm = new AIProviderLLMAdapter(dedicatedProvider, ckModel);
       } else {
         llm = new AIProviderLLMAdapter(
           undefined,

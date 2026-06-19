@@ -29,6 +29,7 @@ import {
   SKIP_POLL, MAX_REWORK, REVIEW_POLL_MS, WAIT_FOR_DEPS, DRY_RUN_PUSH, FORCE_DONE,
   CLEANUP_MERGED,
   POLL_MS, MAX_CYCLES, UNIT_TEST_TIMEOUT, INTEGRATION_TEST_TIMEOUT, API_PROVIDER,
+  AUTOREPAIR_STATUS_KEY, AUTOREPAIR_RELEASE_KEY, AUTOREPAIR_CLEAR_KEY, AUTOREPAIR_DISABLED,
 } from "./autonomous-loop/arg-parser";
 import { getProjectConfig as _getProjectConfig } from "./autonomous-loop/project-detect";
 import { parseDependencies } from "./autonomous-loop/dependency-parser";
@@ -96,6 +97,15 @@ import { loadConvergenceState, saveConvergenceState, serializeConvergence } from
 import { loadReviewGateState, saveReviewGateState, clearReviewGateState, markForceDone } from "./autonomous-loop/review-gate-state";
 import { ensureAgentsMdRules } from "./autonomous-loop/agents-md";
 import { hashUuidToNumber, parseWorkItemTagsJson, extractCodingPromptSection } from "./autonomous-loop/work-item-utils";
+import {
+  runAutorepair,
+  getAutorepairStatus,
+  forceReleaseAutorepair,
+  clearAutorepairGate,
+  isGatePaused as _isAutorepairPaused,
+  isGateEscalated as _isAutorepairEscalated,
+} from "./autonomous-loop/ticket-autorepair";
+import type { TicketIdentifier } from "./autonomous-loop/ticket-autorepair/source-updater";
 
 // Re-export so callers and the orchestrator can import from either module.
 export {
@@ -3795,11 +3805,89 @@ async function runReviewLoop(
         runLogger.logError(`Convergence detected (${convergence.reason}): ${convergence.message}`);
         const report = formatConvergenceReport(convergence, convergenceState, convergenceConfig);
         runLogger.logWork(report);
+
+        // ── Autorepair hook ──────────────────────────────────────────
+        // Before escalating to a human, try one autorepair pass: a separate
+        // LLM diagnoses why the loop is stuck and rewrites the ticket.
+        // Quota and AUTOREPAIR_ENABLED env are handled inside runAutorepair.
+        // The CLI --no-autorepair flag is an additional opt-out for this run.
+        let autorepairOutcome: string | undefined;
+        try {
+          if (AUTOREPAIR_DISABLED) {
+            runLogger.logWork("[autorepair] skipped — --no-autorepair flag set");
+          } else {
+          const ticketIdentifier: TicketIdentifier | null = (() => {
+            if (platform === "gitlab") {
+              const projectId = getGitLabProjectFromRemote(WORKSPACE) || item.repo || cfg.repo || process.env.GITLAB_DEFAULT_PROJECT || "";
+              if (!projectId || !item.number) return null;
+              return { source: "gitlab", id: item.number, projectId };
+            }
+            if (platform === "github") {
+              const issueMatch = (item.url || "").match(/#(\d+)/);
+              const issueNumber = issueMatch ? parseInt(issueMatch[1], 10) : item.number;
+              if (!issueNumber || !owner || !repo) return null;
+              return { source: "github", id: issueNumber, owner, repo };
+            }
+            if (cfg.source === "jira" || /^[A-Z]+-\d+$/.test(item.id)) {
+              return { source: "jira", id: item.id };
+            }
+            return null;
+          })();
+          if (ticketIdentifier) {
+            const autorepairResult = await runAutorepair({
+              issueKey: item.id,
+              ticket: ticketIdentifier,
+              convergence: {
+                reason: convergence.reason,
+                summary: report,
+                roundNumber: convergenceState.roundNumber,
+              },
+              reviewerFindings: semanticFindings.map((f) => ({
+                roundNumber: convergenceState.roundNumber,
+                file: f.file,
+                severity: f.severity,
+                category: f.category,
+                message: f.message,
+              })),
+              coderRounds: convergenceState.roundSummaries.map((s) => ({
+                roundNumber: s.roundNumber,
+                changedFiles: s.changedFiles ?? [],
+                diffStat: s.diffStat,
+                empty: !s.prHadChanges,
+              })),
+              promptStrategiesTried: [...promptStrategiesTried],
+            });
+            autorepairOutcome = autorepairResult.outcome;
+            runLogger.logWork(`[autorepair] outcome=${autorepairResult.outcome} attempt=${autorepairResult.attemptNumber ?? "-"} msg=${autorepairResult.message}`);
+            if (autorepairResult.outcome === "repaired") {
+              // Reset convergence + rework counters so the loop sees the
+              // rewritten ticket as a fresh start. The ticket has been
+              // updated in the source system; the agents will pick it up
+              // on the next poll. Saving state and returning here ends
+              // this run gracefully; the next iteration of the outer
+              // aicoder cycle re-fetches the (now repaired) ticket.
+              clearRunState(item.id);
+              return;
+            }
+          } else {
+            runLogger.logWork("[autorepair] skipped — could not build ticket identifier for this source");
+          }
+          } // close: else (AUTOREPAIR_DISABLED ? skip : run)
+        } catch (err) {
+          runLogger.logError(`[autorepair] threw unexpectedly: ${err instanceof Error ? err.message : err}`);
+        }
+        // ── End autorepair hook ──────────────────────────────────────
+
         lastPipelineExitCode = convergence.reason === "empty_prs" ? EXIT_NO_CHANGES : EXIT_MAX_REWORK;
         // Post convergence report to Jira if configured
         if (jiraClient.isConfigured()) {
           try {
-            await jiraClient.addComment(item.id, report);
+            await jiraClient.addComment(
+              item.id,
+              autorepairOutcome
+                ? `${report}\n\n_Autorepair attempted with outcome: \`${autorepairOutcome}\`._`
+                : report,
+            );
           } catch {
             // Non-fatal: convergence report is best-effort
           }
@@ -4147,6 +4235,24 @@ if (CLEANUP_MERGED) {
   for (const s of sweep.skipped) {
     runLogger.logConfig(`  skipped ${s.branch}: ${s.reason}`);
   }
+  process.exit(EXIT_SUCCESS);
+}
+
+// --autorepair-status / --autorepair-release / --autorepair-clear:
+// inspect or manipulate the autorepair gate for an issue and exit.
+if (AUTOREPAIR_STATUS_KEY) {
+  const status = getAutorepairStatus(AUTOREPAIR_STATUS_KEY);
+  console.log(JSON.stringify(status, null, 2));
+  process.exit(EXIT_SUCCESS);
+}
+if (AUTOREPAIR_RELEASE_KEY) {
+  const rec = forceReleaseAutorepair(AUTOREPAIR_RELEASE_KEY, "manual --autorepair-release");
+  console.log(`Released autorepair gate for ${AUTOREPAIR_RELEASE_KEY}. New state: ${rec.state}`);
+  process.exit(EXIT_SUCCESS);
+}
+if (AUTOREPAIR_CLEAR_KEY) {
+  clearAutorepairGate(AUTOREPAIR_CLEAR_KEY);
+  console.log(`Cleared autorepair gate file for ${AUTOREPAIR_CLEAR_KEY}.`);
   process.exit(EXIT_SUCCESS);
 }
 
