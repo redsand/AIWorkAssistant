@@ -1579,7 +1579,7 @@ async function runChatJob(
         emitJobEvent(sessionId, "tool_start", { id: tc.id, name: canonicalName, params: tc.params });
         try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_call", toolName: canonicalName, sanitizedParams: sanitizeValue(tc.params), stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
         const toolStart = Date.now();
-        const dispatchParams = { ...tc.params, _mode: mode, _loadedTools: getLoadedToolNames() };
+        const dispatchParams = { ...tc.params, _mode: mode, _loadedTools: getLoadedToolNames(), _chatSessionId: sessionId };
         const { result, contextValue, cached } = await dispatchToolCallCached(
           sessionId, tc.name, dispatchParams, userId, false, { messages, mode }, tc.id,
         );
@@ -1629,7 +1629,7 @@ async function runChatJob(
           assertJobActive(job);
           try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_call", toolName: tc.name, sanitizedParams: sanitizeValue(tc.params), stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
           const spawnStart = Date.now();
-          const dispatchParams = { ...tc.params, _mode: mode, _loadedTools: getLoadedToolNames() };
+          const dispatchParams = { ...tc.params, _mode: mode, _loadedTools: getLoadedToolNames(), _chatSessionId: sessionId };
           const result = await dispatchToolCall(tc.name, dispatchParams, userId, false, { messages, mode });
           assertJobActive(job);
           const spawnDuration = Date.now() - spawnStart;
@@ -2029,7 +2029,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           const canonicalName = resolveToolName(tc.name);
           try { if (runId) agentRunDatabase.addStep({ runId, stepType: "tool_call", toolName: canonicalName, sanitizedParams: sanitizeValue(tc.params), stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
           const toolStart = Date.now();
-          const dispatchParams = { ...tc.params, _mode: body.mode, _loadedTools: getLoadedToolNames() };
+          const dispatchParams = { ...tc.params, _mode: body.mode, _loadedTools: getLoadedToolNames(), _chatSessionId: sessionId };
           const { result, contextValue, cached } = await dispatchToolCallCached(
             sessionId,
             tc.name,

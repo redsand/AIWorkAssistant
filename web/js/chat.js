@@ -38,6 +38,10 @@ import {
 import { loadRoadmaps } from "./sidebar.js";
 import { loadConversations } from "./conversations.js";
 import { showLoginOverlay } from "./ui.js";
+import {
+  handleReportSlashCommand,
+  installReportDownloadInterceptor,
+} from "./reports-client.js";
 
 /**
  * Idea 3 + I: render a banner above the messages list when ClaimKit
@@ -405,6 +409,8 @@ function addCompletionMarker() {
   }
 }
 
+let reportInterceptorInstalled = false;
+
 export async function initializeChat() {
   try {
     await initializeProviderControls();
@@ -418,6 +424,10 @@ export async function initializeChat() {
 
   await loadChatHistory();
   ensureScrollListener();
+  if (!reportInterceptorInstalled) {
+    installReportDownloadInterceptor();
+    reportInterceptorInstalled = true;
+  }
 
   const { subscribeLive } = await import("./live.js");
   if (currentSessionId) {
@@ -665,6 +675,10 @@ export async function sendMessage() {
   setDraftBeforeHistory("");
   input.value = "";
   autoResizeTextarea(input);
+
+  // /report — generate a report for the current session without going through
+  // the model. The handler returns true if it consumed the command.
+  if (await handleReportSlashCommand(message)) return;
 
   await executeSend(message, { resend: false });
 }

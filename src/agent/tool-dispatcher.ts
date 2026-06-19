@@ -3227,9 +3227,19 @@ async function handleReportsGenerate(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
   try {
-    const sessionId = String(params.sessionId ?? params.session_id ?? "");
+    // `_chatSessionId` is injected by the chat route so the model can call
+    // reports.generate without having to know its own session UUID. Explicit
+    // `sessionId` from the model still wins (e.g. when generating a report
+    // for an older session).
+    const sessionId = String(
+      params.sessionId ?? params.session_id ?? params._chatSessionId ?? "",
+    );
     if (!sessionId) {
-      return { success: false, error: "sessionId is required" };
+      return {
+        success: false,
+        error:
+          "sessionId is required. When called from a chat the current session id is auto-filled; if you're calling from a script, pass sessionId explicitly.",
+      };
     }
     const template = String(params.template ?? "incident-response") as "incident-response" | "generic";
     const formatsRaw = params.formats ?? ["markdown", "docx"];
@@ -3241,8 +3251,7 @@ async function handleReportsGenerate(
     if (validFormats.length === 0) {
       return { success: false, error: `No valid formats requested. Allowed: ${[...allowed].join(", ")}` };
     }
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { buildAndPersist } = require("../reports/report-builder");
+    const { buildAndPersist } = await import("../reports/report-builder.js");
     const result = await buildAndPersist({
       sessionId,
       template,
@@ -3280,8 +3289,7 @@ async function handleReportsList(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { listReports } = require("../reports/storage");
+    const { listReports } = await import("../reports/storage.js");
     const rows = listReports({
       sessionId: params.sessionId ? String(params.sessionId) : undefined,
       template: params.template ? String(params.template) : undefined,

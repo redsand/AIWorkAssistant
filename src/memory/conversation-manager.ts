@@ -1954,19 +1954,113 @@ ${summary.keyTopics.map((topic) => `- ${topic}`).join("\n")}
       this.sessions.set(sessionId, session);
     }
 
-    // Only show user and assistant messages in the UI — skip system and tool
-    return session.messages
+    // Show user and assistant messages. For assistant messages with no text
+    // content but with tool calls, synthesize a placeholder so the user can
+    // see the agent was working (otherwise the whole turn appears blank).
+    const display = session.messages
       .filter((m) => m.role === "user" || m.role === "assistant")
-      .filter(
-        (m) =>
-          !(m.role === "assistant" && (!m.content || m.content.trim() === "")),
-      )
-      .map((m) => ({
-        role: m.role,
-        content: m.content,
-        timestamp: m.timestamp.toISOString(),
-        ...(m.thinking ? { thinking: m.thinking } : {}),
-      }));
+      .map((m) => {
+        if (m.role === "assistant" && (!m.content || m.content.trim() === "")) {
+          if (m.toolCalls && m.toolCalls.length > 0) {
+            const names = m.toolCalls.map((t) => `\`${t.name}\``).join(", ");
+            return {
+              role: m.role,
+              content: `🔧 *Called ${names}*`,
+              timestamp: m.timestamp.toISOString(),
+              ...(m.thinking ? { thinking: m.thinking } : {}),
+            };
+          }
+          return null;
+        }
+        return {
+          role: m.role,
+          content: m.content,
+          timestamp: m.timestamp.toISOString(),
+          ...(m.thinking ? { thinking: m.thinking } : {}),
+        };
+      })
+      .filter((m): m is NonNullable<typeof m> => m !== null);
+
+    const runStatusMessage = this.buildRunStatusMessage(
+      sessionId,
+      display.length > 0
+        ? new Date(display[display.length - 1].timestamp)
+        : null,
+    );
+    if (runStatusMessage) display.push(runStatusMessage);
+
+    return display;
+  }
+
+  /**
+   * If the most recent agent run for this session failed (or has been
+   * silently stuck in 'running' past a reasonable threshold), surface that
+   * as a synthesized assistant bubble so users can see *why* there's no
+   * reply. Without this, a rate-limit failure or server restart mid-turn
+   * looks identical to "the model said nothing".
+   */
+  private buildRunStatusMessage(
+    sessionId: string,
+    lastDisplayTimestamp: Date | null,
+  ): {
+    role: "assistant";
+    content: string;
+    timestamp: string;
+  } | null {
+    try {
+      // Lazy require avoids a circular dependency with agent-runs/database,
+      // which can transitively pull in conversation-manager via tool-dispatcher.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { agentRunDatabase } = require("../agent-runs/database");
+      const { runs } = agentRunDatabase.listRuns({ sessionId, limit: 1 });
+      if (!runs || runs.length === 0) return null;
+
+      const latest = runs[0];
+      const startedMs = latest.startedAt
+        ? new Date(latest.startedAt).getTime()
+        : 0;
+      const lastVisibleMs = lastDisplayTimestamp
+        ? lastDisplayTimestamp.getTime()
+        : 0;
+      // Only surface if the run started after the last visible message, so
+      // we don't double-report once a successful turn followed up.
+      if (lastVisibleMs && startedMs && startedMs < lastVisibleMs - 1000) {
+        return null;
+      }
+
+      if (latest.status === "failed" && latest.errorMessage) {
+        const ts = latest.completedAt || latest.startedAt || new Date().toISOString();
+        return {
+          role: "assistant",
+          content: `⚠️ *Run failed:* ${latest.errorMessage}`,
+          timestamp: new Date(ts).toISOString(),
+        };
+      }
+
+      if (latest.status === "running") {
+        const lastActivityMs = latest.lastActivityAt
+          ? new Date(latest.lastActivityAt).getTime()
+          : startedMs;
+        const ageMs = Date.now() - lastActivityMs;
+        // 5 minutes idle = effectively dead. The reaper marks these failed
+        // on next server start, but until then they're invisible.
+        if (ageMs > 5 * 60 * 1000) {
+          return {
+            role: "assistant",
+            content:
+              "⏳ *Run interrupted before completion* — server restart or timeout while the agent was running tools. No final reply was generated.",
+            timestamp: new Date(lastActivityMs).toISOString(),
+          };
+        }
+      }
+      return null;
+    } catch (err) {
+      console.warn(
+        "[MemoryManager] Failed to enrich run status into messages:",
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    }
   }
 
   /** Close the SQLite database connection. Call during test cleanup. */

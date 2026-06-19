@@ -4058,12 +4058,13 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "reports.generate",
     description:
-      "Generate an editable, downloadable report from a chat session. Produces Word (.docx — editable), Markdown (.md — editable), HTML (.html — view in browser), and optionally PDF (requires puppeteer). Use the 'incident-response' template for security/IR investigations (auto-extracts timeline, IOCs, evidence refs, gaps). Use 'generic' for any other session. The report is saved to disk and returns a downloadUrl per format.",
+      "Generate an editable, downloadable report from a chat session. Produces Word (.docx — editable), Markdown (.md — editable), HTML (.html — view in browser), and optionally PDF (requires puppeteer). Use the 'incident-response' template for security/IR investigations (auto-extracts timeline, IOCs, evidence refs, gaps). Use 'generic' for any other session. The report is saved to disk and returns a downloadUrl per format. When invoked from a chat, the current chat sessionId is auto-filled — you can omit `sessionId` unless the user wants a report for a different session. After it succeeds, surface each downloadUrl as a markdown link (e.g. `[Download Word](/api/reports/<id>/download/docx)`) so the user can click it.",
     params: {
       sessionId: {
         type: "string",
-        description: "The chat session ID to build the report from.",
-        required: true,
+        description:
+          "Chat session ID to build the report from. Optional in chat context (the current session is auto-filled). Pass explicitly to report on an older session.",
+        required: false,
       },
       template: {
         type: "string",

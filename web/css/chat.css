@@ -525,3 +525,43 @@
   border-radius: 3px;
   font-size: 12px;
 }
+
+/* /report slash-command and inline download buttons */
+.report-download-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.report-download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 6px;
+  color: #4338ca;
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background 0.15s, border-color 0.15s;
+  cursor: pointer;
+}
+
+.report-download-btn:hover {
+  background: #e0e7ff;
+  border-color: #a5b4fc;
+}
+
+.report-download-btn.report-download-loading {
+  opacity: 0.65;
+  pointer-events: none;
+}
+
+.report-download-size {
+  font-size: 11px;
+  color: #6366f1;
+  font-weight: 400;
+}
