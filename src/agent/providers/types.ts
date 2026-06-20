@@ -174,6 +174,89 @@ export abstract class AIProvider {
 
   abstract isConfigured(): boolean;
 
+  /**
+   * Install an abort guard that fires if the upstream connection sends no
+   * data within AI_FIRST_CHUNK_TIMEOUT_MS (default 30s). Returns a signal
+   * to pass to the HTTP client and an onChunk() hook to call as soon as
+   * the first byte of the response body arrives. Also forwards external
+   * cancellations from the caller.
+   *
+   * Without this, a hung upstream (observed: Ollama Cloud pretending to
+   * accept the request but never sending response body) holds its
+   * aiRequestLimiter slot until the OS socket times out — up to 17 minutes
+   * per call. With it, the call dies in ~30s and the bucket recovers fast
+   * enough for the circuit breaker to trip after 3 attempts and stop the
+   * cascade entirely.
+   *
+   * Call dispose() in a finally block to release the abort listener and
+   * timer. Always safe to call dispose() multiple times.
+   */
+  protected installFirstChunkAbort(externalSignal?: AbortSignal): {
+    signal: AbortSignal;
+    onChunk: () => void;
+    dispose: () => void;
+    abortReason: () => string | undefined;
+  } {
+    const idleMs = parseInt(
+      process.env.AI_FIRST_CHUNK_TIMEOUT_MS || "30000",
+      10,
+    );
+    const controller = new AbortController();
+    let reason: string | undefined;
+
+    const onExternalAbort = () => {
+      if (!reason) reason = "External cancellation";
+      controller.abort();
+    };
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        onExternalAbort();
+      } else {
+        externalSignal.addEventListener("abort", onExternalAbort, {
+          once: true,
+        });
+      }
+    }
+
+    let timer: NodeJS.Timeout | null = null;
+    if (Number.isFinite(idleMs) && idleMs > 0) {
+      timer = setTimeout(() => {
+        // First recorded reason wins — a watchdog that fires AFTER an
+        // external cancel shouldn't rewrite the user-facing reason.
+        if (!reason) {
+          reason = `Upstream sent no data within ${idleMs / 1000}s — aborting connection (first-chunk idle timeout)`;
+          if (DEBUG) console.warn(`[${this.name}] ${reason}`);
+        }
+        controller.abort();
+      }, idleMs);
+      // Don't keep the event loop alive solely for this watchdog.
+      if (typeof timer.unref === "function") timer.unref();
+    }
+
+    let disposed = false;
+    return {
+      signal: controller.signal,
+      onChunk: () => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+      },
+      dispose: () => {
+        if (disposed) return;
+        disposed = true;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        if (externalSignal) {
+          externalSignal.removeEventListener("abort", onExternalAbort);
+        }
+      },
+      abortReason: () => reason,
+    };
+  }
+
   getMaxContextTokens(): number {
     return this.config.maxContextTokens || DEFAULT_MAX_CONTEXT_TOKENS;
   }

@@ -8,6 +8,8 @@ import { githubClient } from "../integrations/github/github-client";
 import { gitlabClient } from "../integrations/gitlab/gitlab-client";
 import { jiraClient } from "../integrations/jira/jira-client";
 import { jitbitClient } from "../integrations/jitbit/jitbit-client";
+import { aiRequestLimiter } from "../agent/providers/ai-request-limiter";
+import { providerCircuitBreaker } from "../agent/providers/circuit-breaker";
 
 function getGitMetadata(): { commit: string | null; dirty: boolean } {
   try {
@@ -68,6 +70,28 @@ export async function healthRoutes(fastify: FastifyInstance) {
           valid: jitbitValid,
         },
       },
+    };
+  });
+
+  /**
+   * Per-provider slot accounting + circuit-breaker state. Use this to see
+   * which provider is wedged, how many slots are in use, and whether the
+   * breaker has tripped on a (provider, model) pair.
+   *
+   * Cheap, in-memory, no upstream calls — safe to poll from a status badge.
+   */
+  fastify.get("/health/providers", async () => {
+    const breakers = providerCircuitBreaker.snapshot();
+    const now = Date.now();
+    return {
+      timestamp: new Date().toISOString(),
+      limiter: aiRequestLimiter.stats,
+      breakers: breakers.map((b) => ({
+        ...b,
+        cooldownSecondsRemaining: b.isOpen
+          ? Math.ceil((b.degradedUntil - now) / 1000)
+          : 0,
+      })),
     };
   });
 }

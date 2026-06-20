@@ -294,6 +294,7 @@ export class OllamaProvider extends AIProvider {
     request: ChatRequest,
   ): AsyncGenerator<string | StreamEvent, void, unknown> {
     await aiRequestLimiter.acquire(this.name);
+    const idleGuard = this.installFirstChunkAbort(request.signal);
     try {
       const requestBody = this.buildRequestBody({ ...request, stream: true });
       const toolNameMap = (requestBody as any)[kToolNameMap] as Map<string, string> | undefined;
@@ -315,11 +316,12 @@ export class OllamaProvider extends AIProvider {
             requestBody,
             {
               responseType: "stream",
-              // Without signal here, cancellation never reaches the HTTP socket
-              // and the aiRequestLimiter slot stays held for the full upstream
-              // response (observed: 48 minutes for a stale ollama run in
-              // session 926107f7, blocking subsequent requests).
-              signal: request.signal,
+              // installFirstChunkAbort composes the caller's cancellation
+              // signal with an idle-timeout watchdog (default 30s). Without
+              // this, a stalled upstream held the aiRequestLimiter slot for
+              // up to 17 minutes per call (observed across 22 consecutive
+              // ollama/kimi-k2.7-code:cloud failures on 2026-06-19).
+              signal: idleGuard.signal,
             },
           );
           break; // success — exit retry loop
@@ -391,6 +393,9 @@ export class OllamaProvider extends AIProvider {
       };
 
       for await (const chunk of response.data) {
+        // First byte of response body arrived — clear the idle watchdog so
+        // a slow but live stream doesn't trip it mid-tokens.
+        idleGuard.onChunk();
         lineBuffer += chunk.toString();
         const lines = lineBuffer.split("\n");
         lineBuffer = lines.pop() ?? ""; // keep any incomplete trailing line
@@ -492,11 +497,17 @@ export class OllamaProvider extends AIProvider {
       }
       if (DEBUG) console.log("[Ollama API] Stream completed");
     } catch (error) {
-      console.error("[Ollama API] Stream error:", error);
-      throw new Error(
-        `Ollama API stream failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
+      const idleReason = idleGuard.abortReason();
+      const detail = error instanceof Error ? error.message : "Unknown error";
+      // Prefer the watchdog's reason when it caused the abort — otherwise
+      // axios just reports "canceled" with no context.
+      const message = idleReason && /abort|cancel|canceled/i.test(detail)
+        ? `Ollama API stream aborted: ${idleReason}`
+        : `Ollama API stream failed: ${detail}`;
+      console.error("[Ollama API] Stream error:", message);
+      throw new Error(message);
     } finally {
+      idleGuard.dispose();
       aiRequestLimiter.release(this.name);
     }
   }

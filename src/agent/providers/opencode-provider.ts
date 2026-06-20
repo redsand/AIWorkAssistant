@@ -249,6 +249,7 @@ export class OpenCodeProvider extends AIProvider {
     }
 
     await aiRequestLimiter.acquire(this.name);
+    const idleGuard = this.installFirstChunkAbort(request.signal);
     try {
       const requestBody = this.buildRequestBody({ ...request, stream: true });
       const toolNameMap = (requestBody as any)[kToolNameMap] as Map<string, string> | undefined;
@@ -268,9 +269,10 @@ export class OpenCodeProvider extends AIProvider {
             requestBody,
             {
               responseType: "stream",
-              // Forward request.signal so cancellation aborts the inflight
-              // stream and frees the aiRequestLimiter slot.
-              signal: request.signal,
+              // First-chunk idle watchdog composes the caller's cancellation
+              // signal so a stalled upstream releases the slot in ~30s
+              // instead of holding it for the full OS socket timeout.
+              signal: idleGuard.signal,
             },
           );
           break;
@@ -324,6 +326,7 @@ export class OpenCodeProvider extends AIProvider {
       let lineBuffer = "";
 
       for await (const chunk of response.data) {
+        idleGuard.onChunk();
         lineBuffer += chunk.toString();
         const lines = lineBuffer.split("\n");
         lineBuffer = lines.pop() ?? ""; // keep incomplete trailing line
@@ -405,11 +408,15 @@ export class OpenCodeProvider extends AIProvider {
         }
       }
 
-      console.error("[OpenCode API] Stream error:", error);
-      throw new Error(
-        `OpenCode API stream failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
+      const idleReason = idleGuard.abortReason();
+      const detail = error instanceof Error ? error.message : "Unknown error";
+      const message = idleReason && /abort|cancel|canceled/i.test(detail)
+        ? `OpenCode API stream aborted: ${idleReason}`
+        : `OpenCode API stream failed: ${detail}`;
+      console.error("[OpenCode API] Stream error:", message);
+      throw new Error(message);
     } finally {
+      idleGuard.dispose();
       aiRequestLimiter.release(this.name);
     }
   }

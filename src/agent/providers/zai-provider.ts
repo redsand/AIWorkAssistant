@@ -410,6 +410,7 @@ export class ZaiProvider extends AIProvider {
         });
 
         await aiRequestLimiter.acquire(this.name);
+        const idleGuard = this.installFirstChunkAbort(request.signal);
         try {
           await zaiRateLimiter.acquire();
           let response;
@@ -420,10 +421,10 @@ export class ZaiProvider extends AIProvider {
               {
                 responseType: "stream",
                 validateStatus: () => true,
-                // Forward request.signal so cancellation aborts the inflight
-                // stream and frees the aiRequestLimiter slot. Same gap as in
-                // ollama-provider that caused slot leaks on stale runs.
-                signal: request.signal,
+                // First-chunk idle watchdog (composes with the caller's
+                // signal). Without it, a stalled Z.ai response keeps the
+                // limiter slot held until the OS socket times out.
+                signal: idleGuard.signal,
               },
             );
           } finally {
@@ -506,6 +507,8 @@ export class ZaiProvider extends AIProvider {
         const toolCallAccumulator: ToolCall[] = [];
         let streamUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | null = null;
         for await (const chunk of response.data) {
+          // First byte arrived — clear the watchdog.
+          idleGuard.onChunk();
           lineBuffer += chunk.toString();
           const lines = lineBuffer.split("\n");
           lineBuffer = lines.pop() ?? "";
@@ -580,6 +583,7 @@ export class ZaiProvider extends AIProvider {
         }
         return;
       } finally {
+        idleGuard.dispose();
         aiRequestLimiter.release(this.name);
       }
     } catch (error) {

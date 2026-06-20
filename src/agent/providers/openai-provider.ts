@@ -263,6 +263,7 @@ export class OpenAIProvider extends AIProvider {
     }
 
     await aiRequestLimiter.acquire(this.name);
+    const idleGuard = this.installFirstChunkAbort(request.signal);
     try {
       const requestBody = this.buildRequestBody({ ...request, stream: true });
       (requestBody as any).stream_options = { include_usage: true };
@@ -280,9 +281,10 @@ export class OpenAIProvider extends AIProvider {
         try {
           response = await this.client.post("/chat/completions", requestBody, {
             responseType: "stream",
-            // Forward request.signal so cancellation aborts the inflight
-            // stream and frees the aiRequestLimiter slot.
-            signal: request.signal,
+            // installFirstChunkAbort composes the caller's signal with a
+            // 30s idle watchdog so a stalled upstream releases the slot
+            // promptly instead of waiting on the OS socket timeout.
+            signal: idleGuard.signal,
           });
           break;
         } catch (error) {
@@ -336,6 +338,7 @@ export class OpenAIProvider extends AIProvider {
       let streamUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | null = null;
 
       for await (const chunk of response.data) {
+        idleGuard.onChunk();
         lineBuffer += chunk.toString();
         const lines = lineBuffer.split("\n");
         lineBuffer = lines.pop() ?? "";
@@ -397,9 +400,15 @@ export class OpenAIProvider extends AIProvider {
       }
       if (DEBUG) console.log("[OpenAI] Stream completed");
     } catch (error) {
-      console.error("[OpenAI] Stream error:", error);
-      throw new Error(`OpenAI stream failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+      const idleReason = idleGuard.abortReason();
+      const detail = error instanceof Error ? error.message : "Unknown error";
+      const message = idleReason && /abort|cancel|canceled/i.test(detail)
+        ? `OpenAI stream aborted: ${idleReason}`
+        : `OpenAI stream failed: ${detail}`;
+      console.error("[OpenAI] Stream error:", message);
+      throw new Error(message);
     } finally {
+      idleGuard.dispose();
       aiRequestLimiter.release(this.name);
     }
   }
