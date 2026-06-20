@@ -117,7 +117,7 @@ export class OpenAIProvider extends AIProvider {
     }
   }
 
-  async chat(request: ChatRequest): Promise<ChatResponse> {
+  protected async chatImpl(request: ChatRequest): Promise<ChatResponse> {
     if (!this.isConfigured()) {
       throw new Error("OpenAI API key not configured. Set OPENAI_API_KEY environment variable.");
     }
@@ -141,7 +141,7 @@ export class OpenAIProvider extends AIProvider {
           timeout: `${Math.round(attemptTimeout / 1000)}s`,
         });
 
-        await aiRequestLimiter.acquire();
+        await aiRequestLimiter.acquire(this.name);
         let response;
         try {
           response = await this.client.post("/chat/completions", requestBody, {
@@ -149,7 +149,7 @@ export class OpenAIProvider extends AIProvider {
             signal: request.signal,
           });
         } finally {
-          aiRequestLimiter.release();
+          aiRequestLimiter.release(this.name);
         }
 
         const data = response.data;
@@ -257,12 +257,12 @@ export class OpenAIProvider extends AIProvider {
     throw new Error(`OpenAI API request failed after ${this.config.maxRetries} retries: ${lastError?.message || "Unknown error"}.`);
   }
 
-  async *chatStream(request: ChatRequest): AsyncGenerator<string | StreamEvent, void, unknown> {
+  protected async *chatStreamImpl(request: ChatRequest): AsyncGenerator<string | StreamEvent, void, unknown> {
     if (!this.isConfigured()) {
       throw new Error("OpenAI API key not configured. Set OPENAI_API_KEY environment variable.");
     }
 
-    await aiRequestLimiter.acquire();
+    await aiRequestLimiter.acquire(this.name);
     try {
       const requestBody = this.buildRequestBody({ ...request, stream: true });
       (requestBody as any).stream_options = { include_usage: true };
@@ -400,7 +400,7 @@ export class OpenAIProvider extends AIProvider {
       console.error("[OpenAI] Stream error:", error);
       throw new Error(`OpenAI stream failed: ${error instanceof Error ? error.message : "Unknown error"}`);
     } finally {
-      aiRequestLimiter.release();
+      aiRequestLimiter.release(this.name);
     }
   }
 

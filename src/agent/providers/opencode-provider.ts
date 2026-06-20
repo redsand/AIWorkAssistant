@@ -79,7 +79,7 @@ export class OpenCodeProvider extends AIProvider {
     });
   }
 
-  async chat(request: ChatRequest): Promise<ChatResponse> {
+  protected async chatImpl(request: ChatRequest): Promise<ChatResponse> {
     if (!this.isConfigured()) {
       throw new Error(
         "OpenCode API key not configured. Set OPENCODE_API_KEY environment variable.",
@@ -105,7 +105,7 @@ export class OpenCodeProvider extends AIProvider {
           timeout: `${Math.round(attemptTimeout / 1000)}s`,
         });
 
-        await aiRequestLimiter.acquire();
+        await aiRequestLimiter.acquire(this.name);
         let response;
         try {
           response = await this.client.post(
@@ -114,7 +114,7 @@ export class OpenCodeProvider extends AIProvider {
             { timeout: attemptTimeout, signal: request.signal },
           );
         } finally {
-          aiRequestLimiter.release();
+          aiRequestLimiter.release(this.name);
         }
 
         const data = response.data;
@@ -239,7 +239,7 @@ export class OpenCodeProvider extends AIProvider {
     );
   }
 
-  async *chatStream(
+  protected async *chatStreamImpl(
     request: ChatRequest,
   ): AsyncGenerator<string | StreamEvent, void, unknown> {
     if (!this.isConfigured()) {
@@ -248,7 +248,7 @@ export class OpenCodeProvider extends AIProvider {
       );
     }
 
-    await aiRequestLimiter.acquire();
+    await aiRequestLimiter.acquire(this.name);
     try {
       const requestBody = this.buildRequestBody({ ...request, stream: true });
       const toolNameMap = (requestBody as any)[kToolNameMap] as Map<string, string> | undefined;
@@ -410,7 +410,7 @@ export class OpenCodeProvider extends AIProvider {
         `OpenCode API stream failed: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
     } finally {
-      aiRequestLimiter.release();
+      aiRequestLimiter.release(this.name);
     }
   }
 

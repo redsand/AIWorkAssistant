@@ -1,29 +1,71 @@
 /**
- * Global AI request concurrency limiter.
+ * Per-provider AI request concurrency limiter.
  *
- * All AI provider HTTP calls (chat + chatStream) acquire a slot from this
- * limiter before executing and release it in a finally block. This prevents
- * any single provider from exhausting upstream connection pools and keeps the
- * UI responsive when multiple subsystems hit AI simultaneously.
+ * Each AI provider (ollama, zai, openai, opencode, …) gets its own slot
+ * bucket so that one provider hanging upstream cannot starve all other
+ * providers of throughput. A single hung Ollama Cloud call used to take
+ * a global slot for 5–17 minutes, queueing zai and local-ollama requests
+ * until they hit the 120s queue timeout — observed across 22 consecutive
+ * Ollama Cloud failures (2026-06-19).
  *
- * Configurable via AI_MAX_CONCURRENT (default 3) and AI_QUEUE_TIMEOUT_MS
- * (default 120000).
+ * Defaults:
+ *   - Per-provider concurrency: AI_MAX_CONCURRENT (default 3)
+ *   - Per-provider override:    AI_MAX_CONCURRENT_<PROVIDER>=N  (e.g. AI_MAX_CONCURRENT_OLLAMA=2)
+ *   - Queue timeout:            AI_QUEUE_TIMEOUT_MS (default 120000)
+ *
+ * Callers MUST pass their provider name to acquire/release so the bucket
+ * accounting stays consistent. Calling acquire() with no name routes to a
+ * "default" bucket (used by tests and any legacy caller).
  */
 
-const MAX_CONCURRENT = parseInt(process.env.AI_MAX_CONCURRENT || "3", 10);
-const QUEUE_TIMEOUT_MS = parseInt(process.env.AI_QUEUE_TIMEOUT_MS || "120000", 10);
+const DEFAULT_MAX_CONCURRENT = parseInt(
+  process.env.AI_MAX_CONCURRENT || "3",
+  10,
+);
+const QUEUE_TIMEOUT_MS = parseInt(
+  process.env.AI_QUEUE_TIMEOUT_MS || "120000",
+  10,
+);
+
+function maxForProvider(name: string): number {
+  const envKey = `AI_MAX_CONCURRENT_${name.toUpperCase()}`;
+  const raw = process.env[envKey];
+  if (raw !== undefined && raw !== "") {
+    const n = parseInt(raw, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return DEFAULT_MAX_CONCURRENT;
+}
+
+class ProviderBucket {
+  active = 0;
+  readonly queue: Array<() => void> = [];
+  constructor(
+    public readonly name: string,
+    public readonly max: number,
+  ) {}
+}
 
 class AIRequestLimiter {
-  private active = 0;
-  private readonly queue: Array<() => void> = [];
+  private readonly buckets = new Map<string, ProviderBucket>();
+
+  private getBucket(name: string): ProviderBucket {
+    let bucket = this.buckets.get(name);
+    if (!bucket) {
+      bucket = new ProviderBucket(name, maxForProvider(name));
+      this.buckets.set(name, bucket);
+    }
+    return bucket;
+  }
 
   /**
-   * Acquire a concurrency slot. Queues if at the concurrency limit.
-   * Throws if the queue timeout expires before a slot opens.
+   * Acquire a concurrency slot from the named provider's bucket. Queues if
+   * the bucket is at capacity. Throws if the queue timeout expires.
    */
-  async acquire(): Promise<void> {
-    if (this.active < MAX_CONCURRENT) {
-      this.active++;
+  async acquire(providerName: string = "default"): Promise<void> {
+    const bucket = this.getBucket(providerName);
+    if (bucket.active < bucket.max) {
+      bucket.active++;
       return;
     }
 
@@ -33,11 +75,11 @@ class AIRequestLimiter {
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        const idx = this.queue.indexOf(ticket);
-        if (idx !== -1) this.queue.splice(idx, 1);
+        const idx = bucket.queue.indexOf(ticket);
+        if (idx !== -1) bucket.queue.splice(idx, 1);
         reject(
           new Error(
-            `AI request queued for ${QUEUE_TIMEOUT_MS / 1000}s but no slot opened — too many concurrent requests (${MAX_CONCURRENT} max).`,
+            `AI request queued for ${QUEUE_TIMEOUT_MS / 1000}s but no slot opened — too many concurrent requests to ${providerName} (${bucket.max} max).`,
           ),
         );
       }, QUEUE_TIMEOUT_MS);
@@ -49,30 +91,42 @@ class AIRequestLimiter {
         resolve();
       };
 
-      this.queue.push(ticket);
+      bucket.queue.push(ticket);
     });
 
-    this.active++;
+    bucket.active++;
   }
 
   /**
-   * Release the current slot and wake the next queued request (if any).
-   * Always call this in a finally block after acquire().
+   * Release a slot for the named provider and wake the next queued caller
+   * (if any) for that provider. Always call this in a finally block after
+   * acquire() with the SAME provider name.
    */
-  release(): void {
-    this.active = Math.max(0, this.active - 1);
-    const next = this.queue.shift();
-    if (next) {
-      next();
-    }
+  release(providerName: string = "default"): void {
+    const bucket = this.getBucket(providerName);
+    bucket.active = Math.max(0, bucket.active - 1);
+    const next = bucket.queue.shift();
+    if (next) next();
   }
 
-  get stats() {
-    return {
-      active: this.active,
-      queued: this.queue.length,
-      max: MAX_CONCURRENT,
-    };
+  /** Per-bucket snapshot for diagnostics / health endpoints. */
+  get stats(): Array<{
+    provider: string;
+    active: number;
+    queued: number;
+    max: number;
+  }> {
+    return Array.from(this.buckets.values()).map((b) => ({
+      provider: b.name,
+      active: b.active,
+      queued: b.queue.length,
+      max: b.max,
+    }));
+  }
+
+  /** Reset all buckets — for tests. */
+  __resetForTests(): void {
+    this.buckets.clear();
   }
 }
 

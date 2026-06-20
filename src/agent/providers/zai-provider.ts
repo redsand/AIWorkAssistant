@@ -181,7 +181,7 @@ export class ZaiProvider extends AIProvider {
   }
 
 
-  async chat(request: ChatRequest): Promise<ChatResponse> {
+  protected async chatImpl(request: ChatRequest): Promise<ChatResponse> {
     if (!this.isConfigured()) {
       throw new Error(
         "Z.ai API key not configured. Set ZAI_API_KEY environment variable.",
@@ -217,7 +217,7 @@ export class ZaiProvider extends AIProvider {
         });
 
         let response;
-        await aiRequestLimiter.acquire();
+        await aiRequestLimiter.acquire(this.name);
         try {
           await zaiRateLimiter.acquire();
           try {
@@ -230,7 +230,7 @@ export class ZaiProvider extends AIProvider {
             zaiRateLimiter.release();
           }
         } finally {
-          aiRequestLimiter.release();
+          aiRequestLimiter.release(this.name);
         }
 
         const data = response.data;
@@ -375,7 +375,7 @@ export class ZaiProvider extends AIProvider {
     );
   }
 
-  async *chatStream(
+  protected async *chatStreamImpl(
     request: ChatRequest,
   ): AsyncGenerator<string | StreamEvent, void, unknown> {
     yield* this.chatStreamInternal(request, false);
@@ -409,7 +409,7 @@ export class ZaiProvider extends AIProvider {
           attempt: `${attempt}/${maxAttempts}`,
         });
 
-        await aiRequestLimiter.acquire();
+        await aiRequestLimiter.acquire(this.name);
         try {
           await zaiRateLimiter.acquire();
           let response;
@@ -580,7 +580,7 @@ export class ZaiProvider extends AIProvider {
         }
         return;
       } finally {
-        aiRequestLimiter.release();
+        aiRequestLimiter.release(this.name);
       }
     } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));

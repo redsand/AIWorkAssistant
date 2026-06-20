@@ -64,7 +64,7 @@ export class OllamaProvider extends AIProvider {
     return body;
   }
 
-  async chat(request: ChatRequest): Promise<ChatResponse> {
+  protected async chatImpl(request: ChatRequest): Promise<ChatResponse> {
     return this.chatInternal(request, false);
   }
 
@@ -92,7 +92,7 @@ export class OllamaProvider extends AIProvider {
           timeout: `${Math.round(attemptTimeout / 1000)}s`,
         });
 
-        await aiRequestLimiter.acquire();
+        await aiRequestLimiter.acquire(this.name);
         let response;
         try {
           response = await this.client.post(
@@ -101,7 +101,7 @@ export class OllamaProvider extends AIProvider {
             { timeout: attemptTimeout, signal: request.signal },
           );
         } finally {
-          aiRequestLimiter.release();
+          aiRequestLimiter.release(this.name);
         }
 
         const data = response.data;
@@ -290,10 +290,10 @@ export class OllamaProvider extends AIProvider {
     );
   }
 
-  async *chatStream(
+  protected async *chatStreamImpl(
     request: ChatRequest,
   ): AsyncGenerator<string | StreamEvent, void, unknown> {
-    await aiRequestLimiter.acquire();
+    await aiRequestLimiter.acquire(this.name);
     try {
       const requestBody = this.buildRequestBody({ ...request, stream: true });
       const toolNameMap = (requestBody as any)[kToolNameMap] as Map<string, string> | undefined;
@@ -497,7 +497,7 @@ export class OllamaProvider extends AIProvider {
         `Ollama API stream failed: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
     } finally {
-      aiRequestLimiter.release();
+      aiRequestLimiter.release(this.name);
     }
   }
 

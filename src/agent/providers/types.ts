@@ -1,4 +1,5 @@
 import axios, { AxiosInstance } from "axios";
+import { providerCircuitBreaker } from "./circuit-breaker";
 
 const DEBUG = process.env.AICODER_DEBUG === "true";
 
@@ -121,10 +122,56 @@ export abstract class AIProvider {
     });
   }
 
-  abstract chat(request: ChatRequest): Promise<ChatResponse>;
-  abstract chatStream(
+  /**
+   * Public chat entry point. Wraps the provider's chatImpl with a
+   * per-(provider, model) circuit breaker so consecutive upstream failures
+   * trip a fast-fail cooldown instead of repeatedly burning queue slots.
+   */
+  async chat(request: ChatRequest): Promise<ChatResponse> {
+    const tripped = providerCircuitBreaker.precheck(this.name, request.model);
+    if (tripped) throw tripped;
+    try {
+      const result = await this.chatImpl(request);
+      providerCircuitBreaker.recordSuccess(this.name, request.model);
+      return result;
+    } catch (err) {
+      providerCircuitBreaker.recordFailure(this.name, request.model, err);
+      throw err;
+    }
+  }
+
+  /**
+   * Public streaming entry point. Same circuit-breaker semantics as chat();
+   * the impl must yield from chatStreamImpl and rely on this wrapper for
+   * success/failure accounting.
+   */
+  async *chatStream(
+    request: ChatRequest,
+  ): AsyncGenerator<string | StreamEvent, void, unknown> {
+    const tripped = providerCircuitBreaker.precheck(this.name, request.model);
+    if (tripped) throw tripped;
+    let succeeded = false;
+    try {
+      yield* this.chatStreamImpl(request);
+      succeeded = true;
+    } catch (err) {
+      providerCircuitBreaker.recordFailure(this.name, request.model, err);
+      throw err;
+    } finally {
+      if (succeeded) {
+        providerCircuitBreaker.recordSuccess(this.name, request.model);
+      }
+    }
+  }
+
+  /** Concrete provider implementation of a non-streaming chat call. */
+  protected abstract chatImpl(request: ChatRequest): Promise<ChatResponse>;
+
+  /** Concrete provider implementation of a streaming chat call. */
+  protected abstract chatStreamImpl(
     request: ChatRequest,
   ): AsyncGenerator<string | StreamEvent, void, unknown>;
+
   abstract isConfigured(): boolean;
 
   getMaxContextTokens(): number {
