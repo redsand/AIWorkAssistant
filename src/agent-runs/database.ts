@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { v4 as uuidv4 } from "uuid";
 import path from "path";
 import fs from "fs";
-import { env } from "../config/env";
+import { applyWalHygiene } from "../util/sqlite-hygiene";
 import type {
   AgentRun,
   AgentRunStep,
@@ -29,8 +29,7 @@ class AgentRunDatabase {
       fs.mkdirSync(dir, { recursive: true });
     }
     this.db = new Database(dbFile);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("foreign_keys = ON");
+    applyWalHygiene(this.db, { label: "agent-runs" });
     this.initSchema();
   }
 

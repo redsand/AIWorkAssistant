@@ -14,6 +14,7 @@ import type {
 } from "./entity-types";
 import { EntityMarkdown, entityMarkdown } from "./entity-markdown";
 import type { EntityMarkdownData } from "./entity-markdown";
+import { applyWalHygiene } from "../util/sqlite-hygiene";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const DEFAULT_DB_PATH = path.join(DATA_DIR, "entity-memory.db");
@@ -27,8 +28,7 @@ class EntityMemory {
     const dir = path.dirname(dbFile);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     this.db = new Database(dbFile);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("foreign_keys = ON");
+    applyWalHygiene(this.db, { label: "entity-memory" });
     this.markdown = markdown ?? entityMarkdown;
     this.initSchema();
   }

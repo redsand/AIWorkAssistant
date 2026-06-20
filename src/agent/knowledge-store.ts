@@ -5,6 +5,7 @@ import { ingestSingleKnowledgeEntry } from "../context-engine/claimkit-ingestion
 import { chunkContent } from "../context-engine/chunker";
 import { estimateTokens } from "../context-engine/budget";
 import { env } from "../config/env";
+import { applyWalHygiene } from "../util/sqlite-hygiene";
 
 export interface KnowledgeEntry {
   id: string;
@@ -42,7 +43,7 @@ export class KnowledgeStore {
     }
 
     this.db = new Database(resolvedPath);
-    this.db.pragma("journal_mode = WAL");
+    applyWalHygiene(this.db, { label: "knowledge-store" });
     this.initSchema();
   }
 

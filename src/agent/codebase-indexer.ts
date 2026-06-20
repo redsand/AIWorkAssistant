@@ -4,6 +4,7 @@ import * as path from "path";
 import { env } from "../config/env";
 import { embeddingService, cosineSimilarity } from "./embedding-service";
 import { chunkContent } from "../context-engine/chunker";
+import { applyWalHygiene } from "../util/sqlite-hygiene";
 
 export interface IndexedFile {
   path: string;
@@ -35,7 +36,7 @@ class CodebaseIndexer {
     }
 
     this.db = new Database(path.join(dataDir, "codebase_index.db"));
-    this.db.pragma("journal_mode = WAL");
+    applyWalHygiene(this.db, { label: "codebase-index" });
     this.initSchema();
   }
 

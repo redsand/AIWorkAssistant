@@ -6,6 +6,7 @@
 import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
+import { applyWalHygiene } from '../util/sqlite-hygiene';
 
 const DB_PATH = path.join(process.cwd(), 'data', 'roadmap.db');
 
@@ -71,12 +72,11 @@ class RoadmapDatabase {
 
   constructor() {
     this.db = new Database(DB_PATH);
+    applyWalHygiene(this.db, { label: "roadmap" });
     this.initializeSchema();
   }
 
   private initializeSchema() {
-    // Enable foreign keys
-    this.db.pragma('foreign_keys = ON');
 
     // Roadmaps table
     this.db.exec(`

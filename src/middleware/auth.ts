@@ -3,6 +3,7 @@ import crypto from "crypto";
 import Database from "better-sqlite3";
 import path from "path";
 import { env } from "../config/env";
+import { applyWalHygiene } from "../util/sqlite-hygiene";
 
 const PUBLIC_PATHS = new Set([
   "/health",
@@ -47,7 +48,7 @@ interface Session {
 // SQLite-backed session store — survives server restarts
 const DB_PATH = path.join(process.cwd(), "data", "app.db");
 const sessionDb = new Database(DB_PATH);
-sessionDb.pragma("journal_mode = WAL");
+applyWalHygiene(sessionDb, { label: "auth-sessions" });
 sessionDb.exec(`
   CREATE TABLE IF NOT EXISTS auth_sessions (
     token TEXT PRIMARY KEY,

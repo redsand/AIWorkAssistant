@@ -24,6 +24,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { resolvePath } from "../config/env";
+import { applyWalHygiene } from "../util/sqlite-hygiene";
 import type {
   GenerateReportResult,
   RenderedFile,
@@ -55,7 +56,7 @@ function db(): Database.Database {
   fs.mkdirSync(path.dirname(want), { recursive: true });
   _db = new Database(want);
   _dbPath = want;
-  _db.pragma("journal_mode = WAL");
+  applyWalHygiene(_db, { label: "reports" });
   _db.exec(`
     CREATE TABLE IF NOT EXISTS reports (
       id TEXT PRIMARY KEY,

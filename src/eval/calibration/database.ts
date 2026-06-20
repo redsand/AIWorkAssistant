@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { v4 as uuidv4 } from "uuid";
 import path from "path";
 import fs from "fs";
+import { applyWalHygiene } from "../../util/sqlite-hygiene";
 
 /**
  * Calibration database — Phase 2 of the ClaimKit confidence-scoring
@@ -83,8 +84,11 @@ export class CalibrationDatabase {
     if (!isTest && !fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
     const file = dbPath ?? (isTest ? ":memory:" : path.join(dataDir, "eval-calibration.db"));
     this.db = new Database(file);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("foreign_keys = ON");
+    applyWalHygiene(this.db, {
+      label: "eval-calibration",
+      // In-memory DBs can't TRUNCATE the WAL.
+      skipBootTruncate: file === ":memory:",
+    });
     this.initSchema();
   }
 

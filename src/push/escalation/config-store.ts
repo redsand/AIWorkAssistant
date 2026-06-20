@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import path from "path";
+import { applyWalHygiene } from "../../util/sqlite-hygiene";
 
 export interface EscalationSourceConfig {
   source: "hawk-ir" | "jitbit";
@@ -13,7 +14,7 @@ export interface EscalationRuntimeConfig {
 
 const DB_PATH = path.join(process.cwd(), "data", "app.db");
 const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL");
+applyWalHygiene(db, { label: "escalation-config" });
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS escalation_config (

@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import path from "path";
 import { ApprovalRequest } from "../policy/types";
+import { applyWalHygiene } from "../util/sqlite-hygiene";
 
 const DB_PATH = path.join(process.cwd(), "data", "app.db");
 
@@ -9,11 +10,11 @@ class ApprovalDatabase {
 
   constructor() {
     this.db = new Database(DB_PATH);
+    applyWalHygiene(this.db, { label: "approvals" });
     this.initializeSchema();
   }
 
   private initializeSchema() {
-    this.db.pragma("foreign_keys = ON");
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS approvals (

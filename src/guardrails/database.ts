@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import path from "path";
+import { applyWalHygiene } from "../util/sqlite-hygiene";
 
 const DB_PATH = path.join(process.cwd(), "data", "app.db");
 
@@ -24,11 +25,11 @@ class GuardrailsDatabase {
 
   constructor() {
     this.db = new Database(DB_PATH);
+    applyWalHygiene(this.db, { label: "guardrails" });
     this.initializeSchema();
   }
 
   private initializeSchema() {
-    this.db.pragma("foreign_keys = ON");
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS guardrails_actions (

@@ -4,6 +4,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { ingestSingleGraphNode, ingestSingleGraphEdge } from "../context-engine/claimkit-ingestion";
 import type { Community } from "../context-engine/types";
+import { applyWalHygiene } from "../util/sqlite-hygiene";
 
 export type KGNodeType =
   | "decision"
@@ -64,7 +65,7 @@ class KnowledgeGraph {
     }
 
     this.db = new Database(dbFile);
-    this.db.pragma("journal_mode = WAL");
+    applyWalHygiene(this.db, { label: "knowledge-graph" });
     this.initSchema();
   }
 

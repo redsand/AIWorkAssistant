@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { v4 as uuidv4 } from "uuid";
 import path from "path";
 import fs from "fs";
+import { applyWalHygiene } from "../util/sqlite-hygiene";
 import type {
   ComparisonRunRow,
   ComparisonCaseRow,
@@ -31,8 +32,7 @@ class ComparisonRunDatabase {
       fs.mkdirSync(dir, { recursive: true });
     }
     this.db = new Database(dbFile);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("foreign_keys = ON");
+    applyWalHygiene(this.db, { label: "comparison-runs" });
     this.initSchema();
   }
 

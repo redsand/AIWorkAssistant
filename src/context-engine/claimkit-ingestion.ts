@@ -12,6 +12,7 @@ import type { KGNode, KGEdge } from "../agent/knowledge-graph";
 import type { RelationshipClaim, ScoredDocument } from "./types";
 import { env } from "../config/env";
 import { embeddingService } from "../agent/embedding-service";
+import { applyWalHygiene } from "../util/sqlite-hygiene";
 
 export interface IngestionStats {
   total: number;
@@ -47,7 +48,7 @@ export class IngestionDedupeStore {
       const dir = path.dirname(dbFile);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const db = new Database(dbFile);
-      db.pragma("journal_mode = WAL");
+      applyWalHygiene(db, { label: "claimkit-ingestion" });
       db.exec(`
         CREATE TABLE IF NOT EXISTS ingested (
           key TEXT NOT NULL,

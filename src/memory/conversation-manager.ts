@@ -12,6 +12,7 @@ import type { ChatMessage } from "../agent/opencode-client";
 import { aiClient } from "../agent/opencode-client";
 import { resolvePath } from "../config/env";
 import { toolCallCache } from "./tool-cache";
+import { applyWalHygiene } from "../util/sqlite-hygiene";
 
 export interface Message {
   role: "system" | "user" | "assistant" | "tool";
@@ -225,7 +226,7 @@ export class ConversationManager {
     try {
       const dbPath = path.join(this.memoryBasePath, "sessions.db");
       this.db = new Database(dbPath);
-      this.db.pragma("journal_mode = WAL");
+      applyWalHygiene(this.db, { label: "conversation-sessions" });
       this.db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
           sessionId,
