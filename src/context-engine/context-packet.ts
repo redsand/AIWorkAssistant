@@ -303,8 +303,12 @@ export async function assembleContextPacket(
     onProgress?.("Probing structured claims...");
     const probeStart = Date.now();
     try {
+      // Probe uses queryLite — plan + embed + retrieve + compile only.
+      // Skips the generate + verify LLM calls that the routing decision
+      // never reads (it reads confidence, answerability, claimCount).
+      // Saves 2 LLM round-trips on every chat message.
       ckProbe = await withAbortableTimeout(
-        (signal) => claimKitAdapter.query(retrievalQuery, { signal }),
+        (signal) => claimKitAdapter.queryLite(retrievalQuery, { signal }),
         env.CLAIMKIT_FIRST_PROBE_TIMEOUT_MS,
         null,
       );
@@ -507,8 +511,11 @@ export async function assembleContextPacket(
       onProgress?.("Querying knowledge graph...");
       const ckStart = Date.now();
       try {
+        // Second-pass query also uses queryLite — same rationale as the
+        // probe: the chat doesn't render the LLM-generated answer text,
+        // and routing decisions only need confidence + claim count.
         claimKitResult = await withAbortableTimeout(
-          (signal) => claimKitAdapter.query(retrievalQuery, { signal }),
+          (signal) => claimKitAdapter.queryLite(retrievalQuery, { signal }),
           env.CLAIMKIT_QUERY_TIMEOUT_MS,
           null,
         );

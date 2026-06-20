@@ -42,6 +42,7 @@ import {
   handleReportSlashCommand,
   installReportDownloadInterceptor,
 } from "./reports-client.js";
+import { startIngestionBadgePolling } from "./ingestion-badge.js";
 
 /**
  * Idea 3 + I: render a banner above the messages list when ClaimKit
@@ -428,6 +429,8 @@ export async function initializeChat() {
     installReportDownloadInterceptor();
     reportInterceptorInstalled = true;
   }
+  // Poll cold-start ingestion progress until isReady=true.
+  startIngestionBadgePolling();
 
   const { subscribeLive } = await import("./live.js");
   if (currentSessionId) {

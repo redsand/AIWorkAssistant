@@ -51,7 +51,11 @@ import { workflowRoutes } from "./routes/workflow";
 import { claimKitAdapter } from "./context-engine/adapters/claimkit-adapter";
 import { comparisonRoutes } from "./comparison-runs/api";
 import { evalCalibrationRoutes } from "./eval/calibration/api";
-import { ingestKnowledgeStore, ingestGraphStore } from "./context-engine/claimkit-ingestion";
+import {
+  ingestKnowledgeStore,
+  ingestGraphStore,
+  ingestionStatusTracker,
+} from "./context-engine/claimkit-ingestion";
 import { errorLog } from "./observability/error-log";
 import {
   authMiddleware,
@@ -387,6 +391,7 @@ async function start() {
     // CLAIMKIT_BLOCK_ON_INGESTION=false → fire-and-forget after listen (set below)
     if (ckInitialized && env.CLAIMKIT_BLOCK_ON_INGESTION) {
       logStartupPhase("ClaimKit ingestion", "blocking startup");
+      ingestionStatusTracker.beginRun();
       try {
         const [knowledge, graph] = await Promise.all([
           ingestKnowledgeStore(),
@@ -400,7 +405,9 @@ async function start() {
             ? ` | errors: ${knowledge.errors + graph.errors}`
             : ""),
         );
+        ingestionStatusTracker.markComplete();
       } catch (err) {
+        ingestionStatusTracker.markFailed();
         void errorLog.log({
           source: "claimkit",
           category: "ingestion_failed",
@@ -432,11 +439,13 @@ async function start() {
       }
     }
 
-    // Background ingestion path: only used when CLAIMKIT_BLOCK_ON_INGESTION=false.
-    // Fire-and-forget so the server is responsive while the store fills up.
+    // Background ingestion path: only used when CLAIMKIT_BLOCK_ON_INGESTION=false
+    // (default). Fire-and-forget so the server is responsive while the store
+    // fills up. Poll GET /health/ingestion to watch progress.
     if (ckInitialized && !env.CLAIMKIT_BLOCK_ON_INGESTION) {
+      ingestionStatusTracker.beginRun();
       void (async () => {
-        console.log("[ClaimKit] Ingesting stores (background)…");
+        console.log("[ClaimKit] Ingesting stores (background) — poll /health/ingestion for progress…");
         try {
           const [knowledge, graph] = await Promise.all([
             ingestKnowledgeStore(),
@@ -450,7 +459,9 @@ async function start() {
               ? ` | errors: ${knowledge.errors + graph.errors}`
               : ""),
           );
+          ingestionStatusTracker.markComplete();
         } catch (err) {
+          ingestionStatusTracker.markFailed();
           void errorLog.log({
             source: "claimkit",
             category: "ingestion_failed",

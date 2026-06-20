@@ -36,6 +36,9 @@ vi.mock("../adapters/claimkit-adapter", () => ({
     initialize: vi.fn(async () => false),
     getInitError: vi.fn(() => null),
     query: (...args: unknown[]) => ckQuery(...(args as [])),
+    // Probe path now uses queryLite — delegate to the query mock so the
+    // existing rewrite-tracking assertion still fires.
+    queryLite: (...args: unknown[]) => ckQuery(...(args as [])),
     ground: vi.fn(),
   },
 }));

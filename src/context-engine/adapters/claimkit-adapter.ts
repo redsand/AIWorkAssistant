@@ -322,6 +322,54 @@ export class ClaimKitAdapter {
 
   async ingest(text: string, metadata?: Record<string, unknown>): Promise<{ sourceId: string }> {
     if (!this.claimKit) throw new Error("ClaimKit not initialized");
+    const input = this.buildIngestInput(text, metadata);
+    const result = await this.claimKit.ingest(input);
+    return { sourceId: result.ingest.source.id };
+  }
+
+  /**
+   * Ingest many documents in a single ClaimKit call. ClaimKit's ingestMany
+   * forwards each input to its internal extractor; the extractor in turn
+   * uses the new batched-chunk path (CLAIMKIT_EXTRACT_BATCH_SIZE chunks per
+   * LLM round-trip). Net result: N source docs become roughly N×avgChunks/B
+   * LLM extraction calls instead of N×avgChunks.
+   *
+   * Returns sourceIds aligned to the input order; failed inputs surface as
+   * { sourceId: null, error } so the caller can drop them from any dedupe
+   * write without losing the success set.
+   */
+  async ingestMany(
+    items: Array<{ text: string; metadata?: Record<string, unknown> }>,
+  ): Promise<Array<{ sourceId: string | null; error?: string }>> {
+    if (!this.claimKit) throw new Error("ClaimKit not initialized");
+    if (items.length === 0) return [];
+    const inputs = items.map((i) => this.buildIngestInput(i.text, i.metadata));
+    try {
+      const results = await this.claimKit.ingestMany(inputs);
+      return results.map((r) => ({ sourceId: r.ingest.source.id }));
+    } catch (err) {
+      // ingestMany resolves all-or-throw — if a single doc fails the whole
+      // batch rejects. Degrade to per-doc ingest so partial success isn't
+      // lost (mirrors the extractor's fallback behavior).
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[ClaimKit] ingestMany failed (${items.length} docs) — falling back to per-doc: ${msg}`);
+      const out: Array<{ sourceId: string | null; error?: string }> = [];
+      for (const item of items) {
+        try {
+          const r = await this.ingest(item.text, item.metadata);
+          out.push({ sourceId: r.sourceId });
+        } catch (perDocErr) {
+          out.push({
+            sourceId: null,
+            error: perDocErr instanceof Error ? perDocErr.message : String(perDocErr),
+          });
+        }
+      }
+      return out;
+    }
+  }
+
+  private buildIngestInput(text: string, metadata?: Record<string, unknown>): SourceInput {
     const title = (metadata?.title as string | undefined)
       ?? (metadata?.path as string | undefined)
       ?? (metadata?.docId as string | undefined)
@@ -329,14 +377,12 @@ export class ClaimKitAdapter {
       ?? "source";
     const trustTier = metadata?.trustTier as string | undefined;
     const { trustTier: _drop, ...restMeta } = metadata ?? {};
-    const input: SourceInput = {
+    return {
       title,
       content: text,
-      ...(trustTier ? { trustTier: trustTier as Parameters<typeof this.claimKit.ingest>[0]["trustTier"] } : {}),
+      ...(trustTier ? { trustTier: trustTier as Parameters<NonNullable<typeof this.claimKit>["ingest"]>[0]["trustTier"] } : {}),
       metadata: restMeta as Record<string, Json>,
     };
-    const result = await this.claimKit.ingest(input);
-    return { sourceId: result.ingest.source.id };
   }
 
   async query(question: string, options?: QueryOptions & { signal?: AbortSignal }): Promise<ClaimKitQueryResult> {
@@ -384,6 +430,71 @@ export class ClaimKitAdapter {
         retrievalScore: result.metadata.retrievalScore,
       },
       confidenceTrace: "confidenceTrace" in result ? result.confidenceTrace : undefined,
+    };
+  }
+
+  /**
+   * Retrieval-only query — runs plan + embed + retrieve + compile on
+   * ClaimKit but skips the generate + verify LLM calls. Returns the same
+   * shape as query() so the chat probe path can drop in without further
+   * conversion, but populates `answer` and `citations` from the evidence
+   * packet only (no LLM-generated answer text). The chat probe never
+   * reads `answer`, so the saved 2 LLM round-trips per call are pure win.
+   *
+   * Typical cost drops from 3-30s (full query) to 0.5-3s (lite).
+   */
+  async queryLite(
+    question: string,
+    options?: QueryOptions & { signal?: AbortSignal },
+  ): Promise<ClaimKitQueryResult> {
+    if (!this.claimKit) throw new Error("ClaimKit not initialized");
+    const t0 = Date.now();
+    const result = await this.claimKit.retrieveLite(question, options);
+    const graphVerifications = await this.collectRelationshipVerifications(question);
+    const verifiedGraph = graphVerifications.filter(
+      (verification): verification is VerificationResult & { evidence: string } =>
+        verification.verified && typeof verification.evidence === "string",
+    );
+    const total = Date.now() - t0;
+    const ckMs = result.metadata.processingTimeMs;
+    console.log(`[ClaimKit:timing] total=${total}ms internal=${ckMs}ms claims=${result.metadata.claimCount} sources=${result.metadata.sourceIds.length} mode=lite`);
+    return {
+      // No generated answer in lite mode — leave empty so the existing
+      // chat probe path (which only reads confidence/answerability/metadata)
+      // falls into its rag_first / parallel branch as expected.
+      answer: "",
+      citations: [
+        ...result.packet.claims.flatMap((c) =>
+          (c.evidenceSpans ?? []).map((span) => ({
+            claimId: String(c.claim.id),
+            sourceId: String(c.sourceRef?.id ?? ""),
+            text: span.spanText,
+          })),
+        ),
+        ...verifiedGraph.map((verification, index) => ({
+          claimId: `knowledge-graph:${index + 1}`,
+          sourceId: "knowledge-graph",
+          text: verification.evidence,
+        })),
+      ],
+      confidence: verifiedGraph.length > 0
+        ? this.blendConfidence(result.confidence, verifiedGraph)
+        : result.confidence,
+      contradictions: result.contradictions.map((c) => ({
+        claimA: c.claimText1,
+        claimB: c.claimText2,
+        reason: c.explanation,
+      })),
+      missingEvidence: [],
+      answerability: result.answerability,
+      metadata: {
+        sourceIds: verifiedGraph.length > 0
+          ? [...new Set([...result.metadata.sourceIds, "knowledge-graph"])]
+          : [...result.metadata.sourceIds],
+        claimCount: result.metadata.claimCount + verifiedGraph.length,
+        processingTimeMs: result.metadata.processingTimeMs,
+        retrievalScore: result.metadata.retrievalScore,
+      },
     };
   }
 

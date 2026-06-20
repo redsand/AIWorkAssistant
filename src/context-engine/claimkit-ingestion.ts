@@ -192,11 +192,15 @@ function formatRelationshipClaim(claim: RelationshipClaim, description?: string)
   ].join("\n");
 }
 
-async function ingestDocument(
-  doc: ScoredDocument,
-  query: string,
-  stats: IngestionStats,
-): Promise<void> {
+interface PreparedSeedItem {
+  key: string;
+  hash: string;
+  text: string;
+  metadata: Record<string, unknown>;
+  docId: string;
+}
+
+function prepareSeedDocument(doc: ScoredDocument, query: string): PreparedSeedItem {
   const key = `scored-doc:${doc.source}:${doc.id}`;
   const sourceDetail = doc.source === "codebase"
     ? `${doc.metadata.filePath ?? doc.title}:${doc.metadata.startLine ?? ""}-${doc.metadata.endLine ?? ""}`
@@ -209,14 +213,11 @@ async function ingestDocument(
     "",
     doc.content,
   ].join("\n");
-  const hash = hashContent(text);
-  if (!ingestedIds.hasChanged(key, hash)) {
-    stats.skipped++;
-    return;
-  }
-
-  try {
-    const { sourceId } = await claimKitAdapter.ingest(text, {
+  return {
+    key,
+    hash: hashContent(text),
+    text,
+    metadata: {
       docId: doc.id,
       title: doc.title,
       source: doc.source,
@@ -224,38 +225,11 @@ async function ingestDocument(
       querySeed: true,
       score: doc.score,
       ...doc.metadata,
-    });
-
-    stats.sourceIds.push(sourceId);
-    stats.ingested++;
-    ingestedIds.add(key, hash);
-  } catch (err) {
-    console.warn(`[ClaimKit Ingestion] Failed to ingest scored document ${doc.id}:`, err);
-    stats.errors++;
-  }
+    },
+    docId: doc.id,
+  };
 }
 
-async function runWithConcurrencyLimit<T>(
-  items: T[],
-  limit: number,
-  signal: AbortSignal | undefined,
-  fn: (item: T) => Promise<void>,
-): Promise<void> {
-  const queue = items.slice();
-  const workers: Promise<void>[] = [];
-  for (let i = 0; i < limit; i++) {
-    workers.push(
-      (async () => {
-        while (queue.length > 0) {
-          if (signal?.aborted) return;
-          const item = queue.shift()!;
-          await fn(item);
-        }
-      })(),
-    );
-  }
-  await Promise.all(workers);
-}
 
 export async function ingestSingleKnowledgeEntry(entry: KnowledgeEntry): Promise<void> {
   if (!claimKitAdapter.isAvailable()) return;
@@ -304,12 +278,65 @@ export async function ingestScoredDocumentsForQuery(
     .slice(0, limit);
   stats.total = selected.length;
 
-  const concurrency = Math.max(1, env.AI_MAX_CONCURRENT);
-  await runWithConcurrencyLimit(selected, concurrency, signal, (doc) => ingestDocument(doc, query, stats));
+  // ── Phase 1: hash-prefilter ────────────────────────────────────────────
+  // Read the dedupe store ONCE per doc before doing any embedding or LLM
+  // work. Unchanged docs never reach claimKitAdapter — the prior design
+  // had each worker take a slot just to discover its work was already
+  // done, wasting a queue position on the AI request limiter.
+  const toIngest: PreparedSeedItem[] = [];
+  for (const doc of selected) {
+    if (signal?.aborted) break;
+    const prepared = prepareSeedDocument(doc, query);
+    if (!ingestedIds.hasChanged(prepared.key, prepared.hash)) {
+      stats.skipped++;
+      continue;
+    }
+    toIngest.push(prepared);
+  }
+
+  if (toIngest.length === 0) {
+    stats.durationMs = Date.now() - start;
+    return stats;
+  }
+
+  // ── Phase 2: batched ingest ────────────────────────────────────────────
+  // claimKitAdapter.ingestMany delegates to ClaimKit.ingestMany, which
+  // forwards to the batched extractor (CLAIMKIT_EXTRACT_BATCH_SIZE chunks
+  // per LLM call). One per-query seed now issues ~N×avgChunks/B LLM calls
+  // instead of N×avgChunks.
+  if (signal?.aborted) {
+    stats.durationMs = Date.now() - start;
+    return stats;
+  }
+  try {
+    const results = await claimKitAdapter.ingestMany(
+      toIngest.map((i) => ({ text: i.text, metadata: i.metadata })),
+    );
+    for (let i = 0; i < toIngest.length; i++) {
+      const item = toIngest[i]!;
+      const r = results[i];
+      if (!r || r.sourceId === null) {
+        stats.errors++;
+        if (r?.error) {
+          console.warn(`[ClaimKit Ingestion] Seed ingest failed for ${item.docId}: ${r.error}`);
+        }
+        continue;
+      }
+      stats.sourceIds.push(r.sourceId);
+      stats.ingested++;
+      ingestedIds.add(item.key, item.hash);
+    }
+  } catch (err) {
+    stats.errors += toIngest.length;
+    console.warn(
+      `[ClaimKit Ingestion] Query seed batch failed (${toIngest.length} docs):`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 
   stats.durationMs = Date.now() - start;
   if (stats.ingested > 0 || stats.errors > 0) {
-    console.log(`[ClaimKit Ingestion] Query seed: ${stats.ingested}/${stats.total} ingested (${stats.errors} errors) in ${stats.durationMs}ms`);
+    console.log(`[ClaimKit Ingestion] Query seed: ${stats.ingested}/${stats.total} ingested (${stats.errors} errors, ${stats.skipped} unchanged) in ${stats.durationMs}ms`);
   }
   return stats;
 }
@@ -422,6 +449,190 @@ export async function ingestSingleGraphEdge(edge: KGEdge): Promise<void> {
   }
 }
 
+// ── Ingestion status tracker ───────────────────────────────────────────────
+// In-memory singleton exposing live progress for the cold-start ingestion.
+// Served via GET /health/ingestion and consumed by the web sidebar badge so
+// users can tell when "the KG is still warming up" vs. "actually ready".
+//
+// Phases mirror the work the bootstrap path does, in order:
+//   1. knowledge   — knowledgeStore docs
+//   2. graph-nodes — knowledgeGraph.getAllNodes()
+//   3. graph-edges — knowledgeGraph.getAllEdges()
+// Each phase reports total / ingested / skipped / errors as it runs.
+
+export type IngestionPhaseName = "knowledge" | "graph-nodes" | "graph-edges";
+
+export interface IngestionPhaseSnapshot {
+  name: IngestionPhaseName;
+  total: number;
+  ingested: number;
+  skipped: number;
+  errors: number;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface IngestionStatusSnapshot {
+  isReady: boolean;
+  failed: boolean;
+  startedAt: string | null;
+  completedAt: string | null;
+  durationMs: number | null;
+  phases: IngestionPhaseSnapshot[];
+}
+
+class IngestionStatusTracker {
+  private phases: Map<IngestionPhaseName, IngestionPhaseSnapshot> = new Map();
+  private startedAt: string | null = null;
+  private completedAt: string | null = null;
+  private failed = false;
+
+  beginRun(): void {
+    this.phases.clear();
+    this.startedAt = new Date().toISOString();
+    this.completedAt = null;
+    this.failed = false;
+  }
+
+  beginPhase(name: IngestionPhaseName, total: number): void {
+    this.phases.set(name, {
+      name,
+      total,
+      ingested: 0,
+      skipped: 0,
+      errors: 0,
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+    });
+  }
+
+  updatePhase(name: IngestionPhaseName, patch: Partial<Omit<IngestionPhaseSnapshot, "name" | "startedAt" | "completedAt">>): void {
+    const current = this.phases.get(name);
+    if (!current) return;
+    this.phases.set(name, { ...current, ...patch });
+  }
+
+  endPhase(name: IngestionPhaseName, final: { ingested: number; skipped: number; errors: number }): void {
+    const current = this.phases.get(name);
+    if (!current) return;
+    this.phases.set(name, {
+      ...current,
+      ...final,
+      completedAt: new Date().toISOString(),
+    });
+  }
+
+  markComplete(): void {
+    this.completedAt = new Date().toISOString();
+  }
+
+  markFailed(): void {
+    this.failed = true;
+    this.completedAt = new Date().toISOString();
+  }
+
+  snapshot(): IngestionStatusSnapshot {
+    const phaseList = Array.from(this.phases.values());
+    return {
+      isReady: this.completedAt !== null && !this.failed,
+      failed: this.failed,
+      startedAt: this.startedAt,
+      completedAt: this.completedAt,
+      durationMs: this.completedAt && this.startedAt
+        ? new Date(this.completedAt).getTime() - new Date(this.startedAt).getTime()
+        : null,
+      phases: phaseList,
+    };
+  }
+
+  // Test helper.
+  __resetForTests(): void {
+    this.phases.clear();
+    this.startedAt = null;
+    this.completedAt = null;
+    this.failed = false;
+  }
+}
+
+export const ingestionStatusTracker = new IngestionStatusTracker();
+
+// ── Batched ingestion helper ───────────────────────────────────────────────
+// Per-document loop sat at the heart of the multi-minute cold-start
+// problem. Each iteration acquired an aiRequestLimiter slot, made an LLM
+// extractor round-trip per chunk, then released — paying a full network
+// round-trip per source. With the new claimKitAdapter.ingestMany() and
+// ClaimKit's batched extractor, we send INGEST_BATCH_SIZE sources at a
+// time and amortize the extraction across batches of chunks.
+
+interface PreparedIngestItem {
+  key: string;
+  hash: string;
+  text: string;
+  metadata: Record<string, unknown>;
+  id: string;
+}
+
+const INGEST_BATCH_SIZE = (() => {
+  const raw = parseInt(process.env.CLAIMKIT_INGEST_BATCH_SIZE || "32", 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 32;
+})();
+
+async function runBatchedIngest(
+  label: string,
+  prepared: PreparedIngestItem[],
+  stats: IngestionStats,
+  options?: { signal?: AbortSignal; trackerPhase?: IngestionPhaseName },
+): Promise<void> {
+  const start = Date.now();
+  let lastProgressAt = start;
+  for (let batchStart = 0; batchStart < prepared.length; batchStart += INGEST_BATCH_SIZE) {
+    if (options?.signal?.aborted) return;
+    const batch = prepared.slice(batchStart, batchStart + INGEST_BATCH_SIZE);
+    const elapsed = Date.now() - start;
+    if (elapsed - (Date.now() - lastProgressAt) >= 10_000 || batchStart + batch.length >= prepared.length) {
+      console.log(
+        `[ClaimKit Ingestion] ${label} progress: ${batchStart + batch.length}/${prepared.length} ` +
+        `(${stats.ingested} ingested, ${stats.skipped} skipped, ${stats.errors} errors) — ${elapsed}ms elapsed`,
+      );
+      lastProgressAt = elapsed;
+    }
+    try {
+      const results = await claimKitAdapter.ingestMany(
+        batch.map((b) => ({ text: b.text, metadata: b.metadata })),
+      );
+      for (let i = 0; i < batch.length; i++) {
+        const item = batch[i]!;
+        const r = results[i];
+        if (!r || r.sourceId === null) {
+          stats.errors++;
+          if (r?.error) {
+            console.warn(`[ClaimKit Ingestion] ${label} ingest failed for ${item.id}: ${r.error}`);
+          }
+          continue;
+        }
+        stats.sourceIds.push(r.sourceId);
+        stats.ingested++;
+        ingestedIds.add(item.key, item.hash);
+      }
+    } catch (err) {
+      stats.errors += batch.length;
+      console.warn(
+        `[ClaimKit Ingestion] ${label} batch failed (${batch.length} items):`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+    // Push live progress to the readiness tracker so the UI badge can reflect
+    // the running counts without waiting for the phase to finish.
+    if (options?.trackerPhase) {
+      ingestionStatusTracker.updatePhase(options.trackerPhase, {
+        ingested: stats.ingested,
+        skipped: stats.skipped,
+        errors: stats.errors,
+      });
+    }
+  }
+}
+
 export async function ingestKnowledgeStore(): Promise<IngestionStats> {
   const start = Date.now();
   const stats: IngestionStats = { total: 0, ingested: 0, skipped: 0, errors: 0, sourceIds: [], durationMs: 0 };
@@ -446,40 +657,44 @@ export async function ingestKnowledgeStore(): Promise<IngestionStats> {
     );
   }
 
-  let lastProgressAt = start;
-  for (let i = 0; i < documents.length; i++) {
-    const doc = documents[i];
-    const elapsed = Date.now() - start;
-    if (elapsed - (Date.now() - lastProgressAt) >= 10_000 || i === documents.length - 1) {
-      console.log(`[ClaimKit Ingestion] Knowledge store progress: ${i + 1}/${documents.length} (${stats.ingested} ingested, ${stats.skipped} skipped, ${stats.errors} errors) — ${elapsed}ms elapsed`);
-      lastProgressAt = elapsed;
+  // Phase 1: hash-prefilter — skipped docs never touch the LLM.
+  const prepared: PreparedIngestItem[] = [];
+  for (const doc of documents) {
+    const key = `knowledge:${doc.id}`;
+    const text = `${doc.title}\n\n${doc.content}`;
+    const hash = hashContent(text);
+    if (!ingestedIds.hasChanged(key, hash)) {
+      stats.skipped++;
+      continue;
     }
-    try {
-      const key = `knowledge:${doc.id}`;
-      const text = `${doc.title}\n\n${doc.content}`;
-      const hash = hashContent(text);
-      if (!ingestedIds.hasChanged(key, hash)) {
-        stats.skipped++;
-        continue;
-      }
-      const { sourceId } = await claimKitAdapter.ingest(text, {
+    prepared.push({
+      key,
+      hash,
+      text,
+      metadata: {
         docId: doc.id,
         title: doc.title,
         source: "knowledge",
         trustTier: "curated",
         tags: doc.tags ?? [],
-      });
-      stats.sourceIds.push(sourceId);
-      stats.ingested++;
-      ingestedIds.add(key, hash);
-    } catch (err) {
-      console.warn(`[ClaimKit Ingestion] Failed to ingest doc ${doc.id}:`, err);
-      stats.errors++;
-    }
+      },
+      id: doc.id,
+    });
   }
 
+  ingestionStatusTracker.beginPhase("knowledge", documents.length);
+  ingestionStatusTracker.updatePhase("knowledge", { skipped: stats.skipped });
+
+  // Phase 2: batched ingest via ClaimKit.ingestMany → batched extractor.
+  await runBatchedIngest("Knowledge store", prepared, stats, { trackerPhase: "knowledge" });
+  ingestionStatusTracker.endPhase("knowledge", {
+    ingested: stats.ingested,
+    skipped: stats.skipped,
+    errors: stats.errors,
+  });
+
   stats.durationMs = Date.now() - start;
-  console.log(`[ClaimKit Ingestion] Knowledge store: ${stats.ingested}/${stats.total} ingested (${stats.errors} errors) in ${stats.durationMs}ms`);
+  console.log(`[ClaimKit Ingestion] Knowledge store: ${stats.ingested}/${stats.total} ingested (${stats.errors} errors, ${stats.skipped} unchanged) in ${stats.durationMs}ms`);
   return stats;
 }
 
@@ -498,72 +713,79 @@ export async function ingestGraphStore(): Promise<IngestionStats> {
   stats.total = nodes.length + edges.length;
   console.log(`[ClaimKit Ingestion] Graph: ${nodes.length} node(s) + ${edges.length} edge(s)`);
 
-  let lastProgressAt = start;
-  for (let i = 0; i < nodes.length; i++) {
-    const node = nodes[i];
-    const elapsed = Date.now() - start;
-    if (elapsed - (Date.now() - lastProgressAt) >= 10_000 || i === nodes.length - 1) {
-      console.log(`[ClaimKit Ingestion] Graph node progress: ${i + 1}/${nodes.length} (${stats.ingested} ingested, ${stats.skipped} skipped, ${stats.errors} errors) — ${elapsed}ms elapsed`);
-      lastProgressAt = elapsed;
+  // Nodes — prefilter then batched ingest.
+  const nodesSkippedBefore = stats.skipped;
+  ingestionStatusTracker.beginPhase("graph-nodes", nodes.length);
+  const nodePrepared: PreparedIngestItem[] = [];
+  for (const node of nodes) {
+    const key = `graph-node:${node.id}`;
+    const text = `Entity: ${node.title} (${node.type})\n${node.content}\nContext: ${node.context ?? "N/A"}\nStatus: ${node.status}`;
+    const hash = hashContent(text);
+    if (!ingestedIds.hasChanged(key, hash)) {
+      stats.skipped++;
+      continue;
     }
-    try {
-      const key = `graph-node:${node.id}`;
-      const text = `Entity: ${node.title} (${node.type})\n${node.content}\nContext: ${node.context ?? "N/A"}\nStatus: ${node.status}`;
-      const hash = hashContent(text);
-      if (!ingestedIds.hasChanged(key, hash)) {
-        stats.skipped++;
-        continue;
-      }
-      const { sourceId } = await claimKitAdapter.ingest(text, {
+    nodePrepared.push({
+      key,
+      hash,
+      text,
+      metadata: {
         entityId: node.id,
         entityType: node.type,
         source: "graph",
         trustTier: "curated",
-      });
-      stats.sourceIds.push(sourceId);
-      stats.ingested++;
-      ingestedIds.add(key, hash);
-    } catch (err) {
-      console.warn(`[ClaimKit Ingestion] Failed to ingest node ${node.id}:`, err);
-      stats.errors++;
-    }
+      },
+      id: node.id,
+    });
   }
+  const nodeStatsBefore = { ingested: stats.ingested, errors: stats.errors };
+  await runBatchedIngest("Graph nodes", nodePrepared, stats, { trackerPhase: "graph-nodes" });
+  ingestionStatusTracker.endPhase("graph-nodes", {
+    ingested: stats.ingested - nodeStatsBefore.ingested,
+    skipped: stats.skipped - nodesSkippedBefore,
+    errors: stats.errors - nodeStatsBefore.errors,
+  });
 
-  for (let i = 0; i < edges.length; i++) {
-    const edge = edges[i];
-    const elapsed = Date.now() - start;
-    if (elapsed - (Date.now() - lastProgressAt) >= 10_000 || i === edges.length - 1) {
-      console.log(`[ClaimKit Ingestion] Graph edge progress: ${i + 1}/${edges.length} (${stats.ingested} ingested, ${stats.skipped} skipped, ${stats.errors} errors) — ${elapsed}ms elapsed`);
-      lastProgressAt = elapsed;
+  // Edges — prefilter then batched ingest. Edge text builds a relationship
+  // claim and references the source/target node titles; getNode() is local
+  // SQLite (<1ms) so the loop is cheap.
+  const edgesSkippedBefore = stats.skipped;
+  ingestionStatusTracker.beginPhase("graph-edges", edges.length);
+  const edgePrepared: PreparedIngestItem[] = [];
+  for (const edge of edges) {
+    const sourceNode = knowledgeGraph.getNode(edge.sourceId);
+    const targetNode = knowledgeGraph.getNode(edge.targetId);
+    const relationshipClaim = buildRelationshipClaim(edge, sourceNode, targetNode);
+    const text = formatRelationshipClaim(relationshipClaim, edge.description);
+    const key = `graph-edge:${edge.id}`;
+    const hash = hashContent(text);
+    if (!ingestedIds.hasChanged(key, hash)) {
+      stats.skipped++;
+      continue;
     }
-    try {
-      const key = `graph-edge:${edge.id}`;
-      const sourceNode = knowledgeGraph.getNode(edge.sourceId);
-      const targetNode = knowledgeGraph.getNode(edge.targetId);
-      const relationshipClaim = buildRelationshipClaim(edge, sourceNode, targetNode);
-      const text = formatRelationshipClaim(relationshipClaim, edge.description);
-      const hash = hashContent(text);
-      if (!ingestedIds.hasChanged(key, hash)) {
-        stats.skipped++;
-        continue;
-      }
-      const { sourceId } = await claimKitAdapter.ingest(text, {
+    edgePrepared.push({
+      key,
+      hash,
+      text,
+      metadata: {
         relationshipId: edge.id,
         relationshipType: edge.type,
         relationshipClaim,
         source: "graph",
         trustTier: "curated",
-      });
-      stats.sourceIds.push(sourceId);
-      stats.ingested++;
-      ingestedIds.add(key, hash);
-    } catch (err) {
-      console.warn(`[ClaimKit Ingestion] Failed to ingest edge ${edge.id}:`, err);
-      stats.errors++;
-    }
+      },
+      id: edge.id,
+    });
   }
+  const edgeStatsBefore = { ingested: stats.ingested, errors: stats.errors };
+  await runBatchedIngest("Graph edges", edgePrepared, stats, { trackerPhase: "graph-edges" });
+  ingestionStatusTracker.endPhase("graph-edges", {
+    ingested: stats.ingested - edgeStatsBefore.ingested,
+    skipped: stats.skipped - edgesSkippedBefore,
+    errors: stats.errors - edgeStatsBefore.errors,
+  });
 
   stats.durationMs = Date.now() - start;
-  console.log(`[ClaimKit Ingestion] Graph: ${stats.ingested}/${stats.total} ingested (${stats.errors} errors) in ${stats.durationMs}ms`);
+  console.log(`[ClaimKit Ingestion] Graph: ${stats.ingested}/${stats.total} ingested (${stats.errors} errors, ${stats.skipped} unchanged) in ${stats.durationMs}ms`);
   return stats;
 }

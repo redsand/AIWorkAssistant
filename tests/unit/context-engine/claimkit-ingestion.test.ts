@@ -4,8 +4,33 @@ const mockIngest = vi.fn();
 const mockIsAvailable = vi.fn();
 const mockGetAllEntries = vi.fn();
 
+/**
+ * The production code now batches ingestion via claimKitAdapter.ingestMany,
+ * but the existing per-call assertions on mockIngest are still meaningful
+ * for verifying text+metadata. Stub ingestMany so it iterates items and
+ * defers to mockIngest one-by-one — assertions on mockIngest see the same
+ * arguments as before. Tests that need to assert on the batched shape
+ * can call mockIngestMany directly.
+ */
+const mockIngestMany = vi.fn(async (items: Array<{ text: string; metadata?: Record<string, unknown> }>) => {
+  const results: Array<{ sourceId: string | null; error?: string }> = [];
+  for (const item of items) {
+    try {
+      const r = await mockIngest(item.text, item.metadata);
+      results.push({ sourceId: (r as { sourceId: string }).sourceId });
+    } catch (err) {
+      results.push({
+        sourceId: null,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return results;
+});
+
 const mockClaimKitAdapter = {
   ingest: mockIngest,
+  ingestMany: mockIngestMany,
   isAvailable: mockIsAvailable,
 };
 

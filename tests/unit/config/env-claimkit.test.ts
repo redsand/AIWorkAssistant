@@ -131,9 +131,12 @@ describe("ClaimKit environment variables", () => {
       expect(env.CLAIMKIT_REQUIRE_INIT).toBe(true);
     });
 
-    it("should default CLAIMKIT_BLOCK_ON_INGESTION to true (strict mode)", () => {
+    it("should default CLAIMKIT_BLOCK_ON_INGESTION to false (non-blocking startup)", () => {
+      // Default was flipped to false: server.listen() should be responsive
+      // immediately while background ingestion runs. CI / deterministic-
+      // startup environments can still set CLAIMKIT_BLOCK_ON_INGESTION=true.
       const env = loadEnv();
-      expect(env.CLAIMKIT_BLOCK_ON_INGESTION).toBe(true);
+      expect(env.CLAIMKIT_BLOCK_ON_INGESTION).toBe(false);
     });
   });
 

@@ -7,7 +7,13 @@ const mockClaimKitAdapter = {
   isAvailable: vi.fn(() => false),
   getInitError: vi.fn(() => null),
   ingest: vi.fn(),
+  ingestMany: vi.fn(async (items: Array<{ text: string; metadata?: unknown }>) =>
+    items.map(() => ({ sourceId: null }))),
   query: vi.fn(),
+  // The probe path now uses queryLite (no generate / no verify). Delegate
+  // to query so existing test assertions on mockClaimKitAdapter.query keep
+  // exercising the same call-site logic.
+  queryLite: vi.fn((...args: unknown[]) => mockClaimKitAdapter.query(...(args as Parameters<typeof mockClaimKitAdapter.query>))),
 };
 
 vi.doMock("../../../src/context-engine/adapters/claimkit-adapter", () => ({

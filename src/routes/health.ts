@@ -10,6 +10,7 @@ import { jiraClient } from "../integrations/jira/jira-client";
 import { jitbitClient } from "../integrations/jitbit/jitbit-client";
 import { aiRequestLimiter } from "../agent/providers/ai-request-limiter";
 import { providerCircuitBreaker } from "../agent/providers/circuit-breaker";
+import { ingestionStatusTracker } from "../context-engine/claimkit-ingestion";
 
 function getGitMetadata(): { commit: string | null; dirty: boolean } {
   try {
@@ -71,6 +72,18 @@ export async function healthRoutes(fastify: FastifyInstance) {
         },
       },
     };
+  });
+
+  /**
+   * Cold-start ingestion progress. Used by the web sidebar badge to show
+   * "KG warming up — 287/364 nodes" until isReady flips true.
+   *
+   * In-memory, cheap, safe to poll. Phases run in order: knowledge,
+   * graph-nodes, graph-edges. Each reports total/ingested/skipped/errors
+   * and start/end timestamps.
+   */
+  fastify.get("/health/ingestion", async () => {
+    return ingestionStatusTracker.snapshot();
   });
 
   /**

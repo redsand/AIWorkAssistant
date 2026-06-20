@@ -49,6 +49,29 @@
   white-space: nowrap;
 }
 
+.ingestion-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 10px;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.ingestion-badge-warming {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+
+.ingestion-badge-error {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+}
+
 .logout-btn {
   padding: 6px 16px;
   background: transparent;

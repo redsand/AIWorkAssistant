@@ -395,9 +395,11 @@ const envSchema = z.object({
   // is at or above this value (but below the high threshold). Below this, fall
   // back to full RAG + full ClaimKit.
   CLAIMKIT_LOW_CONFIDENCE_THRESHOLD: z.coerce.number().default(0.5),
-  // Hard cap on the pre-flight ClaimKit probe. Kept small so a slow probe
-  // degrades into "rag_first" rather than adding latency to every query.
-  CLAIMKIT_FIRST_PROBE_TIMEOUT_MS: z.coerce.number().default(500),
+  // Hard cap on the pre-flight ClaimKit probe. The probe now uses
+  // claimKit.retrieveLite which skips generate + verify (2 LLM round-trips),
+  // so a 3s budget actually completes the work most of the time. Slow
+  // probes still degrade into "rag_first" rather than adding latency.
+  CLAIMKIT_FIRST_PROBE_TIMEOUT_MS: z.coerce.number().default(3000),
 
   // Knowledge graph retrieval controls
   KNOWLEDGE_GRAPH_QUERY_ENABLED: z
@@ -422,10 +424,14 @@ const envSchema = z.object({
   // If true, knowledge/codebase/graph ingestion runs synchronously before
   // server.listen(), so the store is fully populated on first request.
   // If false, ingestion is fire-and-forget after listen.
+  // Default false so server.listen() doesn't wait on a multi-minute
+  // first-time ingestion. Background ingestion still runs; /health/ingestion
+  // exposes progress and the web sidebar shows a "KG warming up" badge.
+  // Set to "true" if you need deterministic startup (CI, tests).
   CLAIMKIT_BLOCK_ON_INGESTION: z
     .string()
     .transform((s) => s === "true")
-    .default("true"),
+    .default("false"),
 
   // Dedicated Ollama provider for ClaimKit (isolates LLM calls from main chat).
   // CLAIMKIT_OLLAMA_MODEL defaults to "" so the adapter falls back to OLLAMA_MODEL
