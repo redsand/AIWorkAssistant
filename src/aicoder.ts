@@ -52,6 +52,7 @@ import {
 import { runTestSuite as _runTestSuite, checkCoverage as _checkCoverage } from "./autonomous-loop/test-runner";
 import { runAgent as _runAgent } from "./autonomous-loop/agent-runner";
 import type { AgentConfig } from "./autonomous-loop/agent-runner";
+import { ProcessRetryCircuit } from "./autonomous-loop/process-retry-circuit";
 import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
 import { enrichPrompt } from "./autonomous-loop/prompt-enricher";
 import {
@@ -2146,6 +2147,40 @@ const MAX_FAILED_ATTEMPTS = 3;
 // to skip past blocked items and try the next one rather than stalling the whole cycle.
 const depBlockedThisCycle = new Set<string>();
 
+// ── Process-local rapid-failure circuit breaker ────────────────────────────
+// The DB-backed blacklist works for normal flow but FORCE_REPROCESS bypasses
+// it, which let one issue (#50, 2026-06-18) burn through 103 retries in 3h
+// when the agent crashed immediately each time. The circuit below tracks
+// failures inside the CURRENT aicoder process — regardless of --force — so a
+// tight-loop crash pattern can never racket through more than
+// AICODER_PROCESS_RETRY_MAX (default 3) attempts inside
+// AICODER_PROCESS_RETRY_WINDOW_MS (default 10 min). Operator clears it by
+// restarting the process or waiting out the window. Decoupled from the
+// persistent failed_attempts counter so the two limits compose: persistent
+// for cross-process resilience, process-local for crash-loop protection.
+const processRetryCircuit = new ProcessRetryCircuit({
+  maxFailures: (() => {
+    const n = parseInt(process.env.AICODER_PROCESS_RETRY_MAX || "3", 10);
+    return Number.isFinite(n) && n > 0 ? n : 3;
+  })(),
+  windowMs: (() => {
+    const n = parseInt(process.env.AICODER_PROCESS_RETRY_WINDOW_MS || "600000", 10);
+    return Number.isFinite(n) && n > 0 ? n : 600_000;
+  })(),
+});
+
+function recordProcessFailure(issueKey: string): void {
+  processRetryCircuit.recordFailure(WORKSPACE, issueKey);
+}
+
+function clearProcessFailures(issueKey: string): void {
+  processRetryCircuit.clear(WORKSPACE, issueKey);
+}
+
+function checkProcessRetryCircuit(issueKey: string): string | null {
+  return processRetryCircuit.check(WORKSPACE, issueKey);
+}
+
 // Persist processed issues across restarts via SQLite (concurrency-safe)
 function loadProcessedIssues(): void {
   try {
@@ -2321,6 +2356,13 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   const issueKey = item.id || String(item.number);
   if (infrastructureBlockedIssues.has(issueKey)) {
     runLogger.logSkip(`Issue ${issueKey} has an agent infrastructure failure in this run — skipping to avoid a retry loop`);
+    return null;
+  }
+  // Process-local circuit breaker — fires even with --force, so a tight
+  // crash loop can't keep retrying forever in the same PID.
+  const circuitReason = checkProcessRetryCircuit(issueKey);
+  if (circuitReason) {
+    runLogger.logSkip(circuitReason);
     return null;
   }
   if (processedIssues.has(issueKey) && !FORCE_REPROCESS) {
@@ -2686,6 +2728,10 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
       await escalateAgentInfrastructureFailure(issueKey, agentStderr);
       lastPipelineExitCode = EXIT_REVIEW_FAILED;
     }
+    // Feed the process-local circuit so a tight crash loop can't keep
+    // burning compute. Independent of the persistent DB blacklist so the
+    // two limits compose; --force bypasses the DB blacklist but not this.
+    recordProcessFailure(issueKey);
     runLogger.endRun(exitCode);
     failRunTrack(run.id, `Agent exited with code ${exitCode}, no FIN signal`);
     return null;
@@ -2847,6 +2893,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   if (pr) {
     saveProcessedIssue(issueKey);
     agentRunDatabase.clearFailedAttempt(issueKey, WORKSPACE); // Clear failure counter on success
+    clearProcessFailures(issueKey); // Reset the process-local circuit on success
     try {
       const changedFiles = getChangedFiles(getBaseBranch(), "HEAD");
       conversationManager.saveMemory("aicoder", `[AI] ${item.title}`, `Completed issue ${issueKey}: created PR/MR #${pr.prNumber}. Files changed: ${changedFiles.join(", ") || "none"}.`, [issueKey, ...changedFiles.slice(0, 5)]);
@@ -2976,6 +3023,7 @@ async function continueFromBaselineTestsPass(cfg: ServerConfig, item: WorkItem, 
         if (isAgentInfrastructureFailure(freshResult.stderr)) {
           await escalateAgentInfrastructureFailure(state.issueKey, freshResult.stderr);
         }
+        recordProcessFailure(state.issueKey);
         clearRunState(state.issueKey);
         return;
       }
@@ -2986,6 +3034,7 @@ async function continueFromBaselineTestsPass(cfg: ServerConfig, item: WorkItem, 
       if (isAgentInfrastructureFailure(agentResult.stderr)) {
         await escalateAgentInfrastructureFailure(state.issueKey, agentResult.stderr);
       }
+      recordProcessFailure(state.issueKey);
       clearRunState(state.issueKey);
       return;
     }
