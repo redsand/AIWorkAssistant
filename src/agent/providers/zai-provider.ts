@@ -217,7 +217,8 @@ export class ZaiProvider extends AIProvider {
         });
 
         let response;
-        await aiRequestLimiter.acquire(this.name);
+        const limiterModel = request.model ?? this.config.model ?? null;
+        await aiRequestLimiter.acquire(this.name, limiterModel);
         try {
           await zaiRateLimiter.acquire();
           try {
@@ -230,7 +231,7 @@ export class ZaiProvider extends AIProvider {
             zaiRateLimiter.release();
           }
         } finally {
-          aiRequestLimiter.release(this.name);
+          aiRequestLimiter.release(this.name, limiterModel);
         }
 
         const data = response.data;
@@ -409,7 +410,8 @@ export class ZaiProvider extends AIProvider {
           attempt: `${attempt}/${maxAttempts}`,
         });
 
-        await aiRequestLimiter.acquire(this.name);
+        const limiterModel = request.model ?? this.config.model ?? null;
+        await aiRequestLimiter.acquire(this.name, limiterModel);
         const idleGuard = this.installFirstChunkAbort(request.signal);
         try {
           await zaiRateLimiter.acquire();
@@ -584,7 +586,7 @@ export class ZaiProvider extends AIProvider {
         return;
       } finally {
         idleGuard.dispose();
-        aiRequestLimiter.release(this.name);
+        aiRequestLimiter.release(this.name, limiterModel);
       }
     } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));

@@ -141,7 +141,8 @@ export class OpenAIProvider extends AIProvider {
           timeout: `${Math.round(attemptTimeout / 1000)}s`,
         });
 
-        await aiRequestLimiter.acquire(this.name);
+        const limiterModel = request.model ?? this.config.model ?? null;
+        await aiRequestLimiter.acquire(this.name, limiterModel);
         let response;
         try {
           response = await this.client.post("/chat/completions", requestBody, {
@@ -149,7 +150,7 @@ export class OpenAIProvider extends AIProvider {
             signal: request.signal,
           });
         } finally {
-          aiRequestLimiter.release(this.name);
+          aiRequestLimiter.release(this.name, limiterModel);
         }
 
         const data = response.data;
@@ -262,7 +263,8 @@ export class OpenAIProvider extends AIProvider {
       throw new Error("OpenAI API key not configured. Set OPENAI_API_KEY environment variable.");
     }
 
-    await aiRequestLimiter.acquire(this.name);
+    const limiterModel = request.model ?? this.config.model ?? null;
+    await aiRequestLimiter.acquire(this.name, limiterModel);
     const idleGuard = this.installFirstChunkAbort(request.signal);
     try {
       const requestBody = this.buildRequestBody({ ...request, stream: true });
@@ -409,7 +411,7 @@ export class OpenAIProvider extends AIProvider {
       throw new Error(message);
     } finally {
       idleGuard.dispose();
-      aiRequestLimiter.release(this.name);
+      aiRequestLimiter.release(this.name, limiterModel);
     }
   }
 

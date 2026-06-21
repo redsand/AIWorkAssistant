@@ -92,7 +92,8 @@ export class OllamaProvider extends AIProvider {
           timeout: `${Math.round(attemptTimeout / 1000)}s`,
         });
 
-        await aiRequestLimiter.acquire(this.name);
+        const limiterModel = request.model ?? this.config.model ?? null;
+        await aiRequestLimiter.acquire(this.name, limiterModel);
         let response;
         try {
           response = await this.client.post(
@@ -101,7 +102,7 @@ export class OllamaProvider extends AIProvider {
             { timeout: attemptTimeout, signal: request.signal },
           );
         } finally {
-          aiRequestLimiter.release(this.name);
+          aiRequestLimiter.release(this.name, limiterModel);
         }
 
         const data = response.data;
@@ -293,7 +294,8 @@ export class OllamaProvider extends AIProvider {
   protected async *chatStreamImpl(
     request: ChatRequest,
   ): AsyncGenerator<string | StreamEvent, void, unknown> {
-    await aiRequestLimiter.acquire(this.name);
+    const limiterModel = request.model ?? this.config.model ?? null;
+    await aiRequestLimiter.acquire(this.name, limiterModel);
     const idleGuard = this.installFirstChunkAbort(request.signal);
     try {
       const requestBody = this.buildRequestBody({ ...request, stream: true });
@@ -508,7 +510,7 @@ export class OllamaProvider extends AIProvider {
       throw new Error(message);
     } finally {
       idleGuard.dispose();
-      aiRequestLimiter.release(this.name);
+      aiRequestLimiter.release(this.name, limiterModel);
     }
   }
 
