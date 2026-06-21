@@ -76,6 +76,44 @@ or perform any system task required to complete the work.
 Do not ask for permission before running commands. If a command fails, read the error and try a different approach.`;
 }
 
+/**
+ * Non-interactive operating instructions. Without these, Claude / Codex /
+ * other coding CLIs naturally end with "Want me to push?" or "Should I
+ * commit?" and then sit waiting for stdin that will never arrive — the
+ * aicoder process feeds the prompt via stdin and immediately closes the
+ * pipe. Without an explicit "do not ask questions" rule, the agent
+ * blocks until the no-output watchdog kills it (now 5 min). With these
+ * rules, the agent makes a decision and exits cleanly with FIN.
+ *
+ * Kept short and emphatic on purpose — long instructions get pattern-
+ * matched away by the agent's own task-planning logic.
+ */
+function buildNonInteractiveSection(finToken: string): string {
+  return `### Non-Interactive Operation (CRITICAL)
+
+You are running NON-INTERACTIVELY inside an autonomous loop. There is no
+human at the other end of stdin.
+
+ABSOLUTE RULES:
+- NEVER ask questions. NEVER request confirmation. NEVER end with "Want
+  me to push?", "Should I commit?", "Do you want me to...?" or any
+  similar phrasing. The aicoder process will commit, push, and open the
+  PR. Your only job is to make the code changes.
+- NEVER wait for input. Treat every decision point as "make the most
+  reasonable choice and proceed." If you would have asked, instead pick
+  the safest answer that moves the work forward and continue.
+- When the work is complete (or you've determined it cannot be
+  completed), emit the single token \`${finToken}\` on its own line as
+  the very last thing you output, then stop. Do not write anything
+  after \`${finToken}\`.
+- If you hit an unrecoverable blocker, describe it briefly, then emit
+  \`${finToken}\` so the loop can fail fast and surface the issue. Do
+  not stall waiting for guidance.
+
+The aicoder process owns: \`git add\`, \`git commit\`, \`git push\`,
+\`gh pr create\`. You should NOT run those — focus on the code itself.`;
+}
+
 async function buildTestSection(workspace: string, prompt: string): Promise<string | null> {
   if (!TEST_KEYWORDS.test(prompt)) return null;
 
@@ -115,13 +153,21 @@ async function buildTestSection(workspace: string, prompt: string): Promise<stri
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
- * Enrich a coding prompt with shell capabilities, recovery commands, and test
- * context. Safe to call on every prompt — always returns a valid prompt string.
- * Enrichment failures are swallowed so they never block agent execution.
+ * Enrich a coding prompt with shell capabilities, non-interactive rules,
+ * and test context. Safe to call on every prompt — always returns a valid
+ * prompt string. Enrichment failures are swallowed so they never block
+ * agent execution.
  */
 export async function enrichPrompt(prompt: string, workspace: string): Promise<string> {
   try {
-    const sections: string[] = [prompt, "", buildCapabilitiesSection(workspace)];
+    const finToken = process.env.FIN_SIGNAL || "FIN";
+    const sections: string[] = [
+      prompt,
+      "",
+      buildCapabilitiesSection(workspace),
+      "",
+      buildNonInteractiveSection(finToken),
+    ];
 
     const testCtx = await buildTestSection(workspace, prompt);
     if (testCtx) sections.push("", testCtx);
@@ -132,4 +178,4 @@ export async function enrichPrompt(prompt: string, workspace: string): Promise<s
   }
 }
 
-export { buildTestSection, buildCapabilitiesSection };
+export { buildTestSection, buildCapabilitiesSection, buildNonInteractiveSection };

@@ -247,11 +247,47 @@ export async function runAgentDirect(
       }, HEARTBEAT_MS);
     }
 
+    // Idle-output watchdog. Without it, an agent that finished its summary
+    // and then printed "Want me to push?" while waiting on stdin will sit
+    // there until the DB reaper picks it up (sometimes 120 min). Threshold
+    // is generous enough for long tool-call thinking time but short enough
+    // that a truly hung process doesn't burn the day.
+    const IDLE_TIMEOUT_MS = (() => {
+      const raw = process.env.AICODER_AGENT_IDLE_TIMEOUT_MS;
+      if (!raw) return 5 * 60 * 1000; // default 5 min
+      const n = parseInt(raw, 10);
+      if (!Number.isFinite(n) || n <= 0) return 0; // explicit disable
+      return n;
+    })();
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let idleTimedOut = false;
+    const resetIdleTimer = () => {
+      if (IDLE_TIMEOUT_MS <= 0) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        idleTimedOut = true;
+        const seconds = Math.round(IDLE_TIMEOUT_MS / 1000);
+        logger.logError(
+          `Agent produced no output for ${seconds}s — likely hung waiting on stdin. ` +
+            `Killing to recover. Tail: ...${outputBuf.slice(-300).replace(/\s+/g, " ")}`,
+        );
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* already dead */
+        }
+      }, IDLE_TIMEOUT_MS);
+    };
+    resetIdleTimer();
+
     child.stdin?.write(prompt);
     child.stdin?.end();
 
     child.stderr?.on("data", (chunk: Buffer) => {
       stderrBuf += chunk.toString();
+      // stderr counts as "alive" too — codex/opencode chat occasionally
+      // logs progress there, so don't kill while it's writing.
+      resetIdleTimer();
     });
 
     child.stdout?.on("data", (chunk: Buffer) => {
@@ -260,6 +296,7 @@ export async function runAgentDirect(
       if (formatted) process.stdout.write(formatted);
       outputBuf += text;
       onStep?.({ output: text });
+      resetIdleTimer();
 
       if (!finDetected && (finLineRegex.test(outputBuf) || finRegex.test(outputBuf))) {
         finDetected = true;
@@ -273,6 +310,7 @@ export async function runAgentDirect(
 
     child.on("close", (code) => {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
+      if (idleTimer) clearTimeout(idleTimer);
       const remaining = formatter.flush();
       if (remaining) process.stdout.write(remaining);
       const stderr = stderrBuf.trim();
@@ -281,11 +319,15 @@ export async function runAgentDirect(
         const tail = stderr.length > 2048 ? "…\n" + stderr.slice(-2048) : stderr;
         process.stderr.write(tail + "\n");
       }
-      resolve({ finDetected, exitCode: code, ranTests: formatter.ranTests, sessionId: capturedSessionId, stderr });
+      const finalStderr = idleTimedOut
+        ? `${stderr}${stderr ? "\n" : ""}[aicoder] Idle-output watchdog killed the agent after ${Math.round(IDLE_TIMEOUT_MS / 1000)}s of silence.`
+        : stderr;
+      resolve({ finDetected, exitCode: code, ranTests: formatter.ranTests, sessionId: capturedSessionId, stderr: finalStderr });
     });
 
     child.on("error", (err) => {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
+      if (idleTimer) clearTimeout(idleTimer);
       logger.logError(`Failed to start ${cfg.agent}: ${err.message}`);
       resolve({ finDetected: false, exitCode: -1 });
     });
@@ -343,12 +385,37 @@ export async function runAgentViaLauncher(
           }, HEARTBEAT_MS);
         }
 
+        // Same idle-output watchdog as runAgentDirect — see that
+        // function for the rationale.
+        const IDLE_TIMEOUT_MS = (() => {
+          const raw = process.env.AICODER_AGENT_IDLE_TIMEOUT_MS;
+          if (!raw) return 5 * 60 * 1000;
+          const n = parseInt(raw, 10);
+          if (!Number.isFinite(n) || n <= 0) return 0;
+          return n;
+        })();
+        let idleTimer: ReturnType<typeof setTimeout> | null = null;
+        const resetIdleTimer = () => {
+          if (IDLE_TIMEOUT_MS <= 0) return;
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => {
+            const seconds = Math.round(IDLE_TIMEOUT_MS / 1000);
+            logger.logError(
+              `Agent produced no output for ${seconds}s (launcher path) — killing to recover. ` +
+                `Tail: ...${outputBuf.slice(-300).replace(/\s+/g, " ")}`,
+            );
+            try { child.kill("SIGKILL"); } catch { /* already dead */ }
+          }, IDLE_TIMEOUT_MS);
+        };
+        resetIdleTimer();
+
         child.stdout?.on("data", (chunk: Buffer) => {
           const text = chunk.toString();
           const formatted = formatter.push(text);
           if (formatted) process.stdout.write(formatted);
           outputBuf += text;
           onStep?.({ output: text });
+          resetIdleTimer();
 
           if (!finDetected && (finLineRegex.test(outputBuf) || finRegex.test(outputBuf))) {
             finDetected = true;
@@ -360,8 +427,13 @@ export async function runAgentViaLauncher(
           }
         });
 
+        child.stderr?.on("data", () => {
+          resetIdleTimer();
+        });
+
         child.on("close", (code) => {
           if (heartbeatTimer) clearInterval(heartbeatTimer);
+          if (idleTimer) clearTimeout(idleTimer);
           const remaining = formatter.flush();
           if (remaining) process.stdout.write(remaining);
           resolve({ finDetected, exitCode: code, ranTests: formatter.ranTests, sessionId: capturedSessionId });
@@ -369,6 +441,7 @@ export async function runAgentViaLauncher(
 
         child.on("error", (err) => {
           if (heartbeatTimer) clearInterval(heartbeatTimer);
+          if (idleTimer) clearTimeout(idleTimer);
           logger.logError(`Launcher failed: ${err.message}`);
           resolve({ finDetected: false, exitCode: -1 });
         });

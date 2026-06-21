@@ -93,7 +93,7 @@ export class OllamaProvider extends AIProvider {
         });
 
         const limiterModel = request.model ?? this.config.model ?? null;
-        await aiRequestLimiter.acquire(this.name, limiterModel);
+        const slotId = await aiRequestLimiter.acquire(this.name, limiterModel);
         let response;
         try {
           response = await this.client.post(
@@ -102,7 +102,7 @@ export class OllamaProvider extends AIProvider {
             { timeout: attemptTimeout, signal: request.signal },
           );
         } finally {
-          aiRequestLimiter.release(this.name, limiterModel);
+          aiRequestLimiter.release(this.name, limiterModel, slotId);
         }
 
         const data = response.data;
@@ -295,7 +295,7 @@ export class OllamaProvider extends AIProvider {
     request: ChatRequest,
   ): AsyncGenerator<string | StreamEvent, void, unknown> {
     const limiterModel = request.model ?? this.config.model ?? null;
-    await aiRequestLimiter.acquire(this.name, limiterModel);
+    const slotId = await aiRequestLimiter.acquire(this.name, limiterModel);
     const idleGuard = this.installFirstChunkAbort(request.signal);
     try {
       const requestBody = this.buildRequestBody({ ...request, stream: true });
@@ -510,7 +510,7 @@ export class OllamaProvider extends AIProvider {
       throw new Error(message);
     } finally {
       idleGuard.dispose();
-      aiRequestLimiter.release(this.name, limiterModel);
+      aiRequestLimiter.release(this.name, limiterModel, slotId);
     }
   }
 

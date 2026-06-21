@@ -87,6 +87,24 @@ export async function healthRoutes(fastify: FastifyInstance) {
   });
 
   /**
+   * Admin: force-clear every aiRequestLimiter slot. Use when a leak has
+   * been confirmed via /health/providers (oldestSlotAgeMs > expected
+   * call duration) and you want to recover without restarting the
+   * process. Returns the count of slots cleared.
+   */
+  fastify.post("/health/providers/reset", async (_request, _reply) => {
+    const cleared = aiRequestLimiter.clearAllSlots();
+    return {
+      timestamp: new Date().toISOString(),
+      slotsCleared: cleared,
+      message:
+        cleared > 0
+          ? `Force-released ${cleared} held slot(s). New requests can proceed immediately.`
+          : "No slots were held — nothing to clear.",
+    };
+  });
+
+  /**
    * Per-provider slot accounting + circuit-breaker state. Use this to see
    * which provider is wedged, how many slots are in use, and whether the
    * breaker has tripped on a (provider, model) pair.
