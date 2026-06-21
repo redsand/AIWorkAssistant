@@ -43,6 +43,8 @@ import {
   installReportDownloadInterceptor,
 } from "./reports-client.js";
 import { startIngestionBadgePolling } from "./ingestion-badge.js";
+import { handleKgSlashCommand } from "./kg-client.js";
+import { installKgTypeahead } from "./kg-typeahead.js";
 
 /**
  * Idea 3 + I: render a banner above the messages list when ClaimKit
@@ -431,6 +433,9 @@ export async function initializeChat() {
   }
   // Poll cold-start ingestion progress until isReady=true.
   startIngestionBadgePolling();
+  // KG type-ahead: install once on the chat input. Cache warms on this call.
+  const messageInput = document.getElementById("messageInput");
+  if (messageInput) installKgTypeahead(messageInput);
 
   const { subscribeLive } = await import("./live.js");
   if (currentSessionId) {
@@ -682,6 +687,10 @@ export async function sendMessage() {
   // /report — generate a report for the current session without going through
   // the model. The handler returns true if it consumed the command.
   if (await handleReportSlashCommand(message)) return;
+
+  // /kg — instant knowledge-graph search. Bypasses the LLM entirely; results
+  // come from the in-memory cache (or REST when the cache misses).
+  if (await handleKgSlashCommand(message)) return;
 
   await executeSend(message, { resend: false });
 }
