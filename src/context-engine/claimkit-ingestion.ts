@@ -312,6 +312,7 @@ export async function ingestScoredDocumentsForQuery(
   try {
     const results = await claimKitAdapter.ingestMany(
       toIngest.map((i) => ({ text: i.text, metadata: i.metadata })),
+      { signal },
     );
     for (let i = 0; i < toIngest.length; i++) {
       const item = toIngest[i]!;

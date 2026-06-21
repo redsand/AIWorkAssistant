@@ -340,33 +340,74 @@ export class ClaimKitAdapter {
    */
   async ingestMany(
     items: Array<{ text: string; metadata?: Record<string, unknown> }>,
+    options?: { signal?: AbortSignal },
   ): Promise<Array<{ sourceId: string | null; error?: string }>> {
     if (!this.claimKit) throw new Error("ClaimKit not initialized");
     if (items.length === 0) return [];
-    const inputs = items.map((i) => this.buildIngestInput(i.text, i.metadata));
-    try {
-      const results = await this.claimKit.ingestMany(inputs);
-      return results.map((r) => ({ sourceId: r.ingest.source.id }));
-    } catch (err) {
-      // ingestMany resolves all-or-throw — if a single doc fails the whole
-      // batch rejects. Degrade to per-doc ingest so partial success isn't
-      // lost (mirrors the extractor's fallback behavior).
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[ClaimKit] ingestMany failed (${items.length} docs) — falling back to per-doc: ${msg}`);
-      const out: Array<{ sourceId: string | null; error?: string }> = [];
-      for (const item of items) {
-        try {
-          const r = await this.ingest(item.text, item.metadata);
-          out.push({ sourceId: r.sourceId });
-        } catch (perDocErr) {
-          out.push({
-            sourceId: null,
-            error: perDocErr instanceof Error ? perDocErr.message : String(perDocErr),
-          });
-        }
-      }
-      return out;
+    const signal = options?.signal;
+    if (signal?.aborted) {
+      // Already aborted before we started — short-circuit so the caller
+      // doesn't burn slots on work it doesn't want anymore.
+      return items.map(() => ({ sourceId: null, error: "Aborted before ingest started" }));
     }
+    const inputs = items.map((i) => this.buildIngestInput(i.text, i.metadata));
+    // Race the underlying ingestMany against the abort signal. ClaimKit's
+    // SDK doesn't currently accept a signal — when the signal fires, the
+    // race resolves immediately with "aborted" but the in-flight LLM
+    // extractor calls keep running in the background and eventually
+    // release their aiRequestLimiter slots. The 2-min slot reaper catches
+    // anything they leave behind. From the caller's perspective the seed
+    // is now properly cancellable; the bucket holding a slot for ~2 min
+    // is bounded.
+    const ingestPromise: Promise<Array<{ sourceId: string | null; error?: string }>> = (async () => {
+      try {
+        const results = await this.claimKit!.ingestMany(inputs);
+        return results.map((r) => ({ sourceId: r.ingest.source.id }));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[ClaimKit] ingestMany failed (${items.length} docs) — falling back to per-doc: ${msg}`);
+        const out: Array<{ sourceId: string | null; error?: string }> = [];
+        for (const item of items) {
+          if (signal?.aborted) {
+            out.push({ sourceId: null, error: "Aborted mid-fallback" });
+            continue;
+          }
+          try {
+            const r = await this.ingest(item.text, item.metadata);
+            out.push({ sourceId: r.sourceId });
+          } catch (perDocErr) {
+            out.push({
+              sourceId: null,
+              error: perDocErr instanceof Error ? perDocErr.message : String(perDocErr),
+            });
+          }
+        }
+        return out;
+      }
+    })();
+
+    if (!signal) return ingestPromise;
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        console.warn(`[ClaimKit] ingestMany abandoned by caller — ${items.length} in-flight ingestions detached.`);
+        resolve(items.map(() => ({ sourceId: null, error: "Aborted by caller" })));
+      };
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+      ingestPromise.then((value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      });
+    });
   }
 
   private buildIngestInput(text: string, metadata?: Record<string, unknown>): SourceInput {

@@ -78,14 +78,21 @@ interface AcquiredSlot {
   acquiredAt: number;
 }
 
+// 2-minute reaper window — well past any normal Ollama Cloud streaming
+// chat (typical 10-60s) but short enough that leaked slots self-heal
+// before the bucket fills. Was 10 min initially; observed in production
+// (2026-06-21) that ClaimKit query-time seeding fires fire-and-forget
+// LLM calls whose slots can hang around for the full axios timeout
+// (~120s) and saturate the bucket within a few chat turns.
 const MAX_SLOT_AGE_MS = (() => {
   const raw = process.env.AI_SLOT_MAX_AGE_MS;
-  if (!raw) return 10 * 60 * 1000; // default 10 min — well past any normal call
+  if (!raw) return 2 * 60 * 1000;
   const n = parseInt(raw, 10);
-  return Number.isFinite(n) && n > 0 ? n : 10 * 60 * 1000;
+  return Number.isFinite(n) && n > 0 ? n : 2 * 60 * 1000;
 })();
 
-const SLOT_REAPER_INTERVAL_MS = 60_000;
+// Also poll more often so reclaim is responsive even when a burst hits.
+const SLOT_REAPER_INTERVAL_MS = 15_000;
 
 class ConcurrencyBucket {
   readonly slots = new Map<number, AcquiredSlot>();
