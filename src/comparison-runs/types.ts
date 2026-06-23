@@ -37,6 +37,10 @@ export interface ComparisonCaseRow {
   ck_retrieval_score: number | null;
   ck_source_count: number | null;
   ck_missing_evidence: string | null;
+  /** JSON array of { claimId, sourceId, text } actually cited by ClaimKit
+   *  for this case. Backfilled per turn so the comparison dashboard can
+   *  show "which claims/evidence were used" without parsing ck_answer. */
+  ck_citations: string | null;
   winner_reason: string | null;
   /** Why ClaimKit did not produce an answer, or "answered" when it did. */
   ck_status: CkStatus | null;
@@ -273,6 +277,14 @@ export interface SaveCaseInput {
     retrievalScore?: number;
     sourceCount?: number;
     missingEvidence?: string;
+    /** Cited evidence rows the dashboard renders so operators can see
+     *  what ClaimKit actually used per turn. Persisted as ck_citations
+     *  (JSON-stringified, capped at 20 rows). */
+    citations?: ReadonlyArray<{
+      claimId: string;
+      sourceId: string;
+      text: string;
+    }>;
   } | null;
 }
 

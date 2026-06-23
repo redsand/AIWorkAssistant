@@ -515,6 +515,29 @@
             if (c.ck_missing_evidence) {
               diagHtml += "<div class='diag-row'><span class='diag-label'>Missing evidence:</span> <span class='diag-value'>" + escapeHtml(c.ck_missing_evidence) + "</span></div>";
             }
+            // Cited evidence: the per-claim rows that ClaimKit actually used
+            // for this turn. Restores the dashboard's "what data was cited"
+            // view that went blank when chat switched to retrieve-lite.
+            if (c.ck_citations) {
+              try {
+                var cits = typeof c.ck_citations === "string" ? JSON.parse(c.ck_citations) : c.ck_citations;
+                if (Array.isArray(cits) && cits.length > 0) {
+                  var citHtml = "<ul class='ck-citations'>";
+                  cits.slice(0, 10).forEach(function (ev) {
+                    var txt = (ev && ev.text) ? String(ev.text) : "";
+                    var snippet = txt.replace(/\s+/g, " ").trim().slice(0, 240);
+                    var tail = txt.length > 240 ? "…" : "";
+                    var src = ev && ev.sourceId ? " <span class='ck-cite-source'>[" + escapeHtml(String(ev.sourceId)) + "]</span>" : "";
+                    citHtml += "<li><code>" + escapeHtml(String(ev && ev.claimId || "")) + "</code>" + src + " — " + escapeHtml(snippet + tail) + "</li>";
+                  });
+                  if (cits.length > 10) {
+                    citHtml += "<li class='ck-cite-more'>(+" + (cits.length - 10) + " more)</li>";
+                  }
+                  citHtml += "</ul>";
+                  diagHtml += "<div class='diag-row'><span class='diag-label'>Cited evidence:</span> <span class='diag-value'>" + citHtml + "</span></div>";
+                }
+              } catch (_e) { /* malformed JSON — skip */ }
+            }
           }
 
           // Token-cost story per case (H: makes the savings auditable per query).

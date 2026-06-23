@@ -103,6 +103,40 @@ export interface ClaimKitQueryResult {
   confidenceTrace?: ConfidenceTrace;
 }
 
+/**
+ * Build a human-readable digest of "what ClaimKit actually cited" from
+ * a retrieve-lite result. The full generator pass would normally write
+ * a prose answer with inline citations; without it we synthesize a
+ * structured evidence list so the comparison dashboard still has
+ * something to show in the ck_answer column.
+ *
+ * Format:
+ *   [retrieve-lite] {answerability}, confidence {N%}, {K} claims, {S} sources
+ *   Cited evidence:
+ *     • claim_id: "first 220 chars of evidence span..."
+ *     • ...
+ */
+function buildLiteCitationDigest(
+  citations: Array<{ claimId: string; sourceId: string; text: string }>,
+  result: { confidence: number; answerability: string; metadata: { claimCount: number; sourceIds: readonly string[] } },
+): string {
+  const conf = `${(result.confidence * 100).toFixed(0)}%`;
+  const header = `[retrieve-lite] ${result.answerability}, confidence ${conf}, ${result.metadata.claimCount} claims, ${result.metadata.sourceIds.length} sources.`;
+  if (citations.length === 0) {
+    return `${header}\nCited evidence: (none — retrieval returned no claims for this query).`;
+  }
+  const lines = [header, "Cited evidence:"];
+  for (const c of citations.slice(0, 10)) {
+    const snippet = (c.text || "").replace(/\s+/g, " ").trim().slice(0, 220);
+    const tail = c.text && c.text.length > 220 ? "…" : "";
+    lines.push(`  • ${c.claimId}: "${snippet}${tail}"`);
+  }
+  if (citations.length > 10) {
+    lines.push(`  • (+${citations.length - 10} more)`);
+  }
+  return lines.join("\n");
+}
+
 export class ClaimKitAdapter {
   private claimKit: ClaimKit | null = null;
   private initialized = false;
@@ -499,25 +533,30 @@ export class ClaimKitAdapter {
     const total = Date.now() - t0;
     const ckMs = result.metadata.processingTimeMs;
     console.log(`[ClaimKit:timing] total=${total}ms internal=${ckMs}ms claims=${result.metadata.claimCount} sources=${result.metadata.sourceIds.length} mode=lite`);
-    return {
-      // No generated answer in lite mode — leave empty so the existing
-      // chat probe path (which only reads confidence/answerability/metadata)
-      // falls into its rag_first / parallel branch as expected.
-      answer: "",
-      citations: [
-        ...result.packet.claims.flatMap((c) =>
-          (c.evidenceSpans ?? []).map((span) => ({
-            claimId: String(c.claim.id),
-            sourceId: String(c.sourceRef?.id ?? ""),
-            text: span.spanText,
-          })),
-        ),
-        ...verifiedGraph.map((verification, index) => ({
-          claimId: `knowledge-graph:${index + 1}`,
-          sourceId: "knowledge-graph",
-          text: verification.evidence,
+    const citations = [
+      ...result.packet.claims.flatMap((c) =>
+        (c.evidenceSpans ?? []).map((span) => ({
+          claimId: String(c.claim.id),
+          sourceId: String(c.sourceRef?.id ?? ""),
+          text: span.spanText,
         })),
-      ],
+      ),
+      ...verifiedGraph.map((verification, index) => ({
+        claimId: `knowledge-graph:${index + 1}`,
+        sourceId: "knowledge-graph",
+        text: verification.evidence,
+      })),
+    ];
+    // Synthesize a digest of what was cited so the dashboard's ck_answer
+    // column stays populated even in lite mode. Without this the column
+    // would go blank for every chat turn after the lite-probe switch
+    // (commit 55885f8) and the operator loses visibility into "what data
+    // did ClaimKit actually use?". The full LLM-generated answer text
+    // remains absent — only an evidence-list summary stands in.
+    const answer = buildLiteCitationDigest(citations, result);
+    return {
+      answer,
+      citations,
       confidence: verifiedGraph.length > 0
         ? this.blendConfidence(result.confidence, verifiedGraph)
         : result.confidence,

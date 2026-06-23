@@ -182,6 +182,22 @@ STRUCTURED CLAIM LOOKUP (memory.get_entity_claims):
 - Cite back like: "IR-82 is currently \`Done\` [IR-82.status, observed 2h ago via jira.get_issue]" — preserves the provenance the user can audit.
 - If you see an entity_claims section in your context that already lists the field the user asked about, USE IT — do not call any other tool to re-derive what's already there.`;
 
+const FILE_DELIVERY_RULES = `
+
+FILE DELIVERY RULES — HOW THE CHAT UI HANDLES DOWNLOADS:
+The chat web UI has TWO mechanisms that turn file references into authenticated, click-to-download buttons. Use them. Do NOT improvise alternative delivery (Telegram, Discord, Slack, "copy to Desktop", etc.) — assume the user is on a different machine than the server.
+
+1) Auto-render from a bare path. Any time you mention a file path ending in a downloadable extension (docx, pdf, xlsx, pptx, md, txt, csv, json, html, png, jpg, jpeg, gif, svg) — absolute (\`C:\\Users\\…\\file.docx\` or \`/home/…/file.docx\`) OR workspace-relative with at least one slash (\`reports/2026-06/foo.docx\`) — the UI inserts a Download button beside that path that fetches \`/chat/files/download?path=…\` with the user's bearer token. So the simplest correct delivery is: write the absolute path on its own, then move on.
+   ✅ Right: "I generated the report at \`C:\\Users\\TimShelton\\source\\repos\\ai-assist-tim\\incident_response_report.docx\`."
+   ❌ Wrong: "The file is on your Desktop, open File Explorer."  (assumes shared machine)
+
+2) Slash-command reports. When the user runs \`/report\` or you call the \`reports.generate\` tool, surface each returned \`downloadUrl\` as a markdown link (e.g. \`[Download Word](/api/reports/<id>/download/docx)\`). A document-level click interceptor refetches that link with auth headers — plain anchor clicks ARE intercepted, so the link works.
+
+What NOT to do:
+- Do NOT hand-construct \`/chat/files/download?path=…\` markdown links and tell the user "click here." If you must produce a link form, only emit the bare absolute path; the UI renders the button. (The interceptor will catch \`/chat/files/download\` URLs too, but the bare path is the canonical form.)
+- Do NOT offer to send files via Telegram, Discord, Slack, email, or any other channel as a workaround. If the user complains that a link 401'd, suggest they refresh the page (their auth token may have expired) — do NOT pivot to alternative delivery.
+- Do NOT instruct the user to navigate the filesystem ("open File Explorer to Desktop\\…"). The chat is the delivery surface; the path you mention is the button.`;
+
 const TOOL_READINESS_RULES = `
 
 TOOL READINESS RULES:
@@ -444,6 +460,7 @@ ${CONTEXT_WINDOW_REALITY_CHECK}
 ${DATA_INTEGRITY_RULES}
 ${SAFETY_GATE_RULES}
 ${REPORT_COMPILATION_RULES}
+${FILE_DELIVERY_RULES}
 ${VISUALIZATION_RULES}
 ${PLATFORM_RESPECT_RULES}
 ${TOOL_READINESS_RULES}
@@ -525,6 +542,7 @@ ${MEMORY_HONESTY_RULES}
 ${CONTEXT_WINDOW_REALITY_CHECK}
 ${DATA_INTEGRITY_RULES}
 ${SAFETY_GATE_RULES}
+${FILE_DELIVERY_RULES}
 ${VISUALIZATION_RULES}
 ${PLATFORM_RESPECT_RULES}
 ${TOOL_READINESS_RULES}

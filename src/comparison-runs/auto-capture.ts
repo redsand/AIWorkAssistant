@@ -88,6 +88,8 @@ export function saveLiveComparison(params: {
   ckRetrievalScore?: number | null;
   ckSourceCount?: number | null;
   ckMissingEvidence?: string | null;
+  /** Cited evidence rows for the comparison dashboard. */
+  ckCitations?: ReadonlyArray<{ claimId: string; sourceId: string; text: string }> | null;
   overallWinner: "rag" | "claimkit" | "tie";
   winnerReason?: string;
   ckStatus?: CkStatus | null;
@@ -150,6 +152,7 @@ export function saveLiveComparison(params: {
                   retrievalScore: params.ckRetrievalScore ?? undefined,
                   sourceCount: params.ckSourceCount ?? undefined,
                   missingEvidence: params.ckMissingEvidence ?? undefined,
+                  citations: params.ckCitations ?? undefined,
                 }
               : null,
         },

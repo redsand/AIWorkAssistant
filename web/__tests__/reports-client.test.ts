@@ -115,6 +115,7 @@ describe("reports-client", () => {
       __test.inferFilename(
         "/api/reports/abc/download/docx",
         fakeRes,
+        "report",
       ),
     ).toBe("hunt-companies-report.docx");
 
@@ -123,8 +124,66 @@ describe("reports-client", () => {
       __test.inferFilename(
         "/api/reports/abc/download/markdown",
         fallbackRes,
+        "report",
       ),
     ).toBe("report.md");
+  });
+
+  it("classifies chat-file download URLs so anchor clicks get authenticated", async () => {
+    const { __test } = await import("../js/reports-client.js");
+    // The /chat/files/download endpoint requires auth — historically markdown
+    // links emitted by the model 401'd because anchor clicks send no Bearer
+    // header. classifyDownloadUrl must recognize this family so the global
+    // interceptor refetches with auth headers.
+    expect(__test.isChatFileDownloadUrl("/chat/files/download?path=foo.docx")).toBe(true);
+    expect(__test.isChatFileDownloadUrl("/chat/files/download")).toBe(true);
+    expect(
+      __test.isChatFileDownloadUrl(
+        "https://example.com/chat/files/download?path=C%3A%5Cfoo.docx",
+      ),
+    ).toBe(true);
+    expect(__test.isChatFileDownloadUrl("/chat/sessions/abc/messages")).toBe(false);
+    expect(__test.isChatFileDownloadUrl("/api/reports/abc/download/docx")).toBe(false);
+
+    expect(
+      __test.classifyDownloadUrl(
+        "/api/reports/12345678-1234-1234-1234-1234567890ab/download/pdf",
+      ),
+    ).toBe("report");
+    expect(
+      __test.classifyDownloadUrl("/chat/files/download?path=incident_report.docx"),
+    ).toBe("chat-file");
+    expect(__test.classifyDownloadUrl("/chat/sessions/abc")).toBeNull();
+  });
+
+  it("infers chat-file filename from the path query param", async () => {
+    const { __test } = await import("../js/reports-client.js");
+    const noCd = { headers: { get: () => null } } as unknown as Response;
+    expect(
+      __test.inferFilename(
+        "/chat/files/download?path=C%3A%5CUsers%5CTim%5Creport.docx",
+        noCd,
+        "chat-file",
+      ),
+    ).toBe("report.docx");
+    expect(
+      __test.inferFilename(
+        "/chat/files/download?path=reports%2Fjun.docx",
+        noCd,
+        "chat-file",
+      ),
+    ).toBe("jun.docx");
+    // Content-Disposition still wins when present.
+    const cdRes = {
+      headers: { get: () => 'attachment; filename="override.docx"' },
+    } as unknown as Response;
+    expect(
+      __test.inferFilename(
+        "/chat/files/download?path=ignored.docx",
+        cdRes,
+        "chat-file",
+      ),
+    ).toBe("override.docx");
   });
 
   it("/report short-circuits to POST /api/reports and renders download buttons", async () => {

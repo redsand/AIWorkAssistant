@@ -792,6 +792,7 @@ export async function assembleContextPacket(
       ckRetrievalScore: claimKitResult?.metadata.retrievalScore ?? null,
       ckSourceCount: claimKitResult?.metadata.sourceIds.length ?? null,
       ckMissingEvidence: claimKitResult?.missingEvidence?.join(", ") ?? null,
+      ckCitations: claimKitResult?.citations ?? null,
       overallWinner: routing.overallWinner,
       winnerReason: routing.routingReason,
       ckStatus,

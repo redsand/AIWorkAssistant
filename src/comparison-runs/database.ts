@@ -117,6 +117,14 @@ class ComparisonRunDatabase {
       // simply omit the column and SQLite stores NULL. Rolling the schema
       // forward is idempotent (the ALTER below no-ops once the column exists).
       { col: "routing_strategy", def: "TEXT" },
+      // Cited evidence (post lite-mode switch): a JSON-encoded array of
+      // { claimId, sourceId, text } the dashboard renders so operators can
+      // see "what data ClaimKit actually used". Before this, ck_answer
+      // carried the full LLM answer with inline citations; after the
+      // generator-skipping switch (commit 55885f8) ck_answer went blank.
+      // This column gives the dashboard a structured source-of-truth
+      // independent of whether the generator ran.
+      { col: "ck_citations", def: "TEXT" },
     ];
     for (const { col, def } of migrations) {
       try {
@@ -174,6 +182,7 @@ class ComparisonRunDatabase {
           ck_section_tokens INTEGER,
           confidence_trace TEXT,
           routing_strategy TEXT,
+          ck_citations TEXT,
           created_at TEXT NOT NULL,
           FOREIGN KEY (run_id) REFERENCES comparison_runs(id) ON DELETE CASCADE
         );
@@ -188,6 +197,7 @@ class ComparisonRunDatabase {
                  NULL,
                  NULL,
                  NULL,
+                 ck_citations,
                  created_at
           FROM comparison_cases_old;
         DROP TABLE comparison_cases_old;
@@ -220,8 +230,9 @@ class ComparisonRunDatabase {
           ck_section_tokens,
           confidence_trace,
           routing_strategy,
+          ck_citations,
           created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     const txn = this.db.transaction(() => {
@@ -257,6 +268,9 @@ class ComparisonRunDatabase {
           c.ckSectionTokens ?? null,
           c.confidenceTrace ? JSON.stringify(c.confidenceTrace) : null,
           c.routingStrategy ?? null,
+          c.claimkit?.citations
+            ? JSON.stringify(c.claimkit.citations.slice(0, 20))
+            : null,
           now,
         );
       }
@@ -955,6 +969,7 @@ class ComparisonRunDatabase {
       ck_section_tokens: row.ck_section_tokens as number | null,
       confidence_trace: (row.confidence_trace as string | null) ?? null,
       routing_strategy: (row.routing_strategy as string | null) ?? null,
+      ck_citations: (row.ck_citations as string | null) ?? null,
       created_at: row.created_at as string,
     };
   }
