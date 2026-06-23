@@ -161,24 +161,35 @@ export function installFileAttachmentUI() {
 // ── Download ──────────────────────────────────────────────────────────────
 
 /**
- * Walk the chat DOM, find any text node containing a recognized file
- * path, and replace the path with a small download button. Idempotent —
- * runs after every render via a MutationObserver.
+ * Walk the given root (a single completed message bubble, NOT the whole
+ * chat) and replace recognized file paths in text nodes with a small
+ * Download button. Idempotent — bails out for any node already inside an
+ * existing `.file-download-btn` or `.file-path-with-download`.
+ *
+ * Callers must pass a stable, non-streaming root. We deliberately do NOT
+ * use a MutationObserver: the prior version observed #chatMessages with
+ * subtree:true, which fired on every streaming token, re-ran the regex,
+ * and then mutated the DOM (which re-fired itself). On long sessions
+ * that produced a hard browser freeze. Now the enrichment runs only at
+ * known-finalized points (load-history, message-finalized event).
  */
 function enrichDownloadablePaths(root) {
-  if (!root) return;
+  if (!root || root.nodeType !== 1) return;
+  if (root.dataset && root.dataset.dlEnriched === "1") return;
   const treeWalker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
   const nodes = [];
   let n;
+  let scanned = 0;
+  // Hard cap — don't scan absurdly long text nodes (would still be cheap
+  // in practice but keeps the function bounded under pathological input).
   while ((n = treeWalker.nextNode())) {
-    if (!n.nodeValue) continue;
-    // Skip if already inside a code block / pre / inside a download button.
-    const closestDl = n.parentElement?.closest?.(".file-download-btn");
-    if (closestDl) continue;
-    if (PATH_RE.test(n.nodeValue)) {
-      PATH_RE.lastIndex = 0;
-      nodes.push(n);
-    }
+    if (++scanned > 4000) break;
+    if (!n.nodeValue || n.nodeValue.length > 8000) continue;
+    // Skip if already inside an existing download wrapper.
+    const par = n.parentElement;
+    if (par?.closest?.(".file-download-btn, .file-path-with-download")) continue;
+    PATH_RE.lastIndex = 0;
+    if (PATH_RE.test(n.nodeValue)) nodes.push(n);
     PATH_RE.lastIndex = 0;
   }
   for (const node of nodes) {
@@ -214,6 +225,23 @@ function enrichDownloadablePaths(root) {
     }
     parent.replaceChild(frag, node);
   }
+  if (root.dataset) root.dataset.dlEnriched = "1";
+}
+
+/**
+ * Public hook: enrich a single message bubble after it finalizes.
+ * Safe to call multiple times — re-enriches only if text changed.
+ */
+export function enrichMessageBubble(messageEl) {
+  if (!messageEl) return;
+  // Clear the idempotency flag so a follow-up re-render (markdown re-parse,
+  // user edit) gets a fresh pass.
+  if (messageEl.dataset) delete messageEl.dataset.dlEnriched;
+  try {
+    enrichDownloadablePaths(messageEl);
+  } catch (err) {
+    console.warn("[file-attachments] enrichMessageBubble failed:", err);
+  }
 }
 
 async function downloadFile(absolutePath) {
@@ -243,6 +271,8 @@ async function downloadFile(absolutePath) {
 }
 
 export function installDownloadInterceptor() {
+  // Click delegation for the rendered Download buttons. Cheap: only
+  // runs on actual click events, no continuous scanning.
   document.addEventListener("click", (evt) => {
     const btn = evt.target.closest?.(".file-download-btn");
     if (!btn) return;
@@ -250,19 +280,13 @@ export function installDownloadInterceptor() {
     const p = btn.dataset.path;
     if (p) void downloadFile(p);
   });
-  const chatMessages = document.getElementById("chatMessages");
-  if (chatMessages) {
-    const observer = new MutationObserver((mutations) => {
-      for (const m of mutations) {
-        for (const node of m.addedNodes) {
-          if (node.nodeType === 1) enrichDownloadablePaths(node);
-        }
-      }
-    });
-    observer.observe(chatMessages, { childList: true, subtree: true });
-    // Catch existing content on first install.
-    enrichDownloadablePaths(chatMessages);
-  }
+  // No MutationObserver. The prior version observed #chatMessages with
+  // subtree:true, which fired on every streaming token, ran the path
+  // regex over the entire chat log, then mutated the DOM (which re-
+  // fired the observer recursively) — observed hard browser freezes on
+  // long sessions. enrichMessageBubble() is now called explicitly from
+  // messages.js after a streaming message finalizes and from the
+  // initial chat-history render.
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

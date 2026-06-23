@@ -272,6 +272,14 @@ export function finalizeStreamingMessage(messageId) {
     delete contentEl.dataset.streamRaw;
     renderMermaidIn(contentEl);
   }
+  // After the message has fully landed, scan it once for downloadable
+  // file paths and rewrite them into clickable Download buttons. Lazy
+  // import keeps file-attachments out of the streaming-token hot path.
+  try {
+    import("./file-attachments.js").then((mod) => mod.enrichMessageBubble?.(el));
+  } catch {
+    /* enrichment is purely cosmetic — never block finalize on a failure */
+  }
 }
 
 // Update (or insert) the thinking section of an already-rendered message.
@@ -384,6 +392,18 @@ export function addMessage(content, type, thinking, { scroll = true, messageId =
   messagesDiv.appendChild(messageDiv);
   if (scroll && autoScrollEnabled) {
     scrollChatToBottom();
+  }
+
+  // For non-streaming additions (history load, finalized assistant
+  // turns), scan once for downloadable file paths. Streaming bubbles
+  // are enriched at finalize-time instead so we don't churn on every
+  // incoming token.
+  if (type === "assistant" && !streaming) {
+    try {
+      import("./file-attachments.js").then((mod) => mod.enrichMessageBubble?.(messageDiv));
+    } catch {
+      /* cosmetic — ignore */
+    }
   }
 
   return id;
