@@ -161,9 +161,59 @@ export async function buildServer() {
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 
-  // Serve static web files
+  // Cache-busting rewriter for HTML + JS. Implemented as an onRequest
+  // hook (not a route) so we don't collide with fastify-static's own
+  // catch-all. For HTML/JS requests we read the file ourselves, stamp
+  // every <script src>/<link href> and every relative ES import with the
+  // current BUILD_ID, and end the reply early. fastify-static handles
+  // everything else (fonts, images, audio, css).
+  //
+  // The chained-import problem (chat.js → file-attachments.js with no
+  // version) is why this exists: the browser resolves inner imports by
+  // relative URL with no automatic version inheritance, so a stubborn
+  // cache can keep serving the old inner module even after a deploy.
+  const { rewriteHtml, rewriteJs } = await import("./util/static-cache-buster.js");
+  const webRoot = path.join(__dirname, "..", "web");
+  const fsp = await import("fs/promises");
+  function safeUnderRoot(reqPath: string): string | null {
+    const stripped = reqPath.split("?")[0].replace(/^\/+/, "");
+    const abs = path.resolve(webRoot, stripped || "index.html");
+    if (abs !== webRoot && !abs.startsWith(webRoot + path.sep)) return null;
+    return abs;
+  }
+  server.addHook("onRequest", async (request, reply) => {
+    if (request.method !== "GET" && request.method !== "HEAD") return;
+    const rawPath = request.url.split("?")[0];
+    let kind: "html" | "js" | null = null;
+    if (rawPath === "/" || /\.html?$/i.test(rawPath)) kind = "html";
+    else if (/\/js\/.+\.m?js$/i.test(rawPath)) kind = "js";
+    if (!kind) return;
+    const abs = safeUnderRoot(rawPath === "/" ? "/index.html" : rawPath);
+    if (!abs) return; // fall through; static plugin will 404
+    let body: string;
+    try {
+      body = await fsp.readFile(abs, "utf-8");
+    } catch {
+      return; // not a file we can read — let static handle it
+    }
+    const out = kind === "html" ? rewriteHtml(body) : rewriteJs(body);
+    const contentType =
+      kind === "html"
+        ? "text/html; charset=utf-8"
+        : "application/javascript; charset=utf-8";
+    reply
+      .header("Content-Type", contentType)
+      .header("Content-Length", Buffer.byteLength(out, "utf-8"));
+    if (request.method === "HEAD") {
+      return reply.send();
+    }
+    return reply.send(out);
+  });
+
+  // Serve static web files (fonts, images, css, audio, anything we
+  // didn't handle in the rewriter above)
   await server.register(fastifyStatic, {
-    root: path.join(__dirname, "..", "web"),
+    root: webRoot,
     prefix: "/",
     cacheControl: false,
     lastModified: false,
@@ -200,15 +250,24 @@ export async function buildServer() {
     return reply.sendFile("kanban.html");
   });
 
-  // Force no-cache on static assets so Cloudflare doesn't cache them
+  // Force no-cache on static assets so Cloudflare doesn't cache them.
+  const { BUILD_ID } = await import("./util/static-cache-buster.js");
+  console.log(`[StaticAssets] BUILD_ID=${BUILD_ID}`);
   server.addHook("onSend", async (_request, reply) => {
-    const route = reply.request.url;
-    if (route.match(/\.(js|css|html|ico|png|jpg|svg|woff2?)$/)) {
+    const route = reply.request.url.split("?")[0];
+    if (route.match(/\.(js|mjs|css|html|ico|png|jpg|svg|woff2?)$/)) {
       reply.header("Cache-Control", "no-cache, no-store, must-revalidate");
       reply.header("Pragma", "no-cache");
       reply.header("Expires", "0");
     }
+    if (route === "/" || route.endsWith(".html")) {
+      reply.header("X-Build-Id", BUILD_ID);
+    }
   });
+
+  // Asset rewriting is done at file-read time (not in onSend) so we never
+  // touch the streaming/JSON code paths. See cache-busting hook below the
+  // fastify-static registration.
 
   // Initialize roadmap templates
   try {
