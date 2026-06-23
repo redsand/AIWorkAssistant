@@ -161,18 +161,24 @@ export async function buildServer() {
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 
-  // Cache-busting rewriter for HTML + JS. Implemented as an onRequest
-  // hook (not a route) so we don't collide with fastify-static's own
-  // catch-all. For HTML/JS requests we read the file ourselves, stamp
-  // every <script src>/<link href> and every relative ES import with the
-  // current BUILD_ID, and end the reply early. fastify-static handles
-  // everything else (fonts, images, audio, css).
+  // Cache-busting rewriter for HTML ONLY. Stamps every <script src> +
+  // <link href> in the served HTML with the current BUILD_ID so entry
+  // points are guaranteed fresh per deploy.
   //
-  // The chained-import problem (chat.js → file-attachments.js with no
-  // version) is why this exists: the browser resolves inner imports by
-  // relative URL with no automatic version inheritance, so a stubborn
-  // cache can keep serving the old inner module even after a deploy.
-  const { rewriteHtml, rewriteJs } = await import("./util/static-cache-buster.js");
+  // Chained ES imports inside JS modules are NOT rewritten — that path
+  // turned out to be too risky (regex over module source can mangle
+  // unusual code patterns and produce hard-to-diagnose browser hangs).
+  // We rely on the no-cache headers on .js responses for inner modules
+  // instead. Browsers that respect no-cache will refetch on each load;
+  // browsers that ignore it (extremely rare these days) need a one-time
+  // hard refresh after a deploy.
+  //
+  // To opt back into JS rewriting, set AIWORK_REWRITE_JS=true. Mostly
+  // kept as an escape hatch for any future deployment behind a proxy
+  // that strips no-cache headers.
+  const cacheBuster = await import("./util/static-cache-buster.js");
+  const { rewriteHtml, rewriteJs, BUILD_ID } = cacheBuster;
+  const ENABLE_JS_REWRITE = process.env.AIWORK_REWRITE_JS === "true";
   const webRoot = path.join(__dirname, "..", "web");
   const fsp = await import("fs/promises");
   function safeUnderRoot(reqPath: string): string | null {
@@ -186,15 +192,15 @@ export async function buildServer() {
     const rawPath = request.url.split("?")[0];
     let kind: "html" | "js" | null = null;
     if (rawPath === "/" || /\.html?$/i.test(rawPath)) kind = "html";
-    else if (/\/js\/.+\.m?js$/i.test(rawPath)) kind = "js";
+    else if (ENABLE_JS_REWRITE && /\/js\/.+\.m?js$/i.test(rawPath)) kind = "js";
     if (!kind) return;
     const abs = safeUnderRoot(rawPath === "/" ? "/index.html" : rawPath);
-    if (!abs) return; // fall through; static plugin will 404
+    if (!abs) return;
     let body: string;
     try {
       body = await fsp.readFile(abs, "utf-8");
     } catch {
-      return; // not a file we can read — let static handle it
+      return;
     }
     const out = kind === "html" ? rewriteHtml(body) : rewriteJs(body);
     const contentType =
@@ -203,15 +209,16 @@ export async function buildServer() {
         : "application/javascript; charset=utf-8";
     reply
       .header("Content-Type", contentType)
-      .header("Content-Length", Buffer.byteLength(out, "utf-8"));
+      .header("Content-Length", Buffer.byteLength(out, "utf-8"))
+      .header("X-Build-Id", BUILD_ID);
     if (request.method === "HEAD") {
       return reply.send();
     }
     return reply.send(out);
   });
 
-  // Serve static web files (fonts, images, css, audio, anything we
-  // didn't handle in the rewriter above)
+  // Serve static web files (fonts, images, css, audio, JS chained
+  // imports — anything we didn't handle in the rewriter above)
   await server.register(fastifyStatic, {
     root: webRoot,
     prefix: "/",
@@ -251,17 +258,14 @@ export async function buildServer() {
   });
 
   // Force no-cache on static assets so Cloudflare doesn't cache them.
-  const { BUILD_ID } = await import("./util/static-cache-buster.js");
-  console.log(`[StaticAssets] BUILD_ID=${BUILD_ID}`);
+  // (BUILD_ID is already imported above for the HTML rewriter.)
+  console.log(`[StaticAssets] BUILD_ID=${BUILD_ID} jsRewrite=${ENABLE_JS_REWRITE}`);
   server.addHook("onSend", async (_request, reply) => {
     const route = reply.request.url.split("?")[0];
     if (route.match(/\.(js|mjs|css|html|ico|png|jpg|svg|woff2?)$/)) {
       reply.header("Cache-Control", "no-cache, no-store, must-revalidate");
       reply.header("Pragma", "no-cache");
       reply.header("Expires", "0");
-    }
-    if (route === "/" || route.endsWith(".html")) {
-      reply.header("X-Build-Id", BUILD_ID);
     }
   });
 

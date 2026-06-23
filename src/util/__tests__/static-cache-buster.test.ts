@@ -21,7 +21,11 @@ describe("rewriteHtml", () => {
   it("replaces an existing version on script tags", () => {
     const out = rewriteHtml('<script type="module" src="/js/app.js?v=5"></script>');
     expect(out).toContain(`src="/js/app.js?v=${BUILD_ID}"`);
-    expect(out).not.toContain("v=5");
+    // The prior `?v=5` (terminated by the closing quote) must be gone.
+    // We can't assert "no substring v=5" because BUILD_ID often contains
+    // the digit 5 anywhere — e.g. "508ab80.1782187200" has v=508 inside.
+    expect(out).not.toContain('?v=5"');
+    expect(out).not.toContain('?v=5&');
   });
 
   it("stamps stylesheet link hrefs", () => {
