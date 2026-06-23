@@ -209,6 +209,11 @@ interface ProcessingJob {
   abortController: AbortController;
   events: Array<{ event: string; data: unknown }>;
   subscribers: Set<(event: string, data: unknown) => void>;
+  // Steering messages queued by the user mid-run. Drained at the top of
+  // each tool-loop iteration and injected as a user message in the
+  // conversation, so the model sees them on the next turn without the
+  // chat being cancelled and restarted.
+  steeringQueue: string[];
 }
 
 const processingJobs = new Map<string, ProcessingJob>();
@@ -330,6 +335,7 @@ function getOrCreateJob(sessionId: string): ProcessingJob {
       abortController: new AbortController(),
       events: [],
       subscribers: new Set(),
+      steeringQueue: [],
     };
     processingJobs.set(sessionId, job);
   } else if (job.abortController.signal.aborted) {
@@ -1530,6 +1536,18 @@ async function runChatJob(
 
     while (toolCalls && toolCalls.length > 0) {
       assertJobActive(job);
+      // Drain any steering messages the user queued via POST
+      // /chat/sessions/:id/steer. Injecting them as user-role messages
+      // BEFORE the next model call lets the model pivot based on the
+      // steer without the chat being cancelled and restarted.
+      if (job.steeringQueue.length > 0) {
+        for (const steer of job.steeringQueue) {
+          messages.push({ role: "user", content: `[user steering] ${steer}` });
+          conversationManager.addMessage(sessionId, { role: "user", content: `[steering] ${steer}` });
+          emitJobEvent(sessionId, "steer_applied", { message: steer });
+        }
+        job.steeringQueue.length = 0;
+      }
       loopCount++;
       // Persist counter on every iteration so stalled/failed runs still
       // record how deep the loop went. completeRun also writes it, but
@@ -2605,6 +2623,181 @@ export async function chatRoutes(fastify: FastifyInstance) {
       cancelled,
       message: cancelled ? "Run cancelled" : "No active run for session",
     };
+  });
+
+  /**
+   * Steer an already-running chat. Queues a user-message instruction
+   * that's drained at the top of the next tool-loop iteration and
+   * injected into the model's context, letting the user redirect a run
+   * without cancelling and restarting it.
+   *
+   * Body: { message: string }
+   * Returns: { queued: true, queueDepth: N } or 409 if no active run.
+   */
+  fastify.post("/chat/sessions/:sessionId/steer", async (request, reply) => {
+    const { sessionId } = request.params as { sessionId: string };
+    const body = request.body as { message?: unknown } | undefined;
+    const text = typeof body?.message === "string" ? body.message.trim() : "";
+    if (!text) {
+      reply.code(400);
+      return { error: "message (non-empty string) is required" };
+    }
+    if (text.length > 2000) {
+      reply.code(400);
+      return { error: "steering message capped at 2000 chars" };
+    }
+    const job = processingJobs.get(sessionId);
+    if (!job || job.status !== "processing") {
+      reply.code(409);
+      return { error: "No active run to steer for this session" };
+    }
+    job.steeringQueue.push(text);
+    return {
+      success: true,
+      sessionId,
+      queueDepth: job.steeringQueue.length,
+      message: "Steer queued — will apply on next tool-loop iteration",
+    };
+  });
+
+  /**
+   * Upload files to a session. Body is JSON with base64-encoded contents
+   * (no multipart dep). Files are written to
+   * data/profiles/<active>/uploads/<sessionId>/<safeName> with traversal
+   * protection. The returned `path` is the absolute on-disk path; the
+   * caller embeds that into the next chat message so the model sees the
+   * attachments via local.read_file.
+   *
+   * Body: { files: [{ name, mime?, contentBase64 }] }
+   * 10MB per-file cap, 50 files per request.
+   */
+  fastify.post("/chat/sessions/:sessionId/files", async (request, reply) => {
+    const fs = await import("fs");
+    const path = await import("path");
+    const { sessionId } = request.params as { sessionId: string };
+    const body = request.body as
+      | { files?: Array<{ name?: unknown; mime?: unknown; contentBase64?: unknown }> }
+      | undefined;
+    const files = Array.isArray(body?.files) ? body!.files : [];
+    if (files.length === 0) {
+      reply.code(400);
+      return { error: "files[] is required" };
+    }
+    if (files.length > 50) {
+      reply.code(400);
+      return { error: "max 50 files per upload" };
+    }
+    const sessionSafe = /^[a-f0-9-]+$/i.test(sessionId) ? sessionId : "default";
+    const baseDir = path.resolve(
+      process.cwd(),
+      "data",
+      "profiles",
+      "default",
+      "uploads",
+      sessionSafe,
+    );
+    fs.mkdirSync(baseDir, { recursive: true });
+
+    const stored: Array<{ name: string; path: string; size: number; mime: string }> = [];
+    for (const f of files) {
+      const rawName = typeof f.name === "string" ? f.name : "";
+      const mime = typeof f.mime === "string" ? f.mime : "application/octet-stream";
+      const content = typeof f.contentBase64 === "string" ? f.contentBase64 : "";
+      if (!rawName || !content) continue;
+      // Strip directory traversal — keep only the basename, replace anything
+      // not in [A-Za-z0-9._-] with underscore. Never trust the caller.
+      const safeName = path.basename(rawName).replace(/[^A-Za-z0-9._-]+/g, "_");
+      if (!safeName || safeName === "." || safeName === "..") continue;
+      const buf = Buffer.from(content, "base64");
+      if (buf.length > 10 * 1024 * 1024) {
+        reply.code(413);
+        return { error: `File ${safeName} exceeds 10MB cap` };
+      }
+      const target = path.join(baseDir, safeName);
+      // Defense in depth — make sure the join stayed inside baseDir.
+      if (!target.startsWith(baseDir + path.sep) && target !== baseDir) {
+        reply.code(400);
+        return { error: `Refusing to write outside upload sandbox` };
+      }
+      fs.writeFileSync(target, buf);
+      stored.push({ name: safeName, path: target, size: buf.length, mime });
+    }
+    return { success: true, sessionId, files: stored };
+  });
+
+  /**
+   * Download a file the model produced (or the user uploaded). Sandbox:
+   * the resolved absolute path must live inside either the workspace
+   * (process.cwd()) or the per-session uploads directory. Anything else
+   * is rejected.
+   *
+   * Query: ?path=<absolute or workspace-relative>
+   * Auth: same X-API-Key middleware as the rest of /chat.
+   */
+  fastify.get("/chat/files/download", async (request, reply) => {
+    const fs = await import("fs");
+    const path = await import("path");
+    const query = request.query as { path?: string; sessionId?: string };
+    const raw = (query.path || "").trim();
+    if (!raw) {
+      reply.code(400);
+      return { error: "path query parameter is required" };
+    }
+    const cwd = process.cwd();
+    const uploadsRoot = path.resolve(cwd, "data", "profiles", "default", "uploads");
+    // Accept either absolute or relative — but always resolve to absolute
+    // and verify against the sandbox roots.
+    const abs = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(cwd, raw);
+    const inWorkspace =
+      abs === cwd || abs.startsWith(cwd + path.sep);
+    const inUploads =
+      abs === uploadsRoot || abs.startsWith(uploadsRoot + path.sep);
+    if (!inWorkspace && !inUploads) {
+      reply.code(400);
+      return {
+        error: "Path is outside the workspace + uploads sandbox",
+        sandbox: [cwd, uploadsRoot],
+      };
+    }
+    // Block obviously-sensitive paths even inside the workspace.
+    const blocked = /(?:^|[\\/])\.env(?:$|[\\/])|(?:^|[\\/])\.git(?:$|[\\/])/i;
+    if (blocked.test(abs.slice(cwd.length))) {
+      reply.code(403);
+      return { error: "Refused to download a sensitive workspace path" };
+    }
+    if (!fs.existsSync(abs)) {
+      reply.code(404);
+      return { error: "File not found" };
+    }
+    const stat = fs.statSync(abs);
+    if (!stat.isFile()) {
+      reply.code(400);
+      return { error: "Path is not a regular file" };
+    }
+    const baseName = path.basename(abs);
+    const ext = path.extname(baseName).slice(1).toLowerCase();
+    const mimeFor: Record<string, string> = {
+      docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      pdf: "application/pdf",
+      md: "text/markdown",
+      html: "text/html",
+      txt: "text/plain",
+      csv: "text/csv",
+      json: "application/json",
+      png: "image/png",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      gif: "image/gif",
+      svg: "image/svg+xml",
+    };
+    const mime = mimeFor[ext] ?? "application/octet-stream";
+    reply
+      .header("Content-Type", mime)
+      .header("Content-Length", stat.size)
+      .header("Content-Disposition", `attachment; filename="${baseName}"`);
+    return reply.send(fs.createReadStream(abs));
   });
 
   fastify.get("/chat/sessions/:sessionId/recovery", async (request, reply) => {

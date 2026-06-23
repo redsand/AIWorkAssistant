@@ -45,6 +45,12 @@ import {
 import { startIngestionBadgePolling } from "./ingestion-badge.js";
 import { handleKgSlashCommand } from "./kg-client.js";
 import { installKgTypeahead } from "./kg-typeahead.js";
+import {
+  installFileAttachmentUI,
+  installDownloadInterceptor,
+  applyAttachmentsToMessage,
+} from "./file-attachments.js";
+import { installSteerButton } from "./chat-steer.js";
 
 /**
  * Idea 3 + I: render a banner above the messages list when ClaimKit
@@ -436,6 +442,10 @@ export async function initializeChat() {
   // KG type-ahead: install once on the chat input. Cache warms on this call.
   const messageInput = document.getElementById("messageInput");
   if (messageInput) installKgTypeahead(messageInput);
+  // File attachment (multi-upload) + download interceptor + chat steer
+  installFileAttachmentUI();
+  installDownloadInterceptor();
+  installSteerButton();
 
   const { subscribeLive } = await import("./live.js");
   if (currentSessionId) {
@@ -673,8 +683,12 @@ async function executeSend(message, { resend = false } = {}) {
 
 export async function sendMessage() {
   const input = document.getElementById("messageInput");
-  const message = input.value.trim();
+  let message = input.value.trim();
   if (!message) return;
+
+  // Prepend any queued file attachments as a structured preamble so the
+  // model sees the paths and can open them via local.read_file.
+  message = applyAttachmentsToMessage(message);
 
   const hist = [...messageHistory];
   if (hist[hist.length - 1] !== message) hist.push(message);

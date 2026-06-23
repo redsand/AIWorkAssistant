@@ -704,3 +704,153 @@
 .kg-typeahead-row:hover {
   background: #eef2ff;
 }
+
+/* ── File attachments + bidirectional download ───────────────────────── */
+
+.attach-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid #d1d5db;
+  color: #4b5563;
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.attach-btn:hover {
+  background: #eef2ff;
+  color: #4338ca;
+  border-color: #c7d2fe;
+}
+
+.attachment-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  background: #eef2ff;
+  color: #4338ca;
+  border-radius: 14px;
+  font-size: 12px;
+  border: 1px solid #c7d2fe;
+}
+
+.attachment-name {
+  font-weight: 500;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-size {
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.attachment-remove {
+  background: transparent;
+  border: none;
+  color: #4338ca;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.attachment-remove:hover {
+  color: #1e1b4b;
+}
+
+.file-path-with-download {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.file-download-btn {
+  display: inline-flex;
+  align-items: center;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  color: #4338ca;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.file-download-btn:hover {
+  background: #e0e7ff;
+  border-color: #a5b4fc;
+}
+
+/* ── Steer button + inline prompt ───────────────────────────────────── */
+
+.steer-btn {
+  margin-left: 8px;
+  padding: 4px 10px;
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.steer-btn:hover {
+  background: #fde68a;
+}
+
+.steer-prompt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  width: 100%;
+}
+
+.steer-input {
+  flex: 1;
+  font-size: 13px;
+  padding: 4px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+}
+
+.steer-send,
+.steer-cancel {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.steer-send {
+  background: #4338ca;
+  color: white;
+  border-color: #4338ca;
+}
+
+.steer-cancel {
+  background: white;
+  color: #6b7280;
+  border-color: #d1d5db;
+}

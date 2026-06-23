@@ -148,6 +148,12 @@ document.addEventListener("click", function (e) {
       const isVisible = pre.style.display !== "none";
       pre.style.display = isVisible ? "none" : "block";
       e.target.textContent = isVisible ? "[show raw]" : "[hide raw]";
+      // The parent .tool-call-result has max-height: 80px + overflow: hidden,
+      // so toggling the inner pre's display alone wasn't enough — the wrapper
+      // still clipped to ~3 lines. Toggle an `expanded` class on the wrapper
+      // so the CSS can drop the constraint when raw is open.
+      const wrapper = pre.closest(".tool-call-result");
+      if (wrapper) wrapper.classList.toggle("expanded", !isVisible);
     }
   }
 });

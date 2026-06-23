@@ -130,3 +130,17 @@
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* When the user clicks [show raw], the toggle handler adds `expanded`
+   to the .tool-call-result wrapper. Without this rule the parent's
+   max-height: 80px + overflow: hidden clipped the inner <pre> to
+   ~3 lines regardless of pre's own sizing. */
+.tool-call-result.expanded {
+  max-height: none;
+  overflow: visible;
+}
+
+.tool-call-result.expanded pre {
+  max-height: 60vh;
+  overflow-y: auto;
+}
