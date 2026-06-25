@@ -18,7 +18,7 @@ import type { AgentRunStepCreate } from "./agent-runs/types";
 import type { AgentRun as AgentRunRecord } from "./agent-runs/types";
 // ── Module imports ─────────────────────────────────────────────────────────────
 import type {
-  ServerConfig, WorkItem, GeneratedPrompt,
+  ServerConfig, WorkItem,
   TestSuiteKind, PipelineCheckpoint, RunState,
 } from "./autonomous-loop/types";
 import {
@@ -82,7 +82,6 @@ import {
   extractFilesFromText,
 } from "./aicoder/semantic-helpers";
 import {
-  enrichPromptWithMemory as _enrichPromptWithMemory,
   buildAgentPrompt as _buildAgentPrompt,
 } from "./aicoder/prompt-builder";
 import {
@@ -112,6 +111,11 @@ import { expandWithDependencies as _expandWithDependencies } from "./aicoder/dep
 import { resolveDependencyBranch as _resolveDependencyBranch } from "./aicoder/dep-branch-resolver";
 import { escalateAgentInfrastructureFailure as _escalateAgentInfrastructureFailure } from "./aicoder/infra-failure";
 import { ProcessedIssuesStore } from "./aicoder/processed-issues";
+import { fetchWorkItemDirectly as _fetchWorkItemDirectly } from "./aicoder/work-items";
+import {
+  fetchWork as _fetchWork,
+  generatePrompt as _generatePrompt,
+} from "./aicoder/work-source";
 import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
 // enrichPrompt now used internally by src/aicoder/prompt-builder.ts
 import {
@@ -156,7 +160,8 @@ import type { SemanticFinding } from "./autonomous-loop/semantic-review";
 import { loadConvergenceState, saveConvergenceState, serializeConvergence } from "./autonomous-loop/convergence-state";
 import { loadReviewGateState, saveReviewGateState, clearReviewGateState, markForceDone } from "./autonomous-loop/review-gate-state";
 import { ensureAgentsMdRules } from "./autonomous-loop/agents-md";
-import { hashUuidToNumber, parseWorkItemTagsJson, extractCodingPromptSection } from "./autonomous-loop/work-item-utils";
+// hashUuidToNumber / parseWorkItemTagsJson / extractCodingPromptSection are
+// now used inside src/aicoder/work-items.ts after the work-items extraction.
 import {
   runAutorepair,
   getAutorepairStatus,
@@ -188,9 +193,8 @@ let lastPipelineExitCode: number = EXIT_SUCCESS;
 // Semantic-finding helpers + extractFilesFromText moved to
 // src/aicoder/semantic-helpers.ts
 
-// Memory enrichment + buildAgentPrompt moved to src/aicoder/prompt-builder.ts
-const enrichPromptWithMemory = (prompt: string, item?: WorkItem) =>
-  _enrichPromptWithMemory(conversationManager, prompt, item);
+// buildAgentPrompt moved to src/aicoder/prompt-builder.ts. enrichPromptWithMemory
+// is no longer called from aicoder.ts directly — work-items.ts uses it internally.
 const buildAgentPrompt = (prompt: string, item?: WorkItem) =>
   _buildAgentPrompt(conversationManager, WORKSPACE, prompt, item);
 
@@ -273,22 +277,9 @@ function loadServerConfig(): ServerConfig {
   };
 }
 
-async function fetchWork(cfg: ServerConfig): Promise<WorkItem[]> {
-  const params: Record<string, string> = { label: LABEL, limit: "5", source: cfg.source };
-  if (cfg.owner) params.owner = cfg.owner;
-  if (cfg.repo) params.repo = cfg.repo;
-  if (SPRINT) params.sprint = SPRINT;
-  if (SKIP_PROMPT_CHECK) params.skipPromptCheck = "true";
-
-  const resp = await axios.get<{ success: boolean; items: WorkItem[]; error?: string }>(
-    `${cfg.apiUrl}/api/autonomous-loop/work`,
-    { headers: authHeaders(cfg), params },
-  );
-  if (!resp.data.success) {
-    throw new Error(resp.data.error || "Server returned unsuccessful response");
-  }
-  return resp.data.items ?? [];
-}
+// fetchWork moved to src/aicoder/work-source.ts
+const fetchWork = (cfg: ServerConfig) =>
+  _fetchWork(cfg, { label: LABEL, sprint: SPRINT, skipPromptCheck: SKIP_PROMPT_CHECK });
 
 /** Minimal ADF → text conversion for dep-expansion (mirrors server-side extractJiraBodyText). */
 // Jira helpers (adfToText, extractJiraSprint, jiraDescriptionToText,
@@ -318,35 +309,9 @@ const expandWithDependencies = (
   });
 
 
-async function generatePrompt(
-  cfg: ServerConfig,
-  item: WorkItem,
-): Promise<GeneratedPrompt> {
-  // Work items: resolve from local database via API, build prompt directly
-  if (cfg.source === "work_items") {
-    return generatePromptFromWorkItem(cfg, item);
-  }
-
-  // Determine source type: Jira keys (IR-82, PROJ-123) vs numeric GitHub issues
-  const isJira = /^[A-Z]+-\d+$/.test(item.id);
-  const sourceType = isJira ? "jira" : "github";
-  const sourceId = isJira
-    ? item.id
-    : `${item.owner || cfg.owner}/${item.repo || cfg.repo}#${item.number}`;
-
-  const resp = await axios.post<GeneratedPrompt>(
-    `${cfg.apiUrl}/api/ticket-bridge/prompt`,
-    {
-      source: {
-        type: sourceType,
-        id: sourceId,
-      },
-      context: { includeCodebaseIndex: true, skipMissingCodingPrompt: true },
-    },
-    { headers: authHeaders(cfg) },
-  );
-  return resp.data;
-}
+// generatePrompt moved to src/aicoder/work-source.ts
+const generatePrompt = (cfg: ServerConfig, item: WorkItem) =>
+  _generatePrompt(conversationManager, runLogger, cfg, item);
 
 /**
  * Detect whether the git remote origin points to GitHub, GitLab, or unknown.
@@ -2656,84 +2621,11 @@ async function fetchIssueByKey(cfg: ServerConfig, key: string): Promise<WorkItem
   return fetchIssueDirectly(cfg, num);
 }
 
-async function generatePromptFromWorkItem(
-  cfg: ServerConfig,
-  item: WorkItem,
-): Promise<GeneratedPrompt> {
-  try {
-    const resp = await axios.get<{
-      id: string;
-      title: string;
-      description: string;
-      status: string;
-      type: string;
-      tagsJson?: string | null;
-    }>(`${cfg.apiUrl}/api/work-items/${item.id}`, { headers: authHeaders(cfg) });
-
-    const wi = resp.data;
-    if (!wi || !wi.title) {
-      return { prompt: "", skipped: true, skipReason: "Work item not found" };
-    }
-
-    const body = wi.description || "";
-    const codingPrompt = extractCodingPromptSection(body);
-    const promptContent = codingPrompt || body;
-
-    if (!promptContent.trim()) {
-      return { prompt: "", skipped: true, skipReason: "Work item has no description or coding prompt" };
-    }
-
-    const prompt = `# Task: ${wi.title}
-
-## Description
-${promptContent}
-
-## Instructions
-Implement the changes described above. Follow the project's existing patterns and conventions.
-`;
-
-    const enriched = enrichPromptWithMemory(prompt, item);
-    return { prompt: enriched, skipped: false, skipReason: null };
-  } catch (err) {
-    runLogger.logError(`Failed to fetch work item ${item.id}: ${err instanceof Error ? err.message : err}`);
-    return { prompt: "", skipped: true, skipReason: `Failed to fetch work item: ${err instanceof Error ? err.message : err}` };
-  }
-}
-
-async function fetchWorkItemDirectly(cfg: ServerConfig, workItemId: string): Promise<WorkItem | null> {
-  try {
-    const resp = await axios.get<{
-      id: string;
-      title: string;
-      description: string;
-      status: string;
-      tagsJson?: string | null;
-      owner?: string;
-    }>(`${cfg.apiUrl}/api/work-items/${workItemId}`, { headers: authHeaders(cfg) });
-
-    const wi = resp.data;
-    if (!wi || !wi.title) return null;
-
-    const slug = wi.title
-      .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40).replace(/-+$/g, "");
-    const tags = parseWorkItemTagsJson(wi.tagsJson ?? null);
-
-    return {
-      id: wi.id,
-      number: hashUuidToNumber(wi.id),
-      title: wi.title,
-      url: "",
-      owner: wi.owner || "",
-      repo: "",
-      suggestedBranch: `ai/issue-wi-${slug}`,
-      labels: tags,
-      body: wi.description || "",
-    };
-  } catch (err) {
-    runLogger.logError(`Failed to fetch work item ${workItemId}: ${err instanceof Error ? err.message : err}`);
-    return null;
-  }
-}
+// fetchWorkItemDirectly moved to src/aicoder/work-items.ts.
+// generatePromptFromWorkItem is called from src/aicoder/work-source.ts only
+// (the local aicoder.ts code path goes through generatePrompt now).
+const fetchWorkItemDirectly = (cfg: ServerConfig, workItemId: string) =>
+  _fetchWorkItemDirectly(runLogger, cfg, workItemId);
 
 // fetchJiraIssueDirectly moved to src/aicoder/jira-deps.ts
 const fetchJiraIssueDirectly = (key: string) =>
