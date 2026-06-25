@@ -55,8 +55,6 @@ import type { AgentConfig } from "./autonomous-loop/agent-runner";
 import { ProcessRetryCircuit } from "./autonomous-loop/process-retry-circuit";
 import { RunStateStore } from "./aicoder/run-state";
 import {
-  adfToText,
-  extractJiraSprint,
   jiraDescriptionToText,
 } from "./aicoder/jira-helpers";
 import {
@@ -110,6 +108,10 @@ import {
   summarizeDiffStat,
 } from "./aicoder/git-diff-helpers";
 import { classifyTestFailure as _classifyTestFailure } from "./aicoder/test-failure-classifier";
+import { expandWithDependencies as _expandWithDependencies } from "./aicoder/dep-expander";
+import { resolveDependencyBranch as _resolveDependencyBranch } from "./aicoder/dep-branch-resolver";
+import { escalateAgentInfrastructureFailure as _escalateAgentInfrastructureFailure } from "./aicoder/infra-failure";
+import { ProcessedIssuesStore } from "./aicoder/processed-issues";
 import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
 // enrichPrompt now used internally by src/aicoder/prompt-builder.ts
 import {
@@ -294,142 +296,27 @@ async function fetchWork(cfg: ServerConfig): Promise<WorkItem[]> {
 // Pure functions with no aicoder globals — extracted alongside RunStateStore
 // as part of the staged aicoder.ts split.
 
-/**
- * BFS-expand a work queue by following dependency chains up to their roots.
- * Handles both GitHub (numeric refs) and Jira (KEY-N refs) sources.
- * Only open issues are added. Iterates until no new deps are found
- * (or a 10-hop guard triggers to prevent runaway on circular/deep chains).
- */
-async function expandWithDependencies(
+// expandWithDependencies moved to src/aicoder/dep-expander.ts. The wrapper
+// below preserves the existing call signature; remove once all call sites
+// adopt the new positional/options interface.
+const expandWithDependencies = (
   items: WorkItem[],
   source: string,
   ghToken: string,
   owner: string,
   repo: string,
-): Promise<WorkItem[]> {
-  const isGitHub = source === "github" && ghToken && owner && repo;
-  const isJira = source === "jira" && jiraClient.isConfigured();
-  const gitlabProject = process.env.GITLAB_DEFAULT_PROJECT || "";
-  const isGitLab = source === "gitlab" && gitlabClient.isConfigured() && !!gitlabProject;
-  if (!isGitHub && !isJira && !isGitLab) return items;
+) =>
+  _expandWithDependencies({
+    jiraClient,
+    gitlabClient,
+    logger: runLogger,
+    items,
+    source,
+    ghToken,
+    owner,
+    repo,
+  });
 
-  // Pool keyed by id (GitHub: "123", Jira: "SIEM-15")
-  const inPool = new Map(items.map((i) => [i.id, i]));
-  const fetchedIds: string[] = [];
-
-  const fetchGitHubIssue = async (num: number): Promise<WorkItem | null> => {
-    try {
-      const resp = await axios.get(
-        `https://api.github.com/repos/${owner}/${repo}/issues/${num}`,
-        { headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" } },
-      );
-      const issue = resp.data;
-      if (issue.pull_request || issue.state !== "open") return null;
-      const slug = issue.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40).replace(/-+$/g, "");
-      return {
-        id: String(issue.number),
-        type: "github_issue",
-        title: issue.title,
-        number: issue.number,
-        url: issue.html_url,
-        owner,
-        repo,
-        labels: (issue.labels || []).map((l: any) => (typeof l === "string" ? l : l.name)),
-        suggestedBranch: slug ? `ai/issue-${issue.number}-${slug}` : `ai/issue-${issue.number}`,
-        body: issue.body || "",
-      } as WorkItem;
-    } catch { return null; }
-  };
-
-  const fetchJiraIssue = async (key: string): Promise<WorkItem | null> => {
-    try {
-      const issue = await jiraClient.getIssue(key);
-      const status = issue.fields?.status?.name ?? "";
-      if (/done|closed|resolved|completed/i.test(status)) return null;
-      const num = parseInt(key.split("-").pop() || "0", 10);
-      const title = issue.fields?.summary || "";
-      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40).replace(/-+$/g, "");
-      const jiraBase = process.env.JIRA_BASE_URL ?? "https://hawksolutionstech.atlassian.net";
-      return {
-        id: key,
-        type: "jira_issue",
-        title,
-        number: num,
-        url: `${jiraBase}/browse/${key}`,
-        owner: issue.fields?.project?.key || "",
-        repo: issue.fields?.project?.key || "",
-        labels: issue.fields?.labels || [],
-        suggestedBranch: slug ? `ai/issue-${num}-${slug}` : `ai/issue-${num}`,
-        body: adfToText(issue.fields?.description),
-        sprint: extractJiraSprint(issue.fields),
-      } as WorkItem;
-    } catch { return null; }
-  };
-
-  const fetchGitLabIssue = async (num: number): Promise<WorkItem | null> => {
-    try {
-      const issue = await gitlabClient.getIssue(gitlabProject, num);
-      if (issue.state !== "opened") return null;
-      const title = issue.title || "";
-      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40).replace(/-+$/g, "");
-      return {
-        id: String(issue.iid),
-        type: "gitlab_issue",
-        title,
-        number: issue.iid,
-        url: issue.web_url,
-        owner: String(issue.project_id),
-        repo: gitlabProject,
-        labels: issue.labels || [],
-        suggestedBranch: slug ? `ai/issue-${issue.iid}-${slug}` : `ai/issue-${issue.iid}`,
-        body: issue.description || "",
-      } as WorkItem;
-    } catch { return null; }
-  };
-
-  const isJiraKey = (dep: string) => /^[A-Z][A-Z0-9]+-\d+$/.test(dep);
-  const isNumeric = (dep: string) => /^\d+$/.test(dep);
-
-  // Seed frontier from initial items' deps
-  let frontierGH = new Set<number>();
-  let frontierGL = new Set<number>();
-  let frontierJira = new Set<string>();
-  const seedFrontier = (body: string) => {
-    for (const dep of parseDependencies(body)) {
-      if (isNumeric(dep)) {
-        const num = parseInt(dep, 10);
-        if (isGitHub && !inPool.has(dep)) frontierGH.add(num);
-        if (isGitLab && !inPool.has(dep)) frontierGL.add(num);
-      }
-      if (isJira && isJiraKey(dep) && !inPool.has(dep)) frontierJira.add(dep);
-    }
-  };
-  for (const item of items) seedFrontier(item.body || "");
-
-  const MAX_HOPS = 10;
-  for (let hop = 0; hop < MAX_HOPS && (frontierGH.size > 0 || frontierGL.size > 0 || frontierJira.size > 0); hop++) {
-    const [ghResults, glResults, jiraResults] = await Promise.all([
-      isGitHub ? Promise.all([...frontierGH].map(fetchGitHubIssue)) : Promise.resolve([]),
-      isGitLab ? Promise.all([...frontierGL].map(fetchGitLabIssue)) : Promise.resolve([]),
-      isJira   ? Promise.all([...frontierJira].map(fetchJiraIssue))  : Promise.resolve([]),
-    ]);
-    frontierGH = new Set<number>();
-    frontierGL = new Set<number>();
-    frontierJira = new Set<string>();
-    for (const item of [...ghResults, ...glResults, ...jiraResults]) {
-      if (!item) continue;
-      inPool.set(item.id, item);
-      fetchedIds.push(item.id);
-      seedFrontier(item.body || "");
-    }
-  }
-
-  if (fetchedIds.length > 0) {
-    runLogger.logConfig(`Expanded work queue with ${fetchedIds.length} dependency issue(s): ${fetchedIds.join(", ")}`);
-  }
-
-  return [...inPool.values()];
-}
 
 async function generatePrompt(
   cfg: ServerConfig,
@@ -1614,52 +1501,26 @@ const getUnresolvedJiraDependencies = (issueKeys: string[]) =>
 const findMRForIssue = (projectId: string, issueNumber: number) =>
   _findMRForIssue(gitlabClient, projectId, issueNumber);
 
-async function resolveDependencyBranch(
+// resolveDependencyBranch moved to src/aicoder/dep-branch-resolver.ts
+const resolveDependencyBranch = (
   ghToken: string,
   owner: string,
   repo: string,
   depIssueRefs: string[],
-): Promise<{ branch: string; source: "merged" | "open_pr" } | null> {
-  const platform = detectRemotePlatform(WORKSPACE);
-  let openBranch: string | null = null;
-  for (const depRef of depIssueRefs) {
-    const depNum = parseInt(depRef, 10);
-    if (!Number.isFinite(depNum)) {
-      continue;
-    }
-    if (platform === "gitlab") {
-      const projectId = repo || process.env.GITLAB_DEFAULT_PROJECT || "";
-      if (!projectId) continue;
-      const mr = await findMRForIssue(projectId, depNum);
-      if (!mr) {
-        runLogger.logGit("Dependency has no MR yet", `!${depNum}`);
-        return null; // unresolved dependency
-      }
-      if (mr.merged) {
-        runLogger.logGit("Dependency merged", `!${depNum}`);
-        continue;
-      }
-      runLogger.logGit("Dependency has open MR", `!${depNum} → ${mr.branch}`);
-      openBranch = mr.branch;
-    } else {
-      const pr = await findPRForIssue(ghToken, owner, repo, depNum);
-      if (!pr) {
-        runLogger.logGit("Dependency has no PR yet", `#${depNum}`);
-        return null; // unresolved dependency
-      }
-      if (pr.merged) {
-        runLogger.logGit("Dependency merged", `#${depNum}`);
-        continue;
-      }
-      runLogger.logGit("Dependency has open PR", `#${depNum} → ${pr.branch}`);
-      openBranch = pr.branch;
-    }
-  }
-  // All merged → branch from main; some open → branch from the open PR
-  return openBranch
-    ? { branch: openBranch, source: "open_pr" }
-    : { branch: getBaseBranch(), source: "merged" };
-}
+) =>
+  _resolveDependencyBranch(
+    {
+      logger: runLogger,
+      platform: detectRemotePlatform(WORKSPACE) as "github" | "gitlab" | "unknown",
+      baseBranch: getBaseBranch(),
+      gitlabProjectId: repo || process.env.GITLAB_DEFAULT_PROJECT || "",
+      ghOwner: owner,
+      ghRepo: repo,
+      findPRForIssue: (n) => findPRForIssue(ghToken, owner, repo, n),
+      findMRForIssue,
+    },
+    depIssueRefs,
+  );
 
 // --- Review polling --- (logic in src/aicoder/review-polling.ts)
 const pollForReviewResult = (
@@ -1690,24 +1551,20 @@ const fetchGitLabReworkPrompt = (
 
 
 
-const processedIssues = new Set<string>();
 const infrastructureBlockedIssues = new Set<string>();
 const MAX_FAILED_ATTEMPTS = 3;
 // Items dep-blocked in the current poll cycle — cleared each cycle, used by focusedLoop
 // to skip past blocked items and try the next one rather than stalling the whole cycle.
 const depBlockedThisCycle = new Set<string>();
 
-// ── Process-local rapid-failure circuit breaker ────────────────────────────
-// The DB-backed blacklist works for normal flow but FORCE_REPROCESS bypasses
-// it, which let one issue (#50, 2026-06-18) burn through 103 retries in 3h
-// when the agent crashed immediately each time. The circuit below tracks
-// failures inside the CURRENT aicoder process — regardless of --force — so a
-// tight-loop crash pattern can never racket through more than
-// AICODER_PROCESS_RETRY_MAX (default 3) attempts inside
+// Process-local crash-loop circuit. The DB-backed blacklist works for normal
+// flow but FORCE_REPROCESS bypasses it, which let one issue (#50, 2026-06-18)
+// burn through 103 retries in 3h when the agent crashed immediately each
+// time. The circuit below tracks failures inside the CURRENT aicoder process
+// — regardless of --force — so a tight-loop crash pattern can never racket
+// through more than AICODER_PROCESS_RETRY_MAX (default 3) attempts inside
 // AICODER_PROCESS_RETRY_WINDOW_MS (default 10 min). Operator clears it by
-// restarting the process or waiting out the window. Decoupled from the
-// persistent failed_attempts counter so the two limits compose: persistent
-// for cross-process resilience, process-local for crash-loop protection.
+// restarting the process or waiting out the window.
 const processRetryCircuit = new ProcessRetryCircuit({
   maxFailures: (() => {
     const n = parseInt(process.env.AICODER_PROCESS_RETRY_MAX || "3", 10);
@@ -1719,40 +1576,31 @@ const processRetryCircuit = new ProcessRetryCircuit({
   })(),
 });
 
-function recordProcessFailure(issueKey: string): void {
-  processRetryCircuit.recordFailure(WORKSPACE, issueKey);
-}
-
-function clearProcessFailures(issueKey: string): void {
-  processRetryCircuit.clear(WORKSPACE, issueKey);
-}
-
-function checkProcessRetryCircuit(issueKey: string): string | null {
-  return processRetryCircuit.check(WORKSPACE, issueKey);
-}
-
-// Persist processed issues across restarts via SQLite (concurrency-safe)
-function loadProcessedIssues(): void {
-  try {
-    const keys = agentRunDatabase.listProcessedIssues(WORKSPACE);
-    keys.forEach((id) => processedIssues.add(id));
-    if (processedIssues.size > 0) {
-      runLogger.logConfig(`Resumed with ${processedIssues.size} previously processed issue(s)`);
-    }
-  } catch {
-    // DB not available — start fresh
-  }
-}
-
-function saveProcessedIssue(issueKey: string): void {
-  processedIssues.add(issueKey);
-  try {
-    agentRunDatabase.markIssueProcessed(issueKey, WORKSPACE);
-  } catch (err) {
-    // Persistence failure is non-fatal
-    runLogger.logWork(`Could not persist processed issue: ${err instanceof Error ? err.message : err}`);
-  }
-}
+// Combined processed-issues ledger + crash-loop circuit. See
+// src/aicoder/processed-issues.ts. `processedIssues` proxy preserves the
+// existing call sites that read `.has(...)` / `.add(...)` directly.
+const _processedIssuesStore = new ProcessedIssuesStore({
+  workspace: WORKSPACE,
+  db: agentRunDatabase,
+  circuit: processRetryCircuit,
+  logger: runLogger,
+});
+const processedIssues = {
+  has: (key: string) => _processedIssuesStore.has(key),
+  add: (key: string) => _processedIssuesStore.save(key),
+  delete: (key: string) => _processedIssuesStore.delete(key),
+  get size() {
+    return _processedIssuesStore.size();
+  },
+};
+const recordProcessFailure = (issueKey: string) =>
+  _processedIssuesStore.recordFailure(issueKey);
+const clearProcessFailures = (issueKey: string) =>
+  _processedIssuesStore.clearFailures(issueKey);
+const checkProcessRetryCircuit = (issueKey: string) =>
+  _processedIssuesStore.checkRetryCircuit(issueKey);
+const loadProcessedIssues = () => _processedIssuesStore.load();
+const saveProcessedIssue = (issueKey: string) => _processedIssuesStore.save(issueKey);
 
 // ─── Run state persistence ──────────────────────────────────────────────────
 // Logic lives in src/aicoder/run-state.ts (extracted 2026-06-25 as proof-of-
@@ -1798,25 +1646,20 @@ const completeRunTrack = (
 const failRunTrack = (runId: string, errorMessage: string) =>
   _failRunTrack(agentRunsClient, agentRunDatabase, runId, errorMessage);
 
-async function escalateAgentInfrastructureFailure(issueKey: string, stderr: string | undefined): Promise<void> {
-  const details = stderr?.slice(-2000) || "Agent failed before producing output.";
-  const body = [
-    "## Agent Infrastructure Failure",
-    "",
-    `The coding agent failed before implementation could run. Aicoder is stopping retries for ${issueKey} in this process instead of looping on the same ticket.`,
-    "",
-    "```text",
-    details,
-    "```",
-  ].join("\n");
-  infrastructureBlockedIssues.add(issueKey);
-  saveProcessedIssue(issueKey);
-  if (jiraClient.isConfigured()) {
-    try {
-      await jiraClient.addComment(issueKey, body);
-    } catch {}
-  }
-}
+// escalateAgentInfrastructureFailure moved to src/aicoder/infra-failure.ts
+const escalateAgentInfrastructureFailure = (
+  issueKey: string,
+  stderr: string | undefined,
+) =>
+  _escalateAgentInfrastructureFailure(
+    jiraClient,
+    {
+      markBlocked: (key) => infrastructureBlockedIssues.add(key),
+      markProcessed: saveProcessedIssue,
+    },
+    issueKey,
+    stderr,
+  );
 
 async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prNumber: number } | null> {
   const issueKey = item.id || String(item.number);
