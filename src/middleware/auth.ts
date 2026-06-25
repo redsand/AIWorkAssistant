@@ -33,6 +33,8 @@ const PUBLIC_PATHS = new Set([
   "/dashboard",
   // Calibration eval dashboard — local dev tool
   "/eval",
+  // Auto Runners management — HTML shell, data fetched via protected APIs
+  "/runners",
 ]);
 
 const SESSION_TOKEN_BYTES = 32;

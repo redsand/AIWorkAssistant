@@ -309,6 +309,12 @@ export const DEFAULT_SLOT_DEFINITIONS: BudgetSlotDefinition[] = [
   // squeezed for budget.
   { name: "entity_claims", priority: 70, fraction: 0.05, overflowTarget: "claimkit_evidence" },
   { name: "health", priority: 20, fraction: 0.05, overflowTarget: null },
+  // Added 2026-06-25 — context-packet.ts emits these sections regardless of
+  // which slot scheme is active, so V1 also needs explicit slots or every
+  // chat logs an [enforceBudget] warning + caps them at 200 tokens. Mirror
+  // V2 priorities/fractions.
+  { name: "soul", priority: 110, fraction: 0.01, overflowTarget: "system" },
+  { name: "recent_sessions", priority: 35, fraction: 0.04, overflowTarget: "graph" },
 ];
 
 export const V2_SLOT_DEFINITIONS: BudgetSlotDefinition[] = [

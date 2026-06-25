@@ -140,6 +140,14 @@
   max-width: 220px;
 }
 
+.host-select {
+  max-width: 180px;
+}
+
+.host-manage-btn {
+  padding: 4px 6px;
+}
+
 .provider-select:disabled {
   color: #9ca3af;
   background: #f9fafb;

@@ -3,6 +3,8 @@ import fs from "fs";
 import path from "path";
 import { env } from "../config/env";
 import { aiClient } from "./opencode-client";
+import { agentRunDatabase } from "../agent-runs/database";
+import type { ProviderHost } from "../agent-runs/types";
 
 export type AIProviderName = "opencode" | "zai" | "ollama" | "openai";
 
@@ -27,6 +29,13 @@ const modelCache = new Map<
 interface PersistedProviderSelection {
   provider: AIProviderName;
   model: string;
+  /**
+   * Optional id from provider_hosts (see {@link ProviderHost}). When set, the
+   * runtime overrides the provider's *_API_URL / *_API_KEY env vars with this
+   * host's values so chat traffic targets a user-saved remote (e.g. a LAN
+   * Ollama box) instead of the server's default.
+   */
+  hostId?: string | null;
   updatedAt: string;
 }
 
@@ -45,6 +54,7 @@ function readPersistedSelection(): PersistedProviderSelection | null {
     return {
       provider: parsed.provider,
       model: typeof parsed.model === "string" ? parsed.model : rawDefaultModelForProvider(parsed.provider),
+      hostId: typeof parsed.hostId === "string" && parsed.hostId ? parsed.hostId : null,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date(0).toISOString(),
     };
   } catch {
@@ -214,6 +224,62 @@ function cacheEntry(
   };
 }
 
+/**
+ * Apply (or clear) a provider host's URL/key as runtime env overrides. Today
+ * only Ollama is remoteable; this layer is provider-aware so we can extend to
+ * a remote OpenAI-compatible gateway without changing call sites.
+ *
+ * Pass `host=null` to revert to the static config (i.e. env defaults from
+ * .env). We intentionally `delete process.env[*]` rather than restoring some
+ * captured "original" — config/env.ts already captured the originals at boot,
+ * so deleting the override lets the next createProvider() fall back to env.
+ */
+function applyHostOverride(provider: AIProviderName, host: ProviderHost | null): void {
+  // Always clear cross-cutting overrides first; we'll re-set them below if
+  // applicable. AI_FIRST_CHUNK_TIMEOUT_MS lives in the base provider class
+  // (installFirstChunkAbort) and affects every provider, so leaving a stale
+  // 900s value behind when the user switches from a slow ollama host back
+  // to opencode would suppress the watchdog where it's still useful.
+  delete process.env.AI_FIRST_CHUNK_TIMEOUT_MS;
+
+  if (provider === "ollama") {
+    if (host && host.provider === "ollama") {
+      process.env.OLLAMA_API_URL = host.baseUrl;
+      process.env.OLLAMA_API_KEY = host.apiKey ?? "";
+      // Per-host timeout. factory.ts reads OLLAMA_TIMEOUT_MS when creating
+      // the OllamaProvider; null clears the override so we fall back to the
+      // 300s default. Stored as ms (host.timeoutSeconds * 1000) so the env
+      // var matches the axios `timeout` unit and grep'ing is unambiguous.
+      if (host.timeoutSeconds) {
+        const ms = String(host.timeoutSeconds * 1000);
+        process.env.OLLAMA_TIMEOUT_MS = ms;
+        // Also raise the first-chunk idle watchdog — a slow local box may
+        // take 30–90s to load weights into VRAM and process a long prompt
+        // before the first token streams. Default 30s kills it before it
+        // ever emits a byte. Reuse the same value: if the user says "wait
+        // up to N seconds for this host", they mean total + first-chunk.
+        process.env.AI_FIRST_CHUNK_TIMEOUT_MS = ms;
+      } else {
+        delete process.env.OLLAMA_TIMEOUT_MS;
+      }
+    } else {
+      delete process.env.OLLAMA_API_URL;
+      delete process.env.OLLAMA_API_KEY;
+      delete process.env.OLLAMA_TIMEOUT_MS;
+    }
+  }
+  // No other providers are user-host-overridable today.
+}
+
+function resolveHost(hostId: string | null | undefined): ProviderHost | null {
+  if (!hostId) return null;
+  try {
+    return agentRunDatabase.getProviderHost(hostId);
+  } catch {
+    return null;
+  }
+}
+
 export const providerSettings = {
   providers,
 
@@ -224,16 +290,20 @@ export const providerSettings = {
     if (!persisted) return;
     process.env.AI_PROVIDER = persisted.provider;
     process.env[modelEnvKey(persisted.provider)] = persisted.model;
+    applyHostOverride(persisted.provider, resolveHost(persisted.hostId));
     aiClient.refresh();
   },
 
   getCurrent(): {
     provider: AIProviderName;
     model: string;
+    hostId: string | null;
     providers: readonly AIProviderName[];
   } {
     const provider = providerFromEnv();
-    return { provider, model: defaultModelForProvider(provider), providers };
+    const persisted = readPersistedSelection();
+    const hostId = persisted?.provider === provider ? persisted.hostId ?? null : null;
+    return { provider, model: defaultModelForProvider(provider), hostId, providers };
   },
 
   async getModels(
@@ -269,11 +339,39 @@ export const providerSettings = {
   async setProvider(
     provider: AIProviderName,
     model?: string,
+    hostId?: string | null,
   ): Promise<{
     provider: AIProviderName;
     model: string;
+    hostId: string | null;
     models: ProviderModelCacheEntry;
   }> {
+    // Resolve & apply host BEFORE fetching models so the model list comes
+    // from the chosen host's /api/tags, not the singleton env-default URL.
+    // An explicit null clears any prior override; undefined preserves the
+    // currently-persisted host so callers that don't care about hosts (the
+    // existing tests, mostly) keep working unchanged.
+    const persisted = readPersistedSelection();
+    const effectiveHostId =
+      hostId === undefined
+        ? persisted?.provider === provider
+          ? persisted?.hostId ?? null
+          : null
+        : hostId;
+    const host = resolveHost(effectiveHostId);
+    if (effectiveHostId && !host) {
+      throw new Error(`Provider host '${effectiveHostId}' not found`);
+    }
+    if (host && host.provider !== provider) {
+      throw new Error(
+        `Provider host '${host.name}' is for ${host.provider}, not ${provider}`,
+      );
+    }
+    applyHostOverride(provider, host);
+    // Bust the model cache for this provider — host change means a different
+    // model list. Cheap; the next getModels() will refetch from the new URL.
+    modelCache.delete(provider);
+
     const models = await this.getModels(provider);
     const normalizedModel = model?.toLowerCase();
     const normalizedList = models.models.map((m) => m.toLowerCase());
@@ -293,11 +391,12 @@ export const providerSettings = {
     writePersistedSelection({
       provider,
       model: selectedModel,
+      hostId: effectiveHostId,
       updatedAt: new Date().toISOString(),
     });
     aiClient.refresh();
 
-    return { provider, model: selectedModel, models };
+    return { provider, model: selectedModel, hostId: effectiveHostId, models };
   },
 
   warmDefaultProvider(): void {

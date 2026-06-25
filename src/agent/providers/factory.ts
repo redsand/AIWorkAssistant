@@ -6,6 +6,19 @@ import { OllamaProvider } from "./ollama-provider";
 import { OpenAIProvider } from "./openai-provider";
 
 /**
+ * Parse an env-supplied timeout (in ms) safely. Empty string, non-numeric, or
+ * out-of-range values fall back to the supplied default — we never want a
+ * user typo to wedge the provider with a 0ms timeout (which axios treats as
+ * "infinite" silently and breaks reaper assumptions).
+ */
+function parseTimeoutEnv(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return n;
+}
+
+/**
  * Resolve the effective context limit for a model by checking per-model
  * overrides before falling back to the default.
  */
@@ -51,7 +64,10 @@ export function createProvider(): AIProvider {
         temperature: env.OLLAMA_TEMPERATURE,
         topP: 0.9,
         maxRetries: env.OLLAMA_API_KEY ? 5 : 2,
-        timeout: 300000,
+        // Per-host override (set by provider-settings.applyHostOverride when
+        // a saved host with timeoutSeconds is selected). Falls back to 300s
+        // for default localhost.
+        timeout: parseTimeoutEnv(process.env.OLLAMA_TIMEOUT_MS, 300000),
         maxContextTokens: getEffectiveContextLimit(
           process.env.OLLAMA_MODEL || env.OLLAMA_MODEL || "",
           env.OLLAMA_MAX_CONTEXT_TOKENS,
@@ -110,7 +126,10 @@ export function createProviderFor(name: string): AIProvider | null {
         temperature: env.OLLAMA_TEMPERATURE,
         topP: 0.9,
         maxRetries: env.OLLAMA_API_KEY ? 5 : 2,
-        timeout: 300000,
+        // Per-host override (set by provider-settings.applyHostOverride when
+        // a saved host with timeoutSeconds is selected). Falls back to 300s
+        // for default localhost.
+        timeout: parseTimeoutEnv(process.env.OLLAMA_TIMEOUT_MS, 300000),
         maxContextTokens: getEffectiveContextLimit(
           process.env.OLLAMA_MODEL || env.OLLAMA_MODEL || "",
           env.OLLAMA_MAX_CONTEXT_TOKENS,

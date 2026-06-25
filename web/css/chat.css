@@ -179,6 +179,13 @@
   background: #667eea;
   color: white;
   border-bottom-right-radius: 4px;
+  /* Preserve newlines + indentation typed by the user. messages.js renders
+     user messages with bubble.textContent (safer than innerHTML for raw
+     user input — no XSS surface) but the default HTML whitespace
+     collapse would lose every newline and run of spaces. pre-wrap keeps
+     them visible without turning any character into markup. */
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .message.assistant .message-bubble {

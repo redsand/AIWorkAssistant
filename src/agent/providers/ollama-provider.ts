@@ -19,6 +19,47 @@ const MAX_RATE_LIMIT_SLEEP_MS = 300_000;
 
 const kToolNameMap = Symbol("toolNameMap");
 
+const ERROR_BODY_MAX_BYTES = 4096;
+
+/**
+ * Drain an axios stream-mode error body into a printable string. With
+ * `responseType: "stream"` axios hands us the raw Readable on errors —
+ * the body holds Ollama's actual diagnostic (e.g. `{"error":"model 'foo'
+ * not found"}`) but it's never consumed unless we do it ourselves.
+ *
+ * Bounded at 4KB so a misbehaving server can't OOM the chat job. Tries
+ * to extract the `.error` field from JSON; falls back to the raw string.
+ * Returns an empty string when there's nothing useful to surface.
+ */
+async function drainErrorStream(stream: unknown): Promise<string> {
+  if (!stream || typeof (stream as { on?: unknown }).on !== "function") {
+    return "";
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for await (const chunk of stream as AsyncIterable<Buffer | string>) {
+      const buf = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      const remaining = ERROR_BODY_MAX_BYTES - total;
+      if (remaining <= 0) break;
+      chunks.push(buf.length > remaining ? buf.subarray(0, remaining) : buf);
+      total += Math.min(buf.length, remaining);
+    }
+  } catch {
+    // Stream already closed or errored — return whatever we got.
+  }
+  const text = Buffer.concat(chunks).toString("utf8").trim();
+  if (!text) return "";
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed?.error === "string") return parsed.error;
+    if (typeof parsed?.message === "string") return parsed.message;
+  } catch {
+    // Not JSON — fall through.
+  }
+  return text.length > 500 ? text.slice(0, 500) + "…" : text;
+}
+
 export class OllamaProvider extends AIProvider {
   readonly name = "ollama";
   readonly capabilities: ProviderCapabilities = {
@@ -359,7 +400,16 @@ export class OllamaProvider extends AIProvider {
               continue;
             }
             if (status === 400 || status === 401 || status === 403 || status === 404) {
-              throw lastError;
+              // The response body holds Ollama's actual error message (e.g.
+              // "model 'foo' not found", "context too long", "invalid
+              // payload"), but because we requested responseType: "stream"
+              // axios never reads it. Drain it explicitly so the user gets
+              // something actionable instead of "Request failed with status
+              // code 400". Bounded to 4KB so a misbehaving server can't OOM.
+              const detail = await drainErrorStream(error.response?.data);
+              throw new Error(
+                `Ollama API ${status}${detail ? `: ${detail}` : ""}`,
+              );
             }
           }
           if (attempt < maxAttempts) {

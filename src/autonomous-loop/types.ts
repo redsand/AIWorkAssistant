@@ -23,6 +23,14 @@ export interface WorkItem {
   suggestedBranch: string;
   labels?: string[];
   body?: string;
+  /**
+   * Sprint name when the source provides one (Jira mainly — Sprint custom
+   * field rendered as the sprint name, not the internal id). Surfaced on
+   * the runner card so users can see "SIEM-8 is in Sprint 12" without
+   * leaving the UI. Null when unknown or when the source has no concept
+   * of sprints (GitHub, work_items, etc.).
+   */
+  sprint?: string | null;
 }
 
 export interface GeneratedPrompt {

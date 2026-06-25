@@ -7,9 +7,11 @@
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#1a1a2e" />
     <link rel="stylesheet" href="/css/dashboard.css" />
+    <link rel="stylesheet" href="/css/runners.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.6/dist/vis-network.min.js"></script>
     <script src="/js/dashboard.js" defer></script>
+    <script src="/js/runners-panel.js" defer></script>
   </head>
   <body>
     <div class="page">
@@ -77,6 +79,9 @@
 
       <!-- Dashboard content (hidden until repo selected) -->
       <div id="dashboard-content" style="display: none">
+        <!-- Auto Runners panel (scoped to the selected repo) -->
+        <section id="runners-panel-mount"></section>
+
         <!-- Stats Bar -->
         <div class="stats-bar" id="stats-bar">
           <div class="stat-chip">
@@ -307,5 +312,58 @@
         </div>
       </div>
     </div>
+
+    <!-- Runners panel: re-mount on repo selection so the listing + create
+         preset stay scoped to the dashboard's current repo. -->
+    <script>
+      (function () {
+        var ctl = null;
+        function repoLabelFromSelect(sel) {
+          var opt = sel.options[sel.selectedIndex];
+          if (!opt) return null;
+          // Existing dashboard convention: option text shows "owner/repo (N issues)".
+          var text = (opt.textContent || "").trim();
+          var match = text.match(/^([^\s(]+)/);
+          return match ? match[1] : (opt.value || null);
+        }
+        function platformFromSelect(sel) {
+          var opt = sel.options[sel.selectedIndex];
+          var raw = opt && opt.value ? opt.value : "";
+          var parts = raw.split(":");
+          return parts[0] || "github";
+        }
+        function mountForCurrentRepo() {
+          if (!window.RunnersPanel) return;
+          var sel = document.getElementById("repo-select");
+          if (!sel || !sel.value) return;
+          var container = document.getElementById("runners-panel-mount");
+          if (!container) return;
+          var repo = repoLabelFromSelect(sel);
+          if (!repo) return;
+          var source = platformFromSelect(sel);
+          if (ctl && typeof ctl.destroy === "function") ctl.destroy();
+          ctl = window.RunnersPanel.mount({
+            container: container,
+            title: "Runners for " + repo,
+            repoFilter: repo,
+            sourceFilter: source,
+            presetCreate: { repo: repo, source: source },
+          });
+        }
+        document.addEventListener("DOMContentLoaded", function () {
+          var sel = document.getElementById("repo-select");
+          if (sel) {
+            sel.addEventListener("change", mountForCurrentRepo);
+            // Initial mount: dashboard.js triggers selection async, so retry briefly.
+            var tries = 0;
+            var iv = setInterval(function () {
+              tries++;
+              if (sel.value) { mountForCurrentRepo(); clearInterval(iv); }
+              else if (tries > 20) clearInterval(iv);
+            }, 300);
+          }
+        });
+      })();
+    </script>
   </body>
 </html>

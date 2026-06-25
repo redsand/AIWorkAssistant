@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Auto Runners — AI Work Assistant</title>
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#1a1a2e" />
+    <link rel="stylesheet" href="/css/base.css" />
+    <link rel="stylesheet" href="/css/runners.css" />
+    <link rel="stylesheet" href="/css/combobox.css" />
+    <link rel="stylesheet" href="/css/host-modal.css" />
+    <script src="/js/combobox.js" defer></script>
+    <script src="/js/host-modal.js" defer></script>
+    <script src="/js/runners.js" defer></script>
+  </head>
+  <body>
+    <div class="rn-page">
+      <header class="rn-header">
+        <div class="rn-header-left">
+          <a href="/dashboard" class="rn-back">&larr; Dashboard</a>
+          <div>
+            <div class="rn-title">Auto Runners</div>
+            <div class="rn-subtitle">
+              Persistent aicoders &amp; reviewers — each dedicated to a project/source
+            </div>
+          </div>
+        </div>
+        <div class="rn-header-right">
+          <button class="rn-btn rn-btn-primary" id="add-aicoder">+ Aicoder</button>
+          <button class="rn-btn rn-btn-primary" id="add-reviewer">+ Reviewer</button>
+          <button class="rn-btn" id="refresh">Refresh</button>
+        </div>
+      </header>
+
+      <main class="rn-grid" id="runners-grid">
+        <div class="rn-empty" id="empty-state">
+          No runners yet. Click <strong>+ Aicoder</strong> or <strong>+ Reviewer</strong> to create one.
+        </div>
+      </main>
+    </div>
+
+    <!-- Edit / create modal -->
+    <div class="rn-modal" id="edit-modal" hidden>
+      <div class="rn-modal-backdrop" data-close></div>
+      <div class="rn-modal-body">
+        <header class="rn-modal-header">
+          <h2 id="edit-modal-title">Runner</h2>
+          <button class="rn-modal-close" data-close>&times;</button>
+        </header>
+        <form id="edit-form" class="rn-form">
+          <input type="hidden" name="id" />
+          <input type="hidden" name="kind" />
+
+          <label>
+            <span>Name</span>
+            <input name="name" required placeholder="e.g. ClaimKit aicoder" />
+          </label>
+
+          <div class="rn-row">
+            <!-- "Agent" picks the coding-agent CLI (claude/codex/opencode)
+                 that aicoder shells out to. Reviewer doesn't shell to one —
+                 it just calls the AI provider directly for review judgment —
+                 so this whole label is hidden when kind=reviewer. -->
+            <label data-kind="aicoder">
+              <span>Agent</span>
+              <select name="agent">
+                <option value="claude">claude</option>
+                <option value="codex">codex</option>
+                <option value="opencode">opencode</option>
+              </select>
+            </label>
+            <label>
+              <span>API provider</span>
+              <select name="apiProvider">
+                <option value="">(default)</option>
+                <option value="opencode">opencode</option>
+                <option value="zai">zai</option>
+                <option value="ollama">ollama</option>
+                <option value="openai">openai</option>
+              </select>
+            </label>
+            <!-- Host picker only meaningful for providers that are commonly
+                 self-hosted (today: ollama). Hidden otherwise. -->
+            <label id="host-field" hidden>
+              <span>
+                Host
+                <button type="button" class="rn-btn rn-btn-mini" id="add-host-btn" title="Add a remote host">+ Host</button>
+                <button type="button" class="rn-btn rn-btn-mini" id="edit-host-btn" title="Edit selected host" hidden>Edit</button>
+              </span>
+              <div id="host-combo"></div>
+            </label>
+          </div>
+
+          <div class="rn-row">
+            <label class="rn-field-wide">
+              <span>
+                Model (optional)
+                <button type="button" class="rn-btn rn-btn-mini" id="reload-models" title="Re-list models from the selected host" hidden>Reload</button>
+              </span>
+              <div id="model-combo"></div>
+            </label>
+          </div>
+          <input type="hidden" name="apiProviderHostId" />
+          <input type="hidden" name="model" />
+
+          <div class="rn-row">
+            <label>
+              <span>Source</span>
+              <!-- Reviewer only handles MRs/PRs, so jira/work_items/jitbit/auto
+                   are stripped out by runners.js when kind=reviewer. The full
+                   list lives here as the source of truth for aicoder. -->
+              <select name="source">
+                <option value="github">github</option>
+                <option value="gitlab">gitlab</option>
+                <option value="jira" data-kind="aicoder">jira</option>
+                <option value="work_items" data-kind="aicoder">work_items</option>
+                <option value="jitbit" data-kind="aicoder">jitbit</option>
+                <option value="auto" data-kind="aicoder">auto</option>
+              </select>
+            </label>
+            <label class="rn-field-wide">
+              <span>Project / repository</span>
+              <div id="repo-combo"></div>
+            </label>
+            <label>
+              <span>Owner (auto-filled)</span>
+              <input name="owner" placeholder="optional" />
+            </label>
+          </div>
+          <input type="hidden" name="repo" />
+          <input type="hidden" name="repoKey" />
+
+          <!-- Aicoder-only filters: label/sprint pin which issues the loop
+               picks up; targetIssue forces a one-shot on a specific id. -->
+          <div class="rn-row" data-kind="aicoder">
+            <label>
+              <span>Label filter</span>
+              <input name="label" placeholder="ready-for-agent" />
+            </label>
+            <label>
+              <span>Sprint (optional)</span>
+              <input name="sprint" placeholder="sprint-12" />
+            </label>
+            <label>
+              <span>Target issue (optional, one-shot)</span>
+              <input name="targetIssue" placeholder="IR-82 or 51" />
+            </label>
+          </div>
+
+          <!-- Reviewer-only fields. targetMR maps to reviewer's --review-mr,
+               workspacePath to --workspace-path (parent dir holding local
+               clones of the watched repos — reviewer does NOT clone). -->
+          <div class="rn-row" data-kind="reviewer">
+            <label class="rn-field-wide">
+              <span>Workspace base path</span>
+              <input name="workspacePath" placeholder="C:\Users\you\source\repos" />
+            </label>
+            <label>
+              <span>Target MR/PR # (optional, one-shot)</span>
+              <input name="targetMR" type="number" min="1" placeholder="e.g. 42" />
+            </label>
+          </div>
+
+          <!-- Clone URL is only meaningful when the source has no platform
+               API that owns the repo (Jira, work_items, auto). For
+               github/gitlab the dropdown selection populates this value
+               behind the scenes via the platform API. -->
+          <!-- Clone URL + base branch are aicoder-only. Reviewer works on
+               existing MRs/PRs in already-cloned repos pointed at by the
+               Workspace base path above. -->
+          <div class="rn-row" id="repo-url-row" data-kind="aicoder" hidden>
+            <label class="rn-field-wide">
+              <span>Workspace clone URL (required for Jira / work_items)</span>
+              <input name="repoUrl" placeholder="git@github.com:foo/bar.git" />
+            </label>
+          </div>
+          <div class="rn-row" data-kind="aicoder">
+            <label class="rn-field-wide">
+              <span>Base branch
+                <button type="button" class="rn-btn rn-btn-mini" id="reload-branches" hidden title="Re-list branches from the workspace clone URL">Reload</button>
+              </span>
+              <div id="branch-combo"></div>
+            </label>
+          </div>
+          <!-- repoUrl input stays in the DOM even when its row is hidden so
+               github/gitlab auto-fill (and the form submit) still works. -->
+          <input type="hidden" name="baseBranch" />
+
+          <div class="rn-row">
+            <label>
+              <span>Poll interval (ms)</span>
+              <input name="pollIntervalMs" type="number" min="1000" step="1000" value="60000" />
+            </label>
+            <label>
+              <span>Max cycles (0 = unlimited)</span>
+              <input name="maxCycles" type="number" min="0" value="0" />
+            </label>
+            <label class="rn-checkbox">
+              <input type="checkbox" name="enabled" checked />
+              <span>Enabled (start polling on save)</span>
+            </label>
+          </div>
+
+          <footer class="rn-modal-footer">
+            <button type="button" class="rn-btn" data-close>Cancel</button>
+            <button type="submit" class="rn-btn rn-btn-primary">Save</button>
+          </footer>
+        </form>
+      </div>
+    </div>
+
+    <!-- Add/edit provider host modal lives in web/js/host-modal.js — shared
+         with the chat header so the two stay in sync. -->
+
+    <!-- Live-logs modal -->
+    <div class="rn-modal" id="logs-modal" hidden>
+      <div class="rn-modal-backdrop" data-close></div>
+      <div class="rn-modal-body rn-modal-body--wide">
+        <header class="rn-modal-header">
+          <h2>Live output <span class="rn-modal-sub" id="logs-runner-name"></span></h2>
+          <button class="rn-modal-close" data-close>&times;</button>
+        </header>
+        <pre class="rn-log-pane" id="log-pane"></pre>
+      </div>
+    </div>
+  </body>
+</html>

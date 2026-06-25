@@ -49,6 +49,8 @@ body {
 
 .comp-title { font-size: 22px; font-weight: 700; color: #333; }
 .comp-subtitle { font-size: 13px; color: #888; margin-top: 2px; }
+.comp-sublink { color: #667eea; text-decoration: none; font-weight: 500; }
+.comp-sublink:hover { text-decoration: underline; }
 
 .comp-header-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 

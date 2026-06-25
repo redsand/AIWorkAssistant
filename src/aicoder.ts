@@ -53,8 +53,65 @@ import { runTestSuite as _runTestSuite, checkCoverage as _checkCoverage } from "
 import { runAgent as _runAgent } from "./autonomous-loop/agent-runner";
 import type { AgentConfig } from "./autonomous-loop/agent-runner";
 import { ProcessRetryCircuit } from "./autonomous-loop/process-retry-circuit";
+import { RunStateStore } from "./aicoder/run-state";
+import {
+  adfToText,
+  extractJiraSprint,
+  jiraDescriptionToText,
+} from "./aicoder/jira-helpers";
+import {
+  getUnresolvedJiraDependencies as _getUnresolvedJiraDependencies,
+  fetchJiraIssueDirectly as _fetchJiraIssueDirectly,
+} from "./aicoder/jira-deps";
+import {
+  fetchIssueBody,
+  findPRForIssue,
+  fetchIssueDirectly as _fetchIssueDirectly,
+} from "./aicoder/github-helpers";
+import { findMRForIssue as _findMRForIssue } from "./aicoder/gitlab-helpers";
+import {
+  pollForReviewResult as _pollForReviewResult,
+  pollForGitLabReviewResult as _pollForGitLabReviewResult,
+} from "./aicoder/review-polling";
+import {
+  fetchReworkPrompt,
+  fetchGitLabReworkPrompt as _fetchGitLabReworkPrompt,
+} from "./aicoder/rework-prompts";
+import {
+  isPromptStrategy,
+  normalizeSemanticSeverity,
+  normalizeSemanticCategory,
+  extractFilesFromText,
+} from "./aicoder/semantic-helpers";
+import {
+  enrichPromptWithMemory as _enrichPromptWithMemory,
+  buildAgentPrompt as _buildAgentPrompt,
+} from "./aicoder/prompt-builder";
+import {
+  trackStep as _trackStep,
+  completeRunTrack as _completeRunTrack,
+  failRunTrack as _failRunTrack,
+  isAgentInfrastructureFailure,
+  resetStepOrder,
+  getStepOrder,
+} from "./aicoder/run-tracking";
+import {
+  buildBaselineFixPrompt as _buildBaselineFixPrompt,
+  buildCoverageFixPrompt as _buildCoverageFixPrompt,
+  buildConflictResolutionPrompt as _buildConflictResolutionPrompt,
+} from "./aicoder/fix-prompts";
+import {
+  detectPackageManager as _detectPackageManager,
+  runPackageInstall as _runPackageInstall,
+} from "./aicoder/package-manager";
+import type { PackageManager } from "./aicoder/package-manager";
+import {
+  getChangedFiles as _getChangedFiles,
+  summarizeDiffStat,
+} from "./aicoder/git-diff-helpers";
+import { classifyTestFailure as _classifyTestFailure } from "./aicoder/test-failure-classifier";
 import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
-import { enrichPrompt } from "./autonomous-loop/prompt-enricher";
+// enrichPrompt now used internally by src/aicoder/prompt-builder.ts
 import {
   detectRemotePlatform,
   getGitLabProjectFromRemote,
@@ -126,94 +183,17 @@ export {
 // can call process.exit() with a meaningful code instead of always exiting 0.
 let lastPipelineExitCode: number = EXIT_SUCCESS;
 
-const PROMPT_STRATEGIES: PromptStrategy[] = [
-  "standard",
-  "rework_with_feedback",
-  "simplified",
-  "file_focused",
-  "test_first",
-  "incremental",
-  "escalate_human",
-];
+// Semantic-finding helpers + extractFilesFromText moved to
+// src/aicoder/semantic-helpers.ts
 
-function isPromptStrategy(value: string): value is PromptStrategy {
-  return PROMPT_STRATEGIES.includes(value as PromptStrategy);
-}
-
-function normalizeSemanticSeverity(value: string | undefined): SemanticFinding["severity"] {
-  switch (value) {
-    case "critical":
-    case "high":
-    case "medium":
-    case "low":
-      return value;
-    case "blocker":
-      return "critical";
-    case "major":
-      return "high";
-    case "minor":
-    case "info":
-      return "low";
-    default:
-      return "high";
-  }
-}
-
-function normalizeSemanticCategory(value: string | undefined): SemanticFinding["category"] {
-  switch (value) {
-    case "security":
-    case "correctness":
-    case "testing":
-    case "performance":
-    case "style":
-      return value;
-    case "qa":
-      return "testing";
-    default:
-      return "correctness";
-  }
-}
-
-function extractFilesFromText(text: string): string[] {
-  const files = new Set<string>();
-  const fileRegex = /(?:^|\s|`)([\w./-]+\.(?:ts|tsx|js|jsx|py|rs|go|java|rb|yml|yaml|json|md))\b/gim;
-  let match: RegExpExecArray | null;
-  while ((match = fileRegex.exec(text)) !== null) {
-    files.add(match[1]);
-  }
-  return [...files];
-}
-
-// Memory enrichment — injects relevant past sessions/work items into prompt context
-function enrichPromptWithMemory(prompt: string, item?: WorkItem): string {
-  try {
-    const context = item ? `${item.title}\n${item.body || ""}\n${prompt}` : prompt;
-    const memories = conversationManager.getRelevantMemories("aicoder", context, 5);
-    if (!memories.length) return prompt;
-
-    const memoryBlock = [
-      "## Relevant Past Work",
-      ...memories,
-      "## Current Task",
-    ].join("\n");
-
-    return `${memoryBlock}\n\n${prompt}`;
-  } catch {
-    return prompt;
-  }
-}
-
-async function buildAgentPrompt(prompt: string, item?: WorkItem): Promise<string> {
-  const withMemory = enrichPromptWithMemory(prompt, item);
-  return enrichPrompt(withMemory, WORKSPACE);
-}
+// Memory enrichment + buildAgentPrompt moved to src/aicoder/prompt-builder.ts
+const enrichPromptWithMemory = (prompt: string, item?: WorkItem) =>
+  _enrichPromptWithMemory(conversationManager, prompt, item);
+const buildAgentPrompt = (prompt: string, item?: WorkItem) =>
+  _buildAgentPrompt(conversationManager, WORKSPACE, prompt, item);
 
 // Review result markers (must match reviewer.ts comment headers)
-const REVIEW_PASSED_MARKER = "Review Passed";
-const REVIEW_FAILED_MARKER = "Review Failed — Rework Required";
-const REVIEW_POSTPONED_MARKER = "Review Postponed — Service Unavailable";
-const REVIEW_MERGE_CONFLICT_MARKER = "Merge Failed — Conflict Requires Rebase";
-const REVIEW_HUMAN_REVIEW_MARKER = "Review Requires Human — Ready for Human Review";
+// Review marker constants moved to src/aicoder/review-polling.ts.
 
 process.env.AICODER_AGENT = AGENT;
 process.env.AICODER_MODEL = MODEL;
@@ -309,20 +289,10 @@ async function fetchWork(cfg: ServerConfig): Promise<WorkItem[]> {
 }
 
 /** Minimal ADF → text conversion for dep-expansion (mirrors server-side extractJiraBodyText). */
-function adfToText(description: any): string {
-  if (!description) return "";
-  if (typeof description === "string") return description;
-  if (!description.content) return "";
-  return description.content
-    .map((node: any) => {
-      const text = node?.content?.map((c: any) => c?.text || "").join(" ") || "";
-      if (node?.type === "heading" && node?.attrs?.level) {
-        return `${"#".repeat(node.attrs.level)} ${text}`;
-      }
-      return text;
-    })
-    .join("\n");
-}
+// Jira helpers (adfToText, extractJiraSprint, jiraDescriptionToText,
+// isDoneStatus) live in src/aicoder/jira-helpers.ts as of 2026-06-25.
+// Pure functions with no aicoder globals — extracted alongside RunStateStore
+// as part of the staged aicoder.ts split.
 
 /**
  * BFS-expand a work queue by following dependency chains up to their roots.
@@ -391,6 +361,7 @@ async function expandWithDependencies(
         labels: issue.fields?.labels || [],
         suggestedBranch: slug ? `ai/issue-${num}-${slug}` : `ai/issue-${num}`,
         body: adfToText(issue.fields?.description),
+        sprint: extractJiraSprint(issue.fields),
       } as WorkItem;
     } catch { return null; }
   };
@@ -742,16 +713,9 @@ function validateOutput(baseBranch: string): ReturnType<typeof validateOutputFro
   return validateOutputFromDiff(statResult.stdout, diffResult.stdout, SKIP_AGENT);
 }
 
-function getChangedFiles(fromRef: string, toRef: string = "HEAD"): string[] {
-  const result = gitRunWithOutput(["diff", "--name-only", `${fromRef}...${toRef}`], WORKSPACE);
-  if (!result.ok) return [];
-  return result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-}
-
-function summarizeDiffStat(stat: string): string {
-  const lines = stat.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  return lines.slice(-1)[0] ?? "";
-}
+// getChangedFiles + summarizeDiffStat moved to src/aicoder/git-diff-helpers.ts
+const getChangedFiles = (fromRef: string, toRef: string = "HEAD") =>
+  _getChangedFiles(WORKSPACE, fromRef, toRef);
 
 
 
@@ -851,6 +815,22 @@ function forceCheckout(branch: string, cwd: string): boolean {
 
   // Parse the "would be overwritten by checkout" error to find conflicting files
   const stderr = firstAttempt.stderr;
+
+  // If the branch is already checked out in another worktree, we cannot
+  // checkout it here. This is expected for runner worktrees created by
+  // ensurePersistentWorktree -- the main repo holds the base branch.
+  // Fall back to reset --hard origin/<branch> which updates the detached
+  // HEAD to the latest remote tip without needing to checkout the branch.
+  if (stderr.includes("already used by worktree")) {
+    runLogger.logGit("WARN", `Branch ${branch} already used by another worktree -- resetting to origin/${branch} instead`);
+    gitRun(["fetch", "origin", branch], cwd);
+    if (gitRun(["reset", "--hard", `origin/${branch}`], cwd)) {
+      runLogger.logGit("Reset detached HEAD to", `origin/${branch}`);
+      return true;
+    }
+    runLogger.logError(`Could not reset to origin/${branch} after worktree conflict`);
+    return false;
+  }
 
   // Handle detached HEAD — try force-switching to the branch
   const currentBranch = getCurrentBranch();
@@ -1331,140 +1311,21 @@ async function resolveRebaseConflictsInPlace(branchName: string): Promise<boolea
 
 
 
-function buildConflictResolutionPrompt(conflictFiles: string[], branchName: string): string {
-  // Read conflict markers from each file
-  const conflictSections: string[] = [];
-  const maxFileLen = 4000;
-  const maxTotalLen = 12000;
-  let totalLen = 0;
+// buildConflictResolutionPrompt moved to src/aicoder/fix-prompts.ts
+const buildConflictResolutionPrompt = (
+  conflictFiles: string[],
+  branchName: string,
+) => _buildConflictResolutionPrompt(conflictFiles, branchName, WORKSPACE, getBaseBranch());
 
-  for (const file of conflictFiles.slice(0, 8)) { // Limit to 8 files
-    try {
-      const filePath = path.isAbsolute(file) ? file : path.join(WORKSPACE, file);
-      const content = fs.readFileSync(filePath, "utf-8");
-      // Extract only the conflict sections (between <<<<<<< and >>>>>>>)
-      const conflictBlocks: string[] = [];
-      const lines = content.split("\n");
-      let inConflict = false;
-      let blockLines: string[] = [];
-      for (const line of lines) {
-        if (line.startsWith("<<<<<<<")) {
-          inConflict = true;
-          blockLines = [line];
-        } else if (line.startsWith(">>>>>>>")) {
-          blockLines.push(line);
-          conflictBlocks.push(blockLines.join("\n"));
-          blockLines = [];
-          inConflict = false;
-        } else if (inConflict) {
-          blockLines.push(line);
-        }
-      }
-      if (conflictBlocks.length > 0) {
-        const section = `### ${file}\n\n${conflictBlocks.join("\n\n")}`;
-        const truncated = section.length > maxFileLen ? section.slice(0, maxFileLen) + "\n...(truncated)" : section;
-        conflictSections.push(truncated);
-        totalLen += truncated.length;
-        if (totalLen > maxTotalLen) break;
-      }
-    } catch {
-      // File may have been deleted or be binary — skip it
-    }
-  }
-
-  const conflictContent = conflictSections.join("\n\n");
-  const baseBranch = getBaseBranch();
-
-  return `# URGENT: Resolve Git Merge Conflicts
-
-The branch \`${branchName}\` has merge conflicts when rebasing onto \`${baseBranch}\`.
-
-You must resolve ALL conflict markers in the files listed below. The conflict markers look like:
-
-\`\`\`
-<<<<<<< HEAD (base branch changes)
-... base branch version ...
-=======
-... feature branch (your) version ...
->>>>>>> ${branchName} (your changes)
-\`\`\`
-
-## Conflict Sections
-
-${conflictContent || "(Could not read conflict files — resolve conflicts manually in the working directory)"}
-
-## Instructions
-
-1. **Read each conflict carefully.** Understand what the base branch changed and what your branch changed.
-2. **Merge both sides intelligently.** Do NOT just pick one side. Preserve both changes where they don't directly conflict.
-3. **Remove ALL conflict markers** (<<<<<<<, =======, >>>>>>>). Every single one must be gone.
-4. **Preserve the intent of both branches.** The base branch changes may include important fixes or updates. Your changes implement the feature. Both should be preserved where possible.
-5. **If changes truly conflict** (same function, same line), prefer the feature branch version but incorporate any base branch improvements that don't directly clash.
-6. **Run the project tests after resolving** to verify your resolution doesn't break anything.
-
-Focus ONLY on resolving the conflicts. Do not add new features or make unrelated changes.`;
-}
-
-function buildBaselineFixPrompt(testOutput: string, item: WorkItem): string {
-  const maxOutputLen = 8000;
-  const truncatedOutput = testOutput.length > maxOutputLen
-    ? testOutput.slice(testOutput.length - maxOutputLen)
-    : testOutput;
-  const cfg = getProjectConfig();
-  const testCmd = cfg.testCommand.join(" ") || "npm test";
-
-  return `# URGENT: Fix Failing Baseline Tests
-
-The existing test suite is currently failing on the branch for issue #${item.number}: ${item.title}.
-
-Before implementing new work, the existing tests must pass. The test failure output is below.
-
-## Test Failure Output
-
-\`\`\`
-${truncatedOutput}
-\`\`\`
-
-## Instructions
-
-1. **Read the test failure output carefully.** Identify which test files and assertions are failing.
-2. **Fix the root cause.** This is typically a missing import, a type error, a configuration issue, or a test that references code that was recently changed.
-3. **Do NOT skip or delete failing tests.** Fix the underlying code or update tests only if they test incorrect/outdated behavior.
-4. **Run \`${testCmd}\` locally after each fix** to verify your changes resolve the failures.
-5. **Commit your fix** with a descriptive message like "fix: resolve baseline test failure in X".
-
-Focus ONLY on fixing the failing tests. Do not implement new features or make unrelated changes.`;
-}
+// buildBaselineFixPrompt moved to src/aicoder/fix-prompts.ts
+const buildBaselineFixPrompt = (testOutput: string, item: WorkItem) =>
+  _buildBaselineFixPrompt(testOutput, item, getProjectConfig().testCommand.join(" "));
 
 /** Detect which package manager to use in the workspace. */
-function detectPackageManager(): "npm" | "pnpm" | "yarn" {
-  if (fs.existsSync(path.join(WORKSPACE, "pnpm-lock.yaml"))) return "pnpm";
-  if (fs.existsSync(path.join(WORKSPACE, "yarn.lock"))) return "yarn";
-  return "npm";
-}
-
-/** Run `npm/pnpm/yarn install` in the workspace. Retries with shell if direct spawn fails. */
-function runPackageInstall(pm: "npm" | "pnpm" | "yarn"): { success: boolean; command: string; exitCode: number | null } {
-  const cmd = `${pm} install`;
-  runLogger.logWork(`Running ${cmd} in workspace...`);
-  const result = spawnSync(pm, ["install"], {
-    cwd: WORKSPACE,
-    stdio: "pipe",
-    encoding: "utf-8",
-    timeout: 120_000,
-    shell: process.platform === "win32",
-  });
-  if (result.error) {
-    runLogger.logError(`${cmd} spawn error: ${result.error.message}`);
-    return { success: false, command: cmd, exitCode: -1 };
-  }
-  if (result.status !== 0) {
-    const tail = result.stderr?.split("\n").slice(-5).join("\n") || "";
-    runLogger.logError(`${cmd} failed (exit ${result.status}): ${tail}`);
-    return { success: false, command: cmd, exitCode: result.status };
-  }
-  return { success: true, command: cmd, exitCode: 0 };
-}
+// detectPackageManager + runPackageInstall moved to src/aicoder/package-manager.ts
+const detectPackageManager = () => _detectPackageManager(WORKSPACE);
+const runPackageInstall = (pm: PackageManager) =>
+  _runPackageInstall(runLogger, WORKSPACE, pm);
 
 async function fixBaselineTests(_cfg: ServerConfig, item: WorkItem): Promise<boolean> {
   const cfg = getProjectConfig();
@@ -1569,36 +1430,9 @@ async function fixBaselineTests(_cfg: ServerConfig, item: WorkItem): Promise<boo
 
 const COVERAGE_MAX_FIX_ATTEMPTS = parseInt(process.env.AICODER_COVERAGE_MAX_FIX || "2", 10);
 
-function buildCoverageFixPrompt(coverageOutput: string, item: WorkItem): string {
-  const maxOutputLen = 8000;
-  const truncatedOutput = coverageOutput.length > maxOutputLen
-    ? coverageOutput.slice(coverageOutput.length - maxOutputLen)
-    : coverageOutput;
-  const cfg = getProjectConfig();
-  const covCmd = cfg.coverageCommand.join(" ") || "npm run coverage";
-
-  return `# URGENT: Fix Test Coverage Gap
-
-The test coverage is below the required threshold for the branch implementing issue #${item.number}: ${item.title}.
-
-The agent must bring coverage above the threshold by adding unit tests for the changed code.
-
-## Coverage Output
-
-\`\`\`
-${truncatedOutput}
-\`\`\`
-
-## Instructions
-
-1. **Identify uncovered code.** Review the coverage output to find files and lines that lack test coverage — focus on the files YOU modified.
-2. **Add unit tests** that exercise the uncovered paths. Cover edge cases, error paths, and happy paths.
-3. **Do NOT modify production code.** Only add or update test files. Do not refactor, add features, or change existing behavior.
-4. **Run \`${covCmd}\` locally after adding tests** to verify the coverage threshold is now met.
-5. **Commit your test additions** with a message like "test: add coverage for [file/feature]".
-
-Focus ONLY on adding test coverage. Do not implement new features or make unrelated changes.`;
-}
+// buildCoverageFixPrompt moved to src/aicoder/fix-prompts.ts
+const buildCoverageFixPrompt = (coverageOutput: string, item: WorkItem) =>
+  _buildCoverageFixPrompt(coverageOutput, item, getProjectConfig().coverageCommand.join(" "));
 
 /**
  * Attempt to fix coverage gaps by invoking the agent with a coverage-specific
@@ -1759,141 +1593,26 @@ async function attemptTestFix(item: WorkItem, reworkCount: number, initialOutput
   return false;
 }
 
-/**
- * Evaluate test failures to decide whether they're related to the current rework.
- * Uses a lightweight heuristic: extracts file paths from test output and checks
- * if they overlap with files changed in the last commit.
- */
-async function llmEvaluateTestFailure(testOutput: string, _item: WorkItem): Promise<boolean> {
-  // Heuristic: extract file paths from test output and check overlap with changed files
-  const diffResult = gitRunWithOutput(["diff", "--name-only", "HEAD~1"], WORKSPACE);
-  const changedFiles = diffResult.ok ? diffResult.stdout : "";
-  const testFilePattern = /(?:at\s+)?([\w./\-]+\.(?:ts|js|tsx|jsx|py|go|rs)):\d+/g;
-  const failedFiles = new Set<string>();
-  let match: RegExpExecArray | null;
-  while ((match = testFilePattern.exec(testOutput)) !== null) {
-    failedFiles.add(match[1]);
-  }
-
-  // If we can identify failing test files and none overlap with changed files, likely unrelated
-  if (failedFiles.size > 0 && changedFiles.length > 0) {
-    const changedSet = new Set(changedFiles.split("\n").map((f: string) => f.trim()).filter(Boolean));
-    const overlap = [...failedFiles].some((f: string) => changedSet.has(f) || changedSet.has(f.replace(/^.*\//, "")));
-    if (!overlap) {
-      runLogger.logConfig(`Test failures appear in unrelated files (failed: ${[...failedFiles].join(", ")}) — proceeding`);
-      return true;
-    }
-  }
-
-  // If e2e test failures and no test source files in our changes, likely pre-existing
-  const isE2E = /e2e|workflow|integration/i.test(testOutput.slice(0, 2000));
-  const hasTestChanges = changedFiles.split("\n").some((f: string) => /\/test\//.test(f) || /\.test\./.test(f) || /\.spec\./.test(f));
-  if (isE2E && !hasTestChanges) {
-    runLogger.logConfig("E2E test failures detected but no test files changed — likely pre-existing, proceeding");
-    return true;
-  }
-
-  // Uncertain — need to attempt a fix
-  runLogger.logConfig("Unclear if test failures are related — will attempt fix");
-  return false;
-}
+// Test-failure heuristic moved to src/aicoder/test-failure-classifier.ts
+// (renamed `llmEvaluate*` → `classify*` since it has no LLM call).
+const llmEvaluateTestFailure = (testOutput: string, _item: WorkItem) =>
+  _classifyTestFailure(runLogger, WORKSPACE, testOutput);
 
 
 
 // --- Dependency resolution ---
 
-function jiraDescriptionToText(value: unknown): string {
-  if (!value) return "";
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map(jiraDescriptionToText).filter(Boolean).join("\n");
-  if (typeof value === "object") {
-    const node = value as { text?: unknown; content?: unknown };
-    return [
-      typeof node.text === "string" ? node.text : "",
-      jiraDescriptionToText(node.content),
-    ].filter(Boolean).join("\n");
-  }
-  return "";
-}
+// jiraDescriptionToText / isDoneStatus moved to src/aicoder/jira-helpers.ts
 
-function isDoneStatus(status: string | undefined): boolean {
-  return /done|closed|resolved|completed/i.test(status || "");
-}
+// getUnresolvedJiraDependencies moved to src/aicoder/jira-deps.ts
+const getUnresolvedJiraDependencies = (issueKeys: string[]) =>
+  _getUnresolvedJiraDependencies(jiraClient, issueKeys);
 
-async function getUnresolvedJiraDependencies(issueKeys: string[]): Promise<string[]> {
-  const unresolved: string[] = [];
-  for (const issueKey of issueKeys) {
-    try {
-      const depIssue = await jiraClient.getIssue(issueKey);
-      const status = depIssue.fields.status?.name ?? "";
-      if (!isDoneStatus(status)) {
-        unresolved.push(`${issueKey} (${status || "unknown status"})`);
-      }
-    } catch (err) {
-      unresolved.push(`${issueKey} (${err instanceof Error ? err.message : "could not verify status"})`);
-    }
-  }
-  return unresolved;
-}
+// fetchIssueBody + findPRForIssue moved to src/aicoder/github-helpers.ts
 
-async function fetchIssueBody(
-  ghToken: string,
-  owner: string,
-  repo: string,
-  issueNumber: number,
-): Promise<string> {
-  const resp = await axios.get(`https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`, {
-    headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" },
-  }).catch(() => null);
-  return resp?.data?.body || "";
-}
-
-async function findPRForIssue(
-  ghToken: string,
-  owner: string,
-  repo: string,
-  issueNumber: number,
-): Promise<{ prNumber: number; branch: string; merged: boolean } | null> {
-  const headers = { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" };
-  for (const state of ["open", "closed"]) {
-    try {
-      const resp = await axios.get(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
-        headers,
-        params: { state, per_page: 100, sort: "updated", direction: "desc" },
-      });
-      for (const pr of resp.data || []) {
-        const body: string = pr.body || "";
-        if (body.match(new RegExp(`(?:closes|fixes|resolves)\\s+#${issueNumber}\\b`, "i"))) {
-          return { prNumber: pr.number, branch: pr.head?.ref, merged: !!pr.merged_at };
-        }
-      }
-    } catch {
-      // Continue to next state
-    }
-  }
-  return null;
-}
-
-async function findMRForIssue(
-  projectId: string,
-  issueNumber: number,
-): Promise<{ mrIid: number; branch: string; merged: boolean } | null> {
-  if (!gitlabClient.isConfigured()) return null;
-  for (const state of ["opened", "closed", "merged"] as const) {
-    try {
-      const mrs = await gitlabClient.getMergeRequests(projectId, state);
-      for (const mr of mrs || []) {
-        const desc: string = mr.description || "";
-        if (desc.match(new RegExp(`(?:closes|fixes|resolves)\\s+#${issueNumber}\\b`, "i"))) {
-          return { mrIid: mr.iid, branch: mr.source_branch, merged: mr.state === "merged" };
-        }
-      }
-    } catch {
-      // Continue to next state
-    }
-  }
-  return null;
-}
+// findMRForIssue moved to src/aicoder/gitlab-helpers.ts
+const findMRForIssue = (projectId: string, issueNumber: number) =>
+  _findMRForIssue(gitlabClient, projectId, issueNumber);
 
 async function resolveDependencyBranch(
   ghToken: string,
@@ -1942,199 +1661,30 @@ async function resolveDependencyBranch(
     : { branch: getBaseBranch(), source: "merged" };
 }
 
-// --- Review polling ---
-
-async function pollForReviewResult(
+// --- Review polling --- (logic in src/aicoder/review-polling.ts)
+const pollForReviewResult = (
   ghToken: string,
   owner: string,
   repo: string,
   prNumber: number,
   pollMs: number = REVIEW_POLL_MS,
   sinceIso?: string,
-): Promise<"passed" | "failed" | "postponed" | "merged" | "conflict" | "closed" | "human_review"> {
-  const headers = { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" };
-  const since = sinceIso ? new Date(sinceIso) : null;
-  while (true) {
-    // Check PR state first
-    try {
-      const prResp = await axios.get(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`, { headers });
-      const pr = prResp.data;
-      if (pr.merged_at) return "merged";
-      if (pr.state === "closed") return "closed";
-      // Detect merge conflicts via GitHub API
-      if (pr.mergeable === false && pr.mergeable_state === "dirty") return "conflict";
-    } catch {
-      // PR might not exist yet
-    }
+) => _pollForReviewResult(ghToken, owner, repo, prNumber, pollMs, sinceIso);
 
-    // Check PR comments for review markers — only consider comments after sinceTimestamp
-    try {
-      const commentsResp = await axios.get(
-        `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments`,
-        { headers, params: { per_page: 10, sort: "created", direction: "desc" } },
-      );
-      for (const c of commentsResp.data || []) {
-        // Skip comments from before our last push to avoid re-triggering on old reviews
-        if (since && c.created_at && new Date(c.created_at) < since) continue;
-        const body: string = c.body || "";
-        if (body.includes(REVIEW_PASSED_MARKER)) return "passed";
-        if (body.includes(REVIEW_FAILED_MARKER)) return "failed";
-        if (body.includes(REVIEW_POSTPONED_MARKER)) return "postponed";
-        if (body.includes(REVIEW_MERGE_CONFLICT_MARKER)) return "conflict";
-        if (body.includes(REVIEW_HUMAN_REVIEW_MARKER)) return "human_review";
-      }
-    } catch {
-      // Comments might not be available
-    }
-
-    await new Promise((r) => setTimeout(r, pollMs));
-  }
-}
-
-async function pollForGitLabReviewResult(
+const pollForGitLabReviewResult = (
   projectId: string,
   mrIid: number,
   pollMs: number = REVIEW_POLL_MS,
   sinceIso?: string,
-): Promise<"passed" | "failed" | "postponed" | "merged" | "conflict" | "closed" | "human_review"> {
-  while (true) {
-    // Check MR state first
-    try {
-      const mr = await gitlabClient.getMergeRequest(projectId, mrIid);
-      if (mr.state === "merged") return "merged";
-      if (mr.state === "closed") return "closed";
-    } catch {
-      // MR might not be accessible
-    }
+) => _pollForGitLabReviewResult(gitlabClient, projectId, mrIid, pollMs, sinceIso);
 
-    // Check MR notes for review markers — only consider notes after our last push
-    let hasReviewNote = false;
-    try {
-      const notes = await gitlabClient.listMergeRequestNotes(projectId, mrIid, "desc");
-      for (const note of notes) {
-        // Skip notes from before our last push to avoid re-triggering on old reviews
-        if (sinceIso && note.created_at && new Date(note.created_at) < new Date(sinceIso)) continue;
-        const body: string = note.body || "";
-        if (body.includes(REVIEW_PASSED_MARKER)) return "passed";
-        if (body.includes(REVIEW_FAILED_MARKER)) return "failed";
-        if (body.includes(REVIEW_POSTPONED_MARKER)) return "postponed";
-        if (body.includes(REVIEW_MERGE_CONFLICT_MARKER)) return "conflict";
-        if (body.includes(REVIEW_HUMAN_REVIEW_MARKER)) return "human_review";
-        // Any note from a reviewer (not the bot itself) counts as review activity
-        if (note.author?.username !== "aicoder" && note.author?.username !== "AiRemoteCoder") {
-          hasReviewNote = true;
-        }
-      }
-    } catch {
-      // Notes might not be available
-    }
-
-    // Only check merge conflict status if a reviewer has commented
-    // (fresh MRs often report "cannot_be_merged" before GitLab checks)
-    if (hasReviewNote) {
-      try {
-        const status = await gitlabClient.getMergeRequestStatus(projectId, mrIid);
-        if (status.conflicts || status.mergeStatus === "cannot_be_merged") return "conflict";
-      } catch {
-        // Status check failed — continue polling
-      }
-    }
-
-    await new Promise((r) => setTimeout(r, pollMs));
-  }
-}
-
-async function fetchReworkPrompt(
-  ghToken: string,
-  owner: string,
-  repo: string,
-  prNumber: number,
-  issueNumber: number,
-  sinceTimestamp?: string,
-): Promise<string | null> {
-  const headers = { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" };
-  const since = sinceTimestamp ? new Date(sinceTimestamp) : null;
-  // Check issue comments first (where the reviewer posts the coding prompt)
-  try {
-    const issueResp = await axios.get(
-      `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
-      { headers, params: { per_page: 20, sort: "created", direction: "desc" } },
-    );
-    for (const c of issueResp.data || []) {
-      const body: string = c.body || "";
-      const created = c.created_at ? new Date(c.created_at) : null;
-      // Only consider comments newer than sinceTimestamp to avoid re-processing old feedback
-      if (since && created && created < since) continue;
-      if (body.includes("Rework from PR Review")) {
-        return body;
-      }
-    }
-  } catch {
-    // Issue comments not available
-  }
-  // Also check PR comments (where review findings are posted)
-  try {
-    const prResp = await axios.get(
-      `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments`,
-      { headers, params: { per_page: 20, sort: "created", direction: "desc" } },
-    );
-    for (const c of prResp.data || []) {
-      const body: string = c.body || "";
-      const created = c.created_at ? new Date(c.created_at) : null;
-      if (since && created && created < since) continue;
-      if (body.includes("Review Failed — Rework Required")) {
-        return body;
-      }
-    }
-  } catch {
-    // PR comments not available
-  }
-  return null;
-}
-
-async function fetchGitLabReworkPrompt(
+// fetchReworkPrompt + fetchGitLabReworkPrompt moved to src/aicoder/rework-prompts.ts
+const fetchGitLabReworkPrompt = (
   projectId: string,
   mrIid: number,
   sinceTimestamp?: string,
   issueKey?: string,
-): Promise<string | null> {
-  if (issueKey && /^[A-Z]+-\d+$/.test(issueKey) && jiraClient.isConfigured()) {
-    try {
-      const comments = await jiraClient.getComments(issueKey);
-      const since = sinceTimestamp ? new Date(sinceTimestamp) : null;
-      const newestFirst = [...comments].sort((a, b) => new Date(b.created).getTime() - new Date(a.created).getTime());
-      for (const comment of newestFirst) {
-        const body = comment.body || "";
-        const created = comment.created ? new Date(comment.created) : null;
-        if (since && created && created < since) continue;
-        if (body.includes("Rework from PR Review")) {
-          return body;
-        }
-      }
-    } catch {
-      // Fall back to MR notes below.
-    }
-  }
-
-  try {
-    const notes = await gitlabClient.listMergeRequestNotes(projectId, mrIid, "desc");
-    const since = sinceTimestamp ? new Date(sinceTimestamp) : null;
-    for (const note of notes) {
-      const body: string = note.body || "";
-      const created = note.created_at ? new Date(note.created_at) : null;
-      if (since && created && created < since) continue;
-      if (body.includes("Rework from PR Review")) {
-        return body;
-      }
-      if (body.includes("Review Failed — Rework Required")) {
-        return body;
-      }
-    }
-  } catch {
-    // Notes not available
-  }
-  return null;
-}
+) => _fetchGitLabReworkPrompt(gitlabClient, jiraClient, projectId, mrIid, sinceTimestamp, issueKey);
 
 
 
@@ -2205,132 +1755,48 @@ function saveProcessedIssue(issueKey: string): void {
 }
 
 // ─── Run state persistence ──────────────────────────────────────────────────
-// Saves pipeline checkpoint state to .aicoder/run-state-<issueKey>.json so the
-// aicoder can resume an interrupted run from the last checkpoint. Per-issue
-// file isolation allows concurrent aicoder processes on different issues.
+// Logic lives in src/aicoder/run-state.ts (extracted 2026-06-25 as proof-of-
+// pattern for the larger aicoder.ts split). The thin wrappers below preserve
+// the existing call sites so callers don't have to plumb the store through.
 
-function getRunStateFile(issueKey?: string): string {
-  const base = path.join(WORKSPACE || process.cwd(), ".aicoder");
-  const name = issueKey ? `run-state-${issueKey}.json` : "run-state.json";
-  return path.join(base, name);
-}
+const runStateStore = new RunStateStore({
+  workspace: WORKSPACE,
+  targetIssueKey: TARGET_ISSUE_KEY,
+  logger: runLogger,
+});
 
 function loadRunState(issueKey?: string): RunState | null {
-  const filePath = getRunStateFile(issueKey);
-  try {
-    if (fs.existsSync(filePath)) {
-      const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-      if (data && data.checkpoint && data.issueKey) {
-        return data as RunState;
-      }
-    }
-  } catch {
-    // File doesn't exist or is corrupt — start fresh
-  }
-  // Legacy fallback: if no per-issue file found, try the old unkeyed file
-  if (issueKey) {
-    return loadRunState();
-  }
-  return null;
+  return runStateStore.load(issueKey);
 }
-
-/** Scan .aicoder/ for any existing run-state-*.json and return the first valid one. */
 function findExistingRunState(): RunState | null {
-  // Try TARGET_ISSUE_KEY first if available
-  if (TARGET_ISSUE_KEY) {
-    const state = loadRunState(TARGET_ISSUE_KEY);
-    if (state) return state;
-  }
-  const dir = path.join(WORKSPACE || process.cwd(), ".aicoder");
-  try {
-    if (!fs.existsSync(dir)) return null;
-    for (const entry of fs.readdirSync(dir)) {
-      if (entry.startsWith("run-state-") && entry.endsWith(".json")) {
-        const key = entry.slice("run-state-".length, -".json".length);
-        const state = loadRunState(key);
-        if (state) return state;
-      }
-    }
-  } catch {
-    // Non-fatal
-  }
-  // Legacy fallback
-  return loadRunState();
+  return runStateStore.findExisting();
 }
-
 function saveRunState(state: RunState, issueKey?: string): void {
-  const key = issueKey || state.issueKey;
-  const filePath = getRunStateFile(key);
-  try {
-    const dir = path.dirname(filePath);
-    fs.mkdirSync(dir, { recursive: true });
-    state.updatedAt = new Date().toISOString();
-    fs.writeFileSync(filePath, JSON.stringify(state, null, 2), "utf-8");
-  } catch (err) {
-    runLogger.logWork(`Could not persist run state: ${err instanceof Error ? err.message : err}`);
-  }
+  runStateStore.save(state, issueKey);
 }
-
 function clearRunState(issueKey?: string): void {
-  const filePath = getRunStateFile(issueKey);
-  try {
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-  } catch {
-    // Non-fatal
-  }
+  runStateStore.clear(issueKey);
 }
 
 // Agent-runs tracking: record aicoder steps via API (preferred) or direct DB (fallback)
-let currentRunStepOrder = 0;
 const agentRunsClient = createAgentRunsClient();
 
-function trackStep(runId: string, stepType: AgentRunStepCreate["stepType"], content: string, extra?: Partial<Pick<AgentRunStepCreate, "toolName" | "success" | "errorMessage" | "durationMs">>): void {
-  try {
-    currentRunStepOrder++;
-    const step: AgentRunStepCreate = {
-      runId,
-      stepType,
-      toolName: extra?.toolName ?? null,
-      content,
-      sanitizedParams: null,
-      success: extra?.success ?? true,
-      errorMessage: extra?.errorMessage ?? null,
-      durationMs: extra?.durationMs ?? null,
-      stepOrder: currentRunStepOrder,
-    };
-    if (agentRunsClient) {
-      agentRunsClient.addStep(step).catch(() => {});
-    } else {
-      agentRunDatabase.addStep(step);
-      agentRunDatabase.touchRun(runId);
-    }
-  } catch {
-    // Non-fatal: tracking should never crash the aicoder
-  }
-}
+// trackStep / completeRunTrack / failRunTrack / isAgentInfrastructureFailure
+// moved to src/aicoder/run-tracking.ts
+const trackStep = (
+  runId: string,
+  stepType: AgentRunStepCreate["stepType"],
+  content: string,
+  extra?: Partial<Pick<AgentRunStepCreate, "toolName" | "success" | "errorMessage" | "durationMs">>,
+) => _trackStep(agentRunsClient, agentRunDatabase, runId, stepType, content, extra);
 
-function completeRunTrack(runId: string, data: { model: string; toolLoopCount: number; totalTokens: number }): void {
-  if (agentRunsClient) {
-    agentRunsClient.completeRun(runId, data).catch(() => {});
-  } else {
-    agentRunDatabase.completeRun(runId, data);
-  }
-}
+const completeRunTrack = (
+  runId: string,
+  data: { model: string; toolLoopCount: number; totalTokens: number },
+) => _completeRunTrack(agentRunsClient, agentRunDatabase, runId, data);
 
-function failRunTrack(runId: string, errorMessage: string): void {
-  if (agentRunsClient) {
-    agentRunsClient.failRun(runId, errorMessage).catch(() => {});
-  } else {
-    agentRunDatabase.failRun(runId, errorMessage);
-  }
-}
-
-function isAgentInfrastructureFailure(stderr: string | undefined): boolean {
-  if (!stderr) return false;
-  return /Error loading config\.toml|wire_api\s*=\s*"chat"|Failed to start|cannot use OpenCode Go directly/i.test(stderr);
-}
+const failRunTrack = (runId: string, errorMessage: string) =>
+  _failRunTrack(agentRunsClient, agentRunDatabase, runId, errorMessage);
 
 async function escalateAgentInfrastructureFailure(issueKey: string, stderr: string | undefined): Promise<void> {
   const details = stderr?.slice(-2000) || "Agent failed before producing output.";
@@ -2432,7 +1898,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   };
 
   // Create agent-runs record for API visibility
-  currentRunStepOrder = 0;
+  resetStepOrder();
   const runParams = {
     userId: "aicoder",
     mode: `issue:${issueKey}`,
@@ -2441,6 +1907,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     issuePlatform: (cfg.source === "gitlab" ? "gitlab" : cfg.source === "jira" ? "jira" : cfg.source === "work_items" ? "work_items" : "github"),
     issueId: issueKey,
     issueRepo: cfg.repo || item.repo || process.env.AICODER_REPO || "",
+    issueSprint: item.sprint ?? null,
     worktreePath: WORKSPACE,
     branch: item.suggestedBranch,
     agentType: AGENT,
@@ -2885,7 +2352,7 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   }
 
   const totalDuration = Date.now() - startTime;
-  completeRunTrack(run.id, { model: MODEL, toolLoopCount: currentRunStepOrder, totalTokens: 0 });
+  completeRunTrack(run.id, { model: MODEL, toolLoopCount: getStepOrder(), totalTokens: 0 });
   trackStep(run.id, "note", `Completed in ${(totalDuration / 1000).toFixed(1)}s${pr ? ` — PR #${pr.prNumber}` : ""}`);
   if (pr) lastPipelineExitCode = EXIT_SUCCESS;
   runLogger.endRun(pr ? EXIT_SUCCESS : exitCode);
@@ -3425,58 +2892,13 @@ async function fetchWorkItemDirectly(cfg: ServerConfig, workItemId: string): Pro
   }
 }
 
-async function fetchJiraIssueDirectly(key: string): Promise<WorkItem | null> {
-  if (!jiraClient.isConfigured()) {
-    runLogger.logError("Jira client not configured — set JIRA_* env vars for Jira issue lookups");
-    return null;
-  }
-  try {
-    const issue = await jiraClient.getIssue(key);
-    const fields = issue.fields as typeof issue.fields & { labels?: any[] };
-    const slug = (fields?.summary ?? issue.key ?? key)
-      .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40).replace(/-+$/g, "");
-    return {
-      id: key,
-      number: parseInt(key.replace(/^[A-Z]+-/, ""), 10) || 0,
-      title: fields?.summary ?? key,
-      url: `${process.env.JIRA_BASE_URL ?? "https://hawksolutionstech.atlassian.net"}/browse/${key}`,
-      owner: "",
-      repo: "",
-      suggestedBranch: `ai/issue-${key.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${slug}`,
-      labels: (fields?.labels ?? []).map((l: any) => typeof l === "string" ? l : l.name),
-    };
-  } catch (err) {
-    runLogger.logError(`Failed to fetch Jira issue ${key}: ${err instanceof Error ? err.message : err}`);
-    return null;
-  }
-}
+// fetchJiraIssueDirectly moved to src/aicoder/jira-deps.ts
+const fetchJiraIssueDirectly = (key: string) =>
+  _fetchJiraIssueDirectly(jiraClient, runLogger, key);
 
-async function fetchIssueDirectly(cfg: ServerConfig, issueNumber: number): Promise<WorkItem | null> {
-  const ghToken = process.env.GITHUB_TOKEN;
-  if (!ghToken) {
-    runLogger.logError("GITHUB_TOKEN required to fetch issue by number");
-    return null;
-  }
-  const owner = cfg.owner || "redsand";
-  const repo = cfg.repo || "AIWorkAssistant";
-  const resp = await axios.get(`https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`, {
-    headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" },
-  }).catch(() => null);
-
-  if (!resp || !resp.data?.title) return null;
-
-  const slug = resp.data.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40).replace(/-+$/g, "");
-  return {
-    id: String(issueNumber),
-    number: issueNumber,
-    title: resp.data.title,
-    url: resp.data.html_url || "",
-    owner,
-    repo,
-    suggestedBranch: `ai/issue-${issueNumber}-${slug}`,
-    labels: (resp.data.labels || []).map((l: any) => typeof l === "string" ? l : l.name),
-  };
-}
+// fetchIssueDirectly moved to src/aicoder/github-helpers.ts
+const fetchIssueDirectly = (cfg: ServerConfig, issueNumber: number) =>
+  _fetchIssueDirectly(runLogger, cfg, issueNumber);
 
 async function focusedProcessWorkItem(
   cfg: ServerConfig,

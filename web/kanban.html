@@ -8,9 +8,11 @@
     <meta name="theme-color" content="#1a1a2e" />
     <link rel="stylesheet" href="/css/base.css" />
     <link rel="stylesheet" href="/css/kanban.css" />
+    <link rel="stylesheet" href="/css/runners.css" />
     <script src="/js/kanban-dep-utils.js" defer></script>
     <script src="/js/markdown.js" defer></script>
     <script src="/js/kanban.js" defer></script>
+    <script src="/js/runners-panel.js" defer></script>
   </head>
   <body>
     <div class="page">
@@ -90,6 +92,19 @@
 
       <!-- Screen reader live region -->
       <div id="a11y-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+
+      <!-- Auto Runners panel (compact, embeddable) -->
+      <section id="runners-panel-mount"></section>
+      <script>
+        document.addEventListener("DOMContentLoaded", () => {
+          if (window.RunnersPanel) {
+            window.RunnersPanel.mount({
+              container: document.getElementById("runners-panel-mount"),
+              title: "Auto Runners",
+            });
+          }
+        });
+      </script>
 
       <!-- Agents Rail wrapper (mobile pill + desktop rail) -->
       <div class="k-agents-rail-wrapper">

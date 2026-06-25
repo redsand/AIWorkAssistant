@@ -205,6 +205,7 @@ describe("providerSettings", () => {
     expect(providerSettings.getCurrent()).toEqual({
       provider: "zai",
       model: "glm-persisted",
+      hostId: null,
       providers: ["opencode", "zai", "ollama", "openai"],
     });
 
@@ -240,6 +241,7 @@ describe("providerSettings", () => {
     expect(providerSettings.getCurrent()).toEqual({
       provider: "ollama",
       model: "runtime-llama",
+      hostId: null,
       providers: ["opencode", "zai", "ollama", "openai"],
     });
   });

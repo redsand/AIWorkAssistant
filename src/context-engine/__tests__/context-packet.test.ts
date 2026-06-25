@@ -102,8 +102,19 @@ describe("createBudget", () => {
   it("should allocate slots by priority", () => {
     const budget = createBudget(DEFAULT_SLOT_DEFINITIONS, 10000, 500);
     const names = budget.slots.map((s) => s.name);
-    // system (100) > history (80) > entity claims (70) > documents (60) > claimkit (55) > graph (40) > health (20)
-    expect(names).toEqual(["system", "history", "entity_claims", "documents", "claimkit_evidence", "graph", "health"]);
+    // soul (110) > system (100) > history (80) > entity_claims (70) > documents (60) >
+    // claimkit_evidence (55) > graph (40) > recent_sessions (35) > health (20)
+    expect(names).toEqual([
+      "soul",
+      "system",
+      "history",
+      "entity_claims",
+      "documents",
+      "claimkit_evidence",
+      "graph",
+      "recent_sessions",
+      "health",
+    ]);
   });
 
   it("should apply safety margin of 0.7", () => {

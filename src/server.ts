@@ -48,6 +48,9 @@ import { kanbanRoutes } from "./routes/kanban";
 import { reportRoutes } from "./routes/reports";
 import { errorsRoutes } from "./routes/errors";
 import { workflowRoutes } from "./routes/workflow";
+import { runnerRoutes } from "./routes/runners";
+import { providerHostRoutes } from "./routes/provider-hosts";
+import { runnerManager } from "./runners/runner-manager";
 import { claimKitAdapter } from "./context-engine/adapters/claimkit-adapter";
 import { comparisonRoutes } from "./comparison-runs/api";
 import { evalCalibrationRoutes } from "./eval/calibration/api";
@@ -158,6 +161,8 @@ export async function buildServer() {
   await server.register(reportRoutes, { prefix: "/api/reports" });
   await server.register(errorsRoutes, { prefix: "/api" });
   await server.register(workflowRoutes, { prefix: "/api/workflow" });
+  await server.register(runnerRoutes, { prefix: "/api" });
+  await server.register(providerHostRoutes, { prefix: "/api" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
 
@@ -255,6 +260,11 @@ export async function buildServer() {
   // Serve the kanban board at /kanban (no .html extension)
   server.get("/kanban", async (_request, reply) => {
     return reply.sendFile("kanban.html");
+  });
+
+  // Serve the auto runners page at /runners (no .html extension)
+  server.get("/runners", async (_request, reply) => {
+    return reply.sendFile("runners.html");
   });
 
   // Force no-cache on static assets so Cloudflare doesn't cache them.
@@ -701,6 +711,7 @@ async function start() {
       stopPollingEngine();
       await cronEngine.stop();
       await gatewayEngine.stop();
+      await runnerManager.shutdown();
       await claimKitAdapter.close();
       process.exit(0);
     });
@@ -708,6 +719,7 @@ async function start() {
       stopPollingEngine();
       await cronEngine.stop();
       await gatewayEngine.stop();
+      await runnerManager.shutdown();
       await claimKitAdapter.close();
       process.exit(0);
     });
@@ -718,6 +730,11 @@ async function start() {
     startCalendarScheduler();
     startKanbanCleanupScheduler();
     startStaleAgentRunReaper();
+    try {
+      runnerManager.bootEnabled();
+    } catch (err) {
+      console.error("[RunnerManager] bootEnabled failed:", err);
+    }
     if (env.CRON_ENABLED) {
       cronEngine.start();
     }

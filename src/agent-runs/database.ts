@@ -12,6 +12,14 @@ import type {
   AgentRunCompleteParams,
   AgentRunListResult,
   AgentRunStepCreate,
+  Runner,
+  RunnerKind,
+  RunnerStatus,
+  RunnerCreateParams,
+  RunnerUpdateParams,
+  ProviderHost,
+  ProviderHostCreateParams,
+  ProviderHostUpdateParams,
 } from "./types";
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -81,6 +89,9 @@ class AgentRunDatabase {
     this.ensureColumn("agent_runs", "issue_id", "TEXT");
     this.ensureColumn("agent_runs", "issue_platform", "TEXT");
     this.ensureColumn("agent_runs", "issue_repo", "TEXT");
+    // Sprint name from the issue source (Jira: rendered sprint name; null
+    // for sources without sprints). Populated by aicoder at startRun.
+    this.ensureColumn("agent_runs", "issue_sprint", "TEXT");
     this.ensureColumn("agent_runs", "worktree_path", "TEXT");
     this.ensureColumn("agent_runs", "branch", "TEXT");
     this.ensureColumn("agent_runs", "agent_type", "TEXT");
@@ -139,6 +150,60 @@ class AgentRunDatabase {
         PRIMARY KEY (issue_key, workspace)
       );
     `);
+
+    // Runners — UI-configured persistent aicoder / reviewer loops
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS runners (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        repo_url TEXT,
+        base_branch TEXT,
+        workspace_path TEXT,
+        source TEXT NOT NULL,
+        owner TEXT,
+        repo TEXT,
+        label TEXT,
+        sprint TEXT,
+        target_issue TEXT,
+        agent TEXT NOT NULL,
+        model TEXT,
+        api_provider TEXT,
+        poll_interval_ms INTEGER NOT NULL DEFAULT 60000,
+        max_cycles INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'idle',
+        current_run_id TEXT,
+        last_started_at TEXT,
+        last_finished_at TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_runners_enabled ON runners(enabled);
+      CREATE INDEX IF NOT EXISTS idx_runners_status ON runners(status);
+    `);
+    // Added 2026-06-24 — saved remote endpoints (e.g. LAN Ollama box). Live
+    // alongside runners so the runner-loop can override OLLAMA_API_URL when
+    // spawning a child.
+    this.ensureColumn("runners", "api_provider_host_id", "TEXT");
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS provider_hosts (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        base_url TEXT NOT NULL,
+        api_key TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_provider_hosts_provider ON provider_hosts(provider);
+    `);
+    // Added 2026-06-24 — per-host request timeout (seconds). Null = use the
+    // provider default. Read on every chat/inference + model-list/delete call.
+    this.ensureColumn("provider_hosts", "timeout_seconds", "INTEGER");
   }
 
   startRun(params: AgentRunCreateParams): AgentRun {
@@ -147,8 +212,8 @@ class AgentRunDatabase {
     const pid = process.pid;
     this.db
       .prepare(
-        `INSERT INTO agent_runs (id, session_id, user_id, mode, provider, model, status, started_at, last_activity_at, issue_id, issue_platform, issue_repo, worktree_path, branch, agent_type, pid)
-         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO agent_runs (id, session_id, user_id, mode, provider, model, status, started_at, last_activity_at, issue_id, issue_platform, issue_repo, issue_sprint, worktree_path, branch, agent_type, pid)
+         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -162,6 +227,7 @@ class AgentRunDatabase {
         params.issueId ?? null,
         params.issuePlatform ?? null,
         params.issueRepo ?? null,
+        params.issueSprint ?? null,
         params.worktreePath ?? null,
         params.branch ?? null,
         params.agentType ?? null,
@@ -188,6 +254,7 @@ class AgentRunDatabase {
       issueId: params.issueId ?? null,
       issuePlatform: params.issuePlatform ?? null,
       issueRepo: params.issueRepo ?? null,
+      issueSprint: params.issueSprint ?? null,
       worktreePath: params.worktreePath ?? null,
       branch: params.branch ?? null,
       agentType: params.agentType ?? null,
@@ -562,6 +629,7 @@ class AgentRunDatabase {
       issueId: (row.issue_id as string | null) ?? null,
       issuePlatform: (row.issue_platform as string | null) ?? null,
       issueRepo: (row.issue_repo as string | null) ?? null,
+      issueSprint: (row.issue_sprint as string | null) ?? null,
       worktreePath: (row.worktree_path as string | null) ?? null,
       branch: (row.branch as string | null) ?? null,
       agentType: (row.agent_type as string | null) ?? null,
@@ -709,6 +777,273 @@ class AgentRunDatabase {
     this.db
       .prepare("DELETE FROM blacklisted_issues WHERE issue_key = ? AND workspace = ?")
       .run(issueKey, workspace);
+  }
+
+  // ── Runners ──────────────────────────────────────────────────────────────────
+
+  createRunner(params: RunnerCreateParams): Runner {
+    const id = uuidv4();
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO runners (
+          id, name, kind, enabled,
+          repo_url, base_branch, workspace_path,
+          source, owner, repo, label, sprint, target_issue,
+          agent, model, api_provider, api_provider_host_id,
+          poll_interval_ms, max_cycles,
+          status, current_run_id, last_started_at, last_finished_at, last_error,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', NULL, NULL, NULL, NULL, ?, ?)`,
+      )
+      .run(
+        id,
+        params.name,
+        params.kind,
+        params.enabled === false ? 0 : 1,
+        params.repoUrl ?? null,
+        params.baseBranch ?? null,
+        params.workspacePath ?? null,
+        params.source,
+        params.owner ?? null,
+        params.repo ?? null,
+        params.label ?? null,
+        params.sprint ?? null,
+        params.targetIssue ?? null,
+        params.agent,
+        params.model ?? null,
+        params.apiProvider ?? null,
+        params.apiProviderHostId ?? null,
+        params.pollIntervalMs ?? 60000,
+        params.maxCycles ?? 0,
+        now,
+        now,
+      );
+    return this.getRunner(id)!;
+  }
+
+  getRunner(id: string): Runner | null {
+    const row = this.db
+      .prepare("SELECT * FROM runners WHERE id = ?")
+      .get(id) as Record<string, unknown> | undefined;
+    return row ? this.mapRunnerRow(row) : null;
+  }
+
+  listRunners(): Runner[] {
+    const rows = this.db
+      .prepare("SELECT * FROM runners ORDER BY created_at ASC")
+      .all() as Record<string, unknown>[];
+    return rows.map((r) => this.mapRunnerRow(r));
+  }
+
+  updateRunner(id: string, patch: RunnerUpdateParams): Runner | null {
+    const existing = this.getRunner(id);
+    if (!existing) return null;
+
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    const setField = (col: string, val: unknown) => {
+      fields.push(`${col} = ?`);
+      values.push(val);
+    };
+
+    if (patch.name !== undefined) setField("name", patch.name);
+    if (patch.kind !== undefined) setField("kind", patch.kind);
+    if (patch.enabled !== undefined) setField("enabled", patch.enabled ? 1 : 0);
+    if (patch.repoUrl !== undefined) setField("repo_url", patch.repoUrl);
+    if (patch.baseBranch !== undefined) setField("base_branch", patch.baseBranch);
+    if (patch.workspacePath !== undefined) setField("workspace_path", patch.workspacePath);
+    if (patch.source !== undefined) setField("source", patch.source);
+    if (patch.owner !== undefined) setField("owner", patch.owner);
+    if (patch.repo !== undefined) setField("repo", patch.repo);
+    if (patch.label !== undefined) setField("label", patch.label);
+    if (patch.sprint !== undefined) setField("sprint", patch.sprint);
+    if (patch.targetIssue !== undefined) setField("target_issue", patch.targetIssue);
+    if (patch.agent !== undefined) setField("agent", patch.agent);
+    if (patch.model !== undefined) setField("model", patch.model);
+    if (patch.apiProvider !== undefined) setField("api_provider", patch.apiProvider);
+    if (patch.apiProviderHostId !== undefined) setField("api_provider_host_id", patch.apiProviderHostId);
+    if (patch.pollIntervalMs !== undefined) setField("poll_interval_ms", patch.pollIntervalMs);
+    if (patch.maxCycles !== undefined) setField("max_cycles", patch.maxCycles);
+
+    if (fields.length === 0) return existing;
+
+    fields.push("updated_at = ?");
+    values.push(new Date().toISOString());
+    values.push(id);
+
+    this.db
+      .prepare(`UPDATE runners SET ${fields.join(", ")} WHERE id = ?`)
+      .run(...values);
+    return this.getRunner(id);
+  }
+
+  setRunnerStatus(
+    id: string,
+    status: RunnerStatus,
+    extras?: {
+      currentRunId?: string | null;
+      lastError?: string | null;
+      lastStartedAt?: string | null;
+      lastFinishedAt?: string | null;
+    },
+  ): Runner | null {
+    const existing = this.getRunner(id);
+    if (!existing) return null;
+    const now = new Date().toISOString();
+    const fields: string[] = ["status = ?", "updated_at = ?"];
+    const values: unknown[] = [status, now];
+    if (extras?.currentRunId !== undefined) {
+      fields.push("current_run_id = ?");
+      values.push(extras.currentRunId);
+    }
+    if (extras?.lastError !== undefined) {
+      fields.push("last_error = ?");
+      values.push(extras.lastError);
+    }
+    if (extras?.lastStartedAt !== undefined) {
+      fields.push("last_started_at = ?");
+      values.push(extras.lastStartedAt);
+    }
+    if (extras?.lastFinishedAt !== undefined) {
+      fields.push("last_finished_at = ?");
+      values.push(extras.lastFinishedAt);
+    }
+    values.push(id);
+    this.db
+      .prepare(`UPDATE runners SET ${fields.join(", ")} WHERE id = ?`)
+      .run(...values);
+    return this.getRunner(id);
+  }
+
+  deleteRunner(id: string): boolean {
+    const result = this.db.prepare("DELETE FROM runners WHERE id = ?").run(id);
+    return result.changes > 0;
+  }
+
+  private mapRunnerRow(row: Record<string, unknown>): Runner {
+    return {
+      id: row.id as string,
+      name: row.name as string,
+      kind: row.kind as RunnerKind,
+      enabled: (row.enabled as number) === 1,
+      repoUrl: (row.repo_url as string | null) ?? null,
+      baseBranch: (row.base_branch as string | null) ?? null,
+      workspacePath: (row.workspace_path as string | null) ?? null,
+      source: row.source as string,
+      owner: (row.owner as string | null) ?? null,
+      repo: (row.repo as string | null) ?? null,
+      label: (row.label as string | null) ?? null,
+      sprint: (row.sprint as string | null) ?? null,
+      targetIssue: (row.target_issue as string | null) ?? null,
+      agent: row.agent as string,
+      model: (row.model as string | null) ?? null,
+      apiProvider: (row.api_provider as string | null) ?? null,
+      apiProviderHostId: (row.api_provider_host_id as string | null) ?? null,
+      pollIntervalMs: row.poll_interval_ms as number,
+      maxCycles: row.max_cycles as number,
+      status: row.status as RunnerStatus,
+      currentRunId: (row.current_run_id as string | null) ?? null,
+      lastStartedAt: (row.last_started_at as string | null) ?? null,
+      lastFinishedAt: (row.last_finished_at as string | null) ?? null,
+      lastError: (row.last_error as string | null) ?? null,
+      createdAt: row.created_at as string,
+      updatedAt: row.updated_at as string,
+    };
+  }
+
+  // ── Provider hosts ───────────────────────────────────────────────────────
+
+  createProviderHost(params: ProviderHostCreateParams): ProviderHost {
+    const id = uuidv4();
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO provider_hosts (id, name, provider, base_url, api_key, notes, timeout_seconds, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        params.name,
+        params.provider,
+        params.baseUrl,
+        params.apiKey ?? null,
+        params.notes ?? null,
+        params.timeoutSeconds ?? null,
+        now,
+        now,
+      );
+    return this.getProviderHost(id)!;
+  }
+
+  getProviderHost(id: string): ProviderHost | null {
+    const row = this.db
+      .prepare("SELECT * FROM provider_hosts WHERE id = ?")
+      .get(id) as Record<string, unknown> | undefined;
+    return row ? this.mapProviderHostRow(row) : null;
+  }
+
+  listProviderHosts(filter?: { provider?: string }): ProviderHost[] {
+    const rows = filter?.provider
+      ? this.db
+          .prepare(
+            "SELECT * FROM provider_hosts WHERE provider = ? ORDER BY name ASC",
+          )
+          .all(filter.provider) as Record<string, unknown>[]
+      : this.db
+          .prepare("SELECT * FROM provider_hosts ORDER BY provider, name")
+          .all() as Record<string, unknown>[];
+    return rows.map((r) => this.mapProviderHostRow(r));
+  }
+
+  updateProviderHost(id: string, patch: ProviderHostUpdateParams): ProviderHost | null {
+    const existing = this.getProviderHost(id);
+    if (!existing) return null;
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    const setField = (col: string, val: unknown) => {
+      fields.push(`${col} = ?`);
+      values.push(val);
+    };
+    if (patch.name !== undefined) setField("name", patch.name);
+    if (patch.provider !== undefined) setField("provider", patch.provider);
+    if (patch.baseUrl !== undefined) setField("base_url", patch.baseUrl);
+    if (patch.apiKey !== undefined) setField("api_key", patch.apiKey);
+    if (patch.notes !== undefined) setField("notes", patch.notes);
+    if (patch.timeoutSeconds !== undefined) setField("timeout_seconds", patch.timeoutSeconds);
+    if (fields.length === 0) return existing;
+    fields.push("updated_at = ?");
+    values.push(new Date().toISOString());
+    values.push(id);
+    this.db
+      .prepare(`UPDATE provider_hosts SET ${fields.join(", ")} WHERE id = ?`)
+      .run(...values);
+    return this.getProviderHost(id);
+  }
+
+  deleteProviderHost(id: string): boolean {
+    // Detach any runners pointing here so they fall back to env defaults.
+    this.db
+      .prepare("UPDATE runners SET api_provider_host_id = NULL WHERE api_provider_host_id = ?")
+      .run(id);
+    const result = this.db
+      .prepare("DELETE FROM provider_hosts WHERE id = ?")
+      .run(id);
+    return result.changes > 0;
+  }
+
+  private mapProviderHostRow(row: Record<string, unknown>): ProviderHost {
+    return {
+      id: row.id as string,
+      name: row.name as string,
+      provider: row.provider as string,
+      baseUrl: row.base_url as string,
+      apiKey: (row.api_key as string | null) ?? null,
+      notes: (row.notes as string | null) ?? null,
+      timeoutSeconds: (row.timeout_seconds as number | null) ?? null,
+      createdAt: row.created_at as string,
+      updatedAt: row.updated_at as string,
+    };
   }
 
   close(): void {

@@ -2,6 +2,11 @@ import * as child_process from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import {
+  findLocalCloneForRemote,
+  injectGitCredentials,
+  redactCredentials,
+} from "../util/git-auth";
 
 export interface WorktreeInfo {
   path: string;
@@ -224,4 +229,137 @@ export async function isClean(worktreePath: string): Promise<boolean> {
     worktreePath,
   );
   return stdout.trim() === "";
+}
+
+function spawnAny(
+  cmd: string,
+  args: string[],
+  cwd: string,
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const proc = child_process.spawn(cmd, args, { cwd, shell: false });
+    const chunks: Buffer[] = [];
+    const errChunks: Buffer[] = [];
+    proc.stdout.on("data", (c: Buffer) => chunks.push(c));
+    proc.stderr.on("data", (c: Buffer) => errChunks.push(c));
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      const stdout = Buffer.concat(chunks).toString("utf8");
+      const stderr = Buffer.concat(errChunks).toString("utf8");
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(new Error(`${cmd} ${args.join(" ")} failed (exit ${code}): ${stderr || stdout}`));
+    });
+  });
+}
+
+/**
+ * Provision a persistent per-runner workspace. The directory layout matches the
+ * kanban worktree convention but is keyed by runner id so it survives across
+ * runs.
+ *
+ * If `repoUrl` is supplied and the directory doesn't yet exist, the repo is
+ * cloned into it. Otherwise we just fetch and reset the base branch so the
+ * next aicoder cycle starts from a clean, up-to-date checkout.
+ *
+ * Returns the absolute path of the workspace.
+ */
+export async function ensurePersistentWorktree(opts: {
+  runnerId: string;
+  repoUrl?: string | null;
+  baseBranch?: string | null;
+  worktreeRoot?: string;
+  /** Optional anchor repo to derive worktreeRoot from when none provided. */
+  anchorRepoPath?: string;
+}): Promise<string> {
+  const baseBranch = opts.baseBranch ?? "main";
+  const root = opts.worktreeRoot
+    ?? (opts.anchorRepoPath
+        ? path.join(opts.anchorRepoPath, "..", ".kanban-worktrees")
+        : path.join(process.cwd(), "..", ".kanban-worktrees"));
+  const dir = path.resolve(path.join(root, `runner-${opts.runnerId}`));
+
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
+
+  const isRepo = fs.existsSync(path.join(dir, ".git"));
+  if (!isRepo) {
+    if (!opts.repoUrl) {
+      throw new Error(
+        `Workspace ${dir} does not exist and no repoUrl was provided for runner ${opts.runnerId}`,
+      );
+    }
+    // Two-strategy provisioning (see src/util/git-auth.ts header):
+    //
+    //   1. If the user has a local clone whose origin matches our repoUrl
+    //      sitting next to .kanban-worktrees, `git worktree add` from there.
+    //      No network, no auth required — git treats it as a local op. This
+    //      is exactly what the existing kanban worktree feature does and
+    //      why kanban "just works" while a raw clone here used to fail with
+    //      "Host key verification failed."
+    //
+    //   2. Otherwise fall back to `git clone` with the GITHUB_TOKEN /
+    //      GITLAB_TOKEN injected into an HTTPS URL. ssh-style URLs are
+    //      rewritten to https first so saved runners auto-heal.
+    const searchRoot = path.dirname(root); // sibling of .kanban-worktrees
+    const localAnchor = findLocalCloneForRemote(opts.repoUrl, searchRoot);
+    if (localAnchor) {
+      // Make sure the anchor has the latest base branch fetched before we
+      // create a worktree off it. Best-effort — if fetch fails (e.g. the
+      // anchor's origin remote uses SSH keys not present here) we still
+      // try the worktree add against whatever ref is local.
+      try {
+        await spawnGit(["fetch", "origin", baseBranch], localAnchor);
+      } catch {
+        // Non-fatal — there may already be a local origin/<baseBranch> ref.
+      }
+      // --detach is mandatory here: git refuses to check out the same
+      // branch in two worktrees, so if the anchor is already on master,
+      // any `worktree add -B master` or `worktree add master` fails. We
+      // start the runner workspace in detached-HEAD at the latest
+      // origin/<baseBranch>; aicoder creates its own feature branch from
+      // there exactly the same way kanban worktrees do.
+      await spawnGit(
+        ["worktree", "add", "--detach", dir, `origin/${baseBranch}`],
+        localAnchor,
+      );
+    } else {
+      const cloneUrl = injectGitCredentials(opts.repoUrl);
+      // Never log the credentialed URL — pipe through redactCredentials.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[worktree] No local clone of ${opts.repoUrl} found in ${searchRoot}; ` +
+          `cloning fresh into ${dir} via ${redactCredentials(cloneUrl)}`,
+      );
+      // -b lands the clone directly on baseBranch even if the remote's
+      // default HEAD points elsewhere; saves a second checkout.
+      await spawnAny(
+        "git",
+        ["clone", "-b", baseBranch, cloneUrl, dir],
+        path.dirname(dir),
+      );
+    }
+  }
+
+  // Per-cycle refresh — runs every invocation regardless of how the
+  // workspace was provisioned. Never call `git checkout <baseBranch>` here:
+  // if this workspace was created as a worktree from a local anchor, the
+  // anchor already holds that branch and the checkout would fail with
+  // "branch already used by worktree". `reset --hard origin/<baseBranch>`
+  // moves the current HEAD (branch or detached) to the latest remote tip
+  // which is what we actually want.
+  try {
+    await spawnGit(["fetch", "origin", baseBranch], dir);
+  } catch {
+    // Non-fatal: remote may be unreachable or branch may not exist yet.
+  }
+  try {
+    await spawnGit(["reset", "--hard", `origin/${baseBranch}`], dir);
+  } catch {
+    // Non-fatal: leave whatever state exists, aicoder will recover.
+  }
+
+  const { stdout: topLevel } = await spawnGit(
+    ["rev-parse", "--show-toplevel"],
+    dir,
+  );
+  return path.resolve(topLevel.trim());
 }

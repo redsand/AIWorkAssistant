@@ -269,11 +269,21 @@ async function handleStreamResponse(response, progressElRef, onError) {
 }
 
 
+// Providers that have user-saved remote endpoints. The host pill is hidden
+// for everything else so the chat header stays uncluttered.
+const REMOTEABLE_PROVIDERS = new Set(["ollama"]);
+
+// In-memory cache of the saved host list, populated by loadHostsForProvider.
+// Kept around so the gear button knows which row to edit without re-fetching.
+let _hostCache = [];
+
 function setProviderControlsDisabled(disabled) {
   const providerSelect = document.getElementById("providerSelect");
   const modelSelect = document.getElementById("modelSelect");
+  const hostSelect = document.getElementById("hostSelect");
   if (providerSelect) providerSelect.disabled = disabled;
   if (modelSelect) modelSelect.disabled = disabled;
+  if (hostSelect) hostSelect.disabled = disabled;
 }
 
 function renderOptions(select, values, selectedValue) {
@@ -306,13 +316,21 @@ async function loadModelsForProvider(provider, selectedModel) {
   return models;
 }
 
-async function setRuntimeProvider(provider, model) {
+/**
+ * Push the (provider, model, hostId) tuple to the server. hostId is opt-in:
+ *   - undefined → keep whatever's currently persisted for this provider
+ *   - null      → explicitly clear (back to server env defaults)
+ *   - "abc..."  → switch to that saved host (will override OLLAMA_API_URL etc.)
+ */
+async function setRuntimeProvider(provider, model, hostId) {
   setProviderControlsDisabled(true);
   try {
+    const payload = { provider, model: model || undefined };
+    if (hostId !== undefined) payload.hostId = hostId;
     const response = await fetch(`${API_BASE}/chat/provider`, {
       method: "POST",
       headers: authHeaders(),
-      body: JSON.stringify({ provider, model: model || undefined }),
+      body: JSON.stringify(payload),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `Unable to switch provider to ${provider}`);
@@ -331,9 +349,171 @@ async function setRuntimeProvider(provider, model) {
   }
 }
 
+// ─── Host pill (saved provider hosts, e.g. LAN Ollama box) ─────────────────
+
+const HOST_SENTINEL_ADD = "__add_new__";
+
+/**
+ * Populate the host pill for the active provider. Hidden when the provider
+ * doesn't expose remote hosts (everything but ollama today). The last option
+ * is always "+ Add new host…" so users can create one inline without
+ * leaving the chat.
+ */
+async function loadHostsForProvider(provider, selectedHostId) {
+  const hostSelect = document.getElementById("hostSelect");
+  const hostManageBtn = document.getElementById("hostManageBtn");
+  if (!hostSelect || !hostManageBtn) return;
+  // host-modal.js may not be loaded (tests, pages that don't need it).
+  // Bail quietly rather than crashing the whole provider-controls init.
+  if (!window.HostModal) {
+    hostSelect.hidden = true;
+    hostManageBtn.hidden = true;
+    return;
+  }
+
+  if (!REMOTEABLE_PROVIDERS.has(provider)) {
+    hostSelect.hidden = true;
+    hostManageBtn.hidden = true;
+    _hostCache = [];
+    return;
+  }
+  hostSelect.hidden = false;
+  hostManageBtn.hidden = false;
+  // setProviderControlsDisabled(true) at init blanket-disabled all three
+  // controls and only re-enables providerSelect + modelSelect explicitly.
+  // Re-enable hostSelect here so the user can actually pick a saved host;
+  // otherwise it's stuck disabled after every initializeProviderControls()
+  // call.
+  hostSelect.disabled = false;
+
+  try {
+    _hostCache = await window.HostModal.list(provider);
+  } catch (err) {
+    console.warn("Failed to load provider hosts:", err);
+    _hostCache = [];
+  }
+
+  hostSelect.innerHTML = "";
+  const def = document.createElement("option");
+  def.value = "";
+  def.textContent = "Default (server env)";
+  hostSelect.appendChild(def);
+  for (const h of _hostCache) {
+    const opt = document.createElement("option");
+    opt.value = h.id;
+    opt.textContent = h.name;
+    opt.title = `${h.baseUrl}${h.notes ? " — " + h.notes : ""}`;
+    hostSelect.appendChild(opt);
+  }
+  // If the server says this host is active but the GET /api/provider-hosts
+  // call returned without it (intermittent fetch failure, race during
+  // tsx-watch restart, etc.), insert a placeholder option so the native
+  // <select> can hold the value. Without this, .value = <missing-id>
+  // silently fails and the select snaps back to "Default" — which the
+  // user perceives as the host selection not sticking.
+  if (selectedHostId && !_hostCache.some((h) => h.id === selectedHostId)) {
+    const ghost = document.createElement("option");
+    ghost.value = selectedHostId;
+    ghost.textContent = `(saved host — refresh to see name)`;
+    ghost.style.fontStyle = "italic";
+    hostSelect.appendChild(ghost);
+  }
+  const addOpt = document.createElement("option");
+  addOpt.value = HOST_SENTINEL_ADD;
+  addOpt.textContent = "+ Add new host…";
+  hostSelect.appendChild(addOpt);
+
+  hostSelect.value = selectedHostId || "";
+  // Gear always enabled. When a host is selected → edit/delete that host.
+  // When "Default" is selected → opens add-mode (the same as picking the
+  // "+ Add new host…" sentinel from the dropdown). Tooltip reflects which
+  // mode it'll open in.
+  if (hostManageBtn) {
+    const hasSelection = !!hostSelect.value && hostSelect.value !== HOST_SENTINEL_ADD;
+    hostManageBtn.disabled = false;
+    hostManageBtn.title = hasSelection
+      ? "Edit / delete the selected host"
+      : "Add a new provider host";
+  }
+}
+
+function getActiveProvider() {
+  const sel = document.getElementById("providerSelect");
+  return sel?.value || "";
+}
+
+function getActiveHostId() {
+  const sel = document.getElementById("hostSelect");
+  return sel?.value && sel.value !== HOST_SENTINEL_ADD ? sel.value : "";
+}
+
+async function onHostSelectChange(e) {
+  const value = e.target.value;
+  if (value === HOST_SENTINEL_ADD) {
+    // Restore the previous selection visually until the modal saves something
+    e.target.value = "";
+    window.HostModal.open({
+      provider: getActiveProvider(),
+      onSaved: async (saved) => {
+        await loadHostsForProvider(getActiveProvider(), saved.id);
+        // Switch the chat runtime to the new host immediately
+        await setRuntimeProvider(getActiveProvider(), undefined, saved.id);
+      },
+    });
+    return;
+  }
+  // Switching to a saved host (or back to default) — server will pick the
+  // first model from the new host's list automatically when model=undefined.
+  await setRuntimeProvider(getActiveProvider(), undefined, value || null);
+}
+
+function onHostManageClick() {
+  const currentId = getActiveHostId();
+  if (!currentId) {
+    // No host selected — gear shouldn't have been clickable, but in case
+    // someone bypasses the disabled state, route to add-new instead of
+    // doing nothing.
+    onHostAddClick();
+    return;
+  }
+  const host = _hostCache.find((h) => h.id === currentId) || null;
+  window.HostModal.open({
+    provider: getActiveProvider(),
+    host,
+    onSaved: async (saved) => {
+      await loadHostsForProvider(getActiveProvider(), saved.id);
+      await setRuntimeProvider(getActiveProvider(), undefined, saved.id);
+    },
+    onDeleted: async (deletedId) => {
+      await loadHostsForProvider(
+        getActiveProvider(),
+        currentId === deletedId ? "" : currentId,
+      );
+      if (currentId === deletedId) {
+        // We just deleted the active host; revert to env defaults.
+        await setRuntimeProvider(getActiveProvider(), undefined, null);
+      }
+    },
+  });
+}
+
+/** Always opens the modal in add mode regardless of selection state. */
+function onHostAddClick() {
+  window.HostModal.open({
+    provider: getActiveProvider(),
+    host: null,
+    onSaved: async (saved) => {
+      await loadHostsForProvider(getActiveProvider(), saved.id);
+      await setRuntimeProvider(getActiveProvider(), undefined, saved.id);
+    },
+  });
+}
+
 async function initializeProviderControls(refreshHealth = true) {
   const providerSelect = document.getElementById("providerSelect");
   const modelSelect = document.getElementById("modelSelect");
+  const hostSelect = document.getElementById("hostSelect");
+  const hostManageBtn = document.getElementById("hostManageBtn");
   if (!providerSelect || !modelSelect) return;
 
   setProviderControlsDisabled(true);
@@ -346,12 +526,25 @@ async function initializeProviderControls(refreshHealth = true) {
   modelSelect.disabled = !data.models?.models?.length;
 
   providerSelect.onchange = async () => {
+    // Saved hosts are provider-scoped; server-side setProvider already
+    // clears the persisted hostId when the provider changes, so we omit
+    // hostId here rather than sending an explicit null (keeps the existing
+    // provider-controls tests happy).
     const models = await loadModelsForProvider(providerSelect.value);
     await setRuntimeProvider(providerSelect.value, models[0] || "");
   };
   modelSelect.onchange = async () => {
     await setRuntimeProvider(providerSelect.value, modelSelect.value);
   };
+
+  // Host pill: populated only for providers that support remote hosts.
+  // hostSelect handler is reassigned on every init so the closure captures the
+  // current cache; idempotent across multiple init() passes.
+  if (hostSelect) {
+    await loadHostsForProvider(data.active, data.hostId);
+    hostSelect.onchange = onHostSelectChange;
+  }
+  if (hostManageBtn) hostManageBtn.onclick = onHostManageClick;
 
   if (refreshHealth) await updateProviderHealth();
 }

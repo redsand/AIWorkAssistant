@@ -70,6 +70,8 @@ const chatRequestSchema = z.object({
 const providerSelectionSchema = z.object({
   provider: z.enum(["opencode", "zai", "ollama", "openai"]),
   model: z.string().optional(),
+  // Optional saved provider host (provider_hosts.id). Null = clear override.
+  hostId: z.string().nullable().optional(),
 });
 
 const providerModelsQuerySchema = z.object({
@@ -3056,6 +3058,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
     return {
       active: current.provider,
       model: current.model,
+      hostId: current.hostId,
       providers: current.providers,
       models,
     };
@@ -3076,7 +3079,11 @@ export async function chatRoutes(fastify: FastifyInstance) {
   fastify.post("/chat/provider", async (request, reply) => {
     try {
       const body = providerSelectionSchema.parse(request.body);
-      const result = await providerSettings.setProvider(body.provider, body.model);
+      const result = await providerSettings.setProvider(
+        body.provider,
+        body.model,
+        body.hostId,
+      );
       aiClient.refresh();
       return result;
     } catch (error) {
