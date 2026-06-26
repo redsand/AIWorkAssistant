@@ -135,6 +135,11 @@ import { ensureCleanWorkspace as _ensureCleanWorkspace } from "./aicoder/ensure-
 import type { EnsureCleanWorkspaceDeps } from "./aicoder/ensure-clean-workspace";
 import { watchIssue as _watchIssue } from "./aicoder/watch-issue";
 import type { WatchIssueDeps } from "./aicoder/watch-issue";
+import {
+  focusedLoop as _focusedLoop,
+  pollLoop as _pollLoop,
+} from "./aicoder/run-modes";
+import type { RunModesDeps } from "./aicoder/run-modes";
 import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
 // enrichPrompt now used internally by src/aicoder/prompt-builder.ts
 import {
@@ -1190,63 +1195,9 @@ async function resumeFromCheckpoint(state: RunState): Promise<void> {
 }
 
 
-async function focusedLoop(cfg: ServerConfig): Promise<void> {
-  runLogger.logConfig(`AiRemoteCoder started in focused mode (agent: ${AGENT}, workspace: ${WORKSPACE}${USE_OLLAMA ? ", ollama: on" : ""}${DEBUG ? ", debug: on" : ""}, base: ${getBaseBranch()})`);
-  const ghToken = process.env.GITHUB_TOKEN;
-  const owner = cfg.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand";
-  const repo = cfg.repo || process.env.AICODER_REPO || "";
-
-  // --issue <key>: work on a specific issue with review loop
-  if (TARGET_ISSUE_KEY) {
-    runLogger.logConfig(`Targeting issue ${TARGET_ISSUE_KEY} directly`);
-    const target = await fetchIssueByKey(cfg, TARGET_ISSUE_KEY);
-    if (!target) {
-      runLogger.logError(`Could not find issue ${TARGET_ISSUE_KEY}`);
-      process.exit(1);
-    }
-    await focusedProcessWorkItem(cfg, target, ghToken, owner, repo);
-    process.exit(lastPipelineExitCode);
-  }
-
-  runLogger.logConfig(`Polling ${cfg.apiUrl} for label="${LABEL}"`);
-  runLogger.logConfig(`Source: ${SOURCE}, Priority mode: ${PRIORITY}, Lookup: ${LOOKUP}${SPRINT ? `, Sprint: ${SPRINT}` : ""}`);
-
-  let cycles = 0;
-  while (true) {
-    if (MAX_CYCLES > 0 && cycles >= MAX_CYCLES) {
-      runLogger.log("STOP", `Reached max cycles (${MAX_CYCLES})`);
-      break;
-    }
-
-    try {
-      const rawItems = await fetchWork(cfg);
-      if (rawItems.length === 0) {
-        runLogger.logPoll(`No qualifying issues found — waiting ${POLL_MS / 1000}s`);
-      } else {
-        const items = await expandWithDependencies(rawItems, SOURCE, ghToken || "", owner, repo);
-        const sorted = await prioritizeItems(items, PRIORITY, cfg.apiUrl, cfg.apiKey);
-        runLogger.logConfig(`Prioritized ${sorted.length} issues (mode=${PRIORITY}): ${sorted.map((i) => `#${i.number}`).join(", ")}`);
-        // Try items in priority order. Skip dep-blocked ones and attempt the next.
-        // Only one unblocked item is processed per cycle so that after it merges,
-        // the next cycle pulls latest main before branching for the subsequent item.
-        depBlockedThisCycle.clear();
-        for (const item of sorted) {
-          await focusedProcessWorkItem(cfg, item, ghToken, owner, repo);
-          if (!depBlockedThisCycle.has(item.id || String(item.number))) break;
-        }
-        cycles++;
-      }
-    } catch (err) {
-      runLogger.logError((err as Error).message);
-    }
-
-    if (SKIP_POLL) {
-      runLogger.log("STOP", "skip-poll: exiting after one cycle");
-      break;
-    }
-    await new Promise((r) => setTimeout(r, POLL_MS));
-  }
-}
+// focusedLoop moved to src/aicoder/run-modes.ts
+const focusedLoop = (cfg: ServerConfig) =>
+  _focusedLoop(runModesDeps(), cfg);
 
 /**
  * Resolves an issue key to the correct source system and fetches it.
@@ -1312,45 +1263,8 @@ const fetchJiraIssueDirectly = (key: string) =>
 const fetchIssueDirectly = (cfg: ServerConfig, issueNumber: number) =>
   _fetchIssueDirectly(runLogger, cfg, issueNumber);
 
-async function focusedProcessWorkItem(
-  cfg: ServerConfig,
-  item: WorkItem,
-  ghToken: string | undefined,
-  owner: string,
-  repo: string,
-): Promise<void> {
-  try {
-    await focusedProcessWorkItemInner(cfg, item, ghToken, owner, repo);
-  } finally {
-    // Always clean up the workspace before returning to the poll loop
-    ensureCleanWorkspace();
-  }
-}
-
-async function focusedProcessWorkItemInner(
-  cfg: ServerConfig,
-  item: WorkItem,
-  ghToken: string | undefined,
-  owner: string,
-  repo: string,
-): Promise<void> {
-  const result = await processWorkItem(cfg, item);
-  if (!result) {
-    return; // Failed to create PR/MR
-  }
-
-  const platform = detectRemotePlatform(WORKSPACE);
-  const label = platform === "gitlab" ? "MR" : "PR";
-  const prNumber = result.prNumber;
-
-  // For GitLab, we don't need ghToken/repo for review polling
-  if (platform !== "gitlab" && (!ghToken || !repo)) {
-    return; // No GitHub token — can't poll for review
-  }
-
-  runLogger.logConfig(`Waiting for review of ${label} #${prNumber} (polling every ${REVIEW_POLL_MS / 1000}s)`);
-  await runReviewLoop(cfg, item, ghToken, owner, repo, prNumber);
-}
+// focusedProcessWorkItem + focusedProcessWorkItemInner moved to
+// src/aicoder/run-modes.ts
 
 /**
  * After an MR/PR is merged, close the originating issue on the source platform.
@@ -1399,58 +1313,38 @@ const runReviewLoop = (
   prNumber: number,
 ) => _runReviewLoop(reviewLoopDeps(), cfg, item, ghToken, owner, repo, prNumber);
 
-async function pollLoop(cfg: ServerConfig): Promise<void> {
-  runLogger.logConfig(`AiRemoteCoder started in poll mode (agent: ${AGENT}, workspace: ${WORKSPACE}${USE_OLLAMA ? ", ollama: on" : ""}, base: ${getBaseBranch()})`);
+// pollLoop moved to src/aicoder/run-modes.ts
+const pollLoop = (cfg: ServerConfig) => _pollLoop(runModesDeps(), cfg);
 
-  // --issue <key>: work on a specific issue and exit (no polling)
-  if (TARGET_ISSUE_KEY) {
-    runLogger.logConfig(`Targeting issue ${TARGET_ISSUE_KEY} directly`);
-    const target = await fetchIssueByKey(cfg, TARGET_ISSUE_KEY);
-    if (!target) {
-      runLogger.logError(`Could not find issue ${TARGET_ISSUE_KEY}`);
-      process.exit(1);
-    }
-    await processWorkItem(cfg, target);
-    process.exit(lastPipelineExitCode);
-  }
-
-  runLogger.logConfig(`Polling ${cfg.apiUrl} for label="${LABEL}"`);
-  runLogger.logConfig(`Source: ${SOURCE}, Priority mode: ${PRIORITY}, Lookup: ${LOOKUP}${SPRINT ? `, Sprint: ${SPRINT}` : ""}`);
-
-  let cycles = 0;
-  while (true) {
-    if (MAX_CYCLES > 0 && cycles >= MAX_CYCLES) {
-      runLogger.log("STOP", `Reached max cycles (${MAX_CYCLES})`);
-      break;
-    }
-
-    try {
-      const rawItems = await fetchWork(cfg);
-      const ghToken = process.env.GITHUB_TOKEN;
-      const owner = cfg.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand";
-      const repo = cfg.repo || process.env.AICODER_REPO || "";
-
-      if (rawItems.length === 0) {
-        runLogger.logPoll(`No qualifying issues found — waiting ${POLL_MS / 1000}s`);
-      } else {
-        const items = await expandWithDependencies(rawItems, SOURCE, ghToken || "", owner, repo);
-        const sorted = await prioritizeItems(items, PRIORITY, cfg.apiUrl, cfg.apiKey);
-        runLogger.logConfig(`Prioritized ${sorted.length} issues (mode=${PRIORITY}): ${sorted.map((i) => `#${i.number}`).join(", ")}`);
-        for (const item of sorted) {
-          await processWorkItem(cfg, item);
-        }
-        cycles++;
-      }
-    } catch (err) {
-      runLogger.logError((err as Error).message);
-    }
-
-    if (SKIP_POLL) {
-      runLogger.log("STOP", "skip-poll: exiting after one cycle");
-      break;
-    }
-    await new Promise((r) => setTimeout(r, POLL_MS));
-  }
+function runModesDeps(): RunModesDeps {
+  return {
+    logger: runLogger,
+    workspace: WORKSPACE,
+    agent: AGENT,
+    useOllama: USE_OLLAMA,
+    debug: DEBUG,
+    targetIssueKey: TARGET_ISSUE_KEY,
+    label: LABEL,
+    source: SOURCE,
+    priority: PRIORITY,
+    lookup: LOOKUP,
+    sprint: SPRINT,
+    maxCycles: MAX_CYCLES,
+    pollMs: POLL_MS,
+    skipPoll: SKIP_POLL,
+    reviewPollMs: REVIEW_POLL_MS,
+    getBaseBranch,
+    fetchIssueByKey,
+    fetchWork,
+    expandWithDependencies,
+    prioritizeItems,
+    processWorkItem,
+    ensureCleanWorkspace,
+    detectRemotePlatform,
+    runReviewLoop,
+    depBlockedThisCycle,
+    getLastPipelineExitCode: () => lastPipelineExitCode,
+  };
 }
 
 function cleanup() {
