@@ -92,11 +92,9 @@ import {
   resetStepOrder,
   getStepOrder,
 } from "./aicoder/run-tracking";
-import {
-  buildConflictResolutionPrompt as _buildConflictResolutionPrompt,
-} from "./aicoder/fix-prompts";
-// buildBaselineFixPrompt + buildCoverageFixPrompt are consumed inside
-// src/aicoder/test-fix-loop.ts and no longer called from aicoder.ts.
+// fix-prompts (buildBaselineFixPrompt, buildCoverageFixPrompt,
+// buildConflictResolutionPrompt) are consumed inside test-fix-loop.ts and
+// rebase-loop.ts respectively — no aicoder.ts call sites remain.
 import {
   detectPackageManager as _detectPackageManager,
   runPackageInstall as _runPackageInstall,
@@ -125,9 +123,15 @@ import type { TestFixDeps } from "./aicoder/test-fix-loop";
 import {
   forceCheckout as _forceCheckout,
   safeStashPop as _safeStashPop,
-  resolveConflictsInWorkingTree as _resolveConflictsInWorkingTree,
 } from "./aicoder/git-recovery";
 import type { GitRecoveryDeps } from "./aicoder/git-recovery";
+// resolveConflictsInWorkingTree is used internally by git-recovery.ts and
+// rebase-loop.ts only — no aicoder.ts call site.
+import {
+  rebaseAndResolveConflicts as _rebaseAndResolveConflicts,
+  resolveRebaseConflictsInPlace as _resolveRebaseConflictsInPlace,
+} from "./aicoder/rebase-loop";
+import type { RebaseLoopDeps } from "./aicoder/rebase-loop";
 import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
 // enrichPrompt now used internally by src/aicoder/prompt-builder.ts
 import {
@@ -701,139 +705,24 @@ const safeStashPop = (cwd: string) => _safeStashPop(gitRecoveryDeps(), cwd);
  *   --theirs = feature branch (the commits being replayed)
  * So during rebase, we use --theirs for AI files and --ours for base files.
  */
-// resolveConflictsInWorkingTree moved to src/aicoder/git-recovery.ts
-const resolveConflictsInWorkingTree = (
-  branchFiles: string[],
-  isRebase: boolean = false,
-) => _resolveConflictsInWorkingTree(gitRecoveryDeps(), branchFiles, isRebase);
+// resolveConflictsInWorkingTree moved to src/aicoder/git-recovery.ts.
+// rebase-loop.ts consumes it internally — no top-level alias needed here.
 
-/**
- * Perform a local rebase with conflict resolution. Returns true if the rebase
- * completed successfully (with or without conflicts that were auto-resolved).
- */
-async function rebaseAndResolveConflicts(branchName: string): Promise<boolean> {
-  runLogger.logGit("Starting local rebase with conflict resolution", branchName);
-
-  // Stage any uncommitted changes first
-  stageAndCommit("[AI] auto-save before rebase");
-
-  // Recover from any stuck rebase state
-  if (isRebaseInProgress(WORKSPACE)) {
-    if (!recoverFromRebase(WORKSPACE)) {
-      runLogger.logError("Could not recover from mid-rebase state before conflict rebase");
-      return false;
-    }
-  }
-
-  // Fetch latest base branch
-  if (!gitRun(["fetch", "origin", getBaseBranch()], WORKSPACE)) {
-    runLogger.logError("Failed to fetch latest base branch for rebase");
-    return false;
-  }
-
-  // Ensure we're on the feature branch
-  if (!forceCheckout(branchName, WORKSPACE)) {
-    runLogger.logError(`Could not checkout ${branchName} for rebase`);
-    return false;
-  }
-
-  // Get the list of files this branch modifies (before rebase)
-  const branchFiles = getBranchModifiedFiles();
-  runLogger.logGit("Branch modifies files", branchFiles.join(", "));
-
-  // Attempt rebase
-  const rebaseResult = gitRunWithOutput(["rebase", `origin/${getBaseBranch()}`], WORKSPACE);
-
-  if (rebaseResult.ok) {
-    runLogger.logGit("Rebase completed cleanly (no conflicts)");
-    return true;
-  }
-
-  // Rebase had conflicts — try LLM-assisted resolution first, then fall back to dumb resolution
-  runLogger.logGit("Rebase has conflicts — attempting resolution");
-
-  // Step 1: Try LLM-assisted conflict resolution
-  const conflictFileList = getConflictFiles();
-  if (conflictFileList.length > 0) {
-    runLogger.logGit(`Attempting LLM conflict resolution for ${conflictFileList.length} file(s)`);
-    const conflictPrompt = buildConflictResolutionPrompt(conflictFileList, branchName);
-    const llmResult = await runAgent(conflictPrompt);
-    if (llmResult.finDetected || llmResult.exitCode === 0) {
-      // Stage any files the LLM resolved (marks them resolved in git index).
-      // The LLM edits files directly but doesn't git-add them, so we must stage
-      // before checking which conflicts remain.
-      gitRun(["add", "--all"], WORKSPACE);
-      const remainingConflicts = getConflictFiles();
-      if (remainingConflicts.length === 0) {
-        // Stage the resolved files and continue the rebase
-        const continueResult = spawnSync("git", ["rebase", "--continue"], {
-          cwd: WORKSPACE,
-          stdio: "pipe",
-          encoding: "utf-8",
-          env: { ...process.env, GIT_EDITOR: "true" },
-        });
-        if (continueResult.status === 0) {
-          runLogger.logGit(`Rebase completed with LLM conflict resolution`);
-          return true;
-        }
-        // If continue failed but no more conflicts, try again
-        if (!isRebaseInProgress(WORKSPACE)) {
-          runLogger.logGit("Rebase completed after LLM resolution and continue");
-          return true;
-        }
-        runLogger.logGit("LLM resolved conflicts but rebase continue had issues — falling back to dumb resolution");
-      } else {
-        runLogger.logGit(`LLM left ${remainingConflicts.length} conflict(s) — falling back to dumb resolution`);
-      }
-    }
-  }
-
-  // Step 2: Fall back to dumb --ours/--theirs resolution
-  let resolvedTotal = 0;
-  let maxRounds = 10; // Safety limit for multiple conflict rounds
-
-  while (maxRounds-- > 0) {
-    const resolvedCount = resolveConflictsInWorkingTree(branchFiles, true);
-    if (resolvedCount === 0) break;
-    resolvedTotal += resolvedCount;
-
-    // Continue the rebase after resolving conflicts
-    const continueResult = spawnSync("git", ["rebase", "--continue"], {
-      cwd: WORKSPACE,
-      stdio: "pipe",
-      encoding: "utf-8",
-      env: { ...process.env, GIT_EDITOR: "true" },
-    });
-
-    if (continueResult.status === 0) {
-      // Rebase completed successfully after conflict resolution
-      runLogger.logGit(`Rebase completed with ${resolvedTotal} conflict(s) auto-resolved`);
-      return true;
-    }
-
-    // Check if rebase is still in progress (more conflicts to resolve)
-    if (!isRebaseInProgress(WORKSPACE)) {
-      // Rebase failed but is not in progress — something else went wrong
-      runLogger.logError(`Rebase continue failed: ${continueResult.stderr}`);
-      if (!gitRun(["rebase", "--abort"], WORKSPACE)) {
-        recoverFromRebase(WORKSPACE);
-      }
-      return false;
-    }
-    // More conflicts — loop again
-  }
-
-  if (resolvedTotal === 0) {
-    runLogger.logGit("Rebase failed but no conflict files found — aborting rebase");
-    if (!gitRun(["rebase", "--abort"], WORKSPACE)) {
-      recoverFromRebase(WORKSPACE);
-    }
-    return false;
-  }
-
-  runLogger.logGit(`Rebase completed with ${resolvedTotal} conflict(s) auto-resolved`);
-  return true;
+// rebaseAndResolveConflicts moved to src/aicoder/rebase-loop.ts
+function rebaseLoopDeps(): RebaseLoopDeps {
+  return {
+    logger: runLogger,
+    workspace: WORKSPACE,
+    baseBranch: getBaseBranch(),
+    getBranchModifiedFiles,
+    getConflictFiles,
+    stageAndCommit,
+    runAgent: (prompt) => runAgent(prompt) as Promise<{ finDetected: boolean; exitCode: number | null }>,
+    gitRecoveryDeps: gitRecoveryDeps(),
+  };
 }
+const rebaseAndResolveConflicts = (branchName: string) =>
+  _rebaseAndResolveConflicts(rebaseLoopDeps(), branchName);
 
 
 /** Check if a remote branch exists and pull latest commits into the local branch.
@@ -967,92 +856,16 @@ async function checkoutBranch(branchName: string, fromBranch?: string): Promise<
   return true;
 }
 
-/**
- * When a `git rebase` was just attempted and has conflicts in progress,
- * resolve them directly (dumb + LLM) without aborting and starting over.
- * Returns true if rebase completed (with or without conflict resolution).
- */
-async function resolveRebaseConflictsInPlace(branchName: string): Promise<boolean> {
-  if (!isRebaseInProgress(WORKSPACE)) {
-    // No conflicts — rebase already completed cleanly before this was called
-    return true;
-  }
-
-  // Rebase is in progress with conflicts — resolve them
-  runLogger.logGit("Rebase has conflicts — resolving in place");
-  const branchFiles = getBranchModifiedFiles();
-
-  // Step 1: Try LLM-assisted resolution first (intelligent merge)
-  const conflictFileList = getConflictFiles();
-  if (conflictFileList.length > 0) {
-    runLogger.logGit(`Attempting LLM conflict resolution for ${conflictFileList.length} file(s)`);
-    const conflictPrompt = buildConflictResolutionPrompt(conflictFileList, branchName);
-    const llmResult = await runAgent(conflictPrompt);
-    if (llmResult.finDetected || llmResult.exitCode === 0) {
-      // Stage any files the LLM resolved (marks them resolved in git index).
-      // This is necessary because the LLM edits files directly but doesn't git-add them.
-      gitRun(["add", "--all"], WORKSPACE);
-      const afterLlm = getConflictFiles();
-      if (afterLlm.length === 0) {
-        runLogger.logGit("LLM resolved all conflicts — continuing rebase");
-        const continueResult = spawnSync("git", ["rebase", "--continue"], {
-          cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-          env: { ...process.env, GIT_EDITOR: "true" },
-        });
-        if (continueResult.status === 0 || !isRebaseInProgress(WORKSPACE)) {
-          runLogger.logGit("Rebase completed with LLM conflict resolution");
-          return true;
-        }
-        // LLM resolved conflicts but rebase continue had more patches with conflicts
-        if (isRebaseInProgress(WORKSPACE)) {
-          runLogger.logGit("More conflicts after LLM resolution — continuing");
-        } else {
-          return true;
-        }
-      } else {
-        runLogger.logGit(`LLM left ${afterLlm.length} conflict(s) — falling back to dumb resolution for remaining`);
-      }
-    } else {
-      runLogger.logGit("LLM failed to resolve conflicts — falling back to dumb resolution");
-    }
-  }
-
-  // Step 2: Dumb resolution (--ours/--theirs) for any remaining conflicts
-  const remainingConflicts = getConflictFiles();
-  if (remainingConflicts.length > 0) {
-    resolveConflictsInWorkingTree(branchFiles, true);
-  }
-
-  // Stage everything and try to continue the rebase
-  gitRun(["add", "--all"], WORKSPACE);
-  const continueResult = spawnSync("git", ["rebase", "--continue"], {
-    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-    env: { ...process.env, GIT_EDITOR: "true" },
-  });
-
-  if (continueResult.status === 0 || !isRebaseInProgress(WORKSPACE)) {
-    runLogger.logGit("Rebase completed after conflict resolution");
-    return true;
-  }
-
-  // Still stuck — abort
-  runLogger.logError("Could not resolve rebase conflicts — aborting rebase");
-  if (!gitRun(["rebase", "--abort"], WORKSPACE)) {
-    recoverFromRebase(WORKSPACE);
-  }
-  return false;
-}
+// resolveRebaseConflictsInPlace moved to src/aicoder/rebase-loop.ts
+const resolveRebaseConflictsInPlace = (branchName: string) =>
+  _resolveRebaseConflictsInPlace(rebaseLoopDeps(), branchName);
 
 
 
-// buildConflictResolutionPrompt moved to src/aicoder/fix-prompts.ts
-const buildConflictResolutionPrompt = (
-  conflictFiles: string[],
-  branchName: string,
-) => _buildConflictResolutionPrompt(conflictFiles, branchName, WORKSPACE, getBaseBranch());
-
-// buildBaselineFixPrompt + buildCoverageFixPrompt are used inside
-// src/aicoder/test-fix-loop.ts only — no aicoder.ts call sites remain.
+// buildConflictResolutionPrompt is consumed by src/aicoder/rebase-loop.ts.
+// buildBaselineFixPrompt + buildCoverageFixPrompt are consumed by
+// src/aicoder/test-fix-loop.ts. Both modules import from fix-prompts
+// directly; no aicoder.ts call sites remain.
 
 /** Detect which package manager to use in the workspace. */
 // detectPackageManager + runPackageInstall moved to src/aicoder/package-manager.ts
