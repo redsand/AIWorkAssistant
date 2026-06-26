@@ -2,7 +2,6 @@
 import "dotenv/config";
 import * as fs from "fs";
 import * as path from "path";
-import axios from "axios";
 import { OllamaLauncher } from "./integrations/ollama-launcher";
 import { RunLogger } from "./integrations/ollama-launcher/run-logger";
 import { prioritizeItems } from "./integrations/ollama-launcher/priority-sorter";
@@ -134,6 +133,8 @@ import { checkoutBranch as _checkoutBranch } from "./aicoder/checkout-branch";
 import type { CheckoutBranchDeps } from "./aicoder/checkout-branch";
 import { ensureCleanWorkspace as _ensureCleanWorkspace } from "./aicoder/ensure-clean-workspace";
 import type { EnsureCleanWorkspaceDeps } from "./aicoder/ensure-clean-workspace";
+import { watchIssue as _watchIssue } from "./aicoder/watch-issue";
+import type { WatchIssueDeps } from "./aicoder/watch-issue";
 import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
 // enrichPrompt now used internally by src/aicoder/prompt-builder.ts
 import {
@@ -1256,81 +1257,23 @@ async function focusedLoop(cfg: ServerConfig): Promise<void> {
 // ---------------------------------------------------------------------------
 // Watch an existing PR/MR for review feedback and rework (no agent run)
 // ---------------------------------------------------------------------------
-async function watchIssue(cfg: ServerConfig, issueKey: string): Promise<void> {
-  const item = await fetchIssueByKey(cfg, issueKey);
-  if (!item) {
-    runLogger.logError(`Could not find issue ${issueKey}`);
-    return;
-  }
-
-  runLogger.logWork(`Watching issue ${item.id}: ${item.title}`);
-
-  // Ensure we're on the right branch
-  const branchName = item.suggestedBranch;
-  const currentBranch = gitRunWithOutput(["rev-parse", "--abbrev-ref", "HEAD"], WORKSPACE);
-  if (currentBranch.ok && currentBranch.stdout.trim() !== branchName) {
-    runLogger.logGit(`Switching to branch: ${branchName}`);
-    if (!gitRun(["checkout", branchName], WORKSPACE)) {
-      runLogger.logError(`Cannot checkout branch ${branchName} — does it exist?`);
-      return;
-    }
-  }
-
-  // Find the existing PR/MR
-  const platform = detectRemotePlatform(WORKSPACE);
-  const ghToken = process.env.GITHUB_TOKEN;
-  const owner = cfg.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand";
-  const repo = cfg.repo || process.env.AICODER_REPO || "";
-  let prNumber: number | null = null;
-
-  if (platform === "gitlab") {
-    const projectId = getGitLabProjectFromRemote(WORKSPACE) || item.repo || cfg.repo || process.env.GITLAB_DEFAULT_PROJECT || "";
-    if (!projectId) {
-      runLogger.logError("No GitLab project ID — cannot find MR");
-      return;
-    }
-    const existingMR = await findExistingGitLabMR(projectId, branchName);
-    if (existingMR) {
-      prNumber = existingMR.iid;
-      runLogger.logConfig(`Found existing MR !${prNumber} for branch ${branchName}`);
-    } else {
-      runLogger.logError(`No MR found for branch ${branchName} — use --publish to create one`);
-      return;
-    }
-  } else {
-    if (!ghToken || !owner || !repo) {
-      runLogger.logError("GitHub credentials required — set GITHUB_TOKEN");
-      return;
-    }
-    // Search for an open PR from this branch
-    try {
-      const resp = await axios.get(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
-        params: { state: "open", head: `${owner}:${branchName}` },
-        headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" },
-      });
-      const prs = resp.data;
-      if (prs.length > 0) {
-        prNumber = prs[0].number;
-        runLogger.logConfig(`Found existing PR #${prNumber} for branch ${branchName}`);
-      } else {
-        runLogger.logError(`No PR found for branch ${branchName} — use --publish to create one`);
-        return;
-      }
-    } catch (err) {
-      runLogger.logError(`Failed to search for PR: ${err instanceof Error ? err.message : err}`);
-      return;
-    }
-  }
-
-  if (!prNumber) {
-    runLogger.logError("Could not find existing PR/MR");
-    return;
-  }
-
-  // Clear any stale run state and enter the review loop
-  clearRunState(issueKey);
-  await runReviewLoop(cfg, item, ghToken, owner, repo, prNumber);
+// watchIssue moved to src/aicoder/watch-issue.ts
+function watchIssueDeps(): WatchIssueDeps {
+  return {
+    logger: runLogger,
+    workspace: WORKSPACE,
+    gitRun,
+    gitRunWithOutput: (args, cwd) => _gitRunWithOutput(args, cwd),
+    detectRemotePlatform,
+    getGitLabProjectFromRemote,
+    fetchIssueByKey,
+    findExistingGitLabMR,
+    clearRunState,
+    runReviewLoop,
+  };
 }
+const watchIssue = (cfg: ServerConfig, issueKey: string) =>
+  _watchIssue(watchIssueDeps(), cfg, issueKey);
 
 async function fetchIssueByKey(cfg: ServerConfig, key: string): Promise<WorkItem | null> {
   const resolver = new SourceResolver(WORKSPACE, LOOKUP, cfg.apiUrl, cfg.apiKey);
