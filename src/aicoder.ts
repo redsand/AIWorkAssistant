@@ -127,6 +127,8 @@ import { shouldSkipIssue } from "./aicoder/issue-precheck";
 import type { IssuePrecheckDeps } from "./aicoder/issue-precheck";
 import { transitionIssueToInProgress } from "./aicoder/issue-transition";
 import type { IssueTransitionDeps } from "./aicoder/issue-transition";
+import { resolveIssueDependencies } from "./aicoder/dep-resolution";
+import type { DepResolutionDeps } from "./aicoder/dep-resolution";
 import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
 // enrichPrompt now used internally by src/aicoder/prompt-builder.ts
 import {
@@ -1028,6 +1030,27 @@ function issueTransitionDeps(): IssueTransitionDeps {
   };
 }
 
+function depResolutionDeps(): DepResolutionDeps {
+  return {
+    logger: runLogger,
+    workspace: WORKSPACE,
+    waitForDeps: WAIT_FOR_DEPS,
+    jiraClient,
+    jiraDescriptionToText,
+    parseDependencies,
+    fetchIssueBody,
+    getUnresolvedJiraDependencies,
+    resolveDependencyBranch,
+    getBaseBranch,
+    trackStep,
+    completeRunTrack,
+    clearFailedAttempt: (issueKey, workspace) =>
+      agentRunDatabase.clearFailedAttempt(issueKey, workspace),
+    markDepBlockedThisCycle: (issueKey) => depBlockedThisCycle.add(issueKey),
+    model: MODEL,
+  };
+}
+
 // ─── Run state persistence ──────────────────────────────────────────────────
 // Logic lives in src/aicoder/run-state.ts (extracted 2026-06-25 as proof-of-
 // pattern for the larger aicoder.ts split). The thin wrappers below preserve
@@ -1146,70 +1169,24 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
 
   const startTime = Date.now();
 
-  const isJiraIssue = /^[A-Z]+-\d+$/.test(item.id);
   const ghToken = process.env.GITHUB_TOKEN;
   const owner = cfg.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand";
   const repo = cfg.repo || process.env.AICODER_REPO || "";
 
   // Resolve dependencies before changing source status or starting the agent.
-  let fromBranch: string | undefined;
-  let depBody = "";
-  if (isJiraIssue && jiraClient.isConfigured()) {
-    try {
-      const jiraIssue = await jiraClient.getIssue(item.id);
-      depBody = jiraDescriptionToText(jiraIssue?.fields?.description);
-      const comments = await jiraClient.getComments(item.id).catch(() => []);
-      depBody = [depBody, ...comments.map((comment) => comment.body)].filter(Boolean).join("\n");
-    } catch { /* Jira fetch failed, skip dependency resolution */ }
-  } else if (ghToken && repo) {
-    depBody = await fetchIssueBody(ghToken, owner, repo, item.number);
+  // Logic lives in src/aicoder/dep-resolution.ts.
+  const depResolution = await resolveIssueDependencies(depResolutionDeps(), {
+    issueKey,
+    item,
+    runId: run.id,
+    ghToken,
+    owner,
+    repo,
+  });
+  if (depResolution.kind === "blocked") {
+    return null;
   }
-
-  const selfRefs = new Set([
-    item.id?.toUpperCase(),
-    issueKey.toUpperCase(),
-    String(item.number),
-  ].filter(Boolean));
-  const allDeps = [...new Set(parseDependencies(depBody))]
-    .filter((dep) => !selfRefs.has(dep.toUpperCase()));
-  if (allDeps.length > 0) {
-    runLogger.logGit("Found dependencies", allDeps.join(", "));
-    const jiraDeps = allDeps.filter((dep) => /^[A-Z]+-\d+$/.test(dep));
-    if (jiraDeps.length > 0 && jiraClient.isConfigured()) {
-      const unresolved = await getUnresolvedJiraDependencies(jiraDeps);
-      if (unresolved.length > 0) {
-        const message = `Blocked by unresolved Jira dependencies: ${unresolved.join(", ")}`;
-        runLogger.logSkip(`${issueKey}: ${message}`);
-        trackStep(run.id, "note", message);
-        runLogger.endRun(null);
-        completeRunTrack(run.id, { model: MODEL, toolLoopCount: 0, totalTokens: 0 });
-        agentRunDatabase.clearFailedAttempt(issueKey, WORKSPACE); // dep-blocked is not a failure — don't burn retry budget
-        depBlockedThisCycle.add(issueKey);
-        return null;
-      }
-    }
-
-    const numericDeps = allDeps.filter((dep) => /^\d+$/.test(dep));
-    if (numericDeps.length > 0) {
-      const resolved = await resolveDependencyBranch(ghToken || "", owner, repo, numericDeps);
-      if (!resolved) {
-        agentRunDatabase.clearFailedAttempt(issueKey, WORKSPACE); // dep-blocked is not a failure — don't burn retry budget
-        depBlockedThisCycle.add(issueKey);
-        if (WAIT_FOR_DEPS) {
-          runLogger.logGit("Waiting for dependencies", "will retry later");
-          runLogger.endRun(null);
-          completeRunTrack(run.id, { model: MODEL, toolLoopCount: 0, totalTokens: 0 });
-          return null;
-        }
-        runLogger.logSkip(`${issueKey}: blocked by unresolved dependencies ${numericDeps.join(", ")}`);
-        runLogger.endRun(null);
-        completeRunTrack(run.id, { model: MODEL, toolLoopCount: 0, totalTokens: 0 });
-        return null;
-      }
-      fromBranch = resolved.source === "open_pr" ? resolved.branch : undefined;
-      runLogger.logGit("Base branch resolved", fromBranch || getBaseBranch());
-    }
-  }
+  const fromBranch: string | undefined = depResolution.fromBranch;
 
   // Mark issue as "In Progress" so escalation doesn't pick it up.
   // Logic lives in src/aicoder/issue-transition.ts (4 provider branches).
