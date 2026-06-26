@@ -1,6 +1,5 @@
 #!/usr/bin/env tsx
 import "dotenv/config";
-import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import axios from "axios";
@@ -133,6 +132,8 @@ import { publishBranch as _publishBranch } from "./aicoder/publish-branch";
 import type { PublishBranchDeps } from "./aicoder/publish-branch";
 import { checkoutBranch as _checkoutBranch } from "./aicoder/checkout-branch";
 import type { CheckoutBranchDeps } from "./aicoder/checkout-branch";
+import { ensureCleanWorkspace as _ensureCleanWorkspace } from "./aicoder/ensure-clean-workspace";
+import type { EnsureCleanWorkspaceDeps } from "./aicoder/ensure-clean-workspace";
 import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
 // enrichPrompt now used internally by src/aicoder/prompt-builder.ts
 import {
@@ -389,69 +390,24 @@ const getChangedFiles = (fromRef: string, toRef: string = "HEAD") =>
  * 4. Detached HEAD state
  * Returns true if the workspace is clean, false if recovery failed.
  */
-function ensureCleanWorkspace(): boolean {
-  // 1. Recover from mid-rebase
-  if (isRebaseInProgress(WORKSPACE)) {
-    runLogger.logGit("WARN", "Mid-rebase state detected during workspace cleanup");
-    if (!recoverFromRebase(WORKSPACE)) {
-      runLogger.logError("Could not recover from mid-rebase state");
-      return false;
-    }
-  }
-
-  // 2. Check for unmerged paths
-  const statusResult = spawnSync("git", ["status", "--porcelain"], {
-    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-  });
-  if (statusResult.status === 0) {
-    const unmerged = statusResult.stdout.trim().split("\n")
-      .filter(line => /^(DD|AU|UD|UA|DU|UU|AA)/.test(line))
-      .map(line => line.slice(3).trim())
-      .filter(Boolean);
-
-    if (unmerged.length > 0) {
-      runLogger.logGit("WARN", `Found ${unmerged.length} unmerged path(s) — resolving`);
-      for (const file of unmerged) {
-        // Accept whatever is in the working tree (likely partial resolution)
-        if (!gitRun(["add", "--", file], WORKSPACE)) {
-          // If add fails, the file may have been deleted — remove from index
-          gitRun(["rm", "--", file], WORKSPACE);
-        }
-      }
-      // Commit the resolution
-      stageAndCommit("[AI] auto-resolved unmerged paths");
-    }
-  }
-
-  // 3. Commit any dirty working tree changes
-  const dirtyResult = spawnSync("git", ["diff", "--quiet"], {
-    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-  });
-  const hasUncommittedChanges = dirtyResult.status !== 0;
-
-  const cachedResult = spawnSync("git", ["diff", "--cached", "--quiet"], {
-    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-  });
-  const hasStagedChanges = cachedResult.status !== 0;
-
-  if (hasUncommittedChanges || hasStagedChanges) {
-    const stat = gitRunWithOutput(["diff", "--stat"], WORKSPACE);
-    runLogger.logGit("WARN", `Preserving dirty workspace in git stash during cleanup${stat.ok && stat.stdout.trim() ? `: ${summarizeDiffStat(stat.stdout)}` : ""}`);
-    if (!gitRun(["stash", "push", "--include-untracked", "-m", "[AI] auto-cleanup: pending changes preserved"], WORKSPACE)) {
-      runLogger.logError("Could not preserve dirty workspace in stash during cleanup");
-      return false;
-    }
-  }
-
-  // 4. Check for detached HEAD
-  const branch = getCurrentBranch();
-  if (branch === "HEAD" || branch === null || branch.startsWith("(")) {
-    runLogger.logGit("WARN", "Detached HEAD detected — switching to base branch");
-    forceCheckout(getBaseBranch(), WORKSPACE);
-  }
-
-  return true;
+// ensureCleanWorkspace moved to src/aicoder/ensure-clean-workspace.ts
+function ensureCleanWorkspaceDeps(): EnsureCleanWorkspaceDeps {
+  return {
+    logger: runLogger,
+    workspace: WORKSPACE,
+    isRebaseInProgress,
+    recoverFromRebase,
+    gitRun,
+    gitRunWithOutput: (args, cwd) => _gitRunWithOutput(args, cwd),
+    stageAndCommit,
+    getCurrentBranch,
+    getBaseBranch,
+    forceCheckout,
+    summarizeDiffStat,
+  };
 }
+const ensureCleanWorkspace = () =>
+  _ensureCleanWorkspace(ensureCleanWorkspaceDeps());
 
 /**
  * Resolve the actual default branch by checking git remote HEAD,
