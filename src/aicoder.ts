@@ -122,6 +122,12 @@ import {
   fixReworkTests as _fixReworkTests,
 } from "./aicoder/test-fix-loop";
 import type { TestFixDeps } from "./aicoder/test-fix-loop";
+import {
+  forceCheckout as _forceCheckout,
+  safeStashPop as _safeStashPop,
+  resolveConflictsInWorkingTree as _resolveConflictsInWorkingTree,
+} from "./aicoder/git-recovery";
+import type { GitRecoveryDeps } from "./aicoder/git-recovery";
 import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
 // enrichPrompt now used internally by src/aicoder/prompt-builder.ts
 import {
@@ -666,107 +672,19 @@ function ensureCleanWorkspace(): boolean {
  * stages and commits those files to preserve them, then retries.
  * Falls back to git stash --include-untracked if staging fails.
  */
-function forceCheckout(branch: string, cwd: string): boolean {
-  // Try a clean checkout first
-  const firstAttempt = gitRunWithOutput(["checkout", branch], cwd);
-  if (firstAttempt.ok) return true;
-
-  // Parse the "would be overwritten by checkout" error to find conflicting files
-  const stderr = firstAttempt.stderr;
-
-  // If the branch is already checked out in another worktree, we cannot
-  // checkout it here. This is expected for runner worktrees created by
-  // ensurePersistentWorktree -- the main repo holds the base branch.
-  // Fall back to reset --hard origin/<branch> which updates the detached
-  // HEAD to the latest remote tip without needing to checkout the branch.
-  if (stderr.includes("already used by worktree")) {
-    runLogger.logGit("WARN", `Branch ${branch} already used by another worktree -- resetting to origin/${branch} instead`);
-    gitRun(["fetch", "origin", branch], cwd);
-    if (gitRun(["reset", "--hard", `origin/${branch}`], cwd)) {
-      runLogger.logGit("Reset detached HEAD to", `origin/${branch}`);
-      return true;
-    }
-    runLogger.logError(`Could not reset to origin/${branch} after worktree conflict`);
-    return false;
-  }
-
-  // Handle detached HEAD — try force-switching to the branch
-  const currentBranch = getCurrentBranch();
-  const isDetached = (currentBranch && currentBranch.startsWith("(")) || stderr.includes("detached HEAD") || stderr.includes("HEAD detached");
-  if (isDetached) {
-    runLogger.logGit("WARN", `Detached HEAD detected — force-switching to ${branch}`);
-    // Discard any local modifications that conflict, then checkout
-    gitRun(["checkout", "-f", branch], cwd);
-    const current = getCurrentBranch();
-    if (current === branch) {
-      runLogger.logGit("Recovered from detached HEAD — now on", branch);
-      return true;
-    }
-    // If local branch doesn't exist, create it from origin
-    runLogger.logGit("WARN", `Local branch ${branch} not found — fetching from origin`);
-    gitRun(["fetch", "origin", branch], cwd);
-    if (gitRun(["checkout", "-b", branch, `origin/${branch}`], cwd)) {
-      runLogger.logGit("Created local branch from origin", branch);
-      return true;
-    }
-    runLogger.logError(`Could not recover from detached HEAD to ${branch}`);
-    return false;
-  }
-
-  const overwriteMatch = stderr.match(/The following untracked working tree files would be overwritten by checkout:\s*\n((?:\s+.+\n?)+)/);
-  if (!overwriteMatch) {
-    runLogger.logError(`Could not checkout ${branch} — no recognizable conflict pattern`);
-    return false;
-  }
-
-  const conflictingFiles = overwriteMatch[1]
-    .split("\n")
-    .map(l => l.trim())
-    .filter(f => f);
-
-  if (conflictingFiles.length === 0) {
-    runLogger.logError(`Could not checkout ${branch} — untracked conflict but no files found`);
-    return false;
-  }
-
-  runLogger.logGit("Staging conflicting untracked files before checkout", conflictingFiles.join(", "));
-  // Stage and commit conflicting files to preserve them
-  for (const f of conflictingFiles) {
-    if (!gitRun(["add", f], cwd)) {
-      runLogger.logGit("WARN", `Could not stage ${f} — may need manual resolution`);
-    }
-  }
-  stageAndCommit(`[AI] auto-save: preserve untracked files before checkout of ${branch}`);
-
-  // Retry checkout
-  if (gitRun(["checkout", branch], cwd)) return true;
-
-  // Last resort: stash everything including untracked, checkout, then pop
-  runLogger.logGit("WARN", "Checkout still failed — stashing all changes including untracked");
-  gitRun(["stash", "--include-untracked"], cwd);
-  if (!gitRun(["checkout", branch], cwd)) {
-    runLogger.logError(`Could not checkout ${branch} even after stashing`);
-    safeStashPop(cwd);
-    return false;
-  }
-  safeStashPop(cwd);
-  return true;
+// forceCheckout + safeStashPop moved to src/aicoder/git-recovery.ts
+function gitRecoveryDeps(): GitRecoveryDeps {
+  return {
+    logger: runLogger,
+    workspace: WORKSPACE,
+    getCurrentBranch,
+    stageAndCommit,
+    getBranchModifiedFiles,
+  };
 }
-
-/** Get list of files with conflict markers in the working tree. */
-
-/** Pop stash and handle any conflicts that arise from the pop. */
-function safeStashPop(cwd: string): boolean {
-  if (!gitRun(["stash", "pop"], cwd)) {
-    // Stash pop had conflicts — resolve them
-    runLogger.logGit("WARN", "Stash pop had conflicts — auto-resolving");
-    const branchFiles = getBranchModifiedFiles();
-    resolveConflictsInWorkingTree(branchFiles, false);
-    stageAndCommit("[AI] auto-resolved stash pop conflicts");
-    return false; // stash entry was consumed by pop, but had conflicts
-  }
-  return true;
-}
+const forceCheckout = (branch: string, cwd: string) =>
+  _forceCheckout(gitRecoveryDeps(), branch, cwd);
+const safeStashPop = (cwd: string) => _safeStashPop(gitRecoveryDeps(), cwd);
 
 /**
  * Get the list of files modified by the current branch compared to the base branch.
@@ -783,53 +701,11 @@ function safeStashPop(cwd: string): boolean {
  *   --theirs = feature branch (the commits being replayed)
  * So during rebase, we use --theirs for AI files and --ours for base files.
  */
-function resolveConflictsInWorkingTree(branchFiles: string[], isRebase: boolean = false): number {
-  const statusResult = spawnSync("git", ["status", "--porcelain"], {
-    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-  });
-  if (statusResult.status !== 0) return 0;
-
-  const conflictFiles = statusResult.stdout.trim().split("\n")
-    .filter(line => line.startsWith("UU") || line.startsWith("AA") || line.startsWith("DU") || line.startsWith("UD"))
-    .map(line => line.slice(3).trim());
-
-  if (conflictFiles.length === 0) return 0;
-
-  // If branchFiles is empty, default to keeping AI changes (ours in merge, theirs in rebase)
-  // rather than discarding all AI work
-  const branchFileSet = new Set(branchFiles);
-  const aiFileDefault = branchFileSet.size === 0;
-
-  let resolvedCount = 0;
-
-  for (const file of conflictFiles) {
-    const isAiFile = aiFileDefault || branchFileSet.has(file);
-
-    if (isRebase) {
-      // During rebase: --theirs = feature branch (AI), --ours = base branch
-      if (isAiFile) {
-        runLogger.logGit("Resolving conflict (rebase: accept AI/theirs)", file);
-        gitRun(["checkout", "--theirs", "--", file], WORKSPACE);
-      } else {
-        runLogger.logGit("Resolving conflict (rebase: accept base/ours)", file);
-        gitRun(["checkout", "--ours", "--", file], WORKSPACE);
-      }
-    } else {
-      // During merge: --ours = feature branch (AI), --theirs = base branch
-      if (isAiFile) {
-        runLogger.logGit("Resolving conflict (merge: accept AI/ours)", file);
-        gitRun(["checkout", "--ours", "--", file], WORKSPACE);
-      } else {
-        runLogger.logGit("Resolving conflict (merge: accept base/theirs)", file);
-        gitRun(["checkout", "--theirs", "--", file], WORKSPACE);
-      }
-    }
-    gitRun(["add", "--", file], WORKSPACE);
-    resolvedCount++;
-  }
-
-  return resolvedCount;
-}
+// resolveConflictsInWorkingTree moved to src/aicoder/git-recovery.ts
+const resolveConflictsInWorkingTree = (
+  branchFiles: string[],
+  isRebase: boolean = false,
+) => _resolveConflictsInWorkingTree(gitRecoveryDeps(), branchFiles, isRebase);
 
 /**
  * Perform a local rebase with conflict resolution. Returns true if the rebase
