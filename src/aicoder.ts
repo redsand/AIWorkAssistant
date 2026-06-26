@@ -131,6 +131,8 @@ import { resolveIssueDependencies } from "./aicoder/dep-resolution";
 import type { DepResolutionDeps } from "./aicoder/dep-resolution";
 import { publishBranch as _publishBranch } from "./aicoder/publish-branch";
 import type { PublishBranchDeps } from "./aicoder/publish-branch";
+import { checkoutBranch as _checkoutBranch } from "./aicoder/checkout-branch";
+import type { CheckoutBranchDeps } from "./aicoder/checkout-branch";
 import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
 // enrichPrompt now used internally by src/aicoder/prompt-builder.ts
 import {
@@ -510,140 +512,31 @@ const rebaseAndResolveConflicts = (branchName: string) =>
   _rebaseAndResolveConflicts(rebaseLoopDeps(), branchName);
 
 
-/** Check if a remote branch exists and pull latest commits into the local branch.
- *  Only one aicoder runs per repo, so force-sync is safe — no concurrent push risk. */
-function syncRemoteBranch(branchName: string): boolean {
-  const result = spawnSync("git", ["ls-remote", "--heads", "origin", branchName], {
-    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-  });
-  if (result.status !== 0 || !result.stdout.trim()) return false;
-  runLogger.logGit("Fetching remote branch", branchName);
-  if (!gitRun(["fetch", "origin", branchName], WORKSPACE)) return false;
-  runLogger.logGit("Resetting to remote", `origin/${branchName}`);
-  return gitRun(["reset", "--hard", `origin/${branchName}`], WORKSPACE);
-}
-
-async function checkoutBranch(branchName: string, fromBranch?: string): Promise<boolean> {
-  // Recover from any stuck rebase state before doing anything
-  if (isRebaseInProgress(WORKSPACE)) {
-    runLogger.logGit("WARN", "Mid-rebase state detected — recovering");
-    if (!recoverFromRebase(WORKSPACE)) {
-      runLogger.logError("Could not recover from mid-rebase state");
-      return false;
-    }
-  }
-
-  // Delete stale local branches that were never pushed (left over from prior runs that died early).
-  // If the branch exists locally but has no remote tracking ref, it is almost certainly stale.
-  const localRef = gitRunWithOutput(["rev-parse", "--verify", `refs/heads/${branchName}`], WORKSPACE);
-  if (localRef.ok) {
-    const remoteRef = gitRunWithOutput(["rev-parse", "--verify", `refs/remotes/origin/${branchName}`], WORKSPACE);
-    if (!remoteRef.ok) {
-      runLogger.logGit("Deleting stale local branch (no remote tracking)", branchName);
-      gitRun(["branch", "-D", branchName], WORKSPACE);
-    }
-  }
-
-  // Already on the target branch — stage any pending changes, sync with remote,
-  // then rebase onto base
-  const current = getCurrentBranch();
-  if (current === branchName) {
-    runLogger.logGit("Already on branch", branchName);
-    // Stage any leftover changes from a prior interrupted run
-    stageAndCommit(`[AI] resume: staged pending changes`);
-    // Sync with remote branch from prior PR/MR push (only 1 aicoder per repo, no conflicts)
-    if (syncRemoteBranch(branchName)) {
-      runLogger.logGit("Synced with remote branch", branchName);
-    }
-    // Pull latest base, then rebase this branch onto it
-    if (!pullAndUpdateBase()) {
-      runLogger.logGit("WARN", `Could not pull latest ${getBaseBranch()} before rebase`);
-    }
-    runLogger.logGit("Rebasing onto latest", getBaseBranch());
-    if (!forceCheckout(branchName, WORKSPACE)) {
-      runLogger.logGit("WARN", `Could not switch back to ${branchName} after pull`);
-    }
-    gitRun(["rebase", getBaseBranch()], WORKSPACE);
-    if (!await resolveRebaseConflictsInPlace(branchName)) {
-      return false;
-    }
-    return true;
-  }
-
-  // Stage/commit ALL uncommitted changes before switching branches.
-  // This includes .gitignore edits, leftover agent output, etc.
-  const dirtyResult = spawnSync("git", ["diff", "--quiet"], {
-    cwd: WORKSPACE, stdio: "pipe", encoding: "utf-8",
-  });
-  const hasUncommittedChanges = dirtyResult.status !== 0;
-
-  if (hasUncommittedChanges) {
-    runLogger.logGit("Committing uncommitted changes before branch switch", current || "(detached)");
-    const saved = stageAndCommit(`[AI] auto-save before switching from ${current || "detached"}`);
-    if (!saved) {
-      runLogger.logGit("WARN", "Could not save all changes — some files may be left uncommitted");
-    }
-  }
-
-  // Start from the specified branch or pull latest base
-  if (fromBranch) {
-    runLogger.logGit("Fetching and checking out base branch", fromBranch);
-    if (!gitRun(["fetch", "origin", fromBranch], WORKSPACE)) {
-      runLogger.logGit("WARN", `Could not fetch ${fromBranch} — trying local checkout`);
-    }
-    if (!forceCheckout(fromBranch, WORKSPACE)) {
-      runLogger.logError(`Failed to checkout base branch ${fromBranch}`);
-      return false;
-    }
-  } else {
-    if (!pullAndUpdateBase()) {
-      runLogger.logError(`Could not pull and update base branch — aborting`);
-      return false;
-    }
-  }
-
-  runLogger.logGit("Creating branch", branchName);
-  const createResult = gitRunWithOutput(["checkout", "-b", branchName], WORKSPACE);
-  if (!createResult.ok) {
-    runLogger.logError(`git checkout -b failed: ${createResult.stderr || "unknown error"}`);
-    // Branch already exists — checkout, sync with remote, then rebase onto base
-    runLogger.logGit("Switching to existing branch", branchName);
-    if (!forceCheckout(branchName, WORKSPACE)) {
-      // Checkout failed even with force — try stash with untracked files included
-      runLogger.logGit("Stashing all changes (including untracked) before checkout");
-      gitRun(["stash", "--include-untracked"], WORKSPACE);
-      if (!forceCheckout(branchName, WORKSPACE)) {
-        runLogger.logError(`Could not checkout branch ${branchName}`);
-        safeStashPop(WORKSPACE);
-        return false;
-      }
-      // Sync with remote branch from prior PR/MR push, then stage any changes
-      syncRemoteBranch(branchName);
-      stageAndCommit(`[AI] resume: staged pending changes on ${branchName}`);
-      runLogger.logGit("Rebasing existing branch onto latest", getBaseBranch());
-      gitRun(["rebase", getBaseBranch()], WORKSPACE);
-      if (!await resolveRebaseConflictsInPlace(branchName)) {
-        safeStashPop(WORKSPACE);
-        return false;
-      }
-      safeStashPop(WORKSPACE);
-    } else {
-      // Successfully checked out — sync with remote, stage any dirty changes, then rebase
-      syncRemoteBranch(branchName);
-      stageAndCommit(`[AI] resume: staged pending changes on ${branchName}`);
-      runLogger.logGit("Rebasing existing branch onto latest", getBaseBranch());
-      gitRun(["rebase", getBaseBranch()], WORKSPACE);
-      if (!await resolveRebaseConflictsInPlace(branchName)) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
 
 // resolveRebaseConflictsInPlace moved to src/aicoder/rebase-loop.ts
 const resolveRebaseConflictsInPlace = (branchName: string) =>
   _resolveRebaseConflictsInPlace(rebaseLoopDeps(), branchName);
+
+// checkoutBranch + syncRemoteBranch moved to src/aicoder/checkout-branch.ts
+function checkoutBranchDeps(): CheckoutBranchDeps {
+  return {
+    logger: runLogger,
+    workspace: WORKSPACE,
+    gitRun,
+    gitRunWithOutput: (args, cwd) => _gitRunWithOutput(args, cwd),
+    isRebaseInProgress,
+    recoverFromRebase,
+    safeStashPop,
+    getCurrentBranch,
+    stageAndCommit,
+    pullAndUpdateBase,
+    getBaseBranch,
+    forceCheckout,
+    resolveRebaseConflictsInPlace,
+  };
+}
+const checkoutBranch = (branchName: string, fromBranch?: string) =>
+  _checkoutBranch(checkoutBranchDeps(), branchName, fromBranch);
 
 
 
