@@ -19,7 +19,7 @@ import type { AgentRun as AgentRunRecord } from "./agent-runs/types";
 // ── Module imports ─────────────────────────────────────────────────────────────
 import type {
   ServerConfig, WorkItem,
-  TestSuiteKind, PipelineCheckpoint, RunState,
+  TestSuiteKind, RunState,
 } from "./autonomous-loop/types";
 import {
   ARGV, WORKSPACE, AGENT, LABEL, SPRINT, PRIORITY, SOURCE, LOOKUP,
@@ -45,7 +45,6 @@ import {
   getConflictFiles as _getConflictFiles,
   getBranchModifiedFiles as _getBranchModifiedFiles,
   pullAndUpdateBase as _pullAndUpdateBase,
-  cleanupMergedBranch,
   cleanupAllMergedBranches,
   type PushBranchOptions,
 } from "./autonomous-loop/git-ops";
@@ -67,20 +66,8 @@ import {
   fetchIssueDirectly as _fetchIssueDirectly,
 } from "./aicoder/github-helpers";
 import { findMRForIssue as _findMRForIssue } from "./aicoder/gitlab-helpers";
-import {
-  pollForReviewResult as _pollForReviewResult,
-  pollForGitLabReviewResult as _pollForGitLabReviewResult,
-} from "./aicoder/review-polling";
-import {
-  fetchReworkPrompt,
-  fetchGitLabReworkPrompt as _fetchGitLabReworkPrompt,
-} from "./aicoder/rework-prompts";
-import {
-  isPromptStrategy,
-  normalizeSemanticSeverity,
-  normalizeSemanticCategory,
-  extractFilesFromText,
-} from "./aicoder/semantic-helpers";
+// review-polling + rework-prompts + semantic-helpers now consumed only
+// by review-loop.ts / other modules — no aicoder.ts call sites remain.
 import {
   buildAgentPrompt as _buildAgentPrompt,
 } from "./aicoder/prompt-builder";
@@ -132,6 +119,8 @@ import {
   resolveRebaseConflictsInPlace as _resolveRebaseConflictsInPlace,
 } from "./aicoder/rebase-loop";
 import type { RebaseLoopDeps } from "./aicoder/rebase-loop";
+import { runReviewLoop as _runReviewLoop } from "./aicoder/review-loop";
+import type { ReviewLoopDeps } from "./aicoder/review-loop";
 import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
 // enrichPrompt now used internally by src/aicoder/prompt-builder.ts
 import {
@@ -156,37 +145,28 @@ import {
   EXIT_WHITESPACE_ONLY,
   EXIT_META_ONLY,
 } from "./aicoder-pipeline";
+// Most convergence helpers, prompt strategies, semantic review, review-
+// gate state, autorepair, and rework prompts are consumed inside
+// src/aicoder/review-loop.ts. processWorkItem still needs the
+// pre-check trio (loadConvergenceState + checkConvergence +
+// DEFAULT_CONVERGENCE_CONFIG) for the "issue already stuck — refuse
+// to re-pickup" guard.
+import { loadConvergenceState } from "./autonomous-loop/convergence-state";
 import {
-  recordRoundFindings,
   checkConvergence,
-  formatConvergenceReport,
-  createConvergencePromptDecision,
   DEFAULT_CONVERGENCE_CONFIG,
-  type ConvergenceConfig,
-  type ConvergenceState,
 } from "./autonomous-loop/convergence";
-import {
-  detectFailurePatterns,
-  generatePrompt as generateStrategyPrompt,
-  selectStrategy,
-  type PromptContext,
-  type PromptStrategy,
-} from "./autonomous-loop/prompt-strategies";
-import type { SemanticFinding } from "./autonomous-loop/semantic-review";
-import { loadConvergenceState, saveConvergenceState, serializeConvergence } from "./autonomous-loop/convergence-state";
-import { loadReviewGateState, saveReviewGateState, clearReviewGateState, markForceDone } from "./autonomous-loop/review-gate-state";
+import { markForceDone } from "./autonomous-loop/review-gate-state";
 import { ensureAgentsMdRules } from "./autonomous-loop/agents-md";
 // hashUuidToNumber / parseWorkItemTagsJson / extractCodingPromptSection are
 // now used inside src/aicoder/work-items.ts after the work-items extraction.
 import {
-  runAutorepair,
   getAutorepairStatus,
   forceReleaseAutorepair,
   clearAutorepairGate,
   isGatePaused as _isAutorepairPaused,
   isGateEscalated as _isAutorepairEscalated,
 } from "./autonomous-loop/ticket-autorepair";
-import type { TicketIdentifier } from "./autonomous-loop/ticket-autorepair/source-updater";
 
 // Re-export so callers and the orchestrator can import from either module.
 export {
@@ -949,30 +929,9 @@ const resolveDependencyBranch = (
     depIssueRefs,
   );
 
-// --- Review polling --- (logic in src/aicoder/review-polling.ts)
-const pollForReviewResult = (
-  ghToken: string,
-  owner: string,
-  repo: string,
-  prNumber: number,
-  pollMs: number = REVIEW_POLL_MS,
-  sinceIso?: string,
-) => _pollForReviewResult(ghToken, owner, repo, prNumber, pollMs, sinceIso);
-
-const pollForGitLabReviewResult = (
-  projectId: string,
-  mrIid: number,
-  pollMs: number = REVIEW_POLL_MS,
-  sinceIso?: string,
-) => _pollForGitLabReviewResult(gitlabClient, projectId, mrIid, pollMs, sinceIso);
-
-// fetchReworkPrompt + fetchGitLabReworkPrompt moved to src/aicoder/rework-prompts.ts
-const fetchGitLabReworkPrompt = (
-  projectId: string,
-  mrIid: number,
-  sinceTimestamp?: string,
-  issueKey?: string,
-) => _fetchGitLabReworkPrompt(gitlabClient, jiraClient, projectId, mrIid, sinceTimestamp, issueKey);
+// pollForReviewResult, pollForGitLabReviewResult, fetchReworkPrompt,
+// fetchGitLabReworkPrompt — all consumed inside src/aicoder/review-loop.ts.
+// No top-level wrappers in aicoder.ts anymore.
 
 
 
@@ -2144,621 +2103,45 @@ async function focusedProcessWorkItemInner(
  * Failures are non-fatal — logged but do not abort the run.
  */
 
-async function runReviewLoop(
+// runReviewLoop moved to src/aicoder/review-loop.ts
+function reviewLoopDeps(): ReviewLoopDeps {
+  return {
+    logger: runLogger,
+    workspace: WORKSPACE,
+    gitlabReviewClient: gitlabClient,
+    gitlabReworkClient: gitlabClient,
+    jiraClient,
+    reviewPollMs: REVIEW_POLL_MS,
+    maxRework: MAX_REWORK,
+    autorepairDisabled: AUTOREPAIR_DISABLED,
+    exits: {
+      reviewFailed: EXIT_REVIEW_FAILED,
+      maxRework: EXIT_MAX_REWORK,
+      noChanges: EXIT_NO_CHANGES,
+    },
+    runAgent: (prompt) => runAgent(prompt) as Promise<{ finDetected: boolean; exitCode: number | null; sessionId?: string }>,
+    buildAgentPrompt: (prompt, item) => buildAgentPrompt(prompt, item),
+    forceCheckout,
+    stageAndCommit,
+    pushBranch,
+    rebaseAndResolveConflicts,
+    fixReworkTests,
+    getBaseBranch,
+    saveRunState,
+    loadRunState,
+    clearRunState,
+    saveProcessedIssue,
+    setLastPipelineExitCode: (code) => { lastPipelineExitCode = code; },
+  };
+}
+const runReviewLoop = (
   cfg: ServerConfig,
   item: WorkItem,
   ghToken: string | undefined,
   owner: string,
   repo: string,
   prNumber: number,
-): Promise<void> {
-  const platform = detectRemotePlatform(WORKSPACE);
-  const label = platform === "gitlab" ? "MR" : "PR";
-
-  // Load run state for review loop (may have reworkCount/sinceTimestamp from a resumed run)
-  const reviewState = loadRunState(item.id);
-  let reworkCount = reviewState?.reworkCount ?? 0;
-  let postponeTimeout = 0;
-  const POSTPONE_MAX_MS = 30 * 60 * 1000; // 30 min max wait for service restoration
-  // Start from now — ignore any review notes that existed before our push
-  let sinceTimestamp = reviewState?.sinceTimestamp ?? new Date().toISOString();
-  let lastReworkPrompt: string | null = null;
-  const previousFailures: string[] = [];
-  const promptStrategiesTried = new Set<PromptStrategy>(
-    (reviewState?.promptStrategiesTried ?? []).filter(isPromptStrategy),
-  );
-
-  // Convergence state: tracks repeated findings, empty PRs, and no-progress rounds
-  // Prefer RunState data; fall back to file persistence; fall back to fresh state
-  let convergenceState: ConvergenceState = reviewState?.convergenceState
-    ? {
-        ...reviewState.convergenceState,
-        identicalCount: new Map(Object.entries(reviewState.convergenceState.identicalCount)),
-        lastRoundFindings: new Set(reviewState.convergenceState.lastRoundFindings),
-        roundSummaries: reviewState.convergenceState.roundSummaries ?? [],
-      }
-    : loadConvergenceState(item.id);
-  const convergenceConfig: ConvergenceConfig = { ...DEFAULT_CONVERGENCE_CONFIG };
-
-  // Extract finding-like hashes from a rework prompt string.
-  // Looks for file paths (e.g., "src/foo.ts") and severity keywords to produce stable hashes.
-  function extractFindingsFromPrompt(prompt: string): Array<{ file?: string; severity?: string; category?: string; message?: string }> {
-    const findings: Array<{ file?: string; severity?: string; category?: string; message?: string }> = [];
-    // Match patterns like "src/path/file.ts" which appear in review findings
-    const fileRegex = /(?:^|\s|`)([\w./-]+\.(?:ts|js|py|rs|go|java|rb|yml|yaml|json|md))\b/gim;
-    const severityRegex = /\b(critical|high|medium|low|info|blocker|major|minor)\b/gi;
-    const files = new Set<string>();
-    let m: RegExpExecArray | null;
-    while ((m = fileRegex.exec(prompt)) !== null) {
-      files.add(m[1]);
-    }
-    const severities = new Set<string>();
-    while ((m = severityRegex.exec(prompt)) !== null) {
-      severities.add(m[1].toLowerCase());
-    }
-    // If we found files, create one finding per file+severity combo
-    if (files.size > 0) {
-      for (const file of files) {
-        const sevIter = severities.values();
-        const firstSev = sevIter.next().value;
-        findings.push({ file, severity: firstSev || "high", category: "review" });
-      }
-    }
-    return findings;
-  }
-
-  function toSemanticFindings(findings: Array<{ file?: string; severity?: string; category?: string; message?: string }>): SemanticFinding[] {
-    return findings.map((finding) => ({
-      severity: normalizeSemanticSeverity(finding.severity),
-      category: normalizeSemanticCategory(finding.category),
-      file: finding.file || "unknown",
-      message: finding.message || `Finding in ${finding.file || "unknown file"}`,
-    }));
-  }
-
-  function buildPromptContext(input: {
-    codingPrompt: string;
-    reviewerFindings: SemanticFinding[];
-    diffFromLastAttempt?: string;
-    testOutput?: string;
-  }): PromptContext {
-    const affectedFiles = [...new Set([
-      ...input.reviewerFindings.map((finding) => finding.file).filter((file) => file && file !== "unknown"),
-      ...extractFilesFromText(input.codingPrompt),
-    ])];
-
-    return {
-      issueKey: item.id,
-      issueTitle: item.title,
-      issueDescription: item.url || item.title,
-      codingPrompt: input.codingPrompt,
-      affectedFiles,
-      previousAttempts: reworkCount,
-      previousFailures,
-      reviewerFindings: input.reviewerFindings,
-      diffFromLastAttempt: input.diffFromLastAttempt,
-      testOutput: input.testOutput,
-      strategiesTried: [...promptStrategiesTried],
-    };
-  }
-
-  function recordPromptStrategy(strategy: PromptStrategy): void {
-    promptStrategiesTried.add(strategy);
-  }
-
-  // Checkpoint: entered review polling
-  const currentState = reviewState || {
-    issueKey: item.id,
-    issueNumber: item.number,
-    title: item.title,
-    url: item.url,
-    owner: item.owner,
-    repo: item.repo,
-    suggestedBranch: item.suggestedBranch,
-    labels: item.labels,
-    source: (cfg.source === "gitlab" ? "gitlab" : cfg.source === "jira" ? "jira" : cfg.source === "work_items" ? "work_items" : "github") as RunState["source"],
-    checkpoint: "review_polling" as PipelineCheckpoint,
-    prNumber,
-    reworkCount,
-    sinceTimestamp,
-    apiUrl: cfg.apiUrl,
-    apiKey: cfg.apiKey,
-    startedAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-  saveRunState({ ...currentState, checkpoint: "review_polling", prNumber, reworkCount, sinceTimestamp, convergenceState: serializeConvergence(convergenceState), promptStrategiesTried: [...promptStrategiesTried] });
-
-  while (true) {
-    // Poll for review result using platform-appropriate method
-    let reviewResult: "passed" | "failed" | "postponed" | "merged" | "conflict" | "closed" | "human_review";
-
-    if (platform === "gitlab") {
-      const projectId = getGitLabProjectFromRemote(WORKSPACE) || item.repo || cfg.repo || process.env.GITLAB_DEFAULT_PROJECT || "";
-      if (!projectId) {
-        runLogger.logError("No GitLab project ID — cannot poll for review");
-        return;
-      }
-      reviewResult = await pollForGitLabReviewResult(projectId, prNumber, REVIEW_POLL_MS, sinceTimestamp);
-    } else {
-      if (!ghToken || !owner || !repo) {
-        runLogger.logError("No GitHub credentials — cannot poll for review");
-        return;
-      }
-      reviewResult = await pollForReviewResult(ghToken, owner, repo, prNumber, REVIEW_POLL_MS, sinceTimestamp);
-    }
-
-    if (reviewResult === "passed" || reviewResult === "merged") {
-      runLogger.logConfig(`${label} #${prNumber} passed review — pulling latest ${getBaseBranch()}`);
-      clearRunState(item.id); // Run completed successfully
-      clearReviewGateState(item.id); // All findings resolved — clear the gate
-      forceCheckout(getBaseBranch(), WORKSPACE);
-      gitRun(["pull", "--ff-only", "origin", getBaseBranch()], WORKSPACE);
-
-      // Delete the merged local AI branch + stale remote-tracking ref so the
-      // repo does not accumulate stale ai/issue-* branches over time.
-      const cleanup = cleanupMergedBranch(WORKSPACE, item.suggestedBranch, getBaseBranch(), runLogger);
-      if (!cleanup.deletedLocal && cleanup.reason && cleanup.reason !== "branch_not_found") {
-        runLogger.logGit("Branch cleanup skipped", `${item.suggestedBranch}: ${cleanup.reason}`);
-      }
-
-      // Issue closing is the reviewer's responsibility after the MR is actually merged.
-      return;
-    }
-
-    if (reviewResult === "closed") {
-      runLogger.logError(`${label} #${prNumber} was closed without merge`);
-      clearRunState(item.id);
-      return;
-    }
-
-    if (reviewResult === "human_review") {
-      runLogger.logConfig(`${label} #${prNumber} flagged for human review — stopping rework loop`);
-      lastPipelineExitCode = EXIT_REVIEW_FAILED;
-      clearRunState(item.id);
-      return;
-    }
-
-    if (reviewResult === "postponed") {
-      postponeTimeout += REVIEW_POLL_MS;
-      if (postponeTimeout >= POSTPONE_MAX_MS) {
-        runLogger.logError(`Review service unavailable for ${POSTPONE_MAX_MS / 1000}s — giving up on ${label} #${prNumber}`);
-        return;
-      }
-      runLogger.logPoll(`Review service unavailable — retrying in ${REVIEW_POLL_MS / 1000}s`);
-      await new Promise((r) => setTimeout(r, REVIEW_POLL_MS));
-      continue;
-    }
-
-    if (reviewResult === "conflict") {
-      reworkCount++;
-      if (reworkCount > MAX_REWORK) {
-        runLogger.logError(`${label} #${prNumber} exceeded max rework cycles (${MAX_REWORK}) after conflict resolution attempts`);
-        lastPipelineExitCode = EXIT_MAX_REWORK;
-        clearRunState(item.id);
-        return;
-      }
-
-      runLogger.logWork(`Conflict resolution cycle ${reworkCount}/${MAX_REWORK} for ${label} #${prNumber}`);
-
-      // Perform local rebase with conflict resolution
-      if (!await rebaseAndResolveConflicts(item.suggestedBranch)) {
-        runLogger.logError(`Could not resolve conflicts for ${label} #${prNumber} — manual intervention required`);
-        return;
-      }
-
-      // Force-push the rebased branch
-      if (!pushBranch(item.suggestedBranch, { forceWithLease: true })) {
-        runLogger.logError("Force push after rebase failed");
-        return;
-      }
-
-      runLogger.logConfig(`Rebased and force-pushed ${item.suggestedBranch} — waiting for review again`);
-      sinceTimestamp = new Date().toISOString();
-      continue;
-    }
-
-    if (reviewResult === "failed") {
-      reworkCount++;
-      if (reworkCount > MAX_REWORK) {
-        runLogger.logError(`${label} #${prNumber} exceeded max rework cycles (${MAX_REWORK})`);
-        lastPipelineExitCode = EXIT_MAX_REWORK;
-        clearRunState(item.id);
-        return;
-      }
-
-      runLogger.logWork(`Rework cycle ${reworkCount}/${MAX_REWORK} for ${label} #${prNumber}`);
-
-      // Extract the linked issue number from the PR/MR body
-      const issueMatch = (item.url || "").match(/#(\d+)/);
-      const issueNumber = issueMatch ? parseInt(issueMatch[1], 10) : item.number;
-
-      // Fetch rework prompt — use appropriate method based on platform
-      let reworkPrompt: string | null = null;
-      if (platform === "gitlab") {
-        const projectId = getGitLabProjectFromRemote(WORKSPACE) || item.repo || cfg.repo || process.env.GITLAB_DEFAULT_PROJECT || "";
-        if (projectId) {
-          reworkPrompt = await fetchGitLabReworkPrompt(projectId, prNumber, sinceTimestamp, item.id);
-        }
-      } else if (ghToken && owner && repo) {
-        reworkPrompt = await fetchReworkPrompt(ghToken, owner, repo, prNumber, issueNumber, sinceTimestamp);
-      }
-
-      if (!reworkPrompt) {
-        runLogger.logError("Could not fetch rework prompt — skipping rework");
-        return;
-      }
-
-      if (lastReworkPrompt && reworkPrompt === lastReworkPrompt) {
-        runLogger.logWork(`${label} #${prNumber} received identical rework prompt again — switching prompt strategy if possible`);
-        previousFailures.push("GENERIC_REVIEW_FEEDBACK");
-      }
-      lastReworkPrompt = reworkPrompt;
-
-      // Convergence: record findings from this round and check if loop should stop.
-      // Prefer structured findings persisted by the reviewer; fall back to regex extraction.
-      const persistedGateFindings = loadReviewGateState(item.id).lastFindings;
-      const regexFindings = extractFindingsFromPrompt(reworkPrompt);
-      const roundFindings = persistedGateFindings.length > 0
-        ? persistedGateFindings.map((f) => ({ file: f.file, severity: f.severity, category: f.category }))
-        : regexFindings;
-      if (roundFindings.length === 0) {
-        previousFailures.push("NON_ACTIONABLE_REVIEW_FEEDBACK");
-        convergenceState = recordRoundFindings(convergenceState, [], true, {
-          note: "Reviewer feedback did not include actionable file-specific findings.",
-        });
-        saveConvergenceState(convergenceState, item.id);
-        const report = formatConvergenceReport(
-          {
-            shouldStop: true,
-            reason: "identical_findings",
-            message: "Reviewer feedback did not include file-specific actionable findings. Escalating instead of asking the aicoder to guess.",
-            recommendation: "escalate_human",
-          },
-          convergenceState,
-          convergenceConfig,
-        );
-        runLogger.logError("Reviewer feedback is non-actionable — escalating to human review");
-        runLogger.logWork(report);
-        lastPipelineExitCode = EXIT_REVIEW_FAILED;
-        if (jiraClient.isConfigured()) {
-          try { await jiraClient.addComment(item.id, report); } catch {}
-        }
-        saveProcessedIssue(item.id);
-        clearRunState(item.id);
-        return;
-      }
-      convergenceState = recordRoundFindings(convergenceState, roundFindings, true, {
-        note: "Review findings received before rework.",
-      });
-      saveConvergenceState(convergenceState, item.id);
-
-      // Review gate: persist findings so jira.close_issue can block Done transitions
-      const gateFindings = roundFindings.map((f) => ({
-        severity: (f.severity || "high") as "critical" | "high" | "medium" | "low",
-        category: f.category || "review",
-        file: f.file || "",
-        message: `Finding in ${f.file || "unknown file"}`,
-      }));
-      const currentGateState = loadReviewGateState(item.id);
-      saveReviewGateState({ ...currentGateState, lastFindings: [...currentGateState.lastFindings, ...gateFindings] }, item.id);
-
-      const semanticFindings = toSemanticFindings(roundFindings);
-      const detectedFailures = detectFailurePatterns({
-        reworkPrompt,
-        reviewerFindings: semanticFindings,
-      });
-      previousFailures.push(...detectedFailures);
-
-      const convergence = checkConvergence(convergenceState, convergenceConfig);
-      runLogger.logWork(`Convergence check (round ${convergenceState.roundNumber}): ${convergence.reason} — ${convergence.message}`);
-      let strategyAlreadySelected = false;
-      if (convergence.shouldStop) {
-        if (convergence.recommendation === "requeue_different_prompt") {
-          const decision = createConvergencePromptDecision(convergence, buildPromptContext({
-            codingPrompt: reworkPrompt,
-            reviewerFindings: semanticFindings,
-          }));
-          if (!decision.shouldEscalate) {
-            recordPromptStrategy(decision.strategy);
-            reworkPrompt = decision.prompt;
-            strategyAlreadySelected = true;
-            runLogger.logWork(`Convergence requested a different prompt strategy: ${decision.strategy}`);
-          } else {
-            runLogger.logError(decision.prompt);
-            lastPipelineExitCode = EXIT_MAX_REWORK;
-            clearRunState(item.id);
-            return;
-          }
-        } else {
-        runLogger.logError(`Convergence detected (${convergence.reason}): ${convergence.message}`);
-        const report = formatConvergenceReport(convergence, convergenceState, convergenceConfig);
-        runLogger.logWork(report);
-
-        // ── Autorepair hook ──────────────────────────────────────────
-        // Before escalating to a human, try one autorepair pass: a separate
-        // LLM diagnoses why the loop is stuck and rewrites the ticket.
-        // Quota and AUTOREPAIR_ENABLED env are handled inside runAutorepair.
-        // The CLI --no-autorepair flag is an additional opt-out for this run.
-        let autorepairOutcome: string | undefined;
-        try {
-          if (AUTOREPAIR_DISABLED) {
-            runLogger.logWork("[autorepair] skipped — --no-autorepair flag set");
-          } else {
-          const ticketIdentifier: TicketIdentifier | null = (() => {
-            if (platform === "gitlab") {
-              const projectId = getGitLabProjectFromRemote(WORKSPACE) || item.repo || cfg.repo || process.env.GITLAB_DEFAULT_PROJECT || "";
-              if (!projectId || !item.number) return null;
-              return { source: "gitlab", id: item.number, projectId };
-            }
-            if (platform === "github") {
-              const issueMatch = (item.url || "").match(/#(\d+)/);
-              const issueNumber = issueMatch ? parseInt(issueMatch[1], 10) : item.number;
-              if (!issueNumber || !owner || !repo) return null;
-              return { source: "github", id: issueNumber, owner, repo };
-            }
-            if (cfg.source === "jira" || /^[A-Z]+-\d+$/.test(item.id)) {
-              return { source: "jira", id: item.id };
-            }
-            return null;
-          })();
-          if (ticketIdentifier) {
-            const autorepairResult = await runAutorepair({
-              issueKey: item.id,
-              ticket: ticketIdentifier,
-              convergence: {
-                reason: convergence.reason,
-                summary: report,
-                roundNumber: convergenceState.roundNumber,
-              },
-              reviewerFindings: semanticFindings.map((f) => ({
-                roundNumber: convergenceState.roundNumber,
-                file: f.file,
-                severity: f.severity,
-                category: f.category,
-                message: f.message,
-              })),
-              coderRounds: convergenceState.roundSummaries.map((s) => ({
-                roundNumber: s.roundNumber,
-                changedFiles: s.changedFiles ?? [],
-                diffStat: s.diffStat,
-                empty: !s.prHadChanges,
-              })),
-              promptStrategiesTried: [...promptStrategiesTried],
-            });
-            autorepairOutcome = autorepairResult.outcome;
-            runLogger.logWork(`[autorepair] outcome=${autorepairResult.outcome} attempt=${autorepairResult.attemptNumber ?? "-"} msg=${autorepairResult.message}`);
-            if (autorepairResult.outcome === "repaired") {
-              // Reset convergence + rework counters so the loop sees the
-              // rewritten ticket as a fresh start. The ticket has been
-              // updated in the source system; the agents will pick it up
-              // on the next poll. Saving state and returning here ends
-              // this run gracefully; the next iteration of the outer
-              // aicoder cycle re-fetches the (now repaired) ticket.
-              clearRunState(item.id);
-              return;
-            }
-          } else {
-            runLogger.logWork("[autorepair] skipped — could not build ticket identifier for this source");
-          }
-          } // close: else (AUTOREPAIR_DISABLED ? skip : run)
-        } catch (err) {
-          runLogger.logError(`[autorepair] threw unexpectedly: ${err instanceof Error ? err.message : err}`);
-        }
-        // ── End autorepair hook ──────────────────────────────────────
-
-        lastPipelineExitCode = convergence.reason === "empty_prs" ? EXIT_NO_CHANGES : EXIT_MAX_REWORK;
-        // Post convergence report to Jira if configured
-        if (jiraClient.isConfigured()) {
-          try {
-            await jiraClient.addComment(
-              item.id,
-              autorepairOutcome
-                ? `${report}\n\n_Autorepair attempted with outcome: \`${autorepairOutcome}\`._`
-                : report,
-            );
-          } catch {
-            // Non-fatal: convergence report is best-effort
-          }
-        }
-        // Prevent re-pickup on next poll — ready-for-agent label stays but we've escalated
-        saveProcessedIssue(item.id);
-        clearRunState(item.id);
-        return;
-        }
-      }
-
-      if (!strategyAlreadySelected) {
-        const strategyContext = buildPromptContext({
-          codingPrompt: reworkPrompt,
-          reviewerFindings: semanticFindings,
-        });
-        const strategy = selectStrategy(strategyContext);
-        if (strategy === "escalate_human") {
-          const escalationPrompt = generateStrategyPrompt(strategy, strategyContext);
-          runLogger.logError(escalationPrompt);
-          lastPipelineExitCode = EXIT_REVIEW_FAILED;
-          saveProcessedIssue(item.id);
-          clearRunState(item.id);
-          return;
-        }
-        if (strategy !== "rework_with_feedback") {
-          reworkPrompt = generateStrategyPrompt(strategy, strategyContext);
-          runLogger.logWork(`Using prompt strategy ${strategy} for rework cycle ${reworkCount}`);
-        }
-        recordPromptStrategy(strategy);
-      }
-
-      // Show a summary of the rework prompt so the user can verify we're working on the right feedback
-      const promptPreview = reworkPrompt.length > 500
-        ? reworkPrompt.slice(0, 500) + `\n... (${reworkPrompt.length} chars total)`
-        : reworkPrompt;
-      runLogger.logWork(`Rework prompt for cycle ${reworkCount}:\n${promptPreview}`);
-
-      // Checkout the existing branch and re-run agent with rework prompt
-      if (!forceCheckout(item.suggestedBranch, WORKSPACE)) {
-        runLogger.logError(`Could not checkout branch ${item.suggestedBranch} for rework`);
-        return;
-      }
-
-      const reworkResult = await runAgent(await buildAgentPrompt(reworkPrompt, item));
-      if (!reworkResult.finDetected && reworkResult.exitCode !== 0) {
-        runLogger.logError(`Rework agent exited with code ${reworkResult.exitCode} — stopping`);
-        return;
-      }
-
-      // Checkpoint: rework agent complete
-      saveRunState({ ...currentState, checkpoint: "rework_agent_complete", reworkCount, sessionId: reworkResult.sessionId, convergenceState: serializeConvergence(convergenceState), promptStrategiesTried: [...promptStrategiesTried] });
-
-      // Capture SHA before commit so we can detect "nothing staged" without
-      // relying on validateDiffBeforePush, which compares vs the base branch and
-      // would return valid=true even if rework added no NEW commits (the branch
-      // already has the original PR changes). SHA comparison is the only reliable
-      // way to know whether stageAndCommit actually created a commit this cycle.
-      const reworkHeadBefore = gitRunWithOutput(["rev-parse", "HEAD"], WORKSPACE);
-
-      if (!stageAndCommit(`[AI] rework #${reworkCount}: ${item.title}`)) {
-        runLogger.logError("Rework stage/commit failed");
-        return;
-      }
-
-      const reworkHeadAfter = gitRunWithOutput(["rev-parse", "HEAD"], WORKSPACE);
-      const reworkMadeCommit = reworkHeadBefore.ok && reworkHeadAfter.ok
-        && reworkHeadBefore.stdout.trim() !== reworkHeadAfter.stdout.trim();
-
-      if (!reworkMadeCommit) {
-        // stageAndCommit returned true but made no new commit (nothing was staged).
-        // Pushing with the same SHA would leave the reviewer in an infinite
-        // "[SKIP] already reviewed (SHA unchanged)" loop — skip the push instead.
-        runLogger.logGit("WARN", `Rework #${reworkCount} staged nothing — skipping push to avoid SHA-unchanged reviewer loop`);
-        previousFailures.push("EMPTY_PR");
-        convergenceState = recordRoundFindings(convergenceState, [], false, {
-          changedFiles: [],
-          note: "Aicoder completed but produced no staged changes.",
-        });
-        saveConvergenceState(convergenceState, item.id);
-        const emptyConvergence = checkConvergence(convergenceState, convergenceConfig);
-        if (emptyConvergence.shouldStop) {
-          runLogger.logError(`Convergence detected (${emptyConvergence.reason}): ${emptyConvergence.message}`);
-          const report = formatConvergenceReport(emptyConvergence, convergenceState, convergenceConfig);
-          runLogger.logWork(report);
-          if (jiraClient.isConfigured()) {
-            try { await jiraClient.addComment(item.id, report); } catch {}
-          }
-          lastPipelineExitCode = EXIT_NO_CHANGES;
-          clearRunState(item.id);
-          return;
-        }
-        continue; // Poll again — reviewer still has the old SHA, next rework attempt will try again
-      }
-
-      // Convergence: check if rework produced actual changes (empty PR detection)
-      const baseBranch = getBaseBranch();
-      const changedFilesThisRound = reworkHeadBefore.ok ? getChangedFiles(reworkHeadBefore.stdout.trim(), "HEAD") : [];
-      let reworkDiffStat = gitRunWithOutput(["diff", `${baseBranch}...HEAD`, "--stat"], WORKSPACE);
-      let reworkDiffContent = gitRunWithOutput(["diff", `${baseBranch}...HEAD`], WORKSPACE);
-      let reworkValidation = validateDiffBeforePush(
-        reworkDiffStat.ok ? reworkDiffStat.stdout : "",
-        reworkDiffContent.ok ? reworkDiffContent.stdout : "",
-      );
-      let prHadChanges = reworkValidation.valid;
-      if (!prHadChanges) {
-        runLogger.logError(`Rework produced no meaningful changes (${reworkValidation.reason}) — empty PR cycle ${convergenceState.emptyPRCount + 1}`);
-        previousFailures.push("EMPTY_PR");
-      }
-      convergenceState = recordRoundFindings(convergenceState, [], prHadChanges, {
-        changedFiles: changedFilesThisRound,
-        diffStat: reworkDiffStat.ok ? summarizeDiffStat(reworkDiffStat.stdout) : "",
-        note: prHadChanges ? "Aicoder produced a rework commit." : `Aicoder changes failed validation: ${reworkValidation.reason}`,
-      });
-      saveConvergenceState(convergenceState, item.id);
-      if (!prHadChanges) {
-        const convergence = checkConvergence(convergenceState, convergenceConfig);
-        if (convergence.shouldStop) {
-          if (convergence.recommendation === "requeue_different_prompt") {
-            const decision = createConvergencePromptDecision(convergence, buildPromptContext({
-              codingPrompt: reworkPrompt,
-              reviewerFindings: [],
-              diffFromLastAttempt: reworkDiffContent.ok ? reworkDiffContent.stdout : "",
-            }));
-            if (!decision.shouldEscalate) {
-              recordPromptStrategy(decision.strategy);
-              runLogger.logWork(`Empty PR convergence selected prompt strategy ${decision.strategy}; retrying immediately`);
-              const retryResult = await runAgent(await buildAgentPrompt(decision.prompt, item));
-              if (!retryResult.finDetected && retryResult.exitCode !== 0) {
-                runLogger.logError(`Recovery rework agent exited with code ${retryResult.exitCode} — stopping`);
-                return;
-              }
-              saveRunState({ ...currentState, checkpoint: "rework_agent_complete", reworkCount, sessionId: retryResult.sessionId, convergenceState: serializeConvergence(convergenceState), promptStrategiesTried: [...promptStrategiesTried] });
-              if (!stageAndCommit(`[AI] rework #${reworkCount} recovery: ${item.title}`)) {
-                runLogger.logError("Recovery rework stage/commit failed");
-                return;
-              }
-              reworkDiffStat = gitRunWithOutput(["diff", `${baseBranch}...HEAD`, "--stat"], WORKSPACE);
-              reworkDiffContent = gitRunWithOutput(["diff", `${baseBranch}...HEAD`], WORKSPACE);
-              reworkValidation = validateDiffBeforePush(
-                reworkDiffStat.ok ? reworkDiffStat.stdout : "",
-                reworkDiffContent.ok ? reworkDiffContent.stdout : "",
-              );
-              prHadChanges = reworkValidation.valid;
-              if (prHadChanges) {
-                runLogger.logWork(`Recovery prompt strategy ${decision.strategy} produced meaningful changes`);
-              } else {
-                runLogger.logError(`Recovery prompt strategy ${decision.strategy} still produced no meaningful changes (${reworkValidation.reason})`);
-              }
-            }
-          }
-          if (prHadChanges) {
-            convergenceState = recordRoundFindings(convergenceState, [], true, {
-              changedFiles: getChangedFiles(reworkHeadBefore.ok ? reworkHeadBefore.stdout.trim() : baseBranch, "HEAD"),
-              diffStat: reworkDiffStat.ok ? summarizeDiffStat(reworkDiffStat.stdout) : "",
-              note: "Recovery prompt produced meaningful changes.",
-            });
-            saveConvergenceState(convergenceState, item.id);
-          } else {
-          runLogger.logError(`Convergence detected (${convergence.reason}): ${convergence.message}`);
-          lastPipelineExitCode = EXIT_NO_CHANGES;
-          const report = formatConvergenceReport(convergence, convergenceState, convergenceConfig);
-          runLogger.logWork(report);
-          if (jiraClient.isConfigured()) {
-            try { await jiraClient.addComment(item.id, report); } catch { /* best-effort */ }
-          }
-          clearRunState(item.id);
-          return;
-          }
-        }
-      }
-
-      // Checkpoint: rework committed
-      saveRunState({ ...currentState, checkpoint: "rework_committed", reworkCount, convergenceState: serializeConvergence(convergenceState), promptStrategiesTried: [...promptStrategiesTried] });
-
-      // TDD: Tiered test gate after rework — fix failing tests if possible
-      const reworkTestPassed = await fixReworkTests(item, reworkCount);
-      if (!reworkTestPassed) {
-        previousFailures.push("TESTS_FAILING");
-        runLogger.logError("Rework tests could not be fixed — stopping");
-        return;
-      }
-
-      // Checkpoint: rework tests passed
-      saveRunState({ ...currentState, checkpoint: "rework_tests_passed", reworkCount, convergenceState: serializeConvergence(convergenceState), promptStrategiesTried: [...promptStrategiesTried] });
-
-      if (!pushBranch(item.suggestedBranch, { forceWithLease: true })) {
-        runLogger.logError("Rework push failed");
-        return;
-      }
-
-      // Checkpoint: rework pushed — update state for review loop resumption
-      sinceTimestamp = new Date().toISOString();
-      saveRunState({ ...currentState, checkpoint: "rework_pushed", reworkCount, sinceTimestamp, prNumber, convergenceState: serializeConvergence(convergenceState), promptStrategiesTried: [...promptStrategiesTried] });
-
-      runLogger.logConfig(`Rework pushed for ${label} #${prNumber} — waiting for review again`);
-      continue;
-    }
-
-    // Unknown result — keep polling
-    await new Promise((r) => setTimeout(r, REVIEW_POLL_MS));
-  }
-}
+) => _runReviewLoop(reviewLoopDeps(), cfg, item, ghToken, owner, repo, prNumber);
 
 async function pollLoop(cfg: ServerConfig): Promise<void> {
   runLogger.logConfig(`AiRemoteCoder started in poll mode (agent: ${AGENT}, workspace: ${WORKSPACE}${USE_OLLAMA ? ", ollama: on" : ""}, base: ${getBaseBranch()})`);
