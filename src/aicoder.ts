@@ -129,6 +129,8 @@ import { transitionIssueToInProgress } from "./aicoder/issue-transition";
 import type { IssueTransitionDeps } from "./aicoder/issue-transition";
 import { resolveIssueDependencies } from "./aicoder/dep-resolution";
 import type { DepResolutionDeps } from "./aicoder/dep-resolution";
+import { publishBranch as _publishBranch } from "./aicoder/publish-branch";
+import type { PublishBranchDeps } from "./aicoder/publish-branch";
 import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
 // enrichPrompt now used internally by src/aicoder/prompt-builder.ts
 import {
@@ -344,211 +346,6 @@ const generatePrompt = (cfg: ServerConfig, item: WorkItem) =>
 // ---------------------------------------------------------------------------
 // Publish an existing branch as a PR/MR with full reviewer context
 // ---------------------------------------------------------------------------
-async function publishBranch(cfg: ServerConfig, branchName: string): Promise<void> {
-  runLogger.logWork(`Publishing branch: ${branchName}`);
-
-  // 1. Ensure we're on the right branch
-  const currentBranchResult = gitRunWithOutput(["rev-parse", "--abbrev-ref", "HEAD"], WORKSPACE);
-  const currentBranch = currentBranchResult.ok ? currentBranchResult.stdout.trim() : "";
-  if (currentBranch !== branchName) {
-    runLogger.logGit(`Switching to branch: ${branchName}`);
-    if (!gitRun(["checkout", branchName], WORKSPACE)) {
-      runLogger.logError(`Cannot checkout branch ${branchName} — does it exist?`);
-      process.exit(1);
-    }
-  }
-
-  // 2. Validate diff before push — reject empty, whitespace-only, or meta-only changes
-  const baseBranch = getBaseBranch();
-  const diffStatResult = gitRunWithOutput(["diff", `${baseBranch}...HEAD`, "--stat"], WORKSPACE);
-  const diffContentResult = gitRunWithOutput(["diff", `${baseBranch}...HEAD`], WORKSPACE);
-
-  const diffValidation = validateDiffBeforePush(
-    diffStatResult.ok ? diffStatResult.stdout : "",
-    diffContentResult.ok ? diffContentResult.stdout : "",
-  );
-
-  if (!diffValidation.valid) {
-    runLogger.logError(`Pre-push validation failed (${diffValidation.reason}): ${diffValidation.stats.filesChanged} files, ${diffValidation.stats.insertions} insertions, ${diffValidation.stats.deletions} deletions`);
-    runLogger.logError(`Exit code ${diffValidation.exitCode} — PR will not be created`);
-    runLogger.endRun(diffValidation.exitCode);
-    process.exit(diffValidation.exitCode);
-  }
-
-  runLogger.logWork(`Diff validation passed: ${diffValidation.stats.filesChanged} files, ${diffValidation.stats.insertions} insertions, ${diffValidation.stats.deletions} deletions`);
-
-  // --dry-run-push: show what would be pushed without actually pushing
-  if (DRY_RUN_PUSH) {
-    runLogger.logConfig("Dry-run mode — skipping push and PR creation");
-    console.log("\n=== DRY RUN: Diff Summary ===");
-    console.log(`Base branch: ${baseBranch}`);
-    console.log(`Feature branch: ${branchName}`);
-    console.log(`Files changed: ${diffValidation.stats.filesChanged}`);
-    console.log(`Insertions: ${diffValidation.stats.insertions}`);
-    console.log(`Deletions: ${diffValidation.stats.deletions}`);
-    if (diffStatResult.ok) {
-      console.log("\n--- Diff Stat ---");
-      console.log(diffStatResult.stdout.trim());
-    }
-    console.log("\n=== END DRY RUN ===");
-    runLogger.endRun(EXIT_SUCCESS);
-    process.exit(EXIT_SUCCESS);
-  }
-
-  // 3. Force-push branch to origin — AI branches are always authoritative
-  if (!pushBranch(branchName, { forceWithLease: true })) {
-    runLogger.logError(`Cannot push branch ${branchName} to origin`);
-    process.exit(1);
-  }
-
-  // 4. Resolve issue key: --issue flag overrides branch-name extraction
-  let issueKey: string | null = TARGET_ISSUE_KEY || extractIssueKeyFromBranchName(branchName);
-
-  // If only a bare number was extracted and source is Jira, try to reconstruct
-  // the full key (e.g. "110" → "IR-110") using the JIRA_PROJECT env var
-  if (issueKey && /^\d+$/.test(issueKey) && SOURCE === "jira") {
-    const project = process.env.JIRA_PROJECT || process.env.JIRA_DEFAULT_PROJECT || "";
-    if (project) {
-      issueKey = `${project.toUpperCase()}-${issueKey}`;
-      runLogger.logWork(`Reconstructed Jira key: ${issueKey}`);
-    }
-  }
-
-  if (!issueKey) {
-    runLogger.logError(`Cannot extract issue key from branch name: ${branchName}`);
-    runLogger.logError("Pass --issue IR-110 to specify it explicitly.");
-    process.exit(1);
-  }
-  runLogger.logWork(`Extracted issue key: ${issueKey}`);
-
-  // 5. Look up the issue
-  const isWorkItemId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(issueKey);
-  const isJira = /^[A-Z]+-\d+$/.test(issueKey);
-  let item: WorkItem | null = null;
-
-  if (isWorkItemId) {
-    item = await fetchWorkItemDirectly(cfg, issueKey);
-  } else if (isJira) {
-    item = await fetchJiraIssueDirectly(issueKey);
-  } else {
-    const num = parseInt(issueKey, 10);
-    if (!isNaN(num)) {
-      item = await fetchIssueDirectly(cfg, num);
-    }
-  }
-
-  if (!item) {
-    runLogger.logError(`Cannot find issue ${issueKey} — check --source flag and credentials`);
-    process.exit(1);
-  }
-
-  runLogger.logWork(`Found issue: ${item.id} — ${item.title}`);
-
-  // 5. Build enriched description
-  let description = "";
-
-  // Closes line for auto-merge
-  if (item.url) {
-    description += `Closes ${item.url}\n\n`;
-  }
-
-  // Issue key for reviewer routing
-  description += `Issue: ${item.id}\n\n`;
-
-  // Issue description for reviewer context
-  if (isWorkItemId) {
-    if (item.body) {
-      description += `## Description\n\n${truncate(item.body, 2000)}\n\n`;
-    }
-  } else if (isJira && jiraClient.isConfigured()) {
-    try {
-      const jiraIssue = await jiraClient.getIssue(item.id);
-      const fields = jiraIssue.fields as typeof jiraIssue.fields & { description?: any };
-      // Jira description can be rich text (Atlassian Document Format) or plain string
-      const desc = fields.description;
-      if (desc) {
-        const descText = typeof desc === "string"
-          ? desc
-          : Array.isArray(desc?.content)
-            ? desc.content.map((block: any) => block.text || "").filter(Boolean).join("\n")
-            : "";
-        if (descText) {
-          description += `## Description\n\n${truncate(descText, 2000)}\n\n`;
-        }
-      }
-    } catch {
-      // Non-fatal: description enrichment is best-effort
-    }
-  }
-
-  description += "_Generated by AiRemoteCoder autonomous agent._";
-
-  // 6. Create PR/MR
-  const platform = detectRemotePlatform(WORKSPACE);
-  runLogger.logGit(`Detected remote platform: ${platform}`);
-
-  if (platform === "gitlab") {
-    // Derive project path from git remote — more reliable than Jira project key
-    const gitlabProject = getGitLabProjectFromRemote(WORKSPACE) || process.env.GITLAB_DEFAULT_PROJECT || cfg.repo || item.repo;
-    try {
-      const resp = await axios.post<{ success: boolean; mrIid?: number; url?: string; error?: string }>(
-        `${cfg.apiUrl}/api/autonomous-loop/mr`,
-        {
-          project: gitlabProject,
-          title: `[AI] ${item.title}`,
-          sourceBranch: branchName,
-          targetBranch: getBaseBranch(),
-          description,
-          removeSourceBranch: true,
-        },
-        { headers: authHeaders(cfg) },
-      );
-      if (resp.data.success) {
-        const mrUrl = resp.data.url ?? "";
-        runLogger.logPR(`Created MR !${resp.data.mrIid ?? ""}: ${mrUrl}`);
-      } else {
-        const errMsg = resp.data.error ?? "unknown error";
-        if (/already exists/i.test(errMsg)) {
-          runLogger.logWork(`MR already exists for this branch — branch pushed successfully, reviewer will pick it up`);
-        } else {
-          runLogger.logError(`GitLab MR creation failed: ${errMsg}`);
-          process.exit(1);
-        }
-      }
-    } catch (err) {
-      runLogger.logError(`GitLab MR creation failed: ${(err as Error).message}`);
-      process.exit(1);
-    }
-  } else {
-    // GitHub PR
-    try {
-      const resp = await axios.post<{ success: boolean; prNumber: number; url: string; error?: string }>(
-        `${cfg.apiUrl}/api/autonomous-loop/pr`,
-        {
-          owner: item.owner || cfg.owner,
-          repo: item.repo || cfg.repo,
-          title: `[AI] ${item.title}`,
-          head: branchName,
-          base: "main",
-          body: description,
-          issueNumber: item.number,
-        },
-        { headers: authHeaders(cfg) },
-      );
-      if (resp.data.success) {
-        runLogger.logPR(`Created PR #${resp.data.prNumber}: ${resp.data.url}`);
-      } else {
-        runLogger.logError(`GitHub PR creation failed: ${resp.data.error || "unknown error"}`);
-        process.exit(1);
-      }
-    } catch (err) {
-      runLogger.logError(`GitHub PR creation failed: ${(err as Error).message}`);
-      process.exit(1);
-    }
-  }
-
-  runLogger.logWork("Publish complete");
-}
 
 
 
@@ -1050,6 +847,33 @@ function depResolutionDeps(): DepResolutionDeps {
     model: MODEL,
   };
 }
+
+function publishBranchDeps(): PublishBranchDeps {
+  return {
+    logger: runLogger,
+    workspace: WORKSPACE,
+    dryRunPush: DRY_RUN_PUSH,
+    targetIssueKey: TARGET_ISSUE_KEY,
+    source: SOURCE,
+    exitSuccess: EXIT_SUCCESS,
+    gitRun,
+    gitRunWithOutput: (args, cwd) => _gitRunWithOutput(args, cwd),
+    getBaseBranch,
+    pushBranch,
+    validateDiffBeforePush,
+    extractIssueKeyFromBranchName,
+    detectRemotePlatform,
+    getGitLabProjectFromRemote,
+    truncate,
+    authHeaders,
+    jiraClient,
+    fetchWorkItemDirectly,
+    fetchJiraIssueDirectly,
+    fetchIssueDirectly,
+  };
+}
+const publishBranch = (cfg: ServerConfig, branchName: string) =>
+  _publishBranch(publishBranchDeps(), cfg, branchName);
 
 // ─── Run state persistence ──────────────────────────────────────────────────
 // Logic lives in src/aicoder/run-state.ts (extracted 2026-06-25 as proof-of-
