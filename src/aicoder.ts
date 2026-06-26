@@ -13,7 +13,6 @@ import { agentRunDatabase } from "./agent-runs/database";
 import { createAgentRunsClient } from "./agent-runs/client";
 import { conversationManager } from "./memory/conversation-manager";
 import type { AgentRunStepCreate } from "./agent-runs/types";
-import type { AgentRun as AgentRunRecord } from "./agent-runs/types";
 // ── Module imports ─────────────────────────────────────────────────────────────
 import type {
   ServerConfig, WorkItem,
@@ -140,6 +139,8 @@ import {
   pollLoop as _pollLoop,
 } from "./aicoder/run-modes";
 import type { RunModesDeps } from "./aicoder/run-modes";
+import { startRunPrelude } from "./aicoder/run-prelude";
+import type { RunPreludeDeps } from "./aicoder/run-prelude";
 import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
 // enrichPrompt now used internally by src/aicoder/prompt-builder.ts
 import {
@@ -703,6 +704,20 @@ function depResolutionDeps(): DepResolutionDeps {
   };
 }
 
+function runPreludeDeps(): RunPreludeDeps {
+  return {
+    logger: runLogger,
+    workspace: WORKSPACE,
+    agent: AGENT,
+    model: MODEL || null,
+    apiProvider: API_PROVIDER || null,
+    agentRunsClient,
+    agentRunDatabase,
+    resetStepOrder,
+    trackStep,
+  };
+}
+
 function publishBranchDeps(): PublishBranchDeps {
   return {
     logger: runLogger,
@@ -797,54 +812,11 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     return null;
   }
 
-  runLogger.startRun(item.number, item.title);
-  runLogger.logWork(`Starting issue ${issueKey}: ${item.title}`);
-
-  // Initialize run state for checkpoint persistence
-  let currentState: RunState = {
-    issueKey,
-    issueNumber: item.number,
-    title: item.title,
-    url: item.url,
-    owner: item.owner,
-    repo: item.repo,
-    suggestedBranch: item.suggestedBranch,
-    labels: item.labels,
-    source: (cfg.source === "gitlab" ? "gitlab" : cfg.source === "jira" ? "jira" : cfg.source === "work_items" ? "work_items" : "github") as RunState["source"],
-    checkpoint: "issue_transitioned",
-    apiUrl: cfg.apiUrl,
-    apiKey: cfg.apiKey,
-    startedAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-
-  // Create agent-runs record for API visibility
-  resetStepOrder();
-  const runParams = {
-    userId: "aicoder",
-    mode: `issue:${issueKey}`,
-    model: MODEL || null,
-    provider: API_PROVIDER || AGENT,
-    issuePlatform: (cfg.source === "gitlab" ? "gitlab" : cfg.source === "jira" ? "jira" : cfg.source === "work_items" ? "work_items" : "github"),
-    issueId: issueKey,
-    issueRepo: cfg.repo || item.repo || process.env.AICODER_REPO || "",
-    issueSprint: item.sprint ?? null,
-    worktreePath: WORKSPACE,
-    branch: item.suggestedBranch,
-    agentType: AGENT,
-  };
-  let run: AgentRunRecord;
-  if (agentRunsClient) {
-    const apiRun = await agentRunsClient.startRun(runParams);
-    if (apiRun) {
-      run = apiRun;
-    } else {
-      run = agentRunDatabase.startRun(runParams);
-    }
-  } else {
-    run = agentRunDatabase.startRun(runParams);
-  }
-  trackStep(run.id, "note", `Starting work on ${issueKey}: ${item.title}`);
+  // Initial run state + agent-runs DB/API record. Moved to
+  // src/aicoder/run-prelude.ts.
+  const prelude = await startRunPrelude(runPreludeDeps(), cfg, item, issueKey);
+  let currentState: RunState = prelude.initialState;
+  const run = prelude.run;
 
   const startTime = Date.now();
 
