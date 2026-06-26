@@ -123,6 +123,8 @@ import { runReviewLoop as _runReviewLoop } from "./aicoder/review-loop";
 import type { ReviewLoopDeps } from "./aicoder/review-loop";
 import { resumeFromCheckpoint as _resumeFromCheckpoint } from "./aicoder/checkpoint-resumers";
 import type { CheckpointResumerDeps } from "./aicoder/checkpoint-resumers";
+import { shouldSkipIssue } from "./aicoder/issue-precheck";
+import type { IssuePrecheckDeps } from "./aicoder/issue-precheck";
 import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
 // enrichPrompt now used internally by src/aicoder/prompt-builder.ts
 import {
@@ -990,6 +992,25 @@ const checkProcessRetryCircuit = (issueKey: string) =>
 const loadProcessedIssues = () => _processedIssuesStore.load();
 const saveProcessedIssue = (issueKey: string) => _processedIssuesStore.save(issueKey);
 
+function issuePrecheckDeps(): IssuePrecheckDeps {
+  return {
+    logger: runLogger,
+    workspace: WORKSPACE,
+    force: FORCE_REPROCESS,
+    maxFailedAttempts: MAX_FAILED_ATTEMPTS,
+    infrastructureBlockedIssues,
+    processedIssues,
+    checkProcessRetryCircuit,
+    agentRunDatabase,
+    saveProcessedIssue,
+    convergence: {
+      loadConvergenceState,
+      checkConvergence,
+      config: DEFAULT_CONVERGENCE_CONFIG,
+    },
+  };
+}
+
 // ─── Run state persistence ──────────────────────────────────────────────────
 // Logic lives in src/aicoder/run-state.ts (extracted 2026-06-25 as proof-of-
 // pattern for the larger aicoder.ts split). The thin wrappers below preserve
@@ -1051,60 +1072,10 @@ const escalateAgentInfrastructureFailure = (
 
 async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prNumber: number } | null> {
   const issueKey = item.id || String(item.number);
-  if (infrastructureBlockedIssues.has(issueKey)) {
-    runLogger.logSkip(`Issue ${issueKey} has an agent infrastructure failure in this run — skipping to avoid a retry loop`);
-    return null;
-  }
-  // Process-local circuit breaker — fires even with --force, so a tight
-  // crash loop can't keep retrying forever in the same PID.
-  const circuitReason = checkProcessRetryCircuit(issueKey);
-  if (circuitReason) {
-    runLogger.logSkip(circuitReason);
-    return null;
-  }
-  if (processedIssues.has(issueKey) && !FORCE_REPROCESS) {
-    runLogger.logSkip(`Issue ${issueKey} already processed (use --force to re-process)`);
-    return null;
-  }
 
-  // Blacklist pre-check: permanently skip issues that failed too many times
-  if (!FORCE_REPROCESS && agentRunDatabase.isIssueBlacklisted(issueKey, WORKSPACE)) {
-    runLogger.logSkip(`Issue ${issueKey} is blacklisted after repeated failures — skipping (use --force to override)`);
+  // All pre-flight skip checks moved to src/aicoder/issue-precheck.ts.
+  if (shouldSkipIssue(issuePrecheckDeps(), issueKey).skip) {
     return null;
-  }
-
-  // Convergence pre-check: if a previous run already determined this issue is stuck
-  // (no progress across multiple rounds), refuse to re-run even if the reviewer
-  // re-added the ready-for-agent label. Use --force to override.
-  if (!FORCE_REPROCESS) {
-    const existingConvergence = loadConvergenceState(issueKey);
-    if (existingConvergence.roundNumber > 0) {
-      const convergenceCheck = checkConvergence(existingConvergence, DEFAULT_CONVERGENCE_CONFIG);
-      if (convergenceCheck.shouldStop) {
-        runLogger.logError(
-          `Skipping ${issueKey} — convergence already fired (${convergenceCheck.reason}). ` +
-          `Round ${existingConvergence.roundNumber}, no-progress count: ${existingConvergence.noProgressCount}. ` +
-          `Use --force to override.`,
-        );
-        saveProcessedIssue(issueKey);
-        return null;
-      }
-    }
-  }
-
-  // Track consecutive failures — after MAX_FAILED_ATTEMPTS, mark as processed to stop the loop
-  const attempts = agentRunDatabase.incrementFailedAttempt(issueKey, WORKSPACE);
-  if (attempts >= MAX_FAILED_ATTEMPTS) {
-    runLogger.logError(`Issue ${issueKey} failed ${attempts} times — blacklisting to stop retry loop`);
-    saveProcessedIssue(issueKey);
-    agentRunDatabase.blacklistIssue(issueKey, WORKSPACE, `Failed ${attempts} consecutive times`);
-    agentRunDatabase.clearFailedAttempt(issueKey, WORKSPACE);
-    return null;
-  }
-  if (FORCE_REPROCESS && processedIssues.has(issueKey)) {
-    runLogger.logConfig(`Force re-processing issue ${issueKey} (--force)`);
-    processedIssues.delete(issueKey);
-    agentRunDatabase.unmarkIssueProcessed(issueKey);
   }
 
   runLogger.startRun(item.number, item.title);
