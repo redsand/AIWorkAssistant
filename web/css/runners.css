@@ -336,6 +336,22 @@
   border-radius: 0 0 12px 12px;
 }
 
+.rn-kind-banner {
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  margin-bottom: 4px;
+  background: #f0f4ff;
+  border: 1px solid #c3d2ff;
+  color: #1a1a2e;
+}
+
+.rn-kind-banner[data-kind="reviewer"] {
+  background: #f3f0ff;
+  border-color: #d0c8ff;
+}
+
 .rn-test-result {
   font-size: 12px;
   padding: 8px 10px;

@@ -53,9 +53,21 @@
           <input type="hidden" name="id" />
           <input type="hidden" name="kind" />
 
+          <!-- Kind banner — makes it obvious which runner you're configuring;
+               toggled by runners.js when openNew(kind) runs. -->
+          <div class="rn-kind-banner" id="kind-banner-aicoder" data-kind="aicoder">
+            <strong>Aicoder runner</strong> — polls for ready issues, runs the
+            coding agent in an isolated worktree, opens a PR/MR.
+          </div>
+          <div class="rn-kind-banner" id="kind-banner-reviewer" data-kind="reviewer">
+            <strong>Reviewer runner</strong> — watches existing PRs/MRs in
+            local clones and posts AI-generated review comments. No coding
+            agent, no worktree.
+          </div>
+
           <label>
             <span>Name</span>
-            <input name="name" required placeholder="e.g. ClaimKit aicoder" />
+            <input name="name" required placeholder="e.g. ClaimKit watcher" />
           </label>
 
           <div class="rn-row">
