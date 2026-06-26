@@ -162,12 +162,21 @@ export async function switchConversation(sessionId) {
 }
 
 export async function newChat() {
-  // Abort any active stream from the previous session
+  // ── Tear down the previous session's live state FIRST ────────────────
+  // The original order (clear-then-disconnect) had a race: while we were
+  // awaiting the dynamic import of live.js, the previous session's SSE
+  // was still active. Any event it delivered between clear and
+  // disconnect could re-set currentSessionId back to the old session id,
+  // which then got picked up by the user's next message — they'd see
+  // their reply appear in the old chat instead of a fresh one.
   if (activeStreamController) {
     activeStreamController.abort();
     setActiveStreamController(null);
   }
+  const { disconnectLive } = await import("./live.js");
+  disconnectLive();
 
+  // Now safe to clear session state — no in-flight stream will overwrite it.
   setCurrentSessionId(null);
   localStorage.removeItem("currentSessionId");
   updateSessionHash(null);
@@ -191,9 +200,6 @@ export async function newChat() {
   `;
   showChatView();
   loadConversations();
-
-  const { disconnectLive } = await import("./live.js");
-  disconnectLive();
 }
 
 export async function deleteConversation(sessionId) {

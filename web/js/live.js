@@ -146,8 +146,15 @@ export function subscribeLive(sessionId) {
               }
 
               if (eventType === "session" && data.sessionId) {
-                setCurrentSessionId(data.sessionId);
-                localStorage.setItem("currentSessionId", data.sessionId);
+                // Guard against a stale SSE stream re-setting the session
+                // id after the user moved on (e.g. clicked New Chat
+                // mid-stream). Only honor the event when it matches the
+                // sessionId this subscribeLive was started for. If the
+                // user is now in a different session, drop the event.
+                if (data.sessionId === sessionId) {
+                  setCurrentSessionId(data.sessionId);
+                  localStorage.setItem("currentSessionId", data.sessionId);
+                }
               }
 
               if (eventType === "response_start") {
