@@ -125,6 +125,8 @@ import { resumeFromCheckpoint as _resumeFromCheckpoint } from "./aicoder/checkpo
 import type { CheckpointResumerDeps } from "./aicoder/checkpoint-resumers";
 import { shouldSkipIssue } from "./aicoder/issue-precheck";
 import type { IssuePrecheckDeps } from "./aicoder/issue-precheck";
+import { transitionIssueToInProgress } from "./aicoder/issue-transition";
+import type { IssueTransitionDeps } from "./aicoder/issue-transition";
 import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
 // enrichPrompt now used internally by src/aicoder/prompt-builder.ts
 import {
@@ -1011,6 +1013,21 @@ function issuePrecheckDeps(): IssuePrecheckDeps {
   };
 }
 
+function issueTransitionDeps(): IssueTransitionDeps {
+  return {
+    logger: runLogger,
+    workspace: WORKSPACE,
+    jiraClient,
+    gitlabClient,
+    getGitLabProjectFromRemote,
+    authHeaders,
+    trackStep,
+    saveProcessedIssue,
+    clearFailedAttempt: (issueKey, workspace) =>
+      agentRunDatabase.clearFailedAttempt(issueKey, workspace),
+  };
+}
+
 // ─── Run state persistence ──────────────────────────────────────────────────
 // Logic lives in src/aicoder/run-state.ts (extracted 2026-06-25 as proof-of-
 // pattern for the larger aicoder.ts split). The thin wrappers below preserve
@@ -1194,122 +1211,17 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
     }
   }
 
-  // Mark issue as "In Progress" so escalation doesn't pick it up
-  if (cfg.source === "work_items") {
-    try {
-      const currentResp = await axios.get<{ status: string }>(
-        `${cfg.apiUrl}/api/work-items/${item.id}`,
-        { headers: authHeaders(cfg) },
-      );
-      if (currentResp.data?.status === "active") {
-        runLogger.logWork(`${item.id} already active — keeping status`);
-        trackStep(run.id, "note", `${item.id} already active`);
-      } else if (currentResp.data?.status === "done" || currentResp.data?.status === "archived") {
-        runLogger.logSkip(`${item.id} is already Done/Archived — skipping`);
-        saveProcessedIssue(item.id);
-        agentRunDatabase.clearFailedAttempt(item.id, WORKSPACE);
-        return null;
-      } else {
-        await axios.patch(
-          `${cfg.apiUrl}/api/work-items/${item.id}`,
-          { status: "active" },
-          { headers: { ...authHeaders(cfg), "Content-Type": "application/json" } },
-        );
-        runLogger.logWork(`Updated work item ${item.id} status → active`);
-        trackStep(run.id, "note", `Work item ${item.id} status set to active`);
-      }
-    } catch (err) {
-      runLogger.logWork(`Could not update work item ${item.id} status: ${err instanceof Error ? err.message : err}`);
-      trackStep(run.id, "note", `Work item status update failed: ${err instanceof Error ? err.message : err}`, { success: false });
-    }
-  } else if (isJiraIssue && jiraClient.isConfigured()) {
-    try {
-      const currentIssue = await jiraClient.getIssue(item.id);
-      const currentStatus = currentIssue.fields.status?.name?.toLowerCase() ?? "";
-      const isDone = /done|closed|resolved|completed/i.test(currentStatus);
-      if (isDone) {
-        runLogger.logSkip(`${item.id} is already Done/Closed at source — skipping (use --force-reopen to override)`);
-        saveProcessedIssue(item.id);
-        agentRunDatabase.clearFailedAttempt(item.id, WORKSPACE);
-        return null;
-      }
-      if (currentStatus === "in progress") {
-        runLogger.logWork(`${item.id} already In Progress — keeping status`);
-        trackStep(run.id, "note", `${item.id} already In Progress on Jira`);
-      } else {
-        const transitions = await jiraClient.getTransitions(item.id);
-        const inProgress = transitions.find((t: any) =>
-          t.name === "In Progress" || t.name === "in progress" || t.name === "Start Progress"
-        );
-        if (inProgress) {
-          await jiraClient.transitionIssue(item.id, inProgress.id, "AiRemoteCoder started work on this issue.");
-          runLogger.logWork(`Transitioned ${item.id} → In Progress`);
-          trackStep(run.id, "note", `Transitioned ${item.id} to In Progress`);
-        } else {
-          runLogger.logWork(`No "In Progress" transition available for ${item.id} (available: ${transitions.map((t: any) => t.name).join(", ")})`);
-        }
-      }
-    } catch (err) {
-      runLogger.logWork(`Could not transition ${item.id} to In Progress: ${err instanceof Error ? err.message : err}`);
-      trackStep(run.id, "note", `Jira transition failed: ${err instanceof Error ? err.message : err}`, { success: false });
-    }
-  } else if (cfg.source === "gitlab" && gitlabClient.isConfigured()) {
-    try {
-      const projectId = getGitLabProjectFromRemote(WORKSPACE) || item.repo || process.env.GITLAB_DEFAULT_PROJECT || "";
-      const issueIid = item.number;
-      if (projectId && issueIid) {
-        const issue = await gitlabClient.getIssue(projectId, issueIid);
-        if (issue?.state === "closed") {
-          runLogger.logSkip(`${item.id} is already Closed at source — skipping`);
-          saveProcessedIssue(item.id);
-          agentRunDatabase.clearFailedAttempt(item.id, WORKSPACE);
-          return null;
-        }
-        const rawLabels: string | string[] = issue?.labels || [];
-        const labelArray: string[] = typeof rawLabels === "string" ? rawLabels.split(",").map((l: string) => l.trim()) : Array.isArray(rawLabels) ? rawLabels.map((l: any) => (typeof l === "string" ? l.trim() : String(l))) : [];
-        if (labelArray.some((l: string) => l.toLowerCase() === "in progress" || l.toLowerCase() === "doing")) {
-          runLogger.logWork(`${item.id} already has In Progress label — keeping label`);
-          trackStep(run.id, "note", `${item.id} already In Progress on GitLab`);
-        } else {
-          const newLabels = [...labelArray, "In Progress"].join(",");
-          await gitlabClient.editIssue(projectId, issueIid, { labels: newLabels });
-          runLogger.logWork(`Added "In Progress" label to GitLab issue #${issueIid}`);
-          trackStep(run.id, "note", `GitLab issue #${issueIid} labeled In Progress`);
-        }
-      }
-    } catch (err) {
-      runLogger.logWork(`Could not label GitLab issue: ${err instanceof Error ? err.message : err}`);
-      trackStep(run.id, "note", `GitLab label failed: ${err instanceof Error ? err.message : err}`, { success: false });
-    }
-  } else if (cfg.source === "github" && ghToken) {
-    try {
-      const owner = cfg.owner || process.env.GITHUB_DEFAULT_OWNER || "redsand";
-      const repo = cfg.repo || process.env.AICODER_REPO || "";
-      if (owner && repo && item.number) {
-        const headers = { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" };
-        const issueResp = await axios.get(`https://api.github.com/repos/${owner}/${repo}/issues/${item.number}`, { headers });
-        if (issueResp.data?.state === "closed") {
-          runLogger.logSkip(`${item.id} is already Closed at source — skipping`);
-          saveProcessedIssue(item.id);
-          agentRunDatabase.clearFailedAttempt(item.id, WORKSPACE);
-          return null;
-        }
-        const currentLabels: string[] = (issueResp.data?.labels || []).map((l: any) => typeof l === "string" ? l : l.name);
-        if (currentLabels.some((l: string) => l.toLowerCase() === "in progress")) {
-          runLogger.logWork(`${item.id} already has "In Progress" label — keeping label`);
-          trackStep(run.id, "note", `${item.id} already In Progress on GitHub`);
-        } else {
-          await axios.patch(`https://api.github.com/repos/${owner}/${repo}/issues/${item.number}`, {
-            labels: [...currentLabels, "In Progress"],
-          }, { headers });
-          runLogger.logWork(`Added "In Progress" label to GitHub issue #${item.number}`);
-          trackStep(run.id, "note", `GitHub issue #${item.number} labeled In Progress`);
-        }
-      }
-    } catch (err) {
-      runLogger.logWork(`Could not label GitHub issue: ${err instanceof Error ? err.message : err}`);
-      trackStep(run.id, "note", `GitHub label failed: ${err instanceof Error ? err.message : err}`, { success: false });
-    }
+  // Mark issue as "In Progress" so escalation doesn't pick it up.
+  // Logic lives in src/aicoder/issue-transition.ts (4 provider branches).
+  const transitionResult = await transitionIssueToInProgress(
+    issueTransitionDeps(),
+    cfg,
+    item,
+    run.id,
+    ghToken,
+  );
+  if (transitionResult.alreadyDone) {
+    return null;
   }
 
   // Checkpoint: issue transitioned
