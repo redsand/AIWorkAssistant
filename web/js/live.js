@@ -146,12 +146,16 @@ export function subscribeLive(sessionId) {
               }
 
               if (eventType === "session" && data.sessionId) {
-                // Guard against a stale SSE stream re-setting the session
-                // id after the user moved on (e.g. clicked New Chat
-                // mid-stream). Only honor the event when it matches the
-                // sessionId this subscribeLive was started for. If the
-                // user is now in a different session, drop the event.
-                if (data.sessionId === sessionId) {
+                // Guard: drop the event when the user has moved on to a
+                // different session (or to no session). Previous
+                // implementation compared data.sessionId to the
+                // subscribeLive arg `sessionId`, but those always match
+                // by definition — pointless guard. The real signal is
+                // whether the GLOBAL currentSessionId still wants this
+                // stream's session. If not (user clicked New Chat or
+                // switched conversations mid-stream), dropping prevents
+                // the SSE from re-setting state the user just cleared.
+                if (data.sessionId === currentSessionId) {
                   setCurrentSessionId(data.sessionId);
                   localStorage.setItem("currentSessionId", data.sessionId);
                 }

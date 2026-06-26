@@ -162,26 +162,25 @@ export async function switchConversation(sessionId) {
 }
 
 export async function newChat() {
-  // ── Tear down the previous session's live state FIRST ────────────────
-  // The original order (clear-then-disconnect) had a race: while we were
-  // awaiting the dynamic import of live.js, the previous session's SSE
-  // was still active. Any event it delivered between clear and
-  // disconnect could re-set currentSessionId back to the old session id,
-  // which then got picked up by the user's next message — they'd see
-  // their reply appear in the old chat instead of a fresh one.
+  // ── Synchronous cleanup, done BEFORE the first await ─────────────────
+  // Order matters here: if any code awaits before we clear
+  // currentSessionId, a parallel handler (e.g. the user pressed Enter
+  // on a typed message while we were mid-newChat) can read the still-
+  // populated sessionId via the live ES-module binding and send their
+  // new message to the OLD session. That was the entire "New Chat
+  // keeps swapping back" symptom — fix it by clearing first, awaiting
+  // second.
   if (activeStreamController) {
     activeStreamController.abort();
     setActiveStreamController(null);
   }
-  const { disconnectLive } = await import("./live.js");
-  disconnectLive();
-
-  // Now safe to clear session state — no in-flight stream will overwrite it.
   setCurrentSessionId(null);
   localStorage.removeItem("currentSessionId");
   updateSessionHash(null);
 
-  // Reset processing state from previous session
+  // Reset UI synchronously while we're here. Anything async (sidebar
+  // reload, live disconnect) can wait until after the user-visible
+  // state is consistent.
   const processingIndicator = document.getElementById("processingIndicator");
   if (processingIndicator) processingIndicator.classList.remove("active");
   const typingIndicator = document.getElementById("typingIndicator");
@@ -200,6 +199,12 @@ export async function newChat() {
   `;
   showChatView();
   loadConversations();
+
+  // Now safe to await — the global session state is already cleared so
+  // any stale SSE event delivered during the disconnect is guarded by
+  // live.js's currentSessionId-mismatch check.
+  const { disconnectLive } = await import("./live.js");
+  disconnectLive();
 }
 
 export async function deleteConversation(sessionId) {

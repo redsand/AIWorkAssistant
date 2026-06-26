@@ -3244,6 +3244,26 @@ export async function chatRoutes(fastify: FastifyInstance) {
   });
 
   /**
+   * /compact equivalent — collapses the session's message history into
+   * a single LLM-generated summary so subsequent turns start from a
+   * compact context anchor. Returns the summary + how many messages
+   * were collapsed so the UI can show progress feedback.
+   */
+  fastify.post("/chat/sessions/:sessionId/compact", async (request, reply) => {
+    try {
+      const { sessionId } = request.params as { sessionId: string };
+      const result = await conversationManager.compactSession(sessionId);
+      return { success: true, ...result };
+    } catch (error) {
+      fastify.log.error(error);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      const status = /not found/i.test(message) ? 404 : 500;
+      reply.code(status);
+      return { error: "Failed to compact session", message };
+    }
+  });
+
+  /**
    * Search long-term memory
    */
   fastify.get("/chat/memory/search", async (request, reply) => {

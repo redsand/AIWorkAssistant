@@ -390,6 +390,41 @@ export class ConversationManager {
   }
 
   /**
+   * Manually compact a session: replaces the message history with a
+   * single LLM-generated summary so subsequent turns start from a
+   * compact context anchor. Equivalent to what the auto-compactor does
+   * at MAX_MESSAGES_BEFORE_COMPACT, but triggered explicitly by the
+   * user (slash command `/compact` from the chat UI).
+   *
+   * Returns the new summary + count of messages replaced. Throws if the
+   * session doesn't exist. Safe to call on a session with no messages
+   * (returns originalCount=0, summary="").
+   */
+  async compactSession(
+    sessionId: string,
+  ): Promise<{ summary: string; originalCount: number }> {
+    const session = this.getSession(sessionId);
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`);
+    }
+    const originalCount = session.messages.length;
+    if (originalCount === 0) {
+      return { summary: "", originalCount: 0 };
+    }
+    const summary = await this.buildCompactSummaryLLM(session.messages);
+    session.messages = [
+      {
+        role: "system",
+        content: `[Compacted session summary — ${originalCount} prior messages]\n\n${summary}`,
+        timestamp: new Date(),
+      },
+    ];
+    session.updatedAt = new Date();
+    this.saveActiveSession(session);
+    return { summary, originalCount };
+  }
+
+  /**
    * Get conversation history for a session
    */
   getSession(sessionId: string): ConversationSession | null {

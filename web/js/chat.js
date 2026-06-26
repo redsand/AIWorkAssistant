@@ -899,7 +899,70 @@ export async function sendMessage() {
   // come from the in-memory cache (or REST when the cache misses).
   if (await handleKgSlashCommand(message)) return;
 
+  // /clear — drop the current session and start fresh. Mirrors the
+  // Clear Chat button so users have a keyboard-only path.
+  if (message.trim() === "/clear") {
+    await clearChat();
+    return;
+  }
+
+  // /compact — ask the server to summarize the current session, replace
+  // the message history with the summary, and re-render. Saves context
+  // budget on long conversations without losing topic continuity.
+  if (message.trim() === "/compact") {
+    await compactChat();
+    return;
+  }
+
   await executeSend(message, { resend: false });
+}
+
+/**
+ * Trigger server-side summarization of the current session and replace
+ * the in-memory message list with the single summary stub. Re-fetches
+ * messages so the visual chat matches what the model will see next turn.
+ */
+async function compactChat() {
+  if (!currentSessionId) {
+    addMessage("No active chat to compact. Send a message first.", "assistant");
+    return;
+  }
+  addMessage("Compacting conversation… this can take 10–30s on a long session.", "assistant");
+  try {
+    const res = await fetch(`${API_BASE}/chat/sessions/${currentSessionId}/compact`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      addMessage(
+        "Compact failed: " + (body?.error || res.statusText),
+        "assistant",
+      );
+      return;
+    }
+    const data = await res.json();
+    // Replace the visible chat history with greeting + summary so the
+    // user sees what the model will now see. Subsequent messages append
+    // beneath as normal.
+    const chatMessages = document.getElementById("chatMessages");
+    chatMessages.innerHTML = "";
+    addMessage(
+      "✓ Conversation compacted. " +
+        `${data.originalCount ?? "previous"} messages → 1 summary ` +
+        `(${data.summary?.length ?? "?"} chars). Continue chatting; the summary ` +
+        "now anchors the model's context.",
+      "assistant",
+    );
+    if (data.summary) {
+      addMessage("**Session summary**\n\n" + data.summary, "assistant");
+    }
+  } catch (err) {
+    addMessage(
+      "Compact failed: " + (err instanceof Error ? err.message : String(err)),
+      "assistant",
+    );
+  }
 }
 
 export async function resendMessage(message) {
