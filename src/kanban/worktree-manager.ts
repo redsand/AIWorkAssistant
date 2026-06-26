@@ -287,6 +287,35 @@ export async function ensurePersistentWorktree(opts: {
         `Workspace ${dir} does not exist and no repoUrl was provided for runner ${opts.runnerId}`,
       );
     }
+    // Stale-directory recovery: a prior provision attempt may have
+    // created `dir` but failed before writing `.git`. `git worktree add`
+    // and `git clone` both refuse to operate on a non-empty existing
+    // path. Wipe the orphan and retry — there's nothing in it we want
+    // since it's not a real worktree.
+    if (fs.existsSync(dir)) {
+      // First try to prune the worktree registration in case the anchor
+      // still thinks this path is live; otherwise `worktree add` later
+      // refuses to recreate it even after rm.
+      try {
+        const searchRootForPrune = path.dirname(root);
+        const anchorForPrune = opts.repoUrl
+          ? findLocalCloneForRemote(opts.repoUrl, searchRootForPrune)
+          : null;
+        if (anchorForPrune) {
+          await spawnGit(["worktree", "prune"], anchorForPrune);
+        }
+      } catch {
+        // Best-effort — if anchor lookup or prune fails, we still try rm.
+      }
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `Stale workspace ${dir} could not be removed before re-provisioning: ${msg}`,
+        );
+      }
+    }
     // Two-strategy provisioning (see src/util/git-auth.ts header):
     //
     //   1. If the user has a local clone whose origin matches our repoUrl
