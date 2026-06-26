@@ -93,10 +93,10 @@ import {
   getStepOrder,
 } from "./aicoder/run-tracking";
 import {
-  buildBaselineFixPrompt as _buildBaselineFixPrompt,
-  buildCoverageFixPrompt as _buildCoverageFixPrompt,
   buildConflictResolutionPrompt as _buildConflictResolutionPrompt,
 } from "./aicoder/fix-prompts";
+// buildBaselineFixPrompt + buildCoverageFixPrompt are consumed inside
+// src/aicoder/test-fix-loop.ts and no longer called from aicoder.ts.
 import {
   detectPackageManager as _detectPackageManager,
   runPackageInstall as _runPackageInstall,
@@ -116,6 +116,12 @@ import {
   fetchWork as _fetchWork,
   generatePrompt as _generatePrompt,
 } from "./aicoder/work-source";
+import {
+  fixBaselineTests as _fixBaselineTests,
+  fixCoverageGap as _fixCoverageGap,
+  fixReworkTests as _fixReworkTests,
+} from "./aicoder/test-fix-loop";
+import type { TestFixDeps } from "./aicoder/test-fix-loop";
 import { applyProviderRouting, hasSecret } from "./autonomous-loop/provider-routing";
 // enrichPrompt now used internally by src/aicoder/prompt-builder.ts
 import {
@@ -1169,9 +1175,8 @@ const buildConflictResolutionPrompt = (
   branchName: string,
 ) => _buildConflictResolutionPrompt(conflictFiles, branchName, WORKSPACE, getBaseBranch());
 
-// buildBaselineFixPrompt moved to src/aicoder/fix-prompts.ts
-const buildBaselineFixPrompt = (testOutput: string, item: WorkItem) =>
-  _buildBaselineFixPrompt(testOutput, item, getProjectConfig().testCommand.join(" "));
+// buildBaselineFixPrompt + buildCoverageFixPrompt are used inside
+// src/aicoder/test-fix-loop.ts only — no aicoder.ts call sites remain.
 
 /** Detect which package manager to use in the workspace. */
 // detectPackageManager + runPackageInstall moved to src/aicoder/package-manager.ts
@@ -1179,276 +1184,44 @@ const detectPackageManager = () => _detectPackageManager(WORKSPACE);
 const runPackageInstall = (pm: PackageManager) =>
   _runPackageInstall(runLogger, WORKSPACE, pm);
 
-async function fixBaselineTests(_cfg: ServerConfig, item: WorkItem): Promise<boolean> {
-  const cfg = getProjectConfig();
-
-  if (!cfg.hasTests) {
-    runLogger.logConfig("No test infrastructure detected — skipping baseline check");
-    return true;
-  }
-
-  runLogger.logWork("Running baseline test check before agent starts");
-
-  const baseline = runTestSuite("all");
-  if (baseline.passed) {
-    runLogger.logConfig("Baseline tests passed — proceeding");
-    return true;
-  }
-
-  if (baseline.kind === "timeout") {
-    runLogger.logError("Baseline tests timed out — cannot auto-fix a timeout. Increase timeout or investigate workspace setup.");
-    return false;
-  }
-
-  if (baseline.kind === "spawn_error") {
-    runLogger.logError(`Baseline tests could not start: ${baseline.error}`);
-    runLogger.logConfig("Proceeding without baseline tests — test runner unavailable in workspace");
-    return true; // Proceed without baseline — spawn errors are environment issues, not code issues
-  }
-
-  runLogger.logError("Baseline tests FAILED — attempting to fix");
-
-  // Check for missing packages before invoking the agent — no reason to
-  // burn agent cycles on something `npm install` can fix trivially.
-  const MISSING_PACKAGE_RE = /Cannot find (?:package|module)\s+['"]((?:@[^/'"\s]+\/)?[^/'"\s]+)['"]/gi;
-  const missingPackages = new Set<string>();
-  let match: RegExpExecArray | null;
-  while ((match = MISSING_PACKAGE_RE.exec(baseline.output)) !== null) {
-    missingPackages.add(match[1]);
-  }
-  MISSING_PACKAGE_RE.lastIndex = 0;
-
-  if (missingPackages.size > 0) {
-    const pkgs = [...missingPackages].join(", ");
-    runLogger.logWork(`Missing packages detected: ${pkgs} — installing`);
-
-    const pm = detectPackageManager();
-    const installResult = runPackageInstall(pm);
-    if (installResult.success) {
-      runLogger.logConfig(`Ran ${installResult.command} — re-running baseline tests`);
-      const retest = runTestSuite("all");
-      if (retest.passed) {
-        runLogger.logConfig("Baseline tests pass after package install — proceeding");
-        return true;
-      }
-      runLogger.logWork("Baseline tests still failing after package install — trying agent fix");
-    } else {
-      runLogger.logWork(`Package install failed (exit ${installResult.exitCode}) — falling through to agent fix`);
-    }
-  }
-
-  let attempts = 0;
-  const maxAttempts = Math.min(BASELINE_MAX_FIX_ATTEMPTS, MAX_REWORK);
-  let lastOutput = baseline.output;
-
-  while (attempts < maxAttempts) {
-    attempts++;
-    runLogger.logWork(`Baseline fix attempt ${attempts}/${maxAttempts}`);
-
-    const fixPrompt = buildBaselineFixPrompt(lastOutput, item);
-    const { finDetected, exitCode, stderr } = await runAgent(fixPrompt);
-
-    if (!finDetected && exitCode !== 0) {
-      runLogger.logError(`Baseline fix agent exited with code ${exitCode ?? "unknown"} — stopping`);
-      if (stderr) runLogger.logError(`Agent stderr: ${stderr.slice(-1000)}`);
-      return false;
-    }
-
-    if (!stageAndCommit(`[AI] baseline test fix attempt ${attempts}`)) {
-      runLogger.logError("Baseline fix stage/commit failed — stopping");
-      return false;
-    }
-
-    const retest = runTestSuite("all");
-    if (retest.passed) {
-      runLogger.logConfig(`Baseline tests fixed after attempt ${attempts}`);
-      return true;
-    }
-
-    // Check if remaining failures are related to our changes or pre-existing
-    const safeToProceed = await llmEvaluateTestFailure(retest.output, item);
-    if (safeToProceed) {
-      runLogger.logConfig("Remaining baseline test failures evaluated as pre-existing — proceeding");
-      return true;
-    }
-
-    runLogger.logError(`Baseline tests still failing after attempt ${attempts}`);
-    lastOutput = retest.output;
-  }
-
-  runLogger.logError(`Baseline tests still failing after ${maxAttempts} fix attempts — aborting`);
-  return false;
-}
-
+// Test-fix orchestrators moved to src/aicoder/test-fix-loop.ts. Each wrapper
+// resolves the deps from this file's singletons + module-level config and
+// delegates. Keeping the original signatures avoids touching every caller.
 const COVERAGE_MAX_FIX_ATTEMPTS = parseInt(process.env.AICODER_COVERAGE_MAX_FIX || "2", 10);
-
-// buildCoverageFixPrompt moved to src/aicoder/fix-prompts.ts
-const buildCoverageFixPrompt = (coverageOutput: string, item: WorkItem) =>
-  _buildCoverageFixPrompt(coverageOutput, item, getProjectConfig().coverageCommand.join(" "));
-
-/**
- * Attempt to fix coverage gaps by invoking the agent with a coverage-specific
- * prompt. Retries up to COVERAGE_MAX_FIX_ATTEMPTS times. Returns true if
- * coverage passes after a fix, false if still failing.
- */
-async function fixCoverageGap(item: WorkItem, coverageOutput: string): Promise<boolean> {
-  let attempts = 0;
-  let lastOutput = coverageOutput;
-
-  while (attempts < COVERAGE_MAX_FIX_ATTEMPTS) {
-    attempts++;
-    runLogger.logWork(`Coverage fix attempt ${attempts}/${COVERAGE_MAX_FIX_ATTEMPTS}`);
-
-    const fixPrompt = buildCoverageFixPrompt(lastOutput, item);
-    const { finDetected, exitCode, stderr: covStderr } = await runAgent(fixPrompt);
-
-    if (!finDetected && exitCode !== 0) {
-      runLogger.logError(`Coverage fix agent exited with code ${exitCode ?? "unknown"} — stopping`);
-      if (covStderr) runLogger.logError(`Agent stderr: ${covStderr.slice(-1000)}`);
-      return false;
-    }
-
-    if (!stageAndCommit(`[AI] coverage fix attempt ${attempts}`)) {
-      runLogger.logError("Coverage fix stage/commit failed — stopping");
-      return false;
-    }
-
-    const result = checkCoverage();
-    if (result.passed) {
-      runLogger.logConfig(`Coverage thresholds met after fix attempt ${attempts}`);
-      return true;
-    }
-
-    if (result.kind === "spawn_error") {
-      runLogger.logConfig("Coverage tool unavailable — cannot verify fix, continuing");
-      return true;
-    }
-
-    runLogger.logError(`Coverage still below threshold after fix attempt ${attempts}`);
-    lastOutput = result.output || lastOutput;
-  }
-
-  runLogger.log(`WARN`, `Coverage still below threshold after ${COVERAGE_MAX_FIX_ATTEMPTS} fix attempts — continuing anyway`);
-  return false;
-}
-
-/**
- * Fix failing tests after a rework cycle. Runs the agent with a fix prompt,
- * commits, and re-tests — up to MAX_REWORK_FIX_ATTEMPTS times.
- */
 const MAX_REWORK_FIX_ATTEMPTS = 10;
 
-async function fixReworkTests(item: WorkItem, reworkCount: number): Promise<boolean> {
-  if (SKIP_TESTS) {
-    runLogger.logConfig("Skipping all tests after rework (--skip-tests)");
-    return true;
-  }
-
-  // First, just run the tests to see if they pass
-  const unitResult = runTestSuite("unit");
-  if (unitResult.kind === "spawn_error") {
-    runLogger.logError(`Unit tests could not start: ${unitResult.error}`);
-    runLogger.logConfig("Proceeding without rework tests — test runner unavailable in workspace");
-    return true; // Proceed — spawn errors are environment issues, not code issues
-  }
-
-  if (unitResult.passed) {
-    const integrationResult = runTestSuite("integration");
-    if (integrationResult.kind === "spawn_error") {
-      runLogger.logConfig("Integration tests could not start — skipping");
-      return true;
-    }
-    if (!integrationResult.passed) {
-      // Fall through to fix loop
-    } else {
-      // Unit + integration pass — check coverage/e2e
-      const coverageResult = checkCoverage();
-      if (!coverageResult.passed && coverageResult.kind !== "spawn_error") {
-        // Coverage or e2e tests failed — evaluate whether this
-        // is related to our rework changes or is a pre-existing/unrelated issue
-        const testOutput = coverageResult.output || "coverage check failed with no output";
-        const safeToProceed = await llmEvaluateTestFailure(testOutput, item);
-        if (safeToProceed) {
-          runLogger.logConfig("Test failure evaluated as unrelated to rework — proceeding");
-        } else {
-          // Likely related — try to fix it
-          runLogger.logConfig("Test failure evaluated as related to rework — attempting fix");
-          return await attemptTestFix(item, reworkCount, testOutput);
-        }
-      }
-      return true;
-    }
-  }
-
-  // Unit or integration tests failed — attempt to fix with agent
-  const lastOutput = !unitResult.passed ? unitResult.output : runTestSuite("integration").output;
-  return await attemptTestFix(item, reworkCount, lastOutput);
+function buildTestFixDeps(): TestFixDeps {
+  const cfg = getProjectConfig();
+  return {
+    logger: runLogger,
+    hasTests: cfg.hasTests,
+    testCommand: cfg.testCommand.join(" "),
+    coverageCommand: cfg.coverageCommand.join(" "),
+    skipTests: SKIP_TESTS,
+    baselineMaxFixAttempts: BASELINE_MAX_FIX_ATTEMPTS,
+    coverageMaxFixAttempts: COVERAGE_MAX_FIX_ATTEMPTS,
+    reworkMaxFixAttempts: MAX_REWORK_FIX_ATTEMPTS,
+    maxRework: MAX_REWORK,
+    runAgent,
+    stageAndCommit,
+    runTestSuite,
+    checkCoverage,
+    classifyTestFailure: (out) => _classifyTestFailure(runLogger, WORKSPACE, out),
+    detectPackageManager,
+    runPackageInstall,
+  };
 }
 
-async function attemptTestFix(item: WorkItem, reworkCount: number, initialOutput: string): Promise<boolean> {
-  runLogger.logError("Tests FAILED — entering fix loop");
-
-  let attempts = 0;
-  let lastOutput = initialOutput;
-  const maxAttempts = MAX_REWORK_FIX_ATTEMPTS;
-
-  while (attempts < maxAttempts) {
-    attempts++;
-    runLogger.logWork(`Test fix attempt ${attempts}/${maxAttempts} after rework`);
-
-    const fixPrompt = buildBaselineFixPrompt(lastOutput, item);
-    const { finDetected, exitCode, stderr: reworkStderr } = await runAgent(fixPrompt);
-
-    if (!finDetected && exitCode !== 0) {
-      runLogger.logError(`Test fix agent exited with code ${exitCode ?? "unknown"} — stopping`);
-      if (reworkStderr) runLogger.logError(`Agent stderr: ${reworkStderr.slice(-1000)}`);
-      return false;
-    }
-
-    if (!stageAndCommit(`[AI] rework #${reworkCount} test fix attempt ${attempts}`)) {
-      runLogger.logError("Test fix stage/commit failed — stopping");
-      return false;
-    }
-
-    const retestResult = runTestSuite("all");
-    if (retestResult.passed) {
-      runLogger.logConfig(`Tests fixed after attempt ${attempts}`);
-      return true;
-    }
-
-    if (retestResult.kind === "spawn_error") {
-      runLogger.logError(`Tests could not start: ${retestResult.error}`);
-      runLogger.logConfig("Proceeding without tests — test runner unavailable in workspace");
-      return true; // Proceed — spawn errors are environment issues, not code issues
-    }
-
-    runLogger.logError(`Tests still failing after fix attempt ${attempts}`);
-
-    // Re-evaluate: are the remaining failures related to our changes or pre-existing?
-    const safeToProceed = await llmEvaluateTestFailure(retestResult.output, item);
-    if (safeToProceed) {
-      runLogger.logConfig("Remaining test failures evaluated as unrelated to rework — proceeding");
-      return true;
-    }
-
-    lastOutput = retestResult.output;
-  }
-
-  // Final evaluation before giving up
-  const finalVerdict = await llmEvaluateTestFailure(lastOutput, item);
-  if (finalVerdict) {
-    runLogger.logConfig("Final evaluation: remaining test failures are unrelated — proceeding");
-    return true;
-  }
-
-  runLogger.logError(`Tests still failing after ${maxAttempts} fix attempts — stopping`);
-  return false;
-}
-
-// Test-failure heuristic moved to src/aicoder/test-failure-classifier.ts
-// (renamed `llmEvaluate*` → `classify*` since it has no LLM call).
-const llmEvaluateTestFailure = (testOutput: string, _item: WorkItem) =>
-  _classifyTestFailure(runLogger, WORKSPACE, testOutput);
+const fixBaselineTests = (_cfg: ServerConfig, item: WorkItem) =>
+  _fixBaselineTests(buildTestFixDeps(), item);
+const fixCoverageGap = (item: WorkItem, coverageOutput: string) =>
+  _fixCoverageGap(buildTestFixDeps(), item, coverageOutput);
+const fixReworkTests = (item: WorkItem, reworkCount: number) =>
+  _fixReworkTests(buildTestFixDeps(), item, reworkCount);
+// attemptTestFix is used internally by test-fix-loop.ts (via fixReworkTests)
+// and no longer needs a top-level alias here.
+// classifyTestFailure (formerly llmEvaluateTestFailure) is consumed via
+// deps.classifyTestFailure inside the same module.
 
 
 
