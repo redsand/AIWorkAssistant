@@ -176,7 +176,7 @@ export abstract class AIProvider {
 
   /**
    * Install an abort guard that fires if the upstream connection sends no
-   * data within AI_FIRST_CHUNK_TIMEOUT_MS (default 30s). Returns a signal
+   * data within AI_FIRST_CHUNK_TIMEOUT_MS (default 120s). Returns a signal
    * to pass to the HTTP client and an onChunk() hook to call as soon as
    * the first byte of the response body arrives. Also forwards external
    * cancellations from the caller.
@@ -184,9 +184,17 @@ export abstract class AIProvider {
    * Without this, a hung upstream (observed: Ollama Cloud pretending to
    * accept the request but never sending response body) holds its
    * aiRequestLimiter slot until the OS socket times out — up to 17 minutes
-   * per call. With it, the call dies in ~30s and the bucket recovers fast
-   * enough for the circuit breaker to trip after 3 attempts and stop the
-   * cascade entirely.
+   * per call. With it, the call dies in ~120s and the bucket recovers
+   * fast enough for the circuit breaker to trip after 3 attempts and stop
+   * the cascade entirely.
+   *
+   * Default raised from 30s → 120s on 2026-06-26 after observing legit
+   * Ollama Cloud (glm-5.2:cloud, kimi-k2.x:cloud) cold-load delays
+   * regularly exceed 30s on a fresh model or long-context follow-up
+   * — that's not a hung connection, it's the model warming up. 120s
+   * still catches the genuinely-stuck case before the OS socket
+   * timeout. Per-host override via [[provider-hosts-architecture]]
+   * `timeoutSeconds` still wins when a saved host is selected.
    *
    * Call dispose() in a finally block to release the abort listener and
    * timer. Always safe to call dispose() multiple times.
@@ -198,7 +206,7 @@ export abstract class AIProvider {
     abortReason: () => string | undefined;
   } {
     const idleMs = parseInt(
-      process.env.AI_FIRST_CHUNK_TIMEOUT_MS || "30000",
+      process.env.AI_FIRST_CHUNK_TIMEOUT_MS || "120000",
       10,
     );
     const controller = new AbortController();
