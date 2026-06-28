@@ -32,6 +32,7 @@ const mockRecentReflections = vi.fn();
 const mockSearchSessions = vi.fn();
 const mockBuildEntityClaimsSection = vi.fn();
 const mockSaveLiveComparison = vi.fn();
+const mockCascadeRun = vi.fn();
 
 const mockEnv = {
   AI_PROVIDER: "test",
@@ -50,6 +51,12 @@ const mockEnv = {
   CLAIMKIT_HIGH_CONFIDENCE_THRESHOLD: 0.8,
   CLAIMKIT_LOW_CONFIDENCE_THRESHOLD: 0.5,
   CLAIMKIT_FIRST_PROBE_TIMEOUT_MS: 500,
+  CASCADE_ENABLED: false,
+  CASCADE_BUDGET_TOKENS: 5000,
+  CASCADE_STOP_CONFIDENCE: 0.8,
+  CASCADE_TEACHER_MODEL: "",
+  CASCADE_TEACHER_COST_TOKENS: 1000,
+  CASCADE_TOOL_COST_TOKENS: 2000,
   KNOWLEDGE_GRAPH_QUERY_ENABLED: true,
   KNOWLEDGE_GRAPH_DOC_LIMIT: 5,
   KNOWLEDGE_GRAPH_COMMUNITY_LIMIT: 10,
@@ -143,6 +150,9 @@ function installMocks() {
   vi.doMock("../../../src/comparison-runs/auto-capture", () => ({
     saveLiveComparison: mockSaveLiveComparison,
   }));
+  vi.doMock("../../../src/context-engine/retrieval-cascade", () => ({
+    createDefaultCascade: () => ({ run: mockCascadeRun }),
+  }));
 }
 
 async function loadContextPacket() {
@@ -176,6 +186,10 @@ describe("assembleContextPacket retrieval and context sections", () => {
     mockEnv.CLAIMKIT_HIGH_CONFIDENCE_THRESHOLD = 0.8;
     mockEnv.CLAIMKIT_LOW_CONFIDENCE_THRESHOLD = 0.5;
     mockEnv.CLAIMKIT_FIRST_PROBE_TIMEOUT_MS = 500;
+    mockEnv.CASCADE_ENABLED = false;
+    mockEnv.CASCADE_BUDGET_TOKENS = 5000;
+    mockEnv.CASCADE_STOP_CONFIDENCE = 0.8;
+    mockCascadeRun.mockReset();
     mockEnv.QUERY_REWRITER_ENABLED = true;
     mockEnv.QUERY_REWRITE_VARIANT_COUNT = 3;
     mockClaimKitAdapter.isAvailable.mockReturnValue(false);
@@ -572,5 +586,161 @@ describe("assembleContextPacket retrieval and context sections", () => {
 
     // Primary + exactly one variant.
     expect(mockKnowledgeSearch).toHaveBeenCalledTimes(2);
+  });
+
+  // ── cost-aware retrieval cascade (issue #245) ────────────────────────────
+
+  it("does not run the cascade when CASCADE_ENABLED is false", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CASCADE_ENABLED = false;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.6, "partially-answerable"));
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockCascadeRun).not.toHaveBeenCalled();
+    expect(packet.diagnostics.cascade).toBeNull();
+    // Existing medium-confidence behavior is preserved: RAG still runs.
+    expect(mockKnowledgeSearch).toHaveBeenCalled();
+    expect(packet.diagnostics.documentsRetrieved).toBeGreaterThan(0);
+  });
+
+  it("skips full RAG when the cascade resolves a medium-confidence probe via the teacher", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CASCADE_ENABLED = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.6, "partially-answerable"));
+    mockCascadeRun.mockResolvedValue({
+      level: "teacher_verify",
+      tokensUsed: 950,
+      confidence: 0.9,
+      outcome: "teacher_confirmed",
+    });
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Should not be retrieved"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockCascadeRun).toHaveBeenCalledTimes(1);
+    expect(mockCascadeRun).toHaveBeenCalledWith(
+      expect.objectContaining({ claimKitAnswer: "ClaimKit structured answer.", confidence: 0.6 }),
+    );
+    expect(packet.diagnostics.cascade).toEqual({
+      level: "teacher_verify",
+      tokensUsed: 950,
+      confidence: 0.9,
+      outcome: "teacher_confirmed",
+    });
+    expect(packet.diagnostics.claimkitFirstMetrics.ragSkipped).toBe(true);
+    expect(packet.diagnostics.documentsRetrieved).toBe(0);
+    // The cheap resolution means RAG stores are never touched.
+    expect(mockKnowledgeSearch).not.toHaveBeenCalled();
+    expect(mockCodebaseSearch).not.toHaveBeenCalled();
+  });
+
+  it("falls through to full RAG when the cascade cannot resolve the query cheaply", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CASCADE_ENABLED = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.6, "partially-answerable"));
+    mockCascadeRun.mockResolvedValue({
+      level: "full_rag",
+      tokensUsed: 2400,
+      confidence: 0.3,
+      outcome: "fell_back_to_rag",
+    });
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockCascadeRun).toHaveBeenCalledTimes(1);
+    expect(packet.diagnostics.cascade?.outcome).toBe("fell_back_to_rag");
+    expect(packet.diagnostics.claimkitFirstMetrics.ragSkipped).toBe(false);
+    expect(mockKnowledgeSearch).toHaveBeenCalled();
+    expect(packet.diagnostics.documentsRetrieved).toBeGreaterThan(0);
+  });
+
+  it("does not run the cascade for a high-confidence probe (skip-RAG handled at Level 0)", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CASCADE_ENABLED = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.95, "answerable"));
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "what is the deploy process",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockCascadeRun).not.toHaveBeenCalled();
+    expect(packet.diagnostics.cascade).toBeNull();
+    expect(packet.diagnostics.claimkitFirstMetrics.strategy).toBe("claimkit_first_skip_rag");
+    expect(packet.diagnostics.documentsRetrieved).toBe(0);
+  });
+
+  it("treats a thrown cascade as a fall-through to full RAG", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CASCADE_ENABLED = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.6, "partially-answerable"));
+    mockCascadeRun.mockRejectedValue(new Error("cascade boom"));
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockCascadeRun).toHaveBeenCalledTimes(1);
+    expect(packet.diagnostics.cascade).toBeNull();
+    expect(packet.diagnostics.claimkitFirstMetrics.ragSkipped).toBe(false);
+    expect(mockKnowledgeSearch).toHaveBeenCalled();
+    expect(packet.diagnostics.documentsRetrieved).toBeGreaterThan(0);
   });
 });
