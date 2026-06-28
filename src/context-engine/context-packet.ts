@@ -21,6 +21,7 @@ import type {
   GroundingHandle,
 } from "./types";
 import { claimKitAdapter } from "./adapters/claimkit-adapter";
+import { createDefaultCascade, type CascadeResolution } from "./retrieval-cascade";
 import { rewriteQuerySafe, boostEntityMatches, mergeAndDedupe } from "./query-rewriter";
 import { ingestScoredDocumentsForQuery } from "./claimkit-ingestion";
 import { saveLiveComparison } from "../comparison-runs/auto-capture";
@@ -324,7 +325,50 @@ export async function assembleContextPacket(
       `probe_answerability=${ckProbe?.answerability ?? "—"} | probe=${probeLatencyMs}ms`,
     );
   }
-  const ragSkipped = routingStrategy === "claimkit_first_skip_rag";
+  // ── Cost-aware retrieval cascade (issue #245) ────────────────────────
+  // The ClaimKit-first probe is Level 0 of the cascade. When it lands in the
+  // medium/low band (RAG would otherwise run) we escalate through cheaper
+  // verification — a teacher-LLM check, then a web_search corroboration —
+  // before paying for full RAG. A cheap resolution skips RAG entirely; a
+  // budget-exhausted or unresolved cascade falls through to full RAG (existing
+  // Level 3 behavior). The whole step is gated by CASCADE_ENABLED so the
+  // ClaimKit-first behavior is fully preserved when the cascade is off.
+  let cascadeResolution: CascadeResolution | null = null;
+  let cascadeSkippedRag = false;
+  if (
+    env.CASCADE_ENABLED &&
+    routingStrategy !== "rag_first" &&
+    routingStrategy !== "claimkit_first_skip_rag" &&
+    ckProbe !== null &&
+    (ckProbe.answerability === "answerable" || ckProbe.answerability === "partially-answerable")
+  ) {
+    try {
+      cascadeResolution = await timeStage("cascadeMs", () =>
+        createDefaultCascade().run({
+          query: retrievalQuery,
+          claimKitAnswer: ckProbe!.answer,
+          confidence: ckProbe!.confidence,
+        }),
+      );
+      cascadeSkippedRag =
+        cascadeResolution.outcome === "ck_high_confidence" ||
+        cascadeResolution.outcome === "teacher_confirmed" ||
+        cascadeResolution.outcome === "tool_confirmed";
+      console.log(
+        `[ContextPacket] cascade ${cascadeResolution.level} | outcome=${cascadeResolution.outcome} | ` +
+        `tokensUsed=${cascadeResolution.tokensUsed} | confidence=${(cascadeResolution.confidence * 100).toFixed(0)}% | ` +
+        `rag_skipped=${cascadeSkippedRag}`,
+      );
+    } catch (err) {
+      cascadeResolution = null;
+      console.warn(
+        "[ContextPacket] retrieval cascade failed:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  const ragSkipped = routingStrategy === "claimkit_first_skip_rag" || cascadeSkippedRag;
 
   const baseSystemPrompt = getSystemPrompt(mode, query, "engine");
   const systemTokens = estimateTokens(baseSystemPrompt);
@@ -1248,6 +1292,14 @@ export async function assembleContextPacket(
         ragSkipped,
         latencyDeltaMs,
       },
+      cascade: cascadeResolution
+        ? {
+            level: cascadeResolution.level,
+            tokensUsed: cascadeResolution.tokensUsed,
+            confidence: cascadeResolution.confidence,
+            outcome: cascadeResolution.outcome,
+          }
+        : null,
       queryRewriteMetrics: {
         enabled: env.QUERY_REWRITER_ENABLED,
         latencyMs: rewritten.rewriteLatencyMs,
