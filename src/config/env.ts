@@ -401,6 +401,31 @@ const envSchema = z.object({
   // probes still degrade into "rag_first" rather than adding latency.
   CLAIMKIT_FIRST_PROBE_TIMEOUT_MS: z.coerce.number().default(3000),
 
+  // ── Cost-aware retrieval cascade (issue #245) ────────────────────────
+  // When the ClaimKit-first probe lands in the medium-confidence band, the
+  // cascade escalates through cheaper verification — a teacher-LLM check, then
+  // a web_search corroboration — before paying for full RAG retrieval. U-Mem
+  // (arXiv:2602.22406 §3.2) shows this cuts expensive retrieval calls by 40%+.
+  // Off by default: opt in once a teacher model and/or web search is configured.
+  CASCADE_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
+  // Total token budget across all cascade escalation steps. The cascade stops
+  // escalating and falls back to full RAG once this budget can't afford the
+  // next step.
+  CASCADE_BUDGET_TOKENS: z.coerce.number().default(5000),
+  // Confidence at/above which a cascade level resolves the query and full RAG
+  // is skipped.
+  CASCADE_STOP_CONFIDENCE: z.coerce.number().default(0.8),
+  // Teacher model used for the TEACHER_VERIFY step. Empty (default) lets the
+  // current provider pick its configured model.
+  CASCADE_TEACHER_MODEL: z.string().default(""),
+  // Estimated token cost charged against the budget for the teacher step.
+  CASCADE_TEACHER_COST_TOKENS: z.coerce.number().default(1000),
+  // Estimated token cost charged against the budget for the tool-research step.
+  CASCADE_TOOL_COST_TOKENS: z.coerce.number().default(2000),
+
   // Knowledge graph retrieval controls
   KNOWLEDGE_GRAPH_QUERY_ENABLED: z
     .string()

@@ -180,6 +180,19 @@ export interface QueryRewriteMetrics {
 }
 
 /**
+ * Resolution of the cost-aware retrieval cascade (issue #245), recorded in the
+ * packet's debug diagnostics. `level` is the escalation level that resolved the
+ * query (claimkit | teacher_verify | tool_research | full_rag); `tokensUsed` is
+ * the cumulative escalation spend; `outcome` is the terminal reason.
+ */
+export interface CascadeMetrics {
+  level: string;
+  tokensUsed: number;
+  confidence: number;
+  outcome: string;
+}
+
+/**
  * A pointer the chat layer uses to back-fill RAG hallucinationRate / grounded
  * onto a live comparison_case row after the agent's response is available.
  *
@@ -223,6 +236,13 @@ export interface ContextPacket {
     budgetUtilization: Record<string, number>;
     stageTimings: Record<string, number>;
     claimkitFirstMetrics: ClaimKitFirstMetrics;
+    /**
+     * Cost-aware retrieval cascade resolution (issue #245). Null when the
+     * cascade did not run (disabled, probe high-confidence/unanswerable, or
+     * rag_first). Records which escalation level resolved the query, the tokens
+     * the escalation spent, the resolving confidence, and the outcome.
+     */
+    cascade: CascadeMetrics | null;
     queryRewriteMetrics: QueryRewriteMetrics;
     claimkit: {
       enabled: boolean;
