@@ -50,7 +50,29 @@ import {
   installDownloadInterceptor,
   applyAttachmentsToMessage,
 } from "./file-attachments.js";
-import { installSteerButton } from "./chat-steer.js";
+import { installSteerButton, sendSteer } from "./chat-steer.js";
+
+/**
+ * Update the send button's label between "Send" (idle) and "Steer"
+ * (job in flight). Called whenever activeStreamController flips so the
+ * user knows that pressing Enter mid-stream injects into the running
+ * chat instead of starting a fresh turn. Keeping the label on the same
+ * button (rather than a separate Steer control) is what the user asked
+ * for — one input, one action button, contextual behavior.
+ */
+function updateSendButtonLabel() {
+  const btn = document.getElementById("sendBtn");
+  if (!btn) return;
+  if (activeStreamController) {
+    btn.textContent = "Steer";
+    btn.title = "Inject a steer into the running chat (Enter)";
+    btn.dataset.mode = "steer";
+  } else {
+    btn.textContent = "Send";
+    btn.title = "Send message (Enter)";
+    btn.dataset.mode = "send";
+  }
+}
 
 /**
  * Idea 3 + I: render a banner above the messages list when ClaimKit
@@ -613,6 +635,16 @@ function addCompletionMarker() {
 
 let reportInterceptorInstalled = false;
 
+// Listen once for stream-controller changes and refresh the Send/Steer
+// label in one place. Putting the listener at module scope (not inside
+// initializeChat) means it survives soft reinitializations and is
+// installed exactly once per page lifetime.
+if (typeof window !== "undefined") {
+  window.addEventListener("activeStreamControllerChange", () => {
+    updateSendButtonLabel();
+  });
+}
+
 export async function initializeChat() {
   try {
     await initializeProviderControls();
@@ -640,6 +672,10 @@ export async function initializeChat() {
   installDownloadInterceptor();
   installSteerButton();
 
+  // Reflect the initial idle state on the send button — the listener at
+  // module scope handles every subsequent transition.
+  updateSendButtonLabel();
+
   const { subscribeLive } = await import("./live.js");
   if (currentSessionId) {
     subscribeLive(currentSessionId);
@@ -647,22 +683,12 @@ export async function initializeChat() {
 }
 
 async function loadChatHistory() {
-  if (!currentSessionId) {
-    try {
-      const res = await fetch(`${API_BASE}/chat/sessions?userId=web-user`, {
-        headers: authHeaders(),
-      });
-      const data = await res.json();
-      if (data.sessions && data.sessions.length > 0) {
-        setCurrentSessionId(data.sessions[0].id);
-        localStorage.setItem("currentSessionId", data.sessions[0].id);
-        updateSessionHash(data.sessions[0].id);
-      }
-    } catch {
-      return;
-    }
-  }
-
+  // No auto-pinning to the most-recent session. If currentSessionId isn't
+  // already set (from URL hash or a prior switchConversation), start in
+  // clean New-Chat mode — the sidebar still lets the user pick an old
+  // session explicitly. Previously this routine grabbed sessions[0] and
+  // pinned the user to it, which made later "+ New Chat" → type → submit
+  // sequences land in the silently-restored old chat under races.
   if (!currentSessionId) return;
 
   try {
@@ -878,6 +904,23 @@ export async function sendMessage() {
   const input = document.getElementById("messageInput");
   let message = input.value.trim();
   if (!message) return;
+
+  // Mid-stream: the chat is processing, so this submission is a steer.
+  // Read activeStreamController via the live ES-module binding so we
+  // pick up the latest value even if executeSend just set it. The
+  // textarea clears before the network call so the user can immediately
+  // queue a second steer; rollback on failure happens inside sendSteer.
+  if (activeStreamController) {
+    const hist = [...messageHistory];
+    if (hist[hist.length - 1] !== message) hist.push(message);
+    setMessageHistory(hist);
+    setHistoryIndex(-1);
+    setDraftBeforeHistory("");
+    input.value = "";
+    autoResizeTextarea(input);
+    await sendSteer(message);
+    return;
+  }
 
   // Prepend any queued file attachments as a structured preamble so the
   // model sees the paths and can open them via local.read_file.

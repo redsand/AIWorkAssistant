@@ -62,6 +62,19 @@ export function setDraftBeforeHistory(v) {
 }
 export function setActiveStreamController(v) {
   activeStreamController = v;
+  // Broadcast so UI bits (e.g. the chat input's Send/Steer label) can
+  // react without each setter site having to remember to update them.
+  // Using a DOM CustomEvent keeps state.js layer-pure — it doesn't
+  // import from chat.js / messages.js / etc., it just emits.
+  try {
+    window.dispatchEvent(
+      new CustomEvent("activeStreamControllerChange", { detail: { active: !!v } }),
+    );
+  } catch {
+    // jsdom + the test harness may not implement CustomEvent the same
+    // way every node version does. Failing to broadcast is harmless;
+    // tests that depend on the label can drive it directly.
+  }
 }
 export function setAutoAcceptDeletes(v) {
   autoAcceptDeletes = v;

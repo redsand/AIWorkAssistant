@@ -1545,7 +1545,9 @@ async function runChatJob(
       if (job.steeringQueue.length > 0) {
         for (const steer of job.steeringQueue) {
           messages.push({ role: "user", content: `[user steering] ${steer}` });
-          conversationManager.addMessage(sessionId, { role: "user", content: `[steering] ${steer}` });
+          // Persisted at POST /steer time, not here — otherwise a steer
+          // queued but never drained (model finished without another
+          // tool-call iteration) would vanish on refresh.
           emitJobEvent(sessionId, "steer_applied", { message: steer });
         }
         job.steeringQueue.length = 0;
@@ -2653,7 +2655,17 @@ export async function chatRoutes(fastify: FastifyInstance) {
       reply.code(409);
       return { error: "No active run to steer for this session" };
     }
+    // Persist BEFORE the tool loop drains the queue, so the steer
+    // survives a page refresh even when the model finishes its current
+    // turn without another tool-call iteration (in which case the loop
+    // exits and the in-memory queue is discarded). Stored as a plain
+    // user-role message so it renders identically to anything else the
+    // user typed; the model-facing copy in the tool-loop drain still
+    // gets the "[user steering]" prefix so the model knows it's a
+    // mid-stream injection, not a fresh turn.
+    conversationManager.addMessage(sessionId, { role: "user", content: text });
     job.steeringQueue.push(text);
+    emitJobEvent(sessionId, "steer_queued", { message: text });
     return {
       success: true,
       sessionId,
