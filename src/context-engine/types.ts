@@ -113,6 +113,31 @@ export interface ContextSection {
   sourceCount?: number;
 }
 
+/**
+ * Debug view of the semantic-aware Thompson sampling that selected the
+ * recent_sessions (issue #246). Surfaced on the context packet so the
+ * dashboard / logs can see each surfaced session's Beta utility and the
+ * sampled score that won it a slot.
+ */
+export interface SessionUtilityDiagnostics {
+  enabled: boolean;
+  /** Number of candidate sessions pulled from FTS before reranking. */
+  candidatePool: number;
+  /** Epsilon-greedy exploration probability used this round. */
+  epsilon: number;
+  /** Whether semantic weight came from embeddings or the FTS-score fallback. */
+  semanticSource: "embedding" | "fts_fallback";
+  selected: Array<{
+    sessionId: string;
+    alpha: number;
+    beta: number;
+    sampledUtility: number;
+    similarity: number;
+    combinedScore: number;
+    explored: boolean;
+  }>;
+}
+
 export interface ClaimKitContextSection {
   name: "claimkit_evidence";
   content: string;
@@ -243,6 +268,12 @@ export interface ContextPacket {
      * the escalation spent, the resolving confidence, and the outcome.
      */
     cascade: CascadeMetrics | null;
+    /**
+     * Semantic-aware Thompson sampling trace for recent_sessions (issue #246).
+     * Null when no candidate sessions were available or utility sampling was
+     * disabled.
+     */
+    sessionUtility: SessionUtilityDiagnostics | null;
     queryRewriteMetrics: QueryRewriteMetrics;
     claimkit: {
       enabled: boolean;
@@ -329,12 +360,6 @@ export const DEFAULT_SLOT_DEFINITIONS: BudgetSlotDefinition[] = [
   // squeezed for budget.
   { name: "entity_claims", priority: 70, fraction: 0.05, overflowTarget: "claimkit_evidence" },
   { name: "health", priority: 20, fraction: 0.05, overflowTarget: null },
-  // Added 2026-06-25 — context-packet.ts emits these sections regardless of
-  // which slot scheme is active, so V1 also needs explicit slots or every
-  // chat logs an [enforceBudget] warning + caps them at 200 tokens. Mirror
-  // V2 priorities/fractions.
-  { name: "soul", priority: 110, fraction: 0.01, overflowTarget: "system" },
-  { name: "recent_sessions", priority: 35, fraction: 0.04, overflowTarget: "graph" },
 ];
 
 export const V2_SLOT_DEFINITIONS: BudgetSlotDefinition[] = [

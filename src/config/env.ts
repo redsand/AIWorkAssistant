@@ -248,6 +248,31 @@ const envSchema = z.object({
     .transform((s) => s === "true")
     .default("false"),
 
+  // Semantic-aware Thompson sampling for memory-session retrieval (issue #246).
+  // When enabled, recent_sessions are selected by sampling each session's
+  // Beta(alpha,beta) utility distribution and weighting by semantic similarity,
+  // instead of pure recency/BM25. Disable to fall back to the legacy top-k FTS
+  // ordering.
+  SESSION_UTILITY_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("true"),
+  // How many candidate sessions to pull from FTS before utility reranking.
+  SESSION_UTILITY_CANDIDATE_POOL: z.coerce.number().default(10),
+  // How many sessions to surface after reranking (the recent_sessions top-k).
+  SESSION_UTILITY_TOP_K: z.coerce.number().default(3),
+  // Epsilon-greedy exploration probability (0.2 ⇒ 80% exploit / 20% explore).
+  SESSION_UTILITY_EPSILON: z.coerce.number().default(0.2),
+  // Use embedding cosine similarity for the semantic weight. When false (or
+  // embeddings unavailable) it falls back to the FTS relevance score.
+  SESSION_UTILITY_SEMANTIC_EMBED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("true"),
+  // Optimistic cold-start prior for never-scored sessions (Beta(2,1)).
+  SESSION_UTILITY_PRIOR_ALPHA: z.coerce.number().default(2),
+  SESSION_UTILITY_PRIOR_BETA: z.coerce.number().default(1),
+
   // RAG / Codebase Indexing
   RAG_INDEX_ON_STARTUP: z
     .string()

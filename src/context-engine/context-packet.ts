@@ -19,6 +19,7 @@ import type {
   RoutingTier,
   RoutingStrategy,
   GroundingHandle,
+  SessionUtilityDiagnostics,
 } from "./types";
 import { claimKitAdapter } from "./adapters/claimkit-adapter";
 import { createDefaultCascade, type CascadeResolution } from "./retrieval-cascade";
@@ -33,6 +34,14 @@ import { scoreMessages, deduplicateByJaccard, selectMessages } from "./memory-de
 import type { ClaimKitQueryResult } from "./adapters/claimkit-adapter";
 import { agentMemory } from "../memory/agent-memory";
 import { soulManager } from "../memory/soul-manager";
+import {
+  sessionUtilityStore,
+  thompsonSelect,
+  classifyFollowUpSignal,
+  type UtilityCandidate,
+} from "../memory/session-utility";
+import { embeddingService, cosineSimilarity } from "../agent/embedding-service";
+import type { SessionSearchResult } from "../memory/conversation-manager";
 import { skillManager } from "../skills/skill-manager";
 import { reflectionEngine } from "../agent/reflection-engine";
 import { conversationManager } from "../memory/conversation-manager";
@@ -445,12 +454,24 @@ export async function assembleContextPacket(
   // Start independent async/sync work in parallel with ClaimKit query.
   // These do not depend on ClaimKit result and can overlap with its latency.
   const graphPromise = Promise.resolve().then(() => retrieveGraphContext(query));
-  const sessionsPromise = Promise.resolve().then(() => {
-    try {
-      return conversationManager.searchSessions(query, 3);
-    } catch {
-      return [] as ReturnType<typeof conversationManager.searchSessions>;
-    }
+  // Session retrieval (issue #246): semantic-aware Thompson sampling replaces
+  // the recency-only top-3. The history-decay query (the original `query`) is
+  // used so session relevance matches what the user actually asked. The last
+  // user turn (if any) carries the follow-up/rephrase feedback signal that
+  // updates the PREVIOUS turn's surfaced sessions before this turn overwrites
+  // the remembered retrieval.
+  const previousUserMessage =
+    [...sessionMessages].reverse().find((m) => m.role === "user")?.content ?? "";
+  const sessionsPromise = retrieveUtilityRankedSessions(
+    query,
+    params.sessionId,
+    previousUserMessage,
+  ).catch((err) => {
+    console.warn(
+      "[SessionUtility] retrieval failed, returning empty:",
+      err instanceof Error ? err.message : err,
+    );
+    return { results: [] as UtilityRankedSession[], debug: null };
   });
   const healthPromise = withTimeout(buildHealthStatus(), 2000, null);
 
@@ -836,7 +857,6 @@ export async function assembleContextPacket(
       ckRetrievalScore: claimKitResult?.metadata.retrievalScore ?? null,
       ckSourceCount: claimKitResult?.metadata.sourceIds.length ?? null,
       ckMissingEvidence: claimKitResult?.missingEvidence?.join(", ") ?? null,
-      ckCitations: claimKitResult?.citations ?? null,
       overallWinner: routing.overallWinner,
       winnerReason: routing.routingReason,
       ckStatus,
@@ -876,11 +896,13 @@ export async function assembleContextPacket(
   onProgress?.("Building context packet...");
   // Await parallel work started before ClaimKit query
   const healthStart = Date.now();
-  const [graphContext, sessionResults, healthText] = await Promise.all([
+  const [graphContext, sessionRetrieval, healthText] = await Promise.all([
     graphPromise,
     sessionsPromise,
     healthPromise,
   ]);
+  const sessionResults = sessionRetrieval.results;
+  const sessionUtilityDebug: SessionUtilityDiagnostics | null = sessionRetrieval.debug;
   stageTimings.healthStatusMs = Date.now() - healthStart;
   if (!healthText) {
     console.warn(`[ContextPacket] Health status skipped after ${stageTimings.healthStatusMs}ms`);
@@ -1301,6 +1323,7 @@ export async function assembleContextPacket(
             outcome: cascadeResolution.outcome,
           }
         : null,
+      sessionUtility: sessionUtilityDebug,
       queryRewriteMetrics: {
         enabled: env.QUERY_REWRITER_ENABLED,
         latencyMs: rewritten.rewriteLatencyMs,
@@ -1340,6 +1363,206 @@ function isToolOrFollowUpQuery(query: string): boolean {
   if (trimmed.startsWith("/")) return true;
   const words = trimmed.split(/\s+/).filter(Boolean);
   return words.length > 0 && words.length < 3;
+}
+
+// ── Semantic-aware Thompson sampling for session retrieval (issue #246) ──────
+
+export interface UtilityRankedSession extends SessionSearchResult {
+  utilityDebug?: {
+    alpha: number;
+    beta: number;
+    sampledUtility: number;
+    similarity: number;
+    combinedScore: number;
+    explored: boolean;
+  };
+}
+
+interface SessionRetrievalResult {
+  results: UtilityRankedSession[];
+  debug: SessionUtilityDiagnostics | null;
+}
+
+const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+
+/**
+ * Map FTS relevance scores onto a [0.05, 1] semantic weight when embeddings are
+ * unavailable. Min–max normalized so the best candidate keeps full weight and
+ * the worst keeps a small floor (never exactly 0, which would zero out its
+ * combined score and starve exploration).
+ */
+function ftsFallbackSimilarities(candidates: SessionSearchResult[]): number[] {
+  const scores = candidates.map((c) =>
+    Number.isFinite(c.relevanceScore) ? c.relevanceScore : 0,
+  );
+  const max = Math.max(...scores);
+  const min = Math.min(...scores);
+  const range = max - min;
+  return scores.map((s) => (range <= 0 ? 1 : 0.05 + 0.95 * ((s - min) / range)));
+}
+
+/**
+ * Compute per-candidate semantic similarity to the query. Prefers cosine
+ * similarity of the query embedding vs. each session summary; degrades to the
+ * FTS-relevance fallback whenever embeddings are disabled, unavailable, or
+ * slow. Every embedding call is hard-capped so a slow embedder can't stall
+ * context assembly.
+ */
+async function computeSessionSimilarities(
+  query: string,
+  candidates: SessionSearchResult[],
+): Promise<{ similarities: number[]; source: "embedding" | "fts_fallback" }> {
+  const fallback = ftsFallbackSimilarities(candidates);
+  if (!env.SESSION_UTILITY_SEMANTIC_EMBED) {
+    return { similarities: fallback, source: "fts_fallback" };
+  }
+  try {
+    const available = await withTimeout(embeddingService.isAvailable(), 1500, false);
+    if (!available) return { similarities: fallback, source: "fts_fallback" };
+
+    const queryEmbed = await withTimeout(embeddingService.embed(query), 2500, null);
+    if (!queryEmbed) return { similarities: fallback, source: "fts_fallback" };
+
+    const texts = candidates.map(
+      (c) => (c.summary && c.summary.trim() ? c.summary : c.title) || "",
+    );
+    const summaryEmbeds = await withTimeout(
+      embeddingService.embedBatch(texts),
+      4000,
+      null,
+    );
+    if (!summaryEmbeds) return { similarities: fallback, source: "fts_fallback" };
+
+    const similarities = summaryEmbeds.map((e, i) =>
+      e ? clamp01(cosineSimilarity(queryEmbed.embedding, e.embedding)) : fallback[i],
+    );
+    return { similarities, source: "embedding" };
+  } catch (err) {
+    console.warn(
+      "[SessionUtility] embedding similarity failed, using FTS fallback:",
+      err instanceof Error ? err.message : err,
+    );
+    return { similarities: fallback, source: "fts_fallback" };
+  }
+}
+
+/**
+ * Retrieve past sessions for the recent_sessions context section using
+ * semantic-aware Thompson sampling. Pulls a candidate pool from FTS, samples
+ * each session's Beta utility distribution, weights by semantic similarity, and
+ * selects the top-k (with epsilon-greedy exploration). Falls back to the legacy
+ * recency/BM25 top-k when utility sampling is disabled or no candidates exist.
+ */
+export async function retrieveUtilityRankedSessions(
+  query: string,
+  chatSessionId: string,
+  previousUserMessage = "",
+): Promise<SessionRetrievalResult> {
+  const topK = Math.max(1, env.SESSION_UTILITY_TOP_K);
+
+  // Downstream feedback (issue #246): a new user turn either builds on the
+  // prior answer (follow-up ⇒ success) or re-asks it (rephrase ⇒ failure).
+  // Attribute that signal to the sessions surfaced LAST turn, then clear them,
+  // before this turn records its own retrieval. Gated on utility tracking so a
+  // disabled feature applies no feedback.
+  if (env.SESSION_UTILITY_ENABLED && previousUserMessage) {
+    const signal = classifyFollowUpSignal(previousUserMessage, query);
+    if (signal) {
+      const updated = sessionUtilityStore.recordTurnOutcome(
+        chatSessionId,
+        signal === "success",
+      );
+      if (updated > 0) {
+        console.log(
+          `[SessionUtility] feedback ${signal} → updated ${updated} prior session(s) for ${chatSessionId.substring(0, 8)}`,
+        );
+      }
+    }
+  }
+
+  let candidates: SessionSearchResult[];
+  try {
+    const poolSize = env.SESSION_UTILITY_ENABLED
+      ? Math.max(env.SESSION_UTILITY_CANDIDATE_POOL, topK)
+      : topK;
+    candidates = conversationManager.searchSessions(query, poolSize);
+  } catch {
+    return { results: [], debug: null };
+  }
+
+  if (!env.SESSION_UTILITY_ENABLED || candidates.length === 0) {
+    return { results: candidates.slice(0, topK), debug: null };
+  }
+
+  const { similarities, source } = await computeSessionSimilarities(query, candidates);
+
+  const utilityCandidates: UtilityCandidate[] = candidates.map((c, i) => ({
+    sessionId: c.sessionId,
+    similarity: similarities[i],
+    utility: sessionUtilityStore.getUtility(c.sessionId),
+  }));
+
+  const ranked = thompsonSelect(utilityCandidates, {
+    topK,
+    epsilon: env.SESSION_UTILITY_EPSILON,
+  });
+
+  const byId = new Map(candidates.map((c) => [c.sessionId, c]));
+  const results: UtilityRankedSession[] = ranked
+    .map((r): UtilityRankedSession | null => {
+      const base = byId.get(r.sessionId);
+      if (!base) return null;
+      return {
+        ...base,
+        utilityDebug: {
+          alpha: r.utility.alpha,
+          beta: r.utility.beta,
+          sampledUtility: r.sampledUtility,
+          similarity: r.similarity,
+          combinedScore: r.combinedScore,
+          explored: r.explored,
+        },
+      };
+    })
+    .filter((r): r is UtilityRankedSession => r !== null);
+
+  // Remember the surfaced sessions so a downstream success/failure signal can
+  // be attributed back to exactly the bandit arms that were pulled.
+  sessionUtilityStore.rememberRetrieval(
+    chatSessionId,
+    results.map((r) => r.sessionId),
+  );
+
+  const debug: SessionUtilityDiagnostics = {
+    enabled: true,
+    candidatePool: candidates.length,
+    epsilon: env.SESSION_UTILITY_EPSILON,
+    semanticSource: source,
+    selected: ranked.map((r) => ({
+      sessionId: r.sessionId,
+      alpha: r.utility.alpha,
+      beta: r.utility.beta,
+      sampledUtility: round2(r.sampledUtility),
+      similarity: round2(r.similarity),
+      combinedScore: round2(r.combinedScore),
+      explored: r.explored,
+    })),
+  };
+
+  console.log(
+    `[SessionUtility] ${source} | pool=${candidates.length} → top${topK} | ` +
+      ranked
+        .map(
+          (r) =>
+            `${r.sessionId.substring(0, 8)}(α${r.utility.alpha}/β${r.utility.beta} ` +
+            `${r.sampledUtility.toFixed(2)}×${r.similarity.toFixed(2)}=${r.combinedScore.toFixed(2)}` +
+            `${r.explored ? " *explore" : ""})`,
+        )
+        .join(" "),
+  );
+
+  return { results, debug };
 }
 
 async function retrieveAllStores(query: string): Promise<ScoredDocument[]> {
