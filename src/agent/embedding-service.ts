@@ -1,10 +1,79 @@
 import axios from "axios";
+import { createHash } from "node:crypto";
 import { env } from "../config/env";
 
 export interface EmbeddingResult {
   embedding: number[];
   model: string;
   provider: string;
+}
+
+/**
+ * Per-text embedding cache. ClaimKit's retrieve() embeds the user's
+ * question, then again for each sub-question variant; the RAG store
+ * search also embeds the same query before the cosine match; the
+ * query-rewriter fan-out re-embeds the rewritten variants. With no
+ * cache, the same string can hit the embedding provider 3-5 times per
+ * chat turn — for local Ollama nomic-embed-text that's ~150-1000ms of
+ * pure-redundant CPU; for the cloud fallback it's network round-trips.
+ *
+ * Sized for ~500 entries; at 768-dim float32 that's ~1.5MB peak, plus
+ * key overhead. TTL is generous because embeddings are deterministic
+ * outputs of (text, provider, model) — only a runtime provider/model
+ * swap invalidates them, and that case is gated by the dimension-lock
+ * check below. CLAIMKIT_EMBEDDING_CACHE=false (or =0) disables.
+ */
+const EMBEDDING_CACHE_MAX_ENTRIES = parseInt(
+  process.env.EMBEDDING_CACHE_MAX || "500",
+  10,
+);
+const EMBEDDING_CACHE_TTL_MS = parseInt(
+  process.env.EMBEDDING_CACHE_TTL_MS || "1800000", // 30 min
+  10,
+);
+const EMBEDDING_CACHE_ENABLED =
+  (process.env.EMBEDDING_CACHE || "true").toLowerCase() !== "false" &&
+  process.env.EMBEDDING_CACHE !== "0";
+
+interface EmbeddingCacheEntry {
+  result: EmbeddingResult;
+  expiresAt: number;
+}
+
+const embeddingCache = new Map<string, EmbeddingCacheEntry>();
+
+function embeddingCacheKey(provider: string, model: string, text: string): string {
+  const payload = `${provider}::${model}::${text}`;
+  return createHash("sha256").update(payload).digest("hex").slice(0, 32);
+}
+
+function embeddingCacheGet(key: string): EmbeddingResult | undefined {
+  const entry = embeddingCache.get(key);
+  if (!entry) return undefined;
+  if (entry.expiresAt < Date.now()) {
+    embeddingCache.delete(key);
+    return undefined;
+  }
+  // LRU refresh: re-insert to push to most-recent.
+  embeddingCache.delete(key);
+  embeddingCache.set(key, entry);
+  return entry.result;
+}
+
+function embeddingCacheSet(key: string, result: EmbeddingResult): void {
+  if (embeddingCache.size >= EMBEDDING_CACHE_MAX_ENTRIES) {
+    const oldest = embeddingCache.keys().next().value;
+    if (oldest !== undefined) embeddingCache.delete(oldest);
+  }
+  embeddingCache.set(key, {
+    result,
+    expiresAt: Date.now() + EMBEDDING_CACHE_TTL_MS,
+  });
+}
+
+/** Exposed for tests + diagnostics. */
+export function __clearEmbeddingCacheForTests(): void {
+  embeddingCache.clear();
 }
 
 class EmbeddingService {
@@ -94,12 +163,24 @@ class EmbeddingService {
       return null;
     }
 
+    // Cache lookup before doing any HTTP work. Hash the empty string
+    // through too so a caller passing "" doesn't bypass the cache and
+    // then hit the provider every time with a guaranteed-empty result.
+    let cacheKey: string | null = null;
+    if (EMBEDDING_CACHE_ENABLED) {
+      cacheKey = embeddingCacheKey(this.provider, this.model, text);
+      const hit = embeddingCacheGet(cacheKey);
+      if (hit) return hit;
+    }
+
     try {
       const result =
         this.provider === "ollama"
           ? await this.ollamaEmbed(text)
           : await this.openAICompatibleEmbed(text);
-      return this.enforceLockedDimension(result);
+      const checked = this.enforceLockedDimension(result);
+      if (checked && cacheKey) embeddingCacheSet(cacheKey, checked);
+      return checked;
     } catch (error) {
       console.error(
         `[Embedding] ${this.provider} embed failed:`,
@@ -135,12 +216,46 @@ class EmbeddingService {
       return texts.map(() => null);
     }
 
+    // Two-phase batching: pull cache hits out, send only the misses to
+    // the provider, then weave the results back into the input order.
+    // For the common case where the same query is being re-embedded
+    // alongside genuinely new sub-questions, this skips the provider
+    // call for the duplicate without dropping the batch optimization.
+    const cacheKeys: (string | null)[] = EMBEDDING_CACHE_ENABLED
+      ? texts.map((t) => embeddingCacheKey(this.provider, this.model, t))
+      : texts.map(() => null);
+    const finalResults: (EmbeddingResult | null)[] = new Array(texts.length).fill(null);
+    const missTexts: string[] = [];
+    const missIndices: number[] = [];
+
+    for (let i = 0; i < texts.length; i++) {
+      const key = cacheKeys[i];
+      if (key) {
+        const hit = embeddingCacheGet(key);
+        if (hit) {
+          finalResults[i] = hit;
+          continue;
+        }
+      }
+      missTexts.push(texts[i]);
+      missIndices.push(i);
+    }
+
+    if (missTexts.length === 0) return finalResults;
+
     try {
       const results =
         this.provider === "ollama"
-          ? await this.ollamaEmbedBatch(texts)
-          : await this.openAICompatibleEmbedBatch(texts);
-      return results.map((r) => (r === null ? null : this.enforceLockedDimension(r)));
+          ? await this.ollamaEmbedBatch(missTexts)
+          : await this.openAICompatibleEmbedBatch(missTexts);
+      for (let j = 0; j < results.length; j++) {
+        const checked = results[j] === null ? null : this.enforceLockedDimension(results[j]!);
+        const origIndex = missIndices[j];
+        finalResults[origIndex] = checked;
+        const key = cacheKeys[origIndex];
+        if (checked && key) embeddingCacheSet(key, checked);
+      }
+      return finalResults;
     } catch (error) {
       console.error(
         `[Embedding] ${this.provider} batch embed failed:`,
