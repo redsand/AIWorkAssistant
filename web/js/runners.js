@@ -16,6 +16,13 @@
     hostCombo: null,          // combobox for the runner form's Host picker
     modelCombo: null,         // combobox for the runner form's Model picker
     modelCache: new Map(),    // key = hostId → string[] of model names
+    // The runner id currently being edited, OR null when the modal is in
+    // create mode. Previously the create-vs-update decision read from the
+    // form's hidden `id` input, but any stray form.reset() or DOM
+    // replacement silently wiped it — and a "save" on an edit then POSTed
+    // a brand new runner instead of PATCHing the existing one. Tracking
+    // it in a closure variable here makes the intent unkillable.
+    editingRunnerId: null,
   };
 
   // Providers that expose a remote/self-host. Drives whether the Host
@@ -525,6 +532,7 @@
     ensureCombos();
     if (r) {
       title.textContent = `Edit ${r.kind}`;
+      state.editingRunnerId = r.id;
       form.id.value = r.id;
       form.kind.value = r.kind;
       form.name.value = r.name;
@@ -574,6 +582,7 @@
   function openNew(kind) {
     const form = $("#edit-form");
     form.reset();
+    state.editingRunnerId = null;
     form.id.value = "";
     form.kind.value = kind;
     form.source.value = "github";
@@ -646,8 +655,13 @@
     }
 
     try {
-      if (form.id.value) {
-        await api(`/api/runners/${form.id.value}`, {
+      // editingRunnerId is the load-bearing signal — the form's hidden
+      // `id` field is a fallback for any flow that bypassed openEdit
+      // (e.g. an external script preloading the form), but the closure
+      // value wins when both are present.
+      const editId = state.editingRunnerId || form.id.value || "";
+      if (editId) {
+        await api(`/api/runners/${editId}`, {
           method: "PATCH",
           body: JSON.stringify(data),
         });
@@ -657,6 +671,7 @@
           body: JSON.stringify(data),
         });
       }
+      state.editingRunnerId = null;
       $("#edit-modal").hidden = true;
     } catch (err) {
       alert(`Save failed: ${err.message}`);
