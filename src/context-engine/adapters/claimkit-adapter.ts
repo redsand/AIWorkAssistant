@@ -362,11 +362,20 @@ export class ClaimKitAdapter {
   }
 
   /**
-   * Ingest many documents in a single ClaimKit call. ClaimKit's ingestMany
-   * forwards each input to its internal extractor; the extractor in turn
-   * uses the new batched-chunk path (CLAIMKIT_EXTRACT_BATCH_SIZE chunks per
-   * LLM round-trip). Net result: N source docs become roughly N×avgChunks/B
-   * LLM extraction calls instead of N×avgChunks.
+   * Ingest many documents serially. The SDK's `ingestMany` is just
+   * `Promise.all(inputs.map(this.ingest))` — every input fires an
+   * extraction LLM call at the same time, all tagged "claimkit". With
+   * `CLAIMKIT_QUERY_SEED_LIMIT=3` that's 3 concurrent slots burned per
+   * query just for ingestion, starving the foreground planner +
+   * contradiction LLMs of bucket capacity for the next chat turn.
+   *
+   * Serializing per-doc keeps the total LLM count identical while
+   * holding only 1 claimkit slot at a time. Wall-clock for ingestion
+   * goes up by ~N×, but seeding is fire-and-forget under
+   * `CLAIMKIT_AWAIT_SEED=false` so the user doesn't notice — what they
+   * DO notice is the foreground turn completing faster because the
+   * planner LLM isn't waiting in queue. Trade is unambiguously good
+   * for any chat-driven seed flow.
    *
    * Returns sourceIds aligned to the input order; failed inputs surface as
    * { sourceId: null, error } so the caller can drop them from any dedupe
@@ -384,40 +393,30 @@ export class ClaimKitAdapter {
       // doesn't burn slots on work it doesn't want anymore.
       return items.map(() => ({ sourceId: null, error: "Aborted before ingest started" }));
     }
-    const inputs = items.map((i) => this.buildIngestInput(i.text, i.metadata));
-    // Race the underlying ingestMany against the abort signal. ClaimKit's
-    // SDK doesn't currently accept a signal — when the signal fires, the
-    // race resolves immediately with "aborted" but the in-flight LLM
-    // extractor calls keep running in the background and eventually
-    // release their aiRequestLimiter slots. The 2-min slot reaper catches
-    // anything they leave behind. From the caller's perspective the seed
-    // is now properly cancellable; the bucket holding a slot for ~2 min
-    // is bounded.
+    // Race the serial ingestion against the abort signal. The serial
+    // loop processes one doc at a time so abort can take effect cleanly
+    // between docs without leaving multiple ingestions running in the
+    // background. Any single-doc ingest already in flight when the
+    // signal fires keeps running and releases its slot via the normal
+    // limiter path (2-min reaper as defense-in-depth).
     const ingestPromise: Promise<Array<{ sourceId: string | null; error?: string }>> = (async () => {
-      try {
-        const results = await this.claimKit!.ingestMany(inputs);
-        return results.map((r) => ({ sourceId: r.ingest.source.id }));
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[ClaimKit] ingestMany failed (${items.length} docs) — falling back to per-doc: ${msg}`);
-        const out: Array<{ sourceId: string | null; error?: string }> = [];
-        for (const item of items) {
-          if (signal?.aborted) {
-            out.push({ sourceId: null, error: "Aborted mid-fallback" });
-            continue;
-          }
-          try {
-            const r = await this.ingest(item.text, item.metadata);
-            out.push({ sourceId: r.sourceId });
-          } catch (perDocErr) {
-            out.push({
-              sourceId: null,
-              error: perDocErr instanceof Error ? perDocErr.message : String(perDocErr),
-            });
-          }
+      const out: Array<{ sourceId: string | null; error?: string }> = [];
+      for (const item of items) {
+        if (signal?.aborted) {
+          out.push({ sourceId: null, error: "Aborted mid-ingestion" });
+          continue;
         }
-        return out;
+        try {
+          const r = await this.ingest(item.text, item.metadata);
+          out.push({ sourceId: r.sourceId });
+        } catch (perDocErr) {
+          out.push({
+            sourceId: null,
+            error: perDocErr instanceof Error ? perDocErr.message : String(perDocErr),
+          });
+        }
       }
+      return out;
     })();
 
     if (!signal) return ingestPromise;
