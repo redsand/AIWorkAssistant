@@ -287,26 +287,32 @@ export async function ensurePersistentWorktree(opts: {
         `Workspace ${dir} does not exist and no repoUrl was provided for runner ${opts.runnerId}`,
       );
     }
+    // Always prune the anchor's stale worktree registrations BEFORE we
+    // try to add. The most common failure isn't a left-behind directory
+    // (the rmSync below covers that) — it's git remembering a now-gone
+    // worktree path via `.git/worktrees/<id>` so `worktree add` aborts
+    // with "missing but already registered worktree". Running prune
+    // here makes provisioning self-heal across runner deletes,
+    // file-system cleanups, and disk migrations without forcing the
+    // operator to `git worktree prune` by hand.
+    const searchRootForPrune = path.dirname(root);
+    const anchorForPrune = opts.repoUrl
+      ? findLocalCloneForRemote(opts.repoUrl, searchRootForPrune)
+      : null;
+    if (anchorForPrune) {
+      try {
+        await spawnGit(["worktree", "prune"], anchorForPrune);
+      } catch {
+        // Best-effort — if prune itself fails, the worktree-add retry
+        // path below will still try `-f` as a last resort.
+      }
+    }
     // Stale-directory recovery: a prior provision attempt may have
     // created `dir` but failed before writing `.git`. `git worktree add`
     // and `git clone` both refuse to operate on a non-empty existing
     // path. Wipe the orphan and retry — there's nothing in it we want
     // since it's not a real worktree.
     if (fs.existsSync(dir)) {
-      // First try to prune the worktree registration in case the anchor
-      // still thinks this path is live; otherwise `worktree add` later
-      // refuses to recreate it even after rm.
-      try {
-        const searchRootForPrune = path.dirname(root);
-        const anchorForPrune = opts.repoUrl
-          ? findLocalCloneForRemote(opts.repoUrl, searchRootForPrune)
-          : null;
-        if (anchorForPrune) {
-          await spawnGit(["worktree", "prune"], anchorForPrune);
-        }
-      } catch {
-        // Best-effort — if anchor lookup or prune fails, we still try rm.
-      }
       try {
         fs.rmSync(dir, { recursive: true, force: true });
       } catch (err) {
@@ -346,10 +352,29 @@ export async function ensurePersistentWorktree(opts: {
       // start the runner workspace in detached-HEAD at the latest
       // origin/<baseBranch>; aicoder creates its own feature branch from
       // there exactly the same way kanban worktrees do.
-      await spawnGit(
-        ["worktree", "add", "--detach", dir, `origin/${baseBranch}`],
-        localAnchor,
-      );
+      try {
+        await spawnGit(
+          ["worktree", "add", "--detach", dir, `origin/${baseBranch}`],
+          localAnchor,
+        );
+      } catch (err) {
+        // Last-ditch retry: if prune above didn't clear a leftover
+        // registration (rare — e.g. .git/worktrees/<id> file held open
+        // by another process during the prune attempt), force the add.
+        // "-f" overrides "missing but already registered" without
+        // touching unrelated worktrees. Re-throw the original error if
+        // the message doesn't match so genuine failures (auth, ref not
+        // found, disk full) aren't masked.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/missing but already registered worktree/i.test(msg)) {
+          await spawnGit(
+            ["worktree", "add", "-f", "--detach", dir, `origin/${baseBranch}`],
+            localAnchor,
+          );
+        } else {
+          throw err;
+        }
+      }
     } else {
       const cloneUrl = injectGitCredentials(opts.repoUrl);
       // Never log the credentialed URL — pipe through redactCredentials.
