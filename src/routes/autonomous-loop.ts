@@ -16,6 +16,22 @@ const JIRA_DEPENDENCY_RE = /\b(?:depends\s+on|blocked\s+by|requires|prerequisite
 const DO_NOT_START_UNTIL_RE = /\bdo\s+not\s+start\b[\s\S]{0,160}?\buntil\b[\s\S]{0,80}?([A-Z][A-Z0-9]+-\d+)/gi;
 const JIRA_KEY_RE = /\b[A-Z][A-Z0-9]+-\d+\b/g;
 
+/**
+ * Split a label query-param value into one or more canonical labels.
+ * The runner UI stores multi-label filters as a single comma-joined
+ * string (e.g. "ready-for-agent, octorepl"). Before this helper the
+ * value was forwarded verbatim to each platform, producing JQL like
+ * `labels = "ready-for-agent, octorepl"` which matches nothing because
+ * Jira labels can't contain commas or spaces. Each per-platform
+ * fetcher uses this to AND the labels together correctly.
+ */
+export function splitLabelString(label: string): string[] {
+  return label
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 interface NormalizedWorkItem {
   id: string;
   type: string;
@@ -284,7 +300,12 @@ async function fetchGitHubWork(
     throw new Error("owner and repo are required for GitHub (or set GITHUB_DEFAULT_OWNER/REPO)");
   }
 
-  const issues = await githubClient.listIssues("open", label, owner, repo);
+  // GitHub's ?labels= already does AND semantics across comma-joined
+  // values, but it's intolerant of whitespace around the commas — pass
+  // the canonical "a,b" form so multi-label filters like
+  // "ready-for-agent, octorepl" match correctly.
+  const canonicalLabels = splitLabelString(label).join(",");
+  const issues = await githubClient.listIssues("open", canonicalLabels, owner, repo);
 
   const filtered: any[] = [];
   for (const issue of issues) {
@@ -368,10 +389,14 @@ async function fetchGitLabWork(
     throw new Error("GITLAB_DEFAULT_PROJECT is required for GitLab source");
   }
 
+  // GitLab's labels query param uses comma-joined AND semantics, same
+  // as GitHub. Canonicalize so embedded whitespace doesn't poison the
+  // match.
+  const canonicalLabels = splitLabelString(label).join(",");
   const issues = await gitlabClient.listIssues(
     env.GITLAB_DEFAULT_PROJECT,
     "opened",
-    label,
+    canonicalLabels,
   );
 
   const filtered: any[] = [];
@@ -435,14 +460,28 @@ async function fetchJiraWork(
   // "ready-for-agent" is a GitHub label convention — Jira uses status categories
   // to express readiness, so skip the label clause when using that default.
   const DEFAULT_GITHUB_LABEL = "ready-for-agent";
-  const labelClause = label !== DEFAULT_GITHUB_LABEL ? `labels = "${label}" AND ` : "";
-  let jql: string;
+  // Multi-label support: when the user enters "a, b, c" in the runner
+  // form, we AND each label into its own JQL clause. We keep every
+  // label here, including "ready-for-agent" — that label is a real
+  // Jira label the user attaches to indicate "agent should pick this
+  // up". The previous code dropped it on the assumption that Jira used
+  // statusCategory instead of labels, but users in fact maintain BOTH
+  // signals, so requiring the label correctly narrows the queue. The
+  // statusCategory clause continues to gate by To-Do/In-Progress.
+  void DEFAULT_GITHUB_LABEL;
+  const labels = splitLabelString(label);
+  const clauses = labels.map((l) => `labels = "${l.replace(/"/g, '\\"')}"`);
   if (repoFilter) {
-    const repoLabel = repoFilter.replace(/^(gitlab:|github:)/i, "");
-    jql = `${labelClause}labels = "${repoLabel}" AND statusCategory in (new, indeterminate) ORDER BY priority ASC`;
-  } else {
-    jql = `${labelClause}statusCategory in (new, indeterminate) ORDER BY priority ASC`;
+    // For Jira the "repo" arg holds a project key (e.g. "IR") — that's
+    // a `project =` filter, NOT a label filter. The earlier code wrote
+    // this as `labels = "IR"` and matched zero tickets because Jira
+    // labels can't be project keys. Strip platform-prefix noise just
+    // in case the resolver hands us "github:IR" by mistake.
+    const projectKey = repoFilter.replace(/^(gitlab:|github:|jira:)/i, "");
+    clauses.unshift(`project = "${projectKey.replace(/"/g, '\\"')}"`);
   }
+  const whereClause = clauses.length > 0 ? `${clauses.join(" AND ")} AND ` : "";
+  const jql = `${whereClause}statusCategory in (new, indeterminate) ORDER BY priority ASC`;
   const candidateLimit = Math.min(Math.max(limit * 5, 25), 100);
   const issues = await jiraClient.searchIssues(jql, candidateLimit);
 
@@ -536,9 +575,22 @@ async function fetchJitbitWork(
     throw new Error("JITBIT_ENABLED must be true for Jitbit source");
   }
 
-  const tickets = await jitbitClient.listTickets({ tagName: label });
+  // Jitbit's listTickets accepts a single tagName. For multi-label AND
+  // we fetch by the first label and require the remaining labels to
+  // appear in the returned ticket's tags string.
+  const labels = splitLabelString(label);
+  const primaryLabel = labels[0] ?? label;
+  const tickets = await jitbitClient.listTickets({ tagName: primaryLabel });
+  const requiredLower = labels.slice(1).map((l) => l.toLowerCase());
 
   return tickets
+    .filter((ticket: any) => {
+      if (requiredLower.length === 0) return true;
+      const ticketTags: string[] = ticket.tags
+        ? String(ticket.tags).split(",").map((t: string) => t.trim().toLowerCase())
+        : [];
+      return requiredLower.every((req) => ticketTags.includes(req));
+    })
     .slice(0, limit)
     .filter((ticket: any) => {
       const body = ticket.body || "";
@@ -708,8 +760,11 @@ async function fetchWorkItemsWork(
     if (wi.archived || wi.status === "done" || wi.status === "archived") continue;
 
     const tags = parseWorkItemTagsJson(wi.tagsJson);
-    // Only include items with the label tag (e.g., "ready-for-agent")
-    if (!tags.some((t) => t.toLowerCase() === label.toLowerCase())) continue;
+    // Multi-label AND: every requested label must appear in the work
+    // item's tag list (case-insensitive).
+    const requested = splitLabelString(label).map((l) => l.toLowerCase());
+    const tagsLower = tags.map((t) => t.toLowerCase());
+    if (!requested.every((req) => tagsLower.includes(req))) continue;
 
     // Coding prompt check
     if (!skipPromptCheck) {
