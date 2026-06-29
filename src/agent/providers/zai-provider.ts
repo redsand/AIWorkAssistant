@@ -218,7 +218,13 @@ export class ZaiProvider extends AIProvider {
 
         let response;
         const limiterModel = request.model ?? this.config.model ?? null;
-        const slotId = await aiRequestLimiter.acquire(this.name, limiterModel);
+        const limiterTag = request.concurrencyTag ?? null;
+        const slotId = await aiRequestLimiter.acquire(
+          this.name,
+          limiterModel,
+          limiterTag,
+          request.signal,
+        );
         try {
           await zaiRateLimiter.acquire();
           try {
@@ -231,7 +237,7 @@ export class ZaiProvider extends AIProvider {
             zaiRateLimiter.release();
           }
         } finally {
-          aiRequestLimiter.release(this.name, limiterModel, slotId);
+          aiRequestLimiter.release(this.name, limiterModel, limiterTag, slotId);
         }
 
         const data = response.data;
@@ -411,7 +417,13 @@ export class ZaiProvider extends AIProvider {
         });
 
         const limiterModel = request.model ?? this.config.model ?? null;
-        const slotId = await aiRequestLimiter.acquire(this.name, limiterModel);
+        const limiterTag = request.concurrencyTag ?? null;
+        const slotId = await aiRequestLimiter.acquire(
+          this.name,
+          limiterModel,
+          limiterTag,
+          request.signal,
+        );
         const idleGuard = this.installFirstChunkAbort(request.signal);
         try {
           await zaiRateLimiter.acquire();
@@ -586,7 +598,7 @@ export class ZaiProvider extends AIProvider {
         return;
       } finally {
         idleGuard.dispose();
-        aiRequestLimiter.release(this.name, limiterModel, slotId);
+        aiRequestLimiter.release(this.name, limiterModel, limiterTag, slotId);
       }
     } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));

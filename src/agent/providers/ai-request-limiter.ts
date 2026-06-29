@@ -40,9 +40,23 @@ function sanitizeForEnv(name: string): string {
   return name.toUpperCase().replace(/[^A-Z0-9_]+/g, "_");
 }
 
-function maxForBucket(providerName: string, modelName: string | null): number {
+function maxForBucket(
+  providerName: string,
+  modelName: string | null,
+  tag: string | null,
+): number {
   const providerSlug = sanitizeForEnv(providerName);
-  // Most specific: AI_MAX_CONCURRENT_<PROVIDER>__<MODEL>
+  // Most specific: AI_MAX_CONCURRENT_<PROVIDER>__<MODEL>__<TAG>
+  if (modelName && tag) {
+    const modelSlug = sanitizeForEnv(modelName);
+    const tagSlug = sanitizeForEnv(tag);
+    const perTag = process.env[`AI_MAX_CONCURRENT_${providerSlug}__${modelSlug}__${tagSlug}`];
+    if (perTag !== undefined && perTag !== "") {
+      const n = parseInt(perTag, 10);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+  }
+  // Per-(provider, model)
   if (modelName) {
     const modelSlug = sanitizeForEnv(modelName);
     const perModel = process.env[`AI_MAX_CONCURRENT_${providerSlug}__${modelSlug}`];
@@ -60,8 +74,13 @@ function maxForBucket(providerName: string, modelName: string | null): number {
   return DEFAULT_MAX_CONCURRENT;
 }
 
-function bucketKey(providerName: string, modelName: string | null): string {
-  return modelName ? `${providerName}::${modelName}` : providerName;
+function bucketKey(
+  providerName: string,
+  modelName: string | null,
+  tag: string | null,
+): string {
+  const base = modelName ? `${providerName}::${modelName}` : providerName;
+  return tag ? `${base}#${tag}` : base;
 }
 
 /**
@@ -94,12 +113,24 @@ const MAX_SLOT_AGE_MS = (() => {
 // Also poll more often so reclaim is responsive even when a burst hits.
 const SLOT_REAPER_INTERVAL_MS = 15_000;
 
+/**
+ * A queue entry. We carry both the resolver (to wake the caller when a
+ * slot opens) and a rejecter so an aborted caller can be evicted and
+ * told why. Tracking it as an object instead of a bare function lets the
+ * abort path splice the right ticket out of the queue.
+ */
+interface QueueTicket {
+  resolve: () => void;
+  reject: (err: Error) => void;
+}
+
 class ConcurrencyBucket {
   readonly slots = new Map<number, AcquiredSlot>();
-  readonly queue: Array<() => void> = [];
+  readonly queue: QueueTicket[] = [];
   constructor(
     public readonly provider: string,
     public readonly model: string | null,
+    public readonly tag: string | null,
     public readonly max: number,
   ) {}
 
@@ -125,14 +156,19 @@ class AIRequestLimiter {
     }
   }
 
-  private getBucket(providerName: string, modelName: string | null): ConcurrencyBucket {
-    const key = bucketKey(providerName, modelName);
+  private getBucket(
+    providerName: string,
+    modelName: string | null,
+    tag: string | null,
+  ): ConcurrencyBucket {
+    const key = bucketKey(providerName, modelName, tag);
     let bucket = this.buckets.get(key);
     if (!bucket) {
       bucket = new ConcurrencyBucket(
         providerName,
         modelName,
-        maxForBucket(providerName, modelName),
+        tag,
+        maxForBucket(providerName, modelName, tag),
       );
       this.buckets.set(key, bucket);
     }
@@ -140,38 +176,87 @@ class AIRequestLimiter {
   }
 
   /**
-   * Acquire a concurrency slot for the named (provider, model). The model
-   * is optional; omit only when the caller doesn't know it (legacy / test
-   * paths). Queues if the bucket is at capacity. Throws if the queue
-   * timeout expires. Returns a slot id the caller MUST pass to release.
+   * Acquire a concurrency slot for the named (provider, model[, tag]).
+   * The model is optional; omit only when the caller doesn't know it
+   * (legacy / test paths). The tag is an opt-in "lane" that gives a
+   * caller its own isolated slot pool (e.g. ClaimKit's background
+   * extracts shouldn't share the foreground chat's bucket — pass
+   * tag="claimkit" to put them in `ollama::model#claimkit`).
+   *
+   * Queues if the bucket is at capacity. Throws if the queue timeout
+   * expires OR if the optional signal aborts while we're queued. The
+   * signal-driven eviction is the load-bearing fix for callers (like
+   * ClaimKit) whose per-attempt timer can fire before the queue slot
+   * opens — without it, the caller's AbortController would already be
+   * aborted by the time axios was finally invoked, and every "timed out"
+   * log entry would actually represent a request that never left the
+   * queue. Returns a slot id the caller MUST pass to release.
    */
   async acquire(
     providerName: string = "default",
     modelName: string | null = null,
+    tagOrSignal?: string | null | AbortSignal,
+    maybeSignal?: AbortSignal,
   ): Promise<number> {
-    const bucket = this.getBucket(providerName, modelName);
+    // Overload-resolution: callers that don't tag can still pass a signal as
+    // the 3rd arg. Detect AbortSignal duck-typed (handles polyfills).
+    let tag: string | null = null;
+    let signal: AbortSignal | undefined;
+    if (
+      tagOrSignal &&
+      typeof tagOrSignal === "object" &&
+      "aborted" in tagOrSignal &&
+      typeof (tagOrSignal as AbortSignal).addEventListener === "function"
+    ) {
+      signal = tagOrSignal as AbortSignal;
+    } else {
+      tag = (tagOrSignal as string | null | undefined) ?? null;
+      signal = maybeSignal;
+    }
+
+    if (signal?.aborted) {
+      // Don't even enter the queue — caller already gave up.
+      throw new Error("AI request aborted before queue entry");
+    }
+
+    const bucket = this.getBucket(providerName, modelName, tag);
 
     while (bucket.active >= bucket.max) {
+      let evict: (() => void) | null = null;
       await new Promise<void>((resolve, reject) => {
         let settled = false;
+        const ticket: QueueTicket = {
+          resolve: () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            if (evict) signal?.removeEventListener("abort", evict);
+            resolve();
+          },
+          reject: (err: Error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            if (evict) signal?.removeEventListener("abort", evict);
+            const idx = bucket.queue.indexOf(ticket);
+            if (idx !== -1) bucket.queue.splice(idx, 1);
+            reject(err);
+          },
+        };
         const timer = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          const idx = bucket.queue.indexOf(ticket);
-          if (idx !== -1) bucket.queue.splice(idx, 1);
           const target = modelName ? `${providerName}/${modelName}` : providerName;
-          reject(
+          ticket.reject(
             new Error(
               `AI request queued for ${QUEUE_TIMEOUT_MS / 1000}s but no slot opened — too many concurrent requests to ${target} (${bucket.max} max).`,
             ),
           );
         }, QUEUE_TIMEOUT_MS);
-        const ticket = () => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          resolve();
-        };
+        if (signal) {
+          evict = () => {
+            ticket.reject(new Error("AI request aborted while queued"));
+          };
+          signal.addEventListener("abort", evict, { once: true });
+        }
         bucket.queue.push(ticket);
       });
       // After being woken: loop guards against the race where another
@@ -185,16 +270,29 @@ class AIRequestLimiter {
   }
 
   /**
-   * Release a slot for the named (provider, model). Pass the slot id
-   * returned by acquire so we can detect double-release. Wakes the next
-   * queued caller (if any).
+   * Release a slot for the named (provider, model[, tag]). Pass the slot
+   * id returned by acquire so we can detect double-release. Wakes the
+   * next queued caller (if any). The tag must match what was passed to
+   * acquire — different lanes have separate buckets.
    */
   release(
     providerName: string = "default",
     modelName: string | null = null,
-    slotId?: number,
+    slotIdOrTag?: number | string | null,
+    maybeSlotId?: number,
   ): void {
-    const bucket = this.getBucket(providerName, modelName);
+    // Overload: legacy callers pass (provider, model, slotId). New callers
+    // pass (provider, model, tag, slotId). Disambiguate by type.
+    let tag: string | null = null;
+    let slotId: number | undefined;
+    if (typeof slotIdOrTag === "number") {
+      slotId = slotIdOrTag;
+    } else {
+      tag = slotIdOrTag ?? null;
+      slotId = maybeSlotId;
+    }
+
+    const bucket = this.getBucket(providerName, modelName, tag);
     if (slotId !== undefined) {
       bucket.slots.delete(slotId);
     } else {
@@ -204,7 +302,7 @@ class AIRequestLimiter {
       if (oldest !== undefined) bucket.slots.delete(oldest);
     }
     const next = bucket.queue.shift();
-    if (next) next();
+    if (next) next.resolve();
   }
 
   /**
@@ -229,7 +327,7 @@ class AIRequestLimiter {
               `This indicates a leak — a provider call acquired but never released.`,
           );
           const next = bucket.queue.shift();
-          if (next) next();
+          if (next) next.resolve();
         }
       }
     }
@@ -243,6 +341,7 @@ class AIRequestLimiter {
   get stats(): Array<{
     provider: string;
     model: string | null;
+    tag: string | null;
     active: number;
     queued: number;
     max: number;
@@ -258,6 +357,7 @@ class AIRequestLimiter {
       return {
         provider: b.provider,
         model: b.model,
+        tag: b.tag,
         active: b.active,
         queued: b.queue.length,
         max: b.max,
@@ -278,7 +378,7 @@ class AIRequestLimiter {
       bucket.slots.clear();
       while (bucket.queue.length > 0) {
         const next = bucket.queue.shift();
-        if (next) next();
+        if (next) next.resolve();
       }
     }
     return cleared;

@@ -231,6 +231,7 @@ export class AIProviderLLMAdapter implements LLMAdapter {
             maxTokens: options?.maxTokens,
             top_p: options?.topP,
             signal,
+            concurrencyTag: "claimkit",
           });
           return toGenerateResult(response.content, response.model, response.usage);
         },
@@ -273,6 +274,7 @@ export class AIProviderLLMAdapter implements LLMAdapter {
       top_p: options?.topP,
       jsonMode: true,
       signal,
+      concurrencyTag: "claimkit",
     });
     return JSON.parse(stripJsonFromLlmResponse(response.content)) as T;
   }

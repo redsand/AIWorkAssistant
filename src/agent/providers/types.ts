@@ -42,6 +42,15 @@ export interface ChatRequest {
   jsonMode?: boolean;
   /** Cancellation signal. When aborted, the in-flight HTTP request is cancelled and no retry is attempted. */
   signal?: AbortSignal;
+  /**
+   * Optional concurrency lane. When set, this request goes into its own
+   * bucket in aiRequestLimiter (e.g. `ollama::model#claimkit`) instead of
+   * sharing the default per-(provider, model) pool. Background callers
+   * (ClaimKit extracts, ingestion, etc.) should set this so they don't
+   * starve the foreground chat — and so their abort signal can evict
+   * them from the queue without freeing a slot the chat could have used.
+   */
+  concurrencyTag?: string;
 }
 
 export interface ChatResponse {

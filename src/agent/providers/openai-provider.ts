@@ -142,7 +142,13 @@ export class OpenAIProvider extends AIProvider {
         });
 
         const limiterModel = request.model ?? this.config.model ?? null;
-        const slotId = await aiRequestLimiter.acquire(this.name, limiterModel);
+        const limiterTag = request.concurrencyTag ?? null;
+        const slotId = await aiRequestLimiter.acquire(
+          this.name,
+          limiterModel,
+          limiterTag,
+          request.signal,
+        );
         let response;
         try {
           response = await this.client.post("/chat/completions", requestBody, {
@@ -150,7 +156,7 @@ export class OpenAIProvider extends AIProvider {
             signal: request.signal,
           });
         } finally {
-          aiRequestLimiter.release(this.name, limiterModel, slotId);
+          aiRequestLimiter.release(this.name, limiterModel, limiterTag, slotId);
         }
 
         const data = response.data;
@@ -264,7 +270,13 @@ export class OpenAIProvider extends AIProvider {
     }
 
     const limiterModel = request.model ?? this.config.model ?? null;
-    const slotId = await aiRequestLimiter.acquire(this.name, limiterModel);
+    const limiterTag = request.concurrencyTag ?? null;
+    const slotId = await aiRequestLimiter.acquire(
+      this.name,
+      limiterModel,
+      limiterTag,
+      request.signal,
+    );
     const idleGuard = this.installFirstChunkAbort(request.signal);
     try {
       const requestBody = this.buildRequestBody({ ...request, stream: true });
@@ -411,7 +423,7 @@ export class OpenAIProvider extends AIProvider {
       throw new Error(message);
     } finally {
       idleGuard.dispose();
-      aiRequestLimiter.release(this.name, limiterModel, slotId);
+      aiRequestLimiter.release(this.name, limiterModel, limiterTag, slotId);
     }
   }
 

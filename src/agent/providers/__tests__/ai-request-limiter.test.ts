@@ -149,4 +149,111 @@ describe("aiRequestLimiter — per-(provider, model) buckets", () => {
     aiRequestLimiter.release("zai", "glm-5.2");
     aiRequestLimiter.release("zai", "glm-5.2");
   });
+
+  it("tagged calls go to a separate bucket from the untagged (provider, model)", async () => {
+    await fillBucket("ollama", "kimi-k2.7:cloud", DEFAULT_MAX);
+    // Untagged bucket is saturated. A tagged call ("claimkit") must NOT
+    // contend — it has its own bucket.
+    const start = Date.now();
+    await aiRequestLimiter.acquire("ollama", "kimi-k2.7:cloud", "claimkit");
+    expect(Date.now() - start).toBeLessThan(50);
+    const stats = aiRequestLimiter.stats;
+    const untagged = stats.find(
+      (b) =>
+        b.provider === "ollama" && b.model === "kimi-k2.7:cloud" && b.tag === null,
+    );
+    const tagged = stats.find(
+      (b) =>
+        b.provider === "ollama" &&
+        b.model === "kimi-k2.7:cloud" &&
+        b.tag === "claimkit",
+    );
+    expect(untagged?.active).toBe(DEFAULT_MAX);
+    expect(tagged?.active).toBe(1);
+    aiRequestLimiter.release("ollama", "kimi-k2.7:cloud", "claimkit");
+    drainBucket("ollama", "kimi-k2.7:cloud", DEFAULT_MAX);
+  });
+
+  it("aborting a queued caller evicts the ticket and rejects fast", async () => {
+    await fillBucket("ollama", "kimi-k2.7:cloud", DEFAULT_MAX);
+    const controller = new AbortController();
+    const start = Date.now();
+    const queued = aiRequestLimiter.acquire(
+      "ollama",
+      "kimi-k2.7:cloud",
+      null,
+      controller.signal,
+    );
+    // Let the ticket land in the queue, then abort.
+    await new Promise((r) => setTimeout(r, 10));
+    controller.abort();
+    let caught: Error | null = null;
+    try {
+      await queued;
+    } catch (err) {
+      caught = err as Error;
+    }
+    const elapsed = Date.now() - start;
+    expect(caught?.message).toMatch(/aborted while queued/);
+    // Without the abort path, this would block until the QUEUE_TIMEOUT_MS
+    // default of 120s (or until a slot opens, which it never does here).
+    expect(elapsed).toBeLessThan(200);
+    // And the ticket must NOT linger in the queue — releasing a slot
+    // should hand it to nobody, not silently resolve the dead promise.
+    const statsBefore = aiRequestLimiter.stats.find(
+      (b) =>
+        b.provider === "ollama" && b.model === "kimi-k2.7:cloud" && b.tag === null,
+    );
+    expect(statsBefore?.queued).toBe(0);
+    drainBucket("ollama", "kimi-k2.7:cloud", DEFAULT_MAX);
+  });
+
+  it("a pre-aborted signal causes acquire to reject without entering the queue", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let caught: Error | null = null;
+    try {
+      await aiRequestLimiter.acquire(
+        "ollama",
+        "kimi-k2.7:cloud",
+        null,
+        controller.signal,
+      );
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught?.message).toMatch(/aborted before queue entry/);
+  });
+
+  it("abort doesn't disturb other queued callers — they still get woken on release", async () => {
+    await fillBucket("ollama", "kimi-k2.7:cloud", DEFAULT_MAX);
+    const aborted = new AbortController();
+    let abortedCaughtMessage: string | null = null;
+    const abortedAcquire = aiRequestLimiter
+      .acquire("ollama", "kimi-k2.7:cloud", null, aborted.signal)
+      .catch((err: Error) => {
+        abortedCaughtMessage = err.message;
+      });
+
+    let liveResolved = false;
+    const liveAcquire = aiRequestLimiter
+      .acquire("ollama", "kimi-k2.7:cloud")
+      .then(() => {
+        liveResolved = true;
+      });
+
+    await new Promise((r) => setTimeout(r, 10));
+    aborted.abort();
+    await abortedAcquire;
+    expect(abortedCaughtMessage).toMatch(/aborted while queued/);
+    expect(liveResolved).toBe(false);
+
+    // Release one slot — the live caller (now first in queue) should wake.
+    aiRequestLimiter.release("ollama", "kimi-k2.7:cloud");
+    await liveAcquire;
+    expect(liveResolved).toBe(true);
+
+    aiRequestLimiter.release("ollama", "kimi-k2.7:cloud");
+    drainBucket("ollama", "kimi-k2.7:cloud", DEFAULT_MAX - 1);
+  });
 });
