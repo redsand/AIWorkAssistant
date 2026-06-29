@@ -476,6 +476,20 @@
   cursor: not-allowed;
 }
 
+/* When chat.js detects a job in flight it adds .is-steer so the user
+ * sees that pressing Enter mid-stream injects a steer instead of
+ * starting a new turn. Reuses the warm amber palette from the legacy
+ * dedicated steer button so the visual cue is consistent with what
+ * existed before the steer surface moved into the chat input. */
+.send-btn.is-steer {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+.send-btn.is-steer:hover {
+  background: #fde68a;
+}
+
 /* ── Contradiction banner (Idea 3 + I) ───────────────────────────── */
 .contradiction-banner {
   display: none;

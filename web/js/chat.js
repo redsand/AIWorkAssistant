@@ -67,10 +67,16 @@ function updateSendButtonLabel() {
     btn.textContent = "Steer";
     btn.title = "Inject a steer into the running chat (Enter)";
     btn.dataset.mode = "steer";
+    // is-steer triggers the amber palette that used to live on the
+    // dedicated #steerBtn — same visual cue, now applied to the main
+    // send button so the user can see at a glance that the next
+    // keystroke is a steer, not a fresh turn.
+    btn.classList.add("is-steer");
   } else {
     btn.textContent = "Send";
     btn.title = "Send message (Enter)";
     btn.dataset.mode = "send";
+    btn.classList.remove("is-steer");
   }
 }
 
