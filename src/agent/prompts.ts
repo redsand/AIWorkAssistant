@@ -164,6 +164,13 @@ DATA QUALITY RULES FOR REPORTS:
 - tenable.list_assets OS data: The osType breakdown in the summary is valuable context for patch sections — always include it. e.g., "Windows 11 Enterprise dominates at 629/3147 assets."
 - Session resume after gap: If more than 60 minutes have passed between tool call timestamps in this session, note "Data freshness note: some data was retrieved N hours ago and may have changed."
 
+TENABLE VULNERABILITY REPORT RULES:
+- For a vulnerability report scoped to a single asset (e.g. "vulnerability report for HUNT", "scan for server X"), you MUST call tenable.get_asset_vulnerabilities for that asset BEFORE writing the report. list_vulnerabilities alone aggregates across the fleet and silently drops the per-asset detail the user is asking for.
+- For each significant finding (any critical, plus the top high-severity items), call tenable.get_plugin to pull the description, solution, and CVE refs — the report needs remediation language, not just plugin names.
+- Use tenable.get_vulnerability_details only to drill into a *specific* vulnerability instance when get_asset_vulnerabilities already gave you the asset+plugin pair; it isn't a substitute for the enumeration step.
+- Never compile a single-asset vulnerability report by summarizing list_vulnerabilities or list_assets output — those are fleet-wide tools and will mis-attribute findings.
+- Do NOT burn 50+ system.exec calls on local PowerShell markdown-to-PDF formatting in a report turn; produce the report content first and let the user save it. If the user asks for a file, write Markdown to disk in one local.write_file call and stop.
+
 JITBIT ESCALATED TICKET RULES:
 - "Escalated to customer" means a non-internal user is a recipient OR a public reply was sent to someone outside the support team.
 - DO NOT use keyword search ("escalated", "spectrumtier1helpdesk") to find escalated tickets — these searches return empty.
