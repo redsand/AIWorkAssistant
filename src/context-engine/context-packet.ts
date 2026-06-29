@@ -49,6 +49,11 @@ import { buildEntityClaimsSection, extractEntityIds } from "./entity-claims-inje
 import { entityMemory } from "../memory/entity-memory";
 import { entityMarkdown } from "../memory/entity-markdown";
 import type { MemoryEntity } from "../memory/entity-types";
+import {
+  claimsStore,
+  formatClaimsSection,
+  type RetrievedClaim,
+} from "../memory/claims-store";
 
 export interface RoutingDecision {
   tier: RoutingTier;
@@ -300,6 +305,35 @@ export async function assembleContextPacket(
     );
   }
 
+  // ── Active knowledge acquisition — prior claims injection (issue #247) ──
+  // Before paying for the cascade, ask the claims store for resolutions
+  // persisted from prior cascade runs against similar queries. The store uses
+  // the same SA-CTS retrieval as session utility, so high-utility, semantically
+  // similar claims surface first. The surfaced IDs are tracked on the packet
+  // so a downstream task outcome can update each claim's Beta distribution
+  // via ClaimsStore.updateClaimUtility(). The block is wrapped in try/catch
+  // and never blocks context assembly — a broken claims store degrades to
+  // "no prior knowledge" rather than failing the whole packet.
+  let priorClaims: RetrievedClaim[] = [];
+  const priorClaimIds: string[] = [];
+  try {
+    priorClaims = claimsStore.retrieveClaims(retrievalQuery, 3);
+    for (const c of priorClaims) priorClaimIds.push(c.id);
+    if (priorClaims.length > 0) {
+      stageTimings.claimsRetrieveMs = stageTimings.claimsRetrieveMs ?? 0;
+      console.log(
+        `[ClaimsStore] retrieved ${priorClaims.length} prior claim(s) for query | ` +
+        `ids=[${priorClaimIds.slice(0, 5).map((id) => id.substring(0, 8)).join(", ")}] | ` +
+        `top_combined=${priorClaims[0].combinedScore.toFixed(2)}`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "[ClaimsStore] retrieveClaims failed, skipping prior-knowledge injection:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   // ── ClaimKit-first pre-flight probe (issue #229) ─────────────────────
   // Query ClaimKit BEFORE running RAG. A high-confidence probe lets us skip
   // RAG entirely; medium confidence runs both in parallel; low confidence /
@@ -372,6 +406,52 @@ export async function assembleContextPacket(
       cascadeResolution = null;
       console.warn(
         "[ContextPacket] retrieval cascade failed:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  // ── Persist the cascade resolution as a durable claim (issue #247) ────
+  // When the cascade resolves via teacher verification or tool research (not
+  // the trivial ClaimKit-high-confidence short-circuit), persist the
+  // resolution so the next similar query can skip the expensive escalation
+  // and inject this claim as prior knowledge. Source provenance is derived
+  // from the resolving cascade level so each claim's origin is auditable.
+  let storedClaimId: string | null = null;
+  let storedCascadeLevel: string | null = null;
+  if (
+    cascadeResolution &&
+    (cascadeResolution.outcome === "teacher_confirmed" ||
+      cascadeResolution.outcome === "tool_confirmed" ||
+      cascadeResolution.outcome === "fell_back_to_rag")
+  ) {
+    const cascadeLevelForClaim = cascadeResolution.level as
+      | "teacher_verify"
+      | "tool_research"
+      | "full_rag";
+    try {
+      storedClaimId = claimsStore.storeClaim({
+        query: retrievalQuery,
+        resolution: ckProbe?.answer ?? "",
+        cascadeLevel: cascadeLevelForClaim,
+        confidence: cascadeResolution.confidence,
+        source:
+          cascadeResolution.outcome === "teacher_confirmed"
+            ? `teacher:${env.CASCADE_TEACHER_MODEL || "default"}`
+            : cascadeResolution.outcome === "tool_confirmed"
+              ? "web_search"
+              : "full_rag",
+      });
+      storedCascadeLevel = cascadeLevelForClaim;
+      if (storedClaimId) {
+        console.log(
+          `[ClaimsStore] persisted claim ${storedClaimId.substring(0, 8)} | ` +
+          `level=${cascadeLevelForClaim} | confidence=${(cascadeResolution.confidence * 100).toFixed(0)}%`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        "[ClaimsStore] storeClaim failed:",
         err instanceof Error ? err.message : err,
       );
     }
@@ -991,6 +1071,29 @@ export async function assembleContextPacket(
     ? { name: "health", content: healthText, tokens: estimateTokens(healthText) }
     : null;
 
+  // Prior-knowledge section from persisted cascade resolutions (issue #247).
+  // Built from the claims retrieved at the top of the assembler, BEFORE the
+  // ClaimKit probe. Surfaces resolutions from past teacher-LLM / tool-research
+  // escalations so the agent can answer similar queries without paying for the
+  // cascade again. Budgeted at 400 tokens so the section never crowds out
+  // primary evidence.
+  const MAX_PRIOR_CLAIMS_TOKENS = 400;
+  let priorClaimsSection: ContextSection | null = null;
+  if (priorClaims.length > 0) {
+    const raw = formatClaimsSection(priorClaims);
+    if (raw) {
+      const tokens = estimateTokens(raw);
+      priorClaimsSection = {
+        name: "prior_claims",
+        content: tokens > MAX_PRIOR_CLAIMS_TOKENS
+          ? raw.substring(0, MAX_PRIOR_CLAIMS_TOKENS * 4)
+          : raw,
+        tokens: Math.min(tokens, MAX_PRIOR_CLAIMS_TOKENS),
+        sourceCount: priorClaims.length,
+      };
+    }
+  }
+
   const sections: ContextSection[] = [];
 
   // SOUL.md — absolute first section (slot #0, before everything)
@@ -1026,6 +1129,14 @@ export async function assembleContextPacket(
 
   if (entityProfilesSection) {
     sections.push(entityProfilesSection);
+  }
+
+  // Prior-knowledge claims (issue #247): durable cascade resolutions from
+  // prior turns. Sits BEFORE ClaimKit/RAG so the agent sees what the system
+  // already learned and can short-circuit conclusions that have already been
+  // verified by a teacher LLM or corroborated by web research.
+  if (priorClaimsSection) {
+    sections.push(priorClaimsSection);
   }
 
   if (claimKitSection) {
@@ -1092,6 +1203,17 @@ export async function assembleContextPacket(
   const entityProfilesEnforced = enforced.find((s) => s.name === "entity_profiles");
   if (entityProfilesEnforced?.content.trim()) {
     messages.push({ role: "system", content: entityProfilesEnforced.content });
+  }
+
+  // Prior-knowledge claims (issue #247): inject BEFORE paid retrieval so the
+  // agent treats durable cascade resolutions as the authoritative starting
+  // point and only escalates to ClaimKit/RAG when prior knowledge is missing
+  // or contradicted.
+  const priorClaimsEnforced = enforced.find((s) => s.name === "prior_claims");
+  let priorClaimsInjected = false;
+  if (priorClaimsEnforced?.content.trim()) {
+    messages.push({ role: "system", content: priorClaimsEnforced.content });
+    priorClaimsInjected = true;
   }
 
   if (routing.tier === "ck_primary" && claimKitEnforced?.content.trim()) {
@@ -1344,6 +1466,13 @@ export async function assembleContextPacket(
         claimCount: claimKitResult?.metadata.claimCount ?? null,
         sourceCount: claimKitResult?.metadata.sourceIds.length ?? null,
         retrievalScore: claimKitResult?.metadata.retrievalScore ?? null,
+      },
+      claimsAcquisition: {
+        retrievedClaimIds: priorClaimIds,
+        retrievedCount: priorClaims.length,
+        injectedInMessages: priorClaimsInjected,
+        storedClaimId,
+        storedCascadeLevel,
       },
       createdAt: new Date(),
     },

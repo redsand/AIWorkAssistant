@@ -289,6 +289,20 @@ export interface ContextPacket {
       sourceCount: number | null;
       retrievalScore: number | null;
     };
+    /**
+     * Active knowledge acquisition trace (issue #247). Records the claims
+     * surfaced from prior cascade resolutions (and their SA-CTS scores), and
+     * the id of any new claim persisted from this turn's cascade resolution.
+     * Surfaces the claim IDs so a downstream task outcome can update each
+     * claim's Beta utility distribution via ClaimsStore.updateClaimUtility().
+     */
+    claimsAcquisition?: {
+      retrievedClaimIds: string[];
+      retrievedCount: number;
+      injectedInMessages: boolean;
+      storedClaimId: string | null;
+      storedCascadeLevel: string | null;
+    };
     createdAt: Date;
   };
 }

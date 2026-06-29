@@ -579,6 +579,22 @@ async function start() {
     }, 60_000);
     staleRunInterval.unref();
 
+    // ─── Active knowledge acquisition: prune stale claims (issue #247) ───
+    // Cascade resolutions persist as durable claims so future similar queries
+    // can skip the expensive escalation. Claims that haven't been retrieved
+    // in 30 days are pruned on startup so the store doesn't grow unbounded
+    // with stale, never-used knowledge. Best-effort — failures log but never
+    // block server startup.
+    try {
+      const { runStartupClaimPrune } = require("./memory/claims-store");
+      runStartupClaimPrune(30);
+    } catch (err) {
+      console.warn(
+        "[ClaimsStore] startup prune failed (continuing):",
+        err instanceof Error ? err.message : err,
+      );
+    }
+
     console.log(`
 ╔════════════════════════════════════════════════════════════╗
 ║                                                            ║

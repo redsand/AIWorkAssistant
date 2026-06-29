@@ -129,6 +129,13 @@ const envSchema = z.object({
   // Agent Memory (MEMORY.md / USER.md)
   AGENT_MEMORY_PATH: z.string().default("data/memories"),
 
+  // Active knowledge acquisition (issue #247). Directory holding the
+  // claims.db SQLite store that persists retrieval-cascade resolutions as
+  // durable knowledge claims. Empty (default) reuses AGENT_MEMORY_PATH so the
+  // claims database lives alongside the rest of the agent's memory state
+  // unless an operator wants it on a separate volume.
+  CLAIMS_STORE_PATH: z.string().default(""),
+
   // Agent Soul (SOUL.md)
   SOUL_PATH: z.string().default(""),
   DEFAULT_SOUL: z.string().default(""),
