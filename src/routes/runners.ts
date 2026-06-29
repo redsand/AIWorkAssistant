@@ -52,6 +52,65 @@ function validateCreate(body: Partial<RunnerCreateParams>): string | null {
 }
 
 /**
+ * Normalize a runner's (owner, repo) into a stable key so two configs
+ * pointing at the same project compare equal regardless of how the
+ * fields were filled in. GitHub repos may arrive as "owner/name"
+ * slugs in the repo field with owner missing, or as separate
+ * owner+name pairs. GitLab uses path-with-namespace in the repo
+ * field. Jira / work_items use a project key. The empty string falls
+ * through and prevents the uniqueness check from blocking sources
+ * that don't bind to a single repo.
+ */
+function runnerScopeKey(
+  source: string | undefined,
+  owner: string | null | undefined,
+  repo: string | null | undefined,
+): string {
+  const src = (source || "").toLowerCase();
+  const r = (repo || "").trim().toLowerCase();
+  if (!r) return "";
+  if (src === "github") {
+    // Slug form "owner/name" -> just keep the slug. Otherwise prepend
+    // the owner so two "AIWorkAssistant" repos under different owners
+    // don't collide.
+    if (r.includes("/")) return `${src}::${r}`;
+    const o = (owner || "").trim().toLowerCase();
+    return o ? `${src}::${o}/${r}` : `${src}::${r}`;
+  }
+  // gitlab path-with-namespace, jira project key, jitbit tag, work_items
+  // tag: the repo field alone is identifying for our purposes.
+  return `${src}::${r}`;
+}
+
+/**
+ * Enforce one aicoder per (source, repo). Two aicoders pointing at
+ * the same project end up racing for the same ready-for-agent
+ * tickets and stomp on each other's worktree state (the user has hit
+ * this — two aicoders working on the same issue). Reviewers are
+ * exempt because they're scoped per MR/PR. The excludeId arg lets
+ * PATCH validate a payload against every OTHER runner without
+ * tripping on the runner being updated.
+ *
+ * Returns null when the create/update is allowed, otherwise an error
+ * message naming the existing runner.
+ */
+function validateUniqueAicoder(
+  body: { kind?: string; source?: string; owner?: string | null; repo?: string | null },
+  excludeId?: string,
+): string | null {
+  if (body.kind !== "aicoder") return null;
+  const key = runnerScopeKey(body.source, body.owner, body.repo);
+  if (!key) return null; // No repo bound — nothing to enforce against.
+  const existing = agentRunDatabase.listRunners().find((r) => {
+    if (r.id === excludeId) return false;
+    if (r.kind !== "aicoder") return false;
+    return runnerScopeKey(r.source, r.owner, r.repo) === key;
+  });
+  if (!existing) return null;
+  return `An aicoder already exists for this project (id=${existing.id}, name="${existing.name}"). Only one aicoder is allowed per (source, repo) pair — delete or repurpose the existing one.`;
+}
+
+/**
  * Verify the requested baseBranch actually exists upstream so we never try
  * to clone from a ref that won't resolve. Best-effort: if the platform's API
  * is unavailable we skip the check rather than block the user.
@@ -358,6 +417,8 @@ export async function runnerRoutes(fastify: FastifyInstance) {
     const body = (request.body ?? {}) as Partial<RunnerCreateParams>;
     const err = validateCreate(body);
     if (err) return reply.code(400).send({ error: err });
+    const dupErr = validateUniqueAicoder(body);
+    if (dupErr) return reply.code(409).send({ error: dupErr });
     const branchErr = await validateBranchExists(body.source, body.repo, body.repoUrl, body.baseBranch);
     if (branchErr) return reply.code(400).send({ error: branchErr });
     const runner = runnerManager.create(body as RunnerCreateParams);
@@ -380,16 +441,30 @@ export async function runnerRoutes(fastify: FastifyInstance) {
     if (body.apiProvider && !VALID_PROVIDERS.has(body.apiProvider)) {
       return reply.code(400).send({ error: "invalid apiProvider" });
     }
+    const existing = runnerManager.get(request.params.id);
     if (body.baseBranch !== undefined) {
       // Resolve effective source/repo/repoUrl from patch ∪ existing row so we
       // can validate the new branch against the right repository.
-      const existing = runnerManager.get(request.params.id);
       const effectiveSource = body.source ?? existing?.source;
       const effectiveRepo = body.repo ?? existing?.repo ?? null;
       const effectiveRepoUrl = body.repoUrl ?? existing?.repoUrl ?? null;
       const branchErr = await validateBranchExists(effectiveSource, effectiveRepo, effectiveRepoUrl, body.baseBranch);
       if (branchErr) return reply.code(400).send({ error: branchErr });
     }
+    // Re-check the (source, repo) uniqueness for the effective shape
+    // post-patch. Without this, the user can sneak past the create-time
+    // check by creating two runners for different repos and then editing
+    // one to collide with the other.
+    const dupErr = validateUniqueAicoder(
+      {
+        kind: body.kind ?? existing?.kind,
+        source: body.source ?? existing?.source,
+        owner: body.owner ?? existing?.owner ?? null,
+        repo: body.repo ?? existing?.repo ?? null,
+      },
+      request.params.id,
+    );
+    if (dupErr) return reply.code(409).send({ error: dupErr });
     const updated = runnerManager.update(request.params.id, body);
     if (!updated) return reply.code(404).send({ error: "Runner not found" });
     return updated;
