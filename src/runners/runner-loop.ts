@@ -44,6 +44,38 @@ function ensureLogDir(): void {
   if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
 }
 
+/**
+ * Split a runner's stored repo identifier into the (owner, name) pair the
+ * aicoder/reviewer CLIs actually expect.
+ *
+ * `routes/runners.ts` stores GitHub repos as "owner/name" slugs (the
+ * shape the dropdown UI uses), but `--repo` on the aicoder CLI expects
+ * just the bare name — passing the slug verbatim produces URLs like
+ * `api.github.com/repos/owner/owner/name/...` which 404 and silently
+ * exit the runner with no work picked up. We split here at spawn time
+ * so existing slug-form rows in the DB don't need a migration. The
+ * existing `runner.owner` value (when set) takes precedence over the
+ * slug's owner, in case the user explicitly overrode it.
+ *
+ * GitLab repos store as path-with-namespace and the CLI accepts that
+ * shape (`--gitlab-project group/project`), so we only normalize when
+ * the source is github.
+ */
+export function splitGithubRepoSlug(
+  source: string,
+  owner: string | null | undefined,
+  repo: string | null | undefined,
+): { owner: string | null | undefined; repo: string | null | undefined } {
+  if (source !== "github" || !repo || !repo.includes("/")) {
+    return { owner, repo };
+  }
+  const [slugOwner, slugName] = repo.split("/", 2);
+  return {
+    owner: owner || slugOwner || null,
+    repo: slugName || repo,
+  };
+}
+
 export function runnerLogPath(runnerId: string): string {
   return path.join(LOG_DIR, `${runnerId}.log`);
 }
@@ -341,6 +373,12 @@ export class RunnerLoop {
 
     const argv: string[] = [];
 
+    const { owner: spawnOwner, repo: spawnRepo } = splitGithubRepoSlug(
+      runner.source,
+      runner.owner,
+      runner.repo,
+    );
+
     if (runner.kind === "aicoder") {
       argv.push(aicoderScriptPath());
       argv.push("--workspace", workspacePath);
@@ -351,8 +389,8 @@ export class RunnerLoop {
       if (runner.apiProvider === "opencode") argv.push("--opencode");
       else if (runner.apiProvider === "zai") argv.push("--zai");
       else if (runner.apiProvider === "ollama") argv.push("--ollama");
-      if (runner.owner) argv.push("--owner", runner.owner);
-      if (runner.repo) argv.push("--repo", runner.repo);
+      if (spawnOwner) argv.push("--owner", spawnOwner);
+      if (spawnRepo) argv.push("--repo", spawnRepo);
       if (runner.label) argv.push("--label", runner.label);
       if (runner.sprint) argv.push("--sprint", runner.sprint);
       if (runner.baseBranch) argv.push("--base", runner.baseBranch);
@@ -365,12 +403,14 @@ export class RunnerLoop {
       argv.push(reviewerScriptPath());
       argv.push("--poll-ms", "0"); // one-shot, loop owns cadence
       argv.push("--source", runner.source === "gitlab" ? "gitlab" : "github");
-      if (runner.owner) argv.push("--owner", runner.owner);
-      if (runner.repo) {
+      if (spawnOwner) argv.push("--owner", spawnOwner);
+      if (spawnRepo) {
         if (runner.source === "gitlab") {
-          argv.push("--gitlab-project", runner.repo);
+          // GitLab project ids stay in "group/project" form — pass the
+          // original (un-split) value so the namespace is preserved.
+          argv.push("--gitlab-project", runner.repo!);
         }
-        argv.push("--repo", runner.repo);
+        argv.push("--repo", spawnRepo);
       }
       if (runner.apiProvider) argv.push("--provider", runner.apiProvider);
       if (runner.model) argv.push("--model", runner.model);
