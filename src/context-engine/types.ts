@@ -113,6 +113,31 @@ export interface ContextSection {
   sourceCount?: number;
 }
 
+/**
+ * Debug view of the semantic-aware Thompson sampling that selected the
+ * recent_sessions (issue #246). Surfaced on the context packet so the
+ * dashboard / logs can see each surfaced session's Beta utility and the
+ * sampled score that won it a slot.
+ */
+export interface SessionUtilityDiagnostics {
+  enabled: boolean;
+  /** Number of candidate sessions pulled from FTS before reranking. */
+  candidatePool: number;
+  /** Epsilon-greedy exploration probability used this round. */
+  epsilon: number;
+  /** Whether semantic weight came from embeddings or the FTS-score fallback. */
+  semanticSource: "embedding" | "fts_fallback";
+  selected: Array<{
+    sessionId: string;
+    alpha: number;
+    beta: number;
+    sampledUtility: number;
+    similarity: number;
+    combinedScore: number;
+    explored: boolean;
+  }>;
+}
+
 export interface ClaimKitContextSection {
   name: "claimkit_evidence";
   content: string;
@@ -243,6 +268,12 @@ export interface ContextPacket {
      * the escalation spent, the resolving confidence, and the outcome.
      */
     cascade: CascadeMetrics | null;
+    /**
+     * Semantic-aware Thompson sampling trace for recent_sessions (issue #246).
+     * Null when no candidate sessions were available or utility sampling was
+     * disabled.
+     */
+    sessionUtility: SessionUtilityDiagnostics | null;
     queryRewriteMetrics: QueryRewriteMetrics;
     claimkit: {
       enabled: boolean;
