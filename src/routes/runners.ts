@@ -61,7 +61,7 @@ function validateCreate(body: Partial<RunnerCreateParams>): string | null {
  * through and prevents the uniqueness check from blocking sources
  * that don't bind to a single repo.
  */
-function runnerScopeKey(
+export function runnerScopeKey(
   source: string | undefined,
   owner: string | null | undefined,
   repo: string | null | undefined,
