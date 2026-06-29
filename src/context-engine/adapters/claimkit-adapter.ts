@@ -20,6 +20,7 @@ import {
 import { env } from "../../config/env";
 import { ClaimKitEmbeddingAdapter } from "./claimkit-embedding";
 import { AIProviderLLMAdapter } from "./claimkit-llm-adapter";
+import { classifyIntent } from "./intent-classifier";
 import { embeddingService } from "../../agent/embedding-service";
 import { OllamaProvider } from "../../agent/providers/ollama-provider";
 import { getEffectiveContextLimit } from "../../agent/providers/factory";
@@ -116,6 +117,31 @@ export interface ClaimKitQueryResult {
  *     • claim_id: "first 220 chars of evidence span..."
  *     • ...
  */
+/**
+ * "Should the pairwise contradiction LLM run for this question?"
+ *
+ * Delegates to {@link classifyIntent}, which embeds the question and
+ * cosine-matches against canonical intent prototypes. This is a
+ * proper semantic classifier, not a hand-rolled regex — it
+ * generalizes across phrasings ("who is the owner" vs "who owns
+ * this" vs "tell me the owner") without needing one pattern per
+ * variant. The embedding call is cached, so the per-turn cost is one
+ * cosine-vector op against ~25 prototype vectors (microseconds), and
+ * the query embed itself is shared with ClaimKit's own retrieve()
+ * via the EmbeddingService LRU.
+ *
+ * Returns FALSE only for confident `fact_lookup` matches — every
+ * other intent (comparison / verification / temporal_audit / general
+ * / low-confidence) runs the contradiction stage. Bias is
+ * deliberately conservative: skipping when we shouldn't only loses a
+ * cross-source warning, but running when we didn't need to costs
+ * ~200ms of LLM time. We lean toward the cheaper failure mode.
+ */
+export async function shouldRunContradictionCheck(question: string): Promise<boolean> {
+  const result = await classifyIntent(question);
+  return result.intent !== "fact_lookup";
+}
+
 function buildLiteCitationDigest(
   citations: Array<{ claimId: string; sourceId: string; text: string }>,
   result: { confidence: number; answerability: string; metadata: { claimCount: number; sourceIds: readonly string[] } },
@@ -303,6 +329,15 @@ export class ClaimKitAdapter {
           },
           contradiction: {
             useLLM: !env.CLAIMKIT_DISABLE_CONTRADICTION_LLM,
+            // Cap how many pairs the detector classifies per query so
+            // the parallel LLM fan-out can't blow up the claimkit
+            // concurrency bucket. SDK default is 200; on real chat
+            // turns we see ~20-40 surviving the isCandidatePair filter
+            // so 50 keeps the high-priority pairs while saving 3-10
+            // pair-LLM round-trips per turn on average. Env-tunable.
+            detectorOptions: {
+              maxPairsToCheck: env.CLAIMKIT_MAX_CONTRADICTION_PAIRS,
+            },
           },
         },
       } as ConstructorParameters<typeof ClaimKit>[0]);
@@ -523,7 +558,19 @@ export class ClaimKitAdapter {
   ): Promise<ClaimKitQueryResult> {
     if (!this.claimKit) throw new Error("ClaimKit not initialized");
     const t0 = Date.now();
-    const result = await this.claimKit.retrieveLite(question, options);
+    // Default to running contradictions only when the question shape
+    // suggests they're useful. The SDK's retrieve() hard-codes
+    // includeContradictions=true when unset, which fires the up-to-190
+    // pair-LLM detector even on fact-lookups where no contradiction
+    // could exist between unrelated claims. Caller-supplied options
+    // still win — chat code that knows it wants verification can pass
+    // includeContradictions: true regardless of the heuristic.
+    const inferredOptions: QueryOptions & { signal?: AbortSignal } = {
+      ...options,
+      includeContradictions:
+        options?.includeContradictions ?? (await shouldRunContradictionCheck(question)),
+    };
+    const result = await this.claimKit.retrieveLite(question, inferredOptions);
     const graphVerifications = await this.collectRelationshipVerifications(question);
     const verifiedGraph = graphVerifications.filter(
       (verification): verification is VerificationResult & { evidence: string } =>

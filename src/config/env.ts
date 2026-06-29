@@ -331,6 +331,14 @@ const envSchema = z.object({
   CLAIMKIT_DISABLE_PLANNER_LLM: z.string().transform((s) => s === "true").default("false"),
   CLAIMKIT_DISABLE_VERIFIER_LLM: z.string().transform((s) => s === "true").default("false"),
   CLAIMKIT_DISABLE_CONTRADICTION_LLM: z.string().transform((s) => s === "true").default("false"),
+  // Hard cap on how many claim pairs the contradiction detector
+  // classifies per query. SDK default is 200 — at that ceiling a
+  // single chat turn can fire dozens of pair-LLM calls in parallel,
+  // saturating the claimkit concurrency bucket and blocking the
+  // planner. 50 is enough to catch the most obviously-suspect pairs
+  // (the SDK's isCandidatePair filter prioritizes high jaccard /
+  // shared-entity pairs first) without per-turn cost explosion.
+  CLAIMKIT_MAX_CONTRADICTION_PAIRS: z.coerce.number().default(50),
   CLAIMKIT_INIT_TIMEOUT_MS: z.coerce.number().default(5000),
   CLAIMKIT_LLM_MODEL: z.string().default(""),
   // Per-attempt timeout for each ClaimKit LLM call.
