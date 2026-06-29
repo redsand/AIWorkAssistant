@@ -130,6 +130,7 @@ const createSessionSchema = z.object({
 });
 
 const MAX_TOOL_LOOPS = env.MAX_TOOL_LOOPS;
+const MAX_TOOL_LOOPS_HARD = env.MAX_TOOL_LOOPS_HARD;
 const JOB_TIMEOUT_MS = env.AGENT_JOB_TIMEOUT_MS;
 const JOB_TIMEOUT_ENABLED = JOB_TIMEOUT_MS > 0;
 
@@ -1498,7 +1499,14 @@ async function runChatJob(
 
   try {
     let stepOrder = 0;
+    // loopCount = iterations that did REAL tool work (≥1 uncached call).
+    // This is what the agent gets credit/blame for — the budget the
+    // model is supposed to spend wisely.
     let loopCount = 0;
+    // totalIterations = absolute iteration counter (including pure-
+    // cache iterations). Safety net so a stuck model can't burn the
+    // event loop forever even when it's not doing real work.
+    let totalIterations = 0;
     const jobStartTime = Date.now();
     let expandedTools = [...(tools || [])];
     preExpandFromSession(sessionId, mode, expandedTools);
@@ -1552,14 +1560,17 @@ async function runChatJob(
         }
         job.steeringQueue.length = 0;
       }
-      loopCount++;
-      // Persist counter on every iteration so stalled/failed runs still
-      // record how deep the loop went. completeRun also writes it, but
-      // that path is skipped on uncatchable failures.
-      try { if (runId) agentRunDatabase.updateToolLoopCount(runId, loopCount); } catch (e) { console.error("[AgentRuns]", e); }
-      if (loopCount > MAX_TOOL_LOOPS) {
-        console.warn(`[Chat/Job] Tool loop limit (${MAX_TOOL_LOOPS}) reached for ${sessionId}`);
-        throw new ToolLoopLimitError(MAX_TOOL_LOOPS);
+      // Always count the iteration toward the absolute safety ceiling
+      // BEFORE doing any work — that's the runaway-prevention check.
+      // The "useful work" loopCount is incremented AFTER dispatch only
+      // when we see at least one uncached call (further down in the
+      // loop body). Cache hits are basically free for the system, so
+      // they shouldn't burn the budget the model is supposed to spend
+      // on real exploration.
+      totalIterations++;
+      if (totalIterations > MAX_TOOL_LOOPS_HARD) {
+        console.warn(`[Chat/Job] Hard iteration ceiling (${MAX_TOOL_LOOPS_HARD}) reached for ${sessionId}`);
+        throw new ToolLoopLimitError(MAX_TOOL_LOOPS_HARD);
       }
       if (JOB_TIMEOUT_ENABLED && Date.now() - jobStartTime > JOB_TIMEOUT_MS) {
         console.warn(`[Chat/Job] Job timeout (${JOB_TIMEOUT_MS}ms) reached for ${sessionId}`);
@@ -1594,6 +1605,10 @@ async function runChatJob(
       const toolStreakNudges: Record<string, string> = {};
       const spawnCalls = parsedToolCalls.filter((tc) => tc.name === "agent.spawn");
       const regularCalls = parsedToolCalls.filter((tc) => tc.name !== "agent.spawn");
+      // Track whether ANY tool call in this iteration hit network/IO.
+      // Pure-cache iterations don't burn the "useful work" budget — the
+      // agent already paid for that data earlier in the session.
+      let anyUncachedThisIteration = false;
 
       for (const tc of regularCalls) {
         assertJobActive(job);
@@ -1605,6 +1620,7 @@ async function runChatJob(
         const { result, contextValue, cached } = await dispatchToolCallCached(
           sessionId, tc.name, dispatchParams, userId, false, { messages, mode }, tc.id,
         );
+        if (!cached) anyUncachedThisIteration = true;
         assertJobActive(job);
         const toolDuration = Date.now() - toolStart;
         allToolResults[tc.id] = cached ? contextValue : compactToolResultForContext(contextValue);
@@ -1645,6 +1661,8 @@ async function runChatJob(
         });
       }
 
+      // agent.spawn is always real work (always spawns a subprocess).
+      if (spawnCalls.length > 0) anyUncachedThisIteration = true;
       if (spawnCalls.length > 0) {
         for (const tc of spawnCalls) emitJobEvent(sessionId, "tool_start", { id: tc.id, name: tc.name, params: tc.params });
         const spawnResults = await Promise.all(spawnCalls.map(async (tc) => {
@@ -1662,6 +1680,21 @@ async function runChatJob(
           allToolResults[id] = result;
           emitJobEvent(sessionId, "tool_result", { id, result });
           conversationManager.addMessage(sessionId, { role: "tool", content: stringifyToolResultForMemory(name, result), name, tool_call_id: id });
+        }
+      }
+
+      // Bill the iteration to the "useful work" loopCount only when at
+      // least one call actually hit network/IO (or spawned a subprocess).
+      // Pure-cache iterations are recorded in totalIterations (the hard
+      // safety ceiling above) but don't consume the budget the model is
+      // supposed to spend on exploration. Persist on every increment so
+      // stalled/failed runs still record how deep the loop went.
+      if (anyUncachedThisIteration) {
+        loopCount++;
+        try { if (runId) agentRunDatabase.updateToolLoopCount(runId, loopCount); } catch (e) { console.error("[AgentRuns]", e); }
+        if (loopCount > MAX_TOOL_LOOPS) {
+          console.warn(`[Chat/Job] Tool loop limit (${MAX_TOOL_LOOPS}) reached for ${sessionId}`);
+          throw new ToolLoopLimitError(MAX_TOOL_LOOPS);
         }
       }
 
@@ -1991,22 +2024,25 @@ export async function chatRoutes(fastify: FastifyInstance) {
         expandedTools.map((t: Tool) => t.function.name);
 
       let loopCount = 0;
+      let totalIterations = 0;
       const jobStartTime = Date.now();
 
       while (response.toolCalls && response.toolCalls.length > 0) {
-        loopCount++;
-        try { if (runId) agentRunDatabase.updateToolLoopCount(runId, loopCount); } catch (e) { console.error("[AgentRuns]", e); }
-
-        if (loopCount > MAX_TOOL_LOOPS) {
-          console.warn(
-            `[Chat] Tool loop limit (${MAX_TOOL_LOOPS}) reached, breaking`,
-          );
-          throw new ToolLoopLimitError(MAX_TOOL_LOOPS);
+        // Hard ceiling first — pure-cache iterations still count here
+        // so a runaway model can't loop forever on cached data.
+        totalIterations++;
+        if (totalIterations > MAX_TOOL_LOOPS_HARD) {
+          console.warn(`[Chat] Hard iteration ceiling (${MAX_TOOL_LOOPS_HARD}) reached`);
+          throw new ToolLoopLimitError(MAX_TOOL_LOOPS_HARD);
         }
         if (JOB_TIMEOUT_ENABLED && Date.now() - jobStartTime > JOB_TIMEOUT_MS) {
           console.warn(`[Chat] Job timeout (${JOB_TIMEOUT_MS}ms) reached`);
           throw new JobTimeoutError(JOB_TIMEOUT_MS);
         }
+        // anyUncachedThisIteration is set inside the per-tool-call loop
+        // below; loopCount is incremented AFTER dispatch only when at
+        // least one tool actually hit network/IO. Cache hits are free.
+        let anyUncachedThisIteration = false;
 
         if (response.thinking) {
           try { if (runId) agentRunDatabase.addStep({ runId, stepType: "thinking", content: { thinking: response.thinking }, stepOrder: stepOrder++ }); } catch (e) { console.error("[AgentRuns]", e); }
@@ -2061,6 +2097,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
             { messages: messages || [], mode: body.mode },
             tc.id,
           );
+          if (!cached) anyUncachedThisIteration = true;
           const toolDuration = Date.now() - toolStart;
           const contextResult = cached ? contextValue : compactToolResultForContext(contextValue);
           allToolResults[tc.id] = contextResult;
@@ -2106,6 +2143,19 @@ export async function chatRoutes(fastify: FastifyInstance) {
               name: canonicalName,
               tool_call_id: tc.id,
             });
+          }
+        }
+
+        // Bill to loopCount only when at least one tool actually did work.
+        // Pure-cache iterations are tracked in totalIterations (hard
+        // ceiling above) so they can't run forever, but they don't burn
+        // the "useful work" budget.
+        if (anyUncachedThisIteration) {
+          loopCount++;
+          try { if (runId) agentRunDatabase.updateToolLoopCount(runId, loopCount); } catch (e) { console.error("[AgentRuns]", e); }
+          if (loopCount > MAX_TOOL_LOOPS) {
+            console.warn(`[Chat] Tool loop limit (${MAX_TOOL_LOOPS}) reached, breaking`);
+            throw new ToolLoopLimitError(MAX_TOOL_LOOPS);
           }
         }
 

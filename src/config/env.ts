@@ -600,6 +600,13 @@ const envSchema = z.object({
 
   // Tool loop limit (max iterations before forcing a final response)
   MAX_TOOL_LOOPS: z.coerce.number().default(75),
+  // Hard ceiling on TOTAL iterations (cached + uncached) per agent
+  // job. The MAX_TOOL_LOOPS limit only counts iterations that did
+  // real tool work (at least one non-cached tool call) — cache hits
+  // shouldn't burn the "useful work" budget. But we still want a
+  // safety net so a model stuck in a pure-cache loop can't run
+  // forever. Defaults to ~2.5× MAX_TOOL_LOOPS.
+  MAX_TOOL_LOOPS_HARD: z.coerce.number().default(200),
 
   // Job timeout (ms) — wall-clock limit for a single agent job before it is forcibly failed.
   // Set to 0 to disable the ceiling and allow multi-hour runs.
