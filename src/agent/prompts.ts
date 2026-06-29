@@ -165,11 +165,16 @@ DATA QUALITY RULES FOR REPORTS:
 - Session resume after gap: If more than 60 minutes have passed between tool call timestamps in this session, note "Data freshness note: some data was retrieved N hours ago and may have changed."
 
 TENABLE VULNERABILITY REPORT RULES:
-- For a vulnerability report scoped to a single asset (e.g. "vulnerability report for HUNT", "scan for server X"), you MUST call tenable.get_asset_vulnerabilities for that asset BEFORE writing the report. list_vulnerabilities alone aggregates across the fleet and silently drops the per-asset detail the user is asking for.
-- For each significant finding (any critical, plus the top high-severity items), call tenable.get_plugin to pull the description, solution, and CVE refs — the report needs remediation language, not just plugin names.
-- Use tenable.get_vulnerability_details only to drill into a *specific* vulnerability instance when get_asset_vulnerabilities already gave you the asset+plugin pair; it isn't a substitute for the enumeration step.
-- Never compile a single-asset vulnerability report by summarizing list_vulnerabilities or list_assets output — those are fleet-wide tools and will mis-attribute findings.
-- Do NOT burn 50+ system.exec calls on local PowerShell markdown-to-PDF formatting in a report turn; produce the report content first and let the user save it. If the user asks for a file, write Markdown to disk in one local.write_file call and stop.
+- For a single-asset vulnerability report (e.g. "vulnerability report for HUNT/APPLICATION9"), the working data path is the EXPORT API, not get_asset_vulnerabilities. The Tenable integration's get_asset_vulnerabilities returns empty payloads for hostnames that DO have findings — it requires UUIDs that the asset directory doesn't always populate. The proven sequence is:
+  1. tenable.list_workbench_assets({search: "<hostname>"}) — confirms the asset exists, returns the rank/score header data
+  2. tenable.list_vulnerabilities({severity: ["critical","high"], date_range: 365}) — fleet-wide summary; pulls counts and headline plugins
+  3. tenable.export_vulnerabilities({}) — initiates a full vuln export; returns an export_uuid
+  4. tenable.get_vuln_export_status({export_uuid: "..."}) — poll until ready (chunks list appears)
+  5. tenable.download_vuln_export_chunk({export_uuid, chunk_id}) — download every chunk; filter by hostname in memory to get per-asset findings (the prior successful 11am session pulled 20 chunks for HUNT — expect dozens)
+  6. tenable.get_vulnerability_details({plugin_id: "<id>"}) — per significant plugin for description/solution/CVEs. Use plugin_id, NOT asset_id.
+- Real asset UUIDs come from list_workbench_assets / export_assets response payloads. If a UUID looks like a templated placeholder (e.g. "a1b2c3d4-e5f6-7890-abcd-ef1234567890"), it's hallucinated — re-read the actual response.
+- When the chat user has already confirmed data exists at a prior timestamp ("I generated this report 2h ago"), trust them and try the export sequence; don't give up after the first empty get_asset response.
+- Do NOT burn 50+ system.exec calls on local PowerShell markdown-to-PDF formatting in a report turn. If the customer requested HTML, write HTML to disk in ONE local.write_file call. If Markdown is acceptable, write Markdown the same way. Stop after the write.
 
 JITBIT ESCALATED TICKET RULES:
 - "Escalated to customer" means a non-internal user is a recipient OR a public reply was sent to someone outside the support team.
