@@ -81,3 +81,112 @@ describe("stripJsonFromLlmResponse", () => {
     expect(stripJsonFromLlmResponse("prefix {\"a\":1} suffix")).toBe('{"a":1}');
   });
 });
+
+describe("AIProviderLLMAdapter.generateJson — response cache", () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.env = {
+      ...originalEnv,
+      CLAIMKIT_LLM_TIMEOUT_MS: "5000",
+      CLAIMKIT_LLM_TOTAL_TIMEOUT_MS: "10000",
+      CLAIMKIT_LLM_MAX_ATTEMPTS: "1",
+      CLAIMKIT_LLM_CACHE: "true",
+      CLAIMKIT_LLM_CACHE_MAX: "200",
+      CLAIMKIT_LLM_CACHE_TTL_MS: "300000",
+    };
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it("second identical generateJson returns the cached value without re-hitting the provider", async () => {
+    const chatSpy = vi.fn(async () => ({
+      content: '{"plan":"investigate"}',
+      model: "test-model",
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    }));
+    const provider = { name: "ollama", chat: chatSpy, completion: vi.fn() } as any;
+
+    const { AIProviderLLMAdapter, __clearJsonResponseCacheForTests } =
+      await import("../claimkit-llm-adapter.js");
+    __clearJsonResponseCacheForTests();
+    const adapter = new AIProviderLLMAdapter(provider);
+    const msgs = [{ role: "user" as const, content: "what's the plan?" }];
+
+    const first = await adapter.generateJson(msgs, {} as any);
+    const second = await adapter.generateJson(msgs, {} as any);
+
+    expect(first).toEqual({ plan: "investigate" });
+    expect(second).toEqual({ plan: "investigate" });
+    expect(chatSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("different message content produces different cache entries — no cross-contamination", async () => {
+    const chatSpy = vi.fn(async (req: any) => ({
+      content: req.messages[0].content.includes("plan A")
+        ? '{"answer":"a"}'
+        : '{"answer":"b"}',
+      model: "test-model",
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    }));
+    const provider = { name: "ollama", chat: chatSpy, completion: vi.fn() } as any;
+
+    const { AIProviderLLMAdapter, __clearJsonResponseCacheForTests } =
+      await import("../claimkit-llm-adapter.js");
+    __clearJsonResponseCacheForTests();
+    const adapter = new AIProviderLLMAdapter(provider);
+
+    const a = await adapter.generateJson([{ role: "user", content: "plan A" }], {} as any);
+    const b = await adapter.generateJson([{ role: "user", content: "plan B" }], {} as any);
+
+    expect(a).toEqual({ answer: "a" });
+    expect(b).toEqual({ answer: "b" });
+    expect(chatSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("disabled cache (CLAIMKIT_LLM_CACHE=false) skips lookup and re-hits the provider", async () => {
+    process.env.CLAIMKIT_LLM_CACHE = "false";
+    const chatSpy = vi.fn(async () => ({
+      content: '{"x":1}',
+      model: "test-model",
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    }));
+    const provider = { name: "ollama", chat: chatSpy, completion: vi.fn() } as any;
+
+    const { AIProviderLLMAdapter, __clearJsonResponseCacheForTests } =
+      await import("../claimkit-llm-adapter.js");
+    __clearJsonResponseCacheForTests();
+    const adapter = new AIProviderLLMAdapter(provider);
+    const msgs = [{ role: "user" as const, content: "ping" }];
+
+    await adapter.generateJson(msgs, {} as any);
+    await adapter.generateJson(msgs, {} as any);
+
+    expect(chatSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("expired entries (past TTL) fall through to the provider", async () => {
+    process.env.CLAIMKIT_LLM_CACHE_TTL_MS = "10"; // 10ms — easy to expire
+    const chatSpy = vi.fn(async () => ({
+      content: '{"v":1}',
+      model: "test-model",
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    }));
+    const provider = { name: "ollama", chat: chatSpy, completion: vi.fn() } as any;
+
+    const { AIProviderLLMAdapter, __clearJsonResponseCacheForTests } =
+      await import("../claimkit-llm-adapter.js");
+    __clearJsonResponseCacheForTests();
+    const adapter = new AIProviderLLMAdapter(provider);
+    const msgs = [{ role: "user" as const, content: "ping" }];
+
+    await adapter.generateJson(msgs, {} as any);
+    await new Promise((r) => setTimeout(r, 25));
+    await adapter.generateJson(msgs, {} as any);
+
+    expect(chatSpy).toHaveBeenCalledTimes(2);
+  });
+});

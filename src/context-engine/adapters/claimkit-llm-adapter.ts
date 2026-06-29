@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   MemoryLLMAdapter,
 } from "@redsand/claimkit";
@@ -202,6 +203,90 @@ export function stripJsonFromLlmResponse(content: string): string {
   return content;
 }
 
+/**
+ * Tiny LRU for generateJson results. ClaimKit's planner, verifier, and
+ * contradiction detector all route their LLM calls through generateJson,
+ * and the planner in particular re-fires on every chat turn for the same
+ * (or paraphrased) question with no caching anywhere in the SDK. Caching
+ * by content hash here catches all three stages at once.
+ *
+ * Bounded by JSON_CACHE_MAX_ENTRIES; entries expire after
+ * JSON_CACHE_TTL_MS. Both env-knob-tunable. Setting CLAIMKIT_LLM_CACHE
+ * to "false"/"0" disables caching entirely (for debugging surprising
+ * model outputs without restarting the model).
+ *
+ * The key includes provider + model + temperature + topP + json mode so
+ * a runtime provider/model swap can't return a stale answer from the
+ * previous model. Messages are JSON-stringified into the hash so two
+ * structurally-identical message arrays collide even when they're
+ * different array instances.
+ */
+const JSON_CACHE_MAX_ENTRIES = parseInt(
+  process.env.CLAIMKIT_LLM_CACHE_MAX || "200",
+  10,
+);
+const JSON_CACHE_TTL_MS = parseInt(
+  process.env.CLAIMKIT_LLM_CACHE_TTL_MS || "300000", // 5 min
+  10,
+);
+const JSON_CACHE_ENABLED =
+  (process.env.CLAIMKIT_LLM_CACHE || "true").toLowerCase() !== "false" &&
+  process.env.CLAIMKIT_LLM_CACHE !== "0";
+
+interface CacheEntry {
+  value: unknown;
+  expiresAt: number;
+}
+
+const jsonResponseCache = new Map<string, CacheEntry>();
+
+function jsonCacheKey(
+  provider: string,
+  model: string | undefined,
+  messages: readonly LLMMessage[],
+  options: LLMGenerateOptions | undefined,
+): string {
+  const payload = JSON.stringify({
+    p: provider,
+    m: model ?? "",
+    t: options?.temperature ?? null,
+    tp: options?.topP ?? null,
+    msgs: messages.map((m) => ({ r: m.role, c: m.content })),
+  });
+  // sha256-truncated; this isn't a security boundary, just a cache
+  // key. 32 hex chars = 128 bits of collision resistance which is
+  // plenty for ~200 cached entries.
+  return createHash("sha256").update(payload).digest("hex").slice(0, 32);
+}
+
+function jsonCacheGet<T>(key: string): T | undefined {
+  const entry = jsonResponseCache.get(key);
+  if (!entry) return undefined;
+  if (entry.expiresAt < Date.now()) {
+    jsonResponseCache.delete(key);
+    return undefined;
+  }
+  // Re-insert to refresh recency ordering for the LRU semantics.
+  jsonResponseCache.delete(key);
+  jsonResponseCache.set(key, entry);
+  return entry.value as T;
+}
+
+function jsonCacheSet(key: string, value: unknown): void {
+  if (jsonResponseCache.size >= JSON_CACHE_MAX_ENTRIES) {
+    // Evict the oldest entry. Map iteration order is insertion order, so
+    // .keys().next() yields the LRU element after get-refreshes above.
+    const oldest = jsonResponseCache.keys().next().value;
+    if (oldest !== undefined) jsonResponseCache.delete(oldest);
+  }
+  jsonResponseCache.set(key, { value, expiresAt: Date.now() + JSON_CACHE_TTL_MS });
+}
+
+/** Exposed for tests + diagnostics. */
+export function __clearJsonResponseCacheForTests(): void {
+  jsonResponseCache.clear();
+}
+
 export class AIProviderLLMAdapter implements LLMAdapter {
   private provider?: AIProvider;
   private model?: string;
@@ -249,11 +334,25 @@ export class AIProviderLLMAdapter implements LLMAdapter {
     _schema: LLMJsonSchema,
     options?: LLMGenerateOptions,
   ): Promise<T> {
+    // Cache lookup BEFORE the queue + LLM round-trip. Planner re-firing
+    // for the same paraphrased question every chat turn is the most
+    // common case this catches; contradiction-pair classifications are
+    // a close second. Cache disabled? Skip the lookup entirely so the
+    // hash work is paid for only when there's a payoff.
+    const providerName = this.getActiveProvider().name ?? "unknown";
+    let cacheKey: string | null = null;
+    if (JSON_CACHE_ENABLED) {
+      cacheKey = jsonCacheKey(providerName, this.model ?? options?.model, messages, options);
+      const hit = jsonCacheGet<T>(cacheKey);
+      if (hit !== undefined) return hit;
+    }
     try {
-      return await withLlmTimeout(
+      const result = await withLlmTimeout(
         (signal) => this.generateJsonAbortable<T>(messages, signal, options),
         () => this.fallback.generateJson<T>(messages, _schema, options),
       );
+      if (cacheKey) jsonCacheSet(cacheKey, result);
+      return result;
     } catch (err) {
       if (!shouldFallback(err)) throw err;
       console.warn("[AIProviderLLMAdapter] generateJson failed, falling back:", err instanceof Error ? err.message : String(err));
