@@ -131,9 +131,13 @@ const envSchema = z.object({
 
   // Active knowledge acquisition (issue #247). Directory holding the
   // claims.db SQLite store that persists retrieval-cascade resolutions as
-  // durable knowledge claims. Empty (default) reuses AGENT_MEMORY_PATH so the
-  // claims database lives alongside the rest of the agent's memory state
-  // unless an operator wants it on a separate volume.
+  // durable knowledge claims. Empty (default) falls back to the profile-scoped
+  // memories directory (resolvePath("memories") →
+  // HERMES_HOME/profiles/{ACTIVE_PROFILE}/memories) so the claims database
+  // lives alongside the rest of the agent's profile state unless an operator
+  // wants it on a separate volume. Note: this is NOT AGENT_MEMORY_PATH — that
+  // var is not consulted here, so relocating AGENT_MEMORY_PATH will not move
+  // the claims DB.
   CLAIMS_STORE_PATH: z.string().default(""),
 
   // Agent Soul (SOUL.md)
