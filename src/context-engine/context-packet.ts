@@ -316,18 +316,20 @@ export async function assembleContextPacket(
   // "no prior knowledge" rather than failing the whole packet.
   let priorClaims: RetrievedClaim[] = [];
   const priorClaimIds: string[] = [];
+  const claimsRetrieveStart = Date.now();
   try {
     priorClaims = claimsStore.retrieveClaims(retrievalQuery, 3);
     for (const c of priorClaims) priorClaimIds.push(c.id);
+    stageTimings.claimsRetrieveMs = Date.now() - claimsRetrieveStart;
     if (priorClaims.length > 0) {
-      stageTimings.claimsRetrieveMs = stageTimings.claimsRetrieveMs ?? 0;
       console.log(
         `[ClaimsStore] retrieved ${priorClaims.length} prior claim(s) for query | ` +
         `ids=[${priorClaimIds.slice(0, 5).map((id) => id.substring(0, 8)).join(", ")}] | ` +
-        `top_combined=${priorClaims[0].combinedScore.toFixed(2)}`,
+        `top_combined=${priorClaims[0].combinedScore.toFixed(2)} | ${stageTimings.claimsRetrieveMs}ms`,
       );
     }
   } catch (err) {
+    stageTimings.claimsRetrieveMs = Date.now() - claimsRetrieveStart;
     console.warn(
       "[ClaimsStore] retrieveClaims failed, skipping prior-knowledge injection:",
       err instanceof Error ? err.message : err,
@@ -417,8 +419,20 @@ export async function assembleContextPacket(
   // resolution so the next similar query can skip the expensive escalation
   // and inject this claim as prior knowledge. Source provenance is derived
   // from the resolving cascade level so each claim's origin is auditable.
+  //
+  // The `fell_back_to_rag` outcome must skip persistence when the ClaimKit
+  // probe answer is empty — an empty resolution claim pollutes future
+  // retrievals (it MATCHes anything, surfaces as prior knowledge with no
+  // signal, and never ages out because pruneStaleClaims only drops
+  // never-retrieved rows). The same skip fires when the cascade confidence
+  // collapses to ~0, which is the textbook "we have no real answer" signal.
+  const CLAIM_MIN_PERSIST_CONFIDENCE = 0.05;
   let storedClaimId: string | null = null;
   let storedCascadeLevel: string | null = null;
+  let skippedClaimReason:
+    | "empty_probe_answer"
+    | "below_min_confidence"
+    | null = null;
   if (
     cascadeResolution &&
     (cascadeResolution.outcome === "teacher_confirmed" ||
@@ -429,31 +443,47 @@ export async function assembleContextPacket(
       | "teacher_verify"
       | "tool_research"
       | "full_rag";
-    try {
-      storedClaimId = claimsStore.storeClaim({
-        query: retrievalQuery,
-        resolution: ckProbe?.answer ?? "",
-        cascadeLevel: cascadeLevelForClaim,
-        confidence: cascadeResolution.confidence,
-        source:
-          cascadeResolution.outcome === "teacher_confirmed"
-            ? `teacher:${env.CASCADE_TEACHER_MODEL || "default"}`
-            : cascadeResolution.outcome === "tool_confirmed"
-              ? "web_search"
-              : "full_rag",
-      });
-      storedCascadeLevel = cascadeLevelForClaim;
-      if (storedClaimId) {
-        console.log(
-          `[ClaimsStore] persisted claim ${storedClaimId.substring(0, 8)} | ` +
-          `level=${cascadeLevelForClaim} | confidence=${(cascadeResolution.confidence * 100).toFixed(0)}%`,
+    const probeAnswer = (ckProbe?.answer ?? "").trim();
+    if (
+      cascadeResolution.outcome === "fell_back_to_rag" &&
+      (probeAnswer.length === 0 ||
+        cascadeResolution.confidence < CLAIM_MIN_PERSIST_CONFIDENCE)
+    ) {
+      skippedClaimReason =
+        probeAnswer.length === 0
+          ? "empty_probe_answer"
+          : "below_min_confidence";
+      console.log(
+        `[ClaimsStore] skipped persisting fell_back_to_rag claim | ` +
+        `reason=${skippedClaimReason} | confidence=${(cascadeResolution.confidence * 100).toFixed(0)}%`,
+      );
+    } else {
+      try {
+        storedClaimId = claimsStore.storeClaim({
+          query: retrievalQuery,
+          resolution: probeAnswer,
+          cascadeLevel: cascadeLevelForClaim,
+          confidence: cascadeResolution.confidence,
+          source:
+            cascadeResolution.outcome === "teacher_confirmed"
+              ? `teacher:${env.CASCADE_TEACHER_MODEL || "default"}`
+              : cascadeResolution.outcome === "tool_confirmed"
+                ? "web_search"
+                : "full_rag",
+        });
+        storedCascadeLevel = cascadeLevelForClaim;
+        if (storedClaimId) {
+          console.log(
+            `[ClaimsStore] persisted claim ${storedClaimId.substring(0, 8)} | ` +
+            `level=${cascadeLevelForClaim} | confidence=${(cascadeResolution.confidence * 100).toFixed(0)}%`,
+          );
+        }
+      } catch (err) {
+        console.warn(
+          "[ClaimsStore] storeClaim failed:",
+          err instanceof Error ? err.message : err,
         );
       }
-    } catch (err) {
-      console.warn(
-        "[ClaimsStore] storeClaim failed:",
-        err instanceof Error ? err.message : err,
-      );
     }
   }
 
@@ -1473,6 +1503,7 @@ export async function assembleContextPacket(
         injectedInMessages: priorClaimsInjected,
         storedClaimId,
         storedCascadeLevel,
+        skippedClaimReason,
       },
       createdAt: new Date(),
     },

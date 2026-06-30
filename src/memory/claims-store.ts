@@ -489,22 +489,66 @@ export class ClaimsStore {
    * Remove claims not retrieved in the last maxAgeDays days. Returns the
    * number of claims removed. Best-effort: a failure logs and returns 0 so
    * the startup pruning job is non-fatal.
+   *
+   * The delete runs in a single transaction that ALSO removes the matching
+   * rows from the claims_fts external-content virtual table. Without the FTS
+   * sweep, deletes on the source table orphan the index rows, which silently
+   * corrupts BM25 ranking (the FTS5 rowid namespace keeps growing while the
+   * source shrinks, and stale entries still match MATCH queries). The FTS
+   * sweep is best-effort: if FTS5 was unavailable at init there is no
+   * claims_fts table to clean, and the transaction still completes.
    */
   pruneStaleClaims(maxAgeDays: number): number {
     if (!this.db) return 0;
     if (!Number.isFinite(maxAgeDays) || maxAgeDays <= 0) return 0;
     const cutoff = Date.now() - maxAgeDays * DAY_MS;
     try {
-      const info = this.db
-        .prepare("DELETE FROM claims WHERE lastRetrievedAt < ?")
-        .run(cutoff);
-      return info.changes;
+      const tx = this.db.transaction((ts: number) => {
+        // External-content FTS5 maps claims_fts.rowid -> claims.rowid, so
+        // delete the index rows first while the source rowids still exist.
+        // Best-effort: skip if FTS5 was never created.
+        try {
+          this.db!
+            .prepare(
+              `DELETE FROM claims_fts
+               WHERE rowid IN (
+                 SELECT rowid FROM claims WHERE lastRetrievedAt < ?
+               )`,
+            )
+            .run(ts);
+        } catch {
+          /* FTS5 unavailable — nothing to prune in the index */
+        }
+        const info = this.db!
+          .prepare("DELETE FROM claims WHERE lastRetrievedAt < ?")
+          .run(ts);
+        return info.changes;
+      });
+      return tx(cutoff);
     } catch (err) {
       console.warn(
         "[ClaimsStore] pruneStaleClaims failed:",
         err instanceof Error ? err.message : err,
       );
       return 0;
+    }
+  }
+
+  /**
+   * Internal diagnostic that returns the rowid set still present in the FTS
+   * index. Used by tests to assert that pruneStaleClaims does not orphan
+   * index rows when FTS5 is available. Returns an empty array when FTS5 is
+   * unavailable or the query fails.
+   */
+  ftsRowids(): number[] {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare("SELECT rowid FROM claims_fts").all() as {
+        rowid: number;
+      }[];
+      return rows.map((r) => r.rowid);
+    } catch {
+      return [];
     }
   }
 
@@ -559,4 +603,15 @@ export function runStartupClaimPrune(maxAgeDays = 30): number {
     );
   }
   return removed;
+}
+
+/**
+ * Resolve the on-disk directory that backs the singleton claims store. Server
+ * startup uses this to mkdir -p the directory BEFORE the singleton opens its
+ * SQLite handle, so an operator-supplied CLAIMS_STORE_PATH lands a clear
+ * boot-time error if the parent is missing or read-only rather than a silent
+ * self-disable later.
+ */
+export function getClaimsStoreBasePath(): string {
+  return resolveBasePath();
 }

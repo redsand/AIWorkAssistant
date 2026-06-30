@@ -33,6 +33,8 @@ const mockSearchSessions = vi.fn();
 const mockBuildEntityClaimsSection = vi.fn();
 const mockSaveLiveComparison = vi.fn();
 const mockCascadeRun = vi.fn();
+const mockClaimsStoreRetrieve = vi.fn();
+const mockClaimsStoreStore = vi.fn();
 
 const mockEnv = {
   AI_PROVIDER: "test",
@@ -153,6 +155,13 @@ function installMocks() {
   vi.doMock("../../../src/context-engine/retrieval-cascade", () => ({
     createDefaultCascade: () => ({ run: mockCascadeRun }),
   }));
+  vi.doMock("../../../src/memory/claims-store", () => ({
+    claimsStore: {
+      retrieveClaims: mockClaimsStoreRetrieve,
+      storeClaim: mockClaimsStoreStore,
+    },
+    formatClaimsSection: vi.fn(() => null),
+  }));
 }
 
 async function loadContextPacket() {
@@ -224,6 +233,10 @@ describe("assembleContextPacket retrieval and context sections", () => {
       entitiesWithHistory: 0,
     });
     mockSaveLiveComparison.mockReturnValue(null);
+    mockClaimsStoreRetrieve.mockReset();
+    mockClaimsStoreRetrieve.mockReturnValue([]);
+    mockClaimsStoreStore.mockReset();
+    mockClaimsStoreStore.mockReturnValue(null);
   });
 
   it("assembles retrieved knowledge, code, graph, memory, sessions, and health context", async () => {
@@ -742,5 +755,159 @@ describe("assembleContextPacket retrieval and context sections", () => {
     expect(packet.diagnostics.claimkitFirstMetrics.ragSkipped).toBe(false);
     expect(mockKnowledgeSearch).toHaveBeenCalled();
     expect(packet.diagnostics.documentsRetrieved).toBeGreaterThan(0);
+  });
+
+  // Finding #3 rework: when fell_back_to_rag fires with an empty probe answer
+  // the resolution is meaningless. Persisting it would create a claim that
+  // matches anything (FTS sees empty resolution as universal match) and
+  // surfaces as "PRIOR KNOWLEDGE" with no signal on future similar queries.
+  // The skip must be visible in the diagnostics so a downstream dashboard
+  // can tell "no claim attempted" from "claim attempted but rejected."
+  it("skips persisting a fell_back_to_rag claim when the probe answer is empty", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CASCADE_ENABLED = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue({
+      ...ckResult(0.6, "partially-answerable"),
+      answer: "   ",
+    });
+    mockCascadeRun.mockResolvedValue({
+      level: "full_rag",
+      tokensUsed: 2400,
+      confidence: 0.3,
+      outcome: "fell_back_to_rag",
+    });
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockClaimsStoreStore).not.toHaveBeenCalled();
+    expect(packet.diagnostics.claimsAcquisition?.storedClaimId).toBeNull();
+    expect(packet.diagnostics.claimsAcquisition?.skippedClaimReason).toBe(
+      "empty_probe_answer",
+    );
+  });
+
+  it("skips persisting a fell_back_to_rag claim when the cascade confidence collapses to ~0", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CASCADE_ENABLED = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.6, "partially-answerable"));
+    mockCascadeRun.mockResolvedValue({
+      level: "full_rag",
+      tokensUsed: 2400,
+      confidence: 0.01,
+      outcome: "fell_back_to_rag",
+    });
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockClaimsStoreStore).not.toHaveBeenCalled();
+    expect(packet.diagnostics.claimsAcquisition?.skippedClaimReason).toBe(
+      "below_min_confidence",
+    );
+  });
+
+  it("persists a fell_back_to_rag claim when the probe answer is non-empty and confidence is non-trivial", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CASCADE_ENABLED = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.6, "partially-answerable"));
+    mockCascadeRun.mockResolvedValue({
+      level: "full_rag",
+      tokensUsed: 2400,
+      confidence: 0.35,
+      outcome: "fell_back_to_rag",
+    });
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+    ]);
+    mockClaimsStoreStore.mockReturnValue("claim-id-1234");
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockClaimsStoreStore).toHaveBeenCalledTimes(1);
+    expect(packet.diagnostics.claimsAcquisition?.storedClaimId).toBe(
+      "claim-id-1234",
+    );
+    expect(packet.diagnostics.claimsAcquisition?.skippedClaimReason).toBeNull();
+  });
+
+  // Finding #4 rework: claimsRetrieveMs must reflect the real retrieveClaims
+  // wall-clock cost. Before the fix it was initialized to 0 and never
+  // overwritten, so dashboards reported 0ms even when the FTS5 + Thompson
+  // sampling path ran.
+  it("records a positive claimsRetrieveMs when prior claims are retrieved", async () => {
+    mockEnv.CLAIMKIT_ENABLED = false;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = false;
+    mockClaimsStoreRetrieve.mockImplementationOnce(() => {
+      // Simulate a non-trivial DB read so the wall-clock delta is real.
+      const start = Date.now();
+      while (Date.now() - start < 2) {
+        /* spin briefly to guarantee a measurable ms delta */
+      }
+      return [
+        {
+          id: "claim-1",
+          query: "auth runbook",
+          resolution: "Auth Service runbook content",
+          cascadeLevel: "teacher_verify",
+          confidence: 0.85,
+          source: "teacher:glm-5.2",
+          alpha: 2,
+          beta: 1,
+          createdAt: new Date(),
+          lastRetrievedAt: new Date(),
+          sampledUtility: 0.7,
+          similarity: 0.8,
+          combinedScore: 0.56,
+          explored: false,
+        },
+      ];
+    });
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(packet.diagnostics.stageTimings.claimsRetrieveMs).toBeGreaterThan(0);
+    expect(packet.diagnostics.claimsAcquisition?.retrievedCount).toBe(1);
   });
 });

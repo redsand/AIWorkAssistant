@@ -302,6 +302,13 @@ export interface ContextPacket {
       injectedInMessages: boolean;
       storedClaimId: string | null;
       storedCascadeLevel: string | null;
+      /**
+       * Reason the cascade resolution was NOT persisted as a claim. Set when
+       * storeClaim was deliberately skipped (e.g. fell_back_to_rag with an
+       * empty probe answer). Null when no claim was eligible to be stored at
+       * all (no cascade resolution) or when the claim was persisted.
+       */
+      skippedClaimReason: "empty_probe_answer" | "below_min_confidence" | null;
     };
     createdAt: Date;
   };

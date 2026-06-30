@@ -187,6 +187,88 @@ describe("ClaimsStore", () => {
     expect(store.allClaims().map((c) => c.id)).toContain(id);
   });
 
+  // Regression for the prune-then-retrieve interaction. Before the fix,
+  // pruneStaleClaims deleted from the claims table but left orphan rows in
+  // the claims_fts external-content virtual table. That corrupted BM25
+  // ranking over time (stale index entries kept matching MATCH queries) and,
+  // in external-content mode, surfaced SQL errors when a MATCH hit a rowid
+  // whose source row no longer existed. This test stamps a stale claim past
+  // the max-age window, prunes, and asserts (a) only fresh claims survive and
+  // (b) the FTS index rowids stay in lockstep with the surviving claims.
+  it("pruneStaleClaims does not orphan rows in claims_fts and retrieval still works", () => {
+    const freshId = store.storeClaim({
+      query: "fresh configure ollama embedding",
+      resolution: "EMBEDDING_PROVIDER=ollama, EMBEDDING_MODEL=nomic-embed-text.",
+      cascadeLevel: "teacher_verify",
+      confidence: 0.9,
+      source: "teacher",
+    });
+    const staleId = store.storeClaim({
+      query: "stale configure ollama embedding",
+      resolution: "Use the old nomic-embed-text:v0 trial build from Q1.",
+      cascadeLevel: "tool_research",
+      confidence: 0.6,
+      source: "web_search",
+    });
+    const sixtyDaysAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
+    store["db"]!.prepare(
+      "UPDATE claims SET createdAt = ?, lastRetrievedAt = ? WHERE id = ?",
+    ).run(sixtyDaysAgo, sixtyDaysAgo, staleId);
+
+    // FTS5 rowids must exist for both claims before prune — proves the index
+    // was populated. (Empty when FTS5 was unavailable on the host build, in
+    // which case the rest of the test asserts the fallback path is still
+    // consistent.)
+    const ftsRowidsBefore = store.ftsRowids();
+
+    const removed = store.pruneStaleClaims(30);
+    expect(removed).toBe(1);
+
+    const remaining = store.allClaims().map((c) => c.id);
+    expect(remaining).toContain(freshId);
+    expect(remaining).not.toContain(staleId);
+
+    const ftsRowidsAfter = store.ftsRowids();
+    if (ftsRowidsBefore.length > 0) {
+      // FTS5 was available — the index must have shrunk by exactly one row
+      // and must not contain any rowid that no longer maps to a claims row.
+      expect(ftsRowidsAfter.length).toBe(ftsRowidsBefore.length - 1);
+      const survivingRowids = new Set(
+        store["db"]!
+          .prepare("SELECT rowid FROM claims")
+          .all()
+          .map((r: { rowid: number }) => r.rowid),
+      );
+      for (const rid of ftsRowidsAfter) {
+        expect(survivingRowids.has(rid)).toBe(true);
+      }
+    }
+
+    // Retrieval after prune must return only the fresh claim. If FTS5 had
+    // orphan rows, this query could surface a row whose source claim was
+    // already deleted — either as a SQL error (external-content API) or as
+    // a row that fails the JOIN and returns nothing, leaving an
+    // inconsistent-looking index. Either way, the result set must contain
+    // only the fresh claim.
+    const retrieved = store.retrieveClaims("configure ollama embedding", 5, {
+      rng: seededRng(7),
+    });
+    expect(retrieved.map((r) => r.id)).toContain(freshId);
+    expect(retrieved.map((r) => r.id)).not.toContain(staleId);
+  });
+
+  it("pruneStaleClaims with a max-age of zero is a no-op (guard)", () => {
+    store.storeClaim({
+      query: "q",
+      resolution: "r",
+      cascadeLevel: "teacher_verify",
+      confidence: 0.5,
+      source: "teacher",
+    });
+    expect(store.pruneStaleClaims(0)).toBe(0);
+    expect(store.allClaims()).toHaveLength(1);
+  });
+
   it("persists claims across store instances on the same directory", () => {
     const id = store.storeClaim({
       query: "persistent query",
