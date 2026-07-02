@@ -23,6 +23,7 @@
     // a brand new runner instead of PATCHing the existing one. Tracking
     // it in a closure variable here makes the intent unkillable.
     editingRunnerId: null,
+    queryEditRunnerId: null,
   };
 
   // Providers that expose a remote/self-host. Drives whether the Host
@@ -533,6 +534,7 @@
     if (r) {
       title.textContent = `Edit ${r.kind}`;
       state.editingRunnerId = r.id;
+      state.queryEditRunnerId = r.id;
       form.id.value = r.id;
       form.kind.value = r.kind;
       form.name.value = r.name;
@@ -583,6 +585,7 @@
     const form = $("#edit-form");
     form.reset();
     state.editingRunnerId = null;
+    state.queryEditRunnerId = null;
     form.id.value = "";
     form.kind.value = kind;
     form.source.value = "github";
@@ -661,7 +664,7 @@
       // `id` field is a fallback for any flow that bypassed openEdit
       // (e.g. an external script preloading the form), but the closure
       // value wins when both are present.
-      const editId = state.editingRunnerId || form.id.value || "";
+      const editId = state.editingRunnerId || form.id.value || state.queryEditRunnerId || "";
       if (editId) {
         await api(`/api/runners/${editId}`, {
           method: "PATCH",
@@ -674,6 +677,7 @@
         });
       }
       state.editingRunnerId = null;
+      state.queryEditRunnerId = null;
       $("#edit-modal").hidden = true;
     } catch (err) {
       alert(`Save failed: ${err.message}`);
@@ -843,7 +847,7 @@
    *   /runners?edit=<id>
    *   /runners?logs=<id>
    */
-  function maybeOpenFromQuery() {
+  async function maybeOpenFromQuery() {
     const params = new URLSearchParams(window.location.search);
     const newKind = params.get("new");
     const editId = params.get("edit");
@@ -883,8 +887,20 @@
           preferredDefault: baseBranch || undefined,
         });
       }
-    } else if (editId && state.runners.has(editId)) {
-      openEdit(state.runners.get(editId));
+    } else if (editId) {
+      state.queryEditRunnerId = editId;
+      let runner = state.runners.get(editId);
+      if (!runner) {
+        try {
+          runner = await api(`/api/runners/${encodeURIComponent(editId)}`);
+          if (runner?.id) state.runners.set(runner.id, runner);
+        } catch (err) {
+          alert(`Could not load runner for editing: ${err.message}`);
+          state.queryEditRunnerId = null;
+          return;
+        }
+      }
+      openEdit(runner);
     } else if (logsId && state.runners.has(logsId)) {
       openLogs(state.runners.get(logsId));
     }
