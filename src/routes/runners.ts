@@ -39,7 +39,10 @@ function requireAuth(request: FastifyRequest, reply: FastifyReply): boolean {
 function validateCreate(body: Partial<RunnerCreateParams>): string | null {
   if (!body.name || typeof body.name !== "string") return "name is required";
   if (!body.kind || !VALID_KINDS.has(body.kind)) return "kind must be 'aicoder' or 'reviewer'";
-  if (!body.agent || !VALID_AGENTS.has(body.agent)) return "agent must be claude | codex | opencode";
+  if (body.kind === "aicoder" && (!body.agent || !VALID_AGENTS.has(body.agent))) {
+    return "agent must be claude | codex | opencode";
+  }
+  if (body.agent && !VALID_AGENTS.has(body.agent)) return "agent must be claude | codex | opencode";
   if (!body.source || !VALID_SOURCES.has(body.source)) return "source must be one of github, gitlab, jira, jitbit, work_items, auto";
   if (body.apiProvider && !VALID_PROVIDERS.has(body.apiProvider)) return "apiProvider must be one of opencode, zai, ollama, openai";
   if (body.pollIntervalMs !== undefined && (typeof body.pollIntervalMs !== "number" || body.pollIntervalMs < 1000)) {
@@ -421,6 +424,7 @@ export async function runnerRoutes(fastify: FastifyInstance) {
     if (dupErr) return reply.code(409).send({ error: dupErr });
     const branchErr = await validateBranchExists(body.source, body.repo, body.repoUrl, body.baseBranch);
     if (branchErr) return reply.code(400).send({ error: branchErr });
+    if (body.kind === "reviewer" && !body.agent) body.agent = "opencode";
     const runner = runnerManager.create(body as RunnerCreateParams);
     return reply.code(201).send(runner);
   });
