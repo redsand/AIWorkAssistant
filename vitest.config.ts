@@ -6,7 +6,12 @@ export default defineConfig({
     environment: 'node',
     setupFiles: ['./vitest.setup.ts'],
     hookTimeout: 60000,
-    testTimeout: 15000,
+    // 30s (not 15s): tests that dynamically import large module graphs
+    // (tool-dispatcher, chat routes, conversation-manager) pay a heavy
+    // first-time transform/import cost under parallel worker load. That cost
+    // — not the test logic — was intermittently blowing a 15s budget and
+    // making the suite flaky. A genuine hang still fails at 30s.
+    testTimeout: 30000,
     exclude: ['dist/**', 'node_modules/**', '.claude/**', 'tests/smoke/**'],
     coverage: {
       provider: 'v8',

@@ -102,17 +102,17 @@ describe("createBudget", () => {
   it("should allocate slots by priority", () => {
     const budget = createBudget(DEFAULT_SLOT_DEFINITIONS, 10000, 500);
     const names = budget.slots.map((s) => s.name);
-    // soul (110) > system (100) > history (80) > entity_claims (70) > documents (60) >
-    // claimkit_evidence (55) > graph (40) > recent_sessions (35) > health (20)
+    // DEFAULT (V1) budgets only these slots; soul/recent_sessions are emitted
+    // by context-packet.ts but left unbudgeted (Infinity) — see V2_SLOT_DEFINITIONS.
+    // system (100) > history (80) > entity_claims (70) > documents (60) >
+    // claimkit_evidence (55) > graph (40) > health (20)
     expect(names).toEqual([
-      "soul",
       "system",
       "history",
       "entity_claims",
       "documents",
       "claimkit_evidence",
       "graph",
-      "recent_sessions",
       "health",
     ]);
   });
