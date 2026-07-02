@@ -9,7 +9,7 @@
 // The store is exercised against a real on-disk SQLite database in a temp
 // directory — no network, no embedding provider, no mocking. The Thompson
 // sampler is exercised through the public surface with a deterministic RNG.
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import os from "os";
 import path from "path";
 import fs from "fs";
@@ -259,6 +259,51 @@ describe("ClaimsStore", () => {
     });
     expect(retrieved.map((r) => r.id)).toContain(freshId);
     expect(retrieved.map((r) => r.id)).not.toContain(staleId);
+  });
+
+  it("pruneStaleClaims logs the removal count for operational visibility", () => {
+    const id = store.storeClaim({
+      query: "loggable stale claim",
+      resolution: "r",
+      cascadeLevel: "tool_research",
+      confidence: 0.6,
+      source: "web_search",
+    });
+    const sixtyDaysAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
+    store["db"]!.prepare(
+      "UPDATE claims SET lastRetrievedAt = ? WHERE id = ?",
+    ).run(sixtyDaysAgo, id);
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect(store.pruneStaleClaims(30)).toBe(1);
+      const logged = logSpy.mock.calls
+        .map((c) => c.join(" "))
+        .some((line) => /pruned 1 stale claim/.test(line));
+      expect(logged).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("pruneStaleClaims stays silent when nothing is removed", () => {
+    store.storeClaim({
+      query: "fresh non-prunable claim",
+      resolution: "r",
+      cascadeLevel: "teacher_verify",
+      confidence: 0.8,
+      source: "teacher",
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect(store.pruneStaleClaims(30)).toBe(0);
+      const logged = logSpy.mock.calls
+        .map((c) => c.join(" "))
+        .some((line) => /pruned \d+ stale claim/.test(line));
+      expect(logged).toBe(false);
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   it("pruneStaleClaims with a max-age of zero is a no-op (guard)", () => {

@@ -753,7 +753,17 @@ export class ClaimsStore {
           .run(ts);
         return info.changes;
       });
-      return tx(cutoff);
+      const removed = tx(cutoff);
+      // Log the removal here (not only at the startup call site) so every
+      // prune caller — startup job, a future periodic sweep, or a test — gives
+      // operational visibility into claims DB health. Silent on a no-op so the
+      // common "nothing stale" case doesn't add log noise.
+      if (removed > 0) {
+        console.log(
+          `[ClaimsStore] pruned ${removed} stale claim(s) not retrieved in ${maxAgeDays}d`,
+        );
+      }
+      return removed;
     } catch (err) {
       console.warn(
         "[ClaimsStore] pruneStaleClaims failed:",
@@ -822,11 +832,10 @@ export const claimsStore = new ClaimsStore();
  */
 export function runStartupClaimPrune(maxAgeDays = 30): number {
   const removed = claimsStore.pruneStaleClaims(maxAgeDays);
-  if (removed > 0) {
-    console.log(
-      `[ClaimsStore] startup prune removed ${removed} claim(s) older than ${maxAgeDays}d`,
-    );
-  } else {
+  // pruneStaleClaims logs the removal itself; here we only confirm the startup
+  // job executed when there was nothing to prune, so operators can still see
+  // the sweep ran on a clean database without double-logging the removal.
+  if (removed === 0) {
     console.log(
       `[ClaimsStore] startup prune — nothing to remove (max age ${maxAgeDays}d)`,
     );
