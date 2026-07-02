@@ -196,8 +196,14 @@ const CLAIM_RENDER_CHAR_CAP = 500;
  * attacker-controllable channel for durable prompt injection. We:
  *   - strip C0/C1 control characters (except tab/newline) that could smuggle
  *     terminal escapes or hidden instructions;
+ *   - strip Unicode bidirectional overrides/isolates and zero-width characters
+ *     (Trojan-Source style reordering / hidden text);
  *   - collapse newlines to spaces so a claim can't forge new role/section
- *     headers (e.g. a line starting "=== SYSTEM ===" or "User:");
+ *     headers (e.g. a line starting "=== SYSTEM ===" or "User:"). This must
+ *     include the Unicode line/paragraph separators U+2028/U+2029: they render
+ *     as line breaks but the ASCII-only [\r\n] collapse missed them, and a
+ *     single one survives the trailing whitespace-run collapse (which only
+ *     fires on runs of 2+), leaving a live line terminator in the output;
  *   - code-point-safe truncate so multi-byte characters are never split
  *     mid-sequence, with an explicit ellipsis when content is dropped.
  */
@@ -205,7 +211,8 @@ export function sanitizeClaimText(raw: string, maxChars = CLAIM_RENDER_CHAR_CAP)
   const stripped = raw
     // eslint-disable-next-line no-control-regex
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, "")
-    .replace(/[\r\n]+/g, " ")
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "")
+    .replace(/[\r\n\u2028\u2029]+/g, " ")
     .replace(/\s{2,}/g, " ")
     .trim();
   const codePoints = Array.from(stripped);
