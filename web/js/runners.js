@@ -26,9 +26,9 @@
     queryEditRunnerId: null,
   };
 
-  // Providers that expose a remote/self-host. Drives whether the Host
-  // picker is shown when the runner's API provider <select> changes.
-  const REMOTEABLE_PROVIDERS = new Set(["ollama"]);
+  function isRemoteHostProvider(provider) {
+    return provider === "ollama";
+  }
 
   // Sources where the user MUST type the workspace clone URL because the
   // issue platform itself doesn't know where the code lives. For github /
@@ -214,7 +214,12 @@
       ["Owner/Repo", [r.owner, r.repo].filter(Boolean).join(" / ") || "—"],
       ["Label filter", r.label || "(none)"],
       ["Sprint filter", r.sprint || "(none)"],
-      ["Agent", `${r.agent}${r.model ? " · " + r.model : ""}${r.apiProvider ? " · " + r.apiProvider : ""}${r.apiProviderHostId ? " @ " + (state.hosts.find((h) => h.id === r.apiProviderHostId)?.name || "(saved host)") : ""}`],
+      [
+        r.kind === "reviewer" ? "Provider" : "Agent",
+        r.kind === "reviewer"
+          ? `${r.apiProvider || "(default)"}${r.model ? " · " + r.model : ""}${r.apiProviderHostId ? " @ " + (state.hosts.find((h) => h.id === r.apiProviderHostId)?.name || "(saved host)") : ""}`
+          : `${r.agent}${r.model ? " · " + r.model : ""}${r.apiProvider ? " · " + r.apiProvider : ""}${r.apiProviderHostId ? " @ " + (state.hosts.find((h) => h.id === r.apiProviderHostId)?.name || "(saved host)") : ""}`,
+      ],
       ["Poll", `${Math.round(r.pollIntervalMs / 1000)}s`],
       ["Workspace", r.workspacePath || "(provisioned on first run)"],
     ];
@@ -379,7 +384,7 @@
   async function loadHostsForProvider(provider) {
     if (!ensureCombos()) return;
     const hostField = $("#host-field");
-    if (!REMOTEABLE_PROVIDERS.has(provider)) {
+    if (!isRemoteHostProvider(provider)) {
       // Provider doesn't support remote hosts — hide the picker, detach any
       // previously-selected host so the runner falls back to env defaults.
       hostField.hidden = true;
@@ -439,7 +444,9 @@
   function openHostModal(host) {
     const runnerForm = $("#edit-form");
     window.HostModal.open({
-      provider: runnerForm.apiProvider.value || "ollama",
+      provider: isRemoteHostProvider(runnerForm.apiProvider.value)
+        ? runnerForm.apiProvider.value
+        : "ollama",
       host,
       onSaved: async (saved) => {
         state.modelCache.delete(saved.id);
@@ -627,7 +634,9 @@
       kind,
       model: modelValue || null,
       apiProvider: form.apiProvider.value || null,
-      apiProviderHostId: form.apiProviderHostId.value || null,
+      apiProviderHostId: isRemoteHostProvider(form.apiProvider.value)
+        ? form.apiProviderHostId.value || null
+        : null,
       source: form.source.value,
       owner: form.owner.value.trim() || null,
       repo: form.repo.value.trim() || null,
