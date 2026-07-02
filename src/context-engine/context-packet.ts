@@ -1117,10 +1117,16 @@ export async function assembleContextPacket(
         const capChars = MAX_PRIOR_CLAIMS_TOKENS * 4;
         content = cps.length > capChars ? cps.slice(0, capChars).join("") + "…" : raw;
       }
+      // Re-estimate on the final content rather than assuming the cap: the
+      // char-level truncation is approximate (a 4-chars-per-token heuristic
+      // that won't line up with the real token count of the sliced text), so
+      // reporting min(tokens, cap) would under-report the budget the section
+      // actually consumes. Estimating the emitted content keeps the packet's
+      // token accounting honest.
       priorClaimsSection = {
         name: "prior_claims",
         content,
-        tokens: Math.min(tokens, MAX_PRIOR_CLAIMS_TOKENS),
+        tokens: estimateTokens(content),
         sourceCount: priorClaims.length,
       };
     }

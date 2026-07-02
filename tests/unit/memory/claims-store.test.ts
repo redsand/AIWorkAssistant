@@ -13,11 +13,13 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import os from "os";
 import path from "path";
 import fs from "fs";
+import Database from "better-sqlite3";
 import {
   ClaimsStore,
   claimsStore,
   formatClaimsSection,
   sanitizeClaimText,
+  MAX_RETRIEVED_CLAIMS,
   type KnowledgeClaim,
   type RetrievedClaim,
 } from "../../../src/memory/claims-store";
@@ -402,6 +404,263 @@ describe("ClaimsStore", () => {
       const found = reopened.allClaims().find((c) => c.id === id);
       expect(found).toBeDefined();
       expect(found?.resolution).toBe("persistent resolution");
+    } finally {
+      reopened.close();
+    }
+  });
+
+  // ── Injection-surface cap (security fix) ────────────────────────────────
+  it("retrieveClaims never returns more than MAX_RETRIEVED_CLAIMS regardless of topK", () => {
+    // Store more matching claims than the cap. All share a common term so the
+    // FTS candidate pool is large; a hostile/accidental topK far above the cap
+    // must still be clamped so the prompt-injection surface stays bounded.
+    for (let i = 0; i < MAX_RETRIEVED_CLAIMS * 3; i++) {
+      store.storeClaim({
+        query: `configure ollama embedding variant ${i}`,
+        resolution: `resolution number ${i} about ollama embeddings`,
+        cascadeLevel: "tool_research",
+        confidence: 0.8,
+        source: "web_search",
+      });
+    }
+    const results = store.retrieveClaims("configure ollama embedding", 1000, {
+      rng: seededRng(11),
+      // Ask for a huge candidate pool too — the cap must bind on the OUTPUT,
+      // not just the pool size.
+      candidatePool: 500,
+    });
+    expect(results.length).toBeLessThanOrEqual(MAX_RETRIEVED_CLAIMS);
+    expect(results.length).toBeGreaterThan(0);
+  });
+
+  it("retrieveClaims returns claims ordered by combinedScore descending", () => {
+    // With epsilon=0 there is no exploration swap, so the SA-CTS ranking is a
+    // pure combinedScore-descending sort. Store several claims that all match
+    // the query, then assert the returned combinedScores are monotonically
+    // non-increasing.
+    for (let i = 0; i < 6; i++) {
+      store.storeClaim({
+        query: `deploy pipeline step ${i} details`,
+        resolution: `deploy pipeline resolution ${i}`,
+        cascadeLevel: "teacher_verify",
+        confidence: 0.7 + i * 0.02,
+        source: "teacher",
+      });
+    }
+    const results = store.retrieveClaims("deploy pipeline step details", 6, {
+      rng: seededRng(99),
+      epsilon: 0,
+    });
+    expect(results.length).toBeGreaterThan(1);
+    for (let i = 1; i < results.length; i++) {
+      expect(results[i - 1].combinedScore).toBeGreaterThanOrEqual(
+        results[i].combinedScore,
+      );
+    }
+  });
+
+  // ── FTS5-unavailable fallback path ──────────────────────────────────────
+  it("retrieves via the fallback scan when the FTS5 index is unavailable", () => {
+    const wantId = store.storeClaim({
+      query: "configure the ollama embedding provider",
+      resolution: "Set EMBEDDING_PROVIDER=ollama in .env.",
+      cascadeLevel: "teacher_verify",
+      confidence: 0.9,
+      source: "teacher",
+    });
+    store.storeClaim({
+      query: "completely different topic about baking bread",
+      resolution: "Preheat oven to 220C.",
+      cascadeLevel: "tool_research",
+      confidence: 0.5,
+      source: "web_search",
+    });
+
+    // Simulate a SQLite build without FTS5 by dropping the virtual table. The
+    // MATCH query in fetchFtsCandidates now throws and retrieval must degrade
+    // to the in-memory word-overlap fallback rather than returning nothing.
+    store["db"]!.exec("DROP TABLE IF EXISTS claims_fts");
+
+    const results = store.retrieveClaims("configure ollama embedding provider", 5, {
+      rng: seededRng(5),
+    });
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.map((r) => r.id)).toContain(wantId);
+    // The unrelated bread claim shares no query terms, so the fallback scan
+    // (relevanceScore > 0 filter) must exclude it.
+    expect(results.map((r) => r.resolution).join(" ")).not.toContain("oven");
+  });
+
+  it("stores and prunes without throwing when FTS5 is unavailable", () => {
+    // Drop the FTS index up front so every FTS touch-point (index on insert,
+    // reindex on upsert, prune sweep) exercises its best-effort no-op path.
+    store["db"]!.exec("DROP TABLE IF EXISTS claims_fts");
+
+    const id = store.storeClaim({
+      query: "no fts insert path",
+      resolution: "resolution without an fts index",
+      cascadeLevel: "teacher_verify",
+      confidence: 0.8,
+      source: "teacher",
+    });
+    expect(id).toBeTruthy();
+    // Upsert (reindex path) must also be a no-op, not a throw.
+    expect(() =>
+      store.storeClaim({
+        query: "no fts insert path",
+        resolution: "updated resolution without an fts index",
+        cascadeLevel: "teacher_verify",
+        confidence: 0.85,
+        source: "teacher",
+      }),
+    ).not.toThrow();
+    const sixtyDaysAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
+    store["db"]!.prepare(
+      "UPDATE claims SET lastRetrievedAt = ? WHERE id = ?",
+    ).run(sixtyDaysAgo, id);
+    expect(() => store.pruneStaleClaims(30)).not.toThrow();
+    expect(store.allClaims()).toHaveLength(0);
+  });
+
+  // ── pruneStaleClaims boundary conditions ────────────────────────────────
+  it("pruneStaleClaims honors a fractional-day window on the boundary", () => {
+    const id = store.storeClaim({
+      query: "fractional window claim",
+      resolution: "r",
+      cascadeLevel: "teacher_verify",
+      confidence: 0.8,
+      source: "teacher",
+    });
+    // Aged 20 hours. A 12-hour (0.5-day) window prunes it; a 24-hour (1-day)
+    // window keeps it. Exercises the boundary just outside and just inside.
+    const twentyHoursAgo = Date.now() - 20 * 60 * 60 * 1000;
+    store["db"]!.prepare(
+      "UPDATE claims SET lastRetrievedAt = ? WHERE id = ?",
+    ).run(twentyHoursAgo, id);
+
+    expect(store.pruneStaleClaims(1)).toBe(0);
+    expect(store.allClaims().map((c) => c.id)).toContain(id);
+    expect(store.pruneStaleClaims(0.5)).toBe(1);
+    expect(store.allClaims()).toHaveLength(0);
+  });
+
+  it("pruneStaleClaims rejects non-finite and negative max-age windows", () => {
+    store.storeClaim({
+      query: "guard claim",
+      resolution: "r",
+      cascadeLevel: "teacher_verify",
+      confidence: 0.8,
+      source: "teacher",
+    });
+    expect(store.pruneStaleClaims(Number.NaN)).toBe(0);
+    expect(store.pruneStaleClaims(-5)).toBe(0);
+    expect(store.pruneStaleClaims(Number.POSITIVE_INFINITY)).toBe(0);
+    expect(store.allClaims()).toHaveLength(1);
+  });
+
+  // ── Concurrent writes from independent store instances ──────────────────
+  it("handles concurrent writes from multiple store instances on the same directory", () => {
+    // Two independent connections (proxy for two worker processes) writing to
+    // the same claims.db. WAL + busy_timeout must let both commit without
+    // corruption; every distinct claim must be readable afterward.
+    const storeB = new ClaimsStore(dir);
+    try {
+      const ids: (string | null)[] = [];
+      for (let i = 0; i < 10; i++) {
+        ids.push(
+          store.storeClaim({
+            query: `worker-a claim ${i}`,
+            resolution: `a-${i}`,
+            cascadeLevel: "teacher_verify",
+            confidence: 0.8,
+            source: "teacher",
+          }),
+        );
+        ids.push(
+          storeB.storeClaim({
+            query: `worker-b claim ${i}`,
+            resolution: `b-${i}`,
+            cascadeLevel: "tool_research",
+            confidence: 0.7,
+            source: "web_search",
+          }),
+        );
+      }
+      expect(ids.every((id) => typeof id === "string" && id.length > 0)).toBe(true);
+      // Both connections see all 20 committed rows.
+      expect(store.allClaims()).toHaveLength(20);
+      expect(storeB.allClaims()).toHaveLength(20);
+    } finally {
+      storeB.close();
+    }
+  });
+
+  // ── Schema rebuild / down-migration recovery ────────────────────────────
+  it("rebuilds the cache when the on-disk schema version is newer than supported", () => {
+    store.storeClaim({
+      query: "claim from a future build",
+      resolution: "should be discarded on rebuild",
+      cascadeLevel: "teacher_verify",
+      confidence: 0.9,
+      source: "teacher",
+    });
+    // Stamp a future schema version and close so it persists to disk.
+    store["db"]!.pragma("user_version = 99");
+    store.close();
+
+    // Reopen: migrate() sees v99 > supported and rebuilds at the current
+    // version. The stale cached claim is dropped (it regenerates), the store is
+    // functional, and user_version is reset to the supported version.
+    const reopened = new ClaimsStore(dir);
+    try {
+      expect(reopened.allClaims()).toHaveLength(0);
+      expect(reopened["db"]!.pragma("user_version", { simple: true })).toBe(1);
+      const id = reopened.storeClaim({
+        query: "post-rebuild claim",
+        resolution: "works after rebuild",
+        cascadeLevel: "teacher_verify",
+        confidence: 0.8,
+        source: "teacher",
+      });
+      expect(id).toBeTruthy();
+      const retrieved = reopened.retrieveClaims("post-rebuild claim", 5, {
+        rng: seededRng(13),
+      });
+      expect(retrieved.map((r) => r.id)).toContain(id);
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it("rebuilds the cache when a v1 migration step fails on a corrupt table", () => {
+    // Simulate a defective/incompatible claims table shipped under v1: a table
+    // named `claims` with the wrong shape and user_version left at 0 so the v1
+    // step runs. The ALTER/backfill/insert path can't reconcile it, migrate()
+    // catches the failure and rebuilds a clean v1 schema in its place.
+    const dbPath = path.join(dir, "claims.db");
+    store.close();
+    const raw = new Database(dbPath);
+    raw.exec("DROP TABLE IF EXISTS claims_fts");
+    raw.exec("DROP TABLE IF EXISTS claims");
+    // A `claims` table missing the `query` column the backfill SELECTs.
+    raw.exec("CREATE TABLE claims (id TEXT PRIMARY KEY, bogus TEXT)");
+    raw.prepare("INSERT INTO claims (id, bogus) VALUES (?, ?)").run("x", "y");
+    raw.pragma("user_version = 0");
+    raw.close();
+
+    const reopened = new ClaimsStore(dir);
+    try {
+      // Rebuild produced a clean, working store at the supported version.
+      expect(reopened["db"]!.pragma("user_version", { simple: true })).toBe(1);
+      const id = reopened.storeClaim({
+        query: "clean schema after rebuild",
+        resolution: "ok",
+        cascadeLevel: "teacher_verify",
+        confidence: 0.8,
+        source: "teacher",
+      });
+      expect(id).toBeTruthy();
+      expect(reopened.allClaims()).toHaveLength(1);
     } finally {
       reopened.close();
     }

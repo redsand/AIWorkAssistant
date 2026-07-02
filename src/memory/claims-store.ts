@@ -121,6 +121,16 @@ const MAX_RESOLUTION_CHARS = 8000;
 /** Hard cap on stored query text — queries are short by construction. */
 const MAX_QUERY_CHARS = 2000;
 
+/**
+ * Hard ceiling on how many claims a single retrieveClaims() call can return,
+ * regardless of the caller-supplied topK. Claim resolutions are an
+ * attacker-controllable channel (tool_research claims are web-sourced) that get
+ * injected into a system message, so the number of injected claims is the
+ * prompt-injection surface. Capping it bounds that surface even if a caller
+ * passes an unbounded or hostile topK.
+ */
+export const MAX_RETRIEVED_CLAIMS = 8;
+
 function clamp01(n: number): number {
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.min(1, n));
@@ -219,8 +229,13 @@ export function formatClaimsSection(claims: RetrievedClaim[]): string | null {
   ];
   for (const claim of claims) {
     const confidencePct = Math.round(clamp01(claim.confidence) * 100);
+    // Sanitize source alongside resolution: provenance is stored from the
+    // cascade (e.g. a web tool name) and is just as attacker-influenceable, so
+    // it must not be able to inject control chars or forge a section break in
+    // the rendered header. Kept short — a label, not a payload.
+    const safeSource = sanitizeClaimText(claim.source, 80);
     lines.push(
-      `- [${claim.cascadeLevel} | ${confidencePct}% | src: ${claim.source}] ` +
+      `- [${claim.cascadeLevel} | ${confidencePct}% | src: ${safeSource}] ` +
         sanitizeClaimText(claim.resolution),
     );
   }
@@ -315,12 +330,62 @@ export class ClaimsStore {
    * idempotent and additive so an existing claims.db upgrades in place. New
    * schema changes append a `if (version < N)` block and bump
    * CLAIMS_SCHEMA_VERSION — never rewrite an already-shipped step.
+   *
+   * Recovery / down-migration path: the claims store is a *rebuildable cache*
+   * (every claim can be re-derived by paying the retrieval cascade again), so a
+   * schema it can't reconcile is recovered by rebuilding from scratch rather
+   * than requiring an operator to manually delete claims.db:
+   *   - Forward-incompatible DB (on-disk user_version > CLAIMS_SCHEMA_VERSION,
+   *     e.g. opened by a newer build then rolled back) → rebuild at the current
+   *     version instead of running unknown-shape queries.
+   *   - Any migration step that throws (corrupt/defective v1 schema) → rebuild.
+   * Both cases log and drop→recreate so a defective ship has an automatic
+   * down-path, at the cost of discarding the cached claims (which regenerate).
    */
   private migrate(): void {
     if (!this.db) return;
     const db = this.db;
     const version = (db.pragma("user_version", { simple: true }) as number) ?? 0;
 
+    if (version > CLAIMS_SCHEMA_VERSION) {
+      console.warn(
+        `[ClaimsStore] on-disk schema v${version} is newer than supported ` +
+          `v${CLAIMS_SCHEMA_VERSION} (likely a rolled-back build); rebuilding ` +
+          `the claims cache at v${CLAIMS_SCHEMA_VERSION}.`,
+      );
+      this.rebuildSchema();
+      return;
+    }
+
+    try {
+      this.applyMigrations(db, version);
+    } catch (err) {
+      console.warn(
+        "[ClaimsStore] schema migration failed; rebuilding the claims cache " +
+          "(cached claims are discarded and will regenerate):",
+        err instanceof Error ? err.message : err,
+      );
+      this.rebuildSchema();
+    }
+  }
+
+  /**
+   * Drop and recreate the claims schema at the current version. Safe because
+   * the claims store is a derived cache — the cost of a rebuild is re-paying the
+   * cascade for future queries, not lost source-of-truth data. Used as the
+   * automatic down-migration/recovery path from migrate().
+   */
+  private rebuildSchema(): void {
+    if (!this.db) return;
+    const db = this.db;
+    db.exec("DROP TABLE IF EXISTS claims_fts");
+    db.exec("DROP TABLE IF EXISTS claims");
+    db.pragma("user_version = 0");
+    this.applyMigrations(db, 0);
+  }
+
+  /** Forward-only, additive migration steps keyed on the current version. */
+  private applyMigrations(db: Database.Database, version: number): void {
     if (version < 1) {
       // v1 — base table + last-retrieved index + normalized-query column for
       // dedup. queryNorm backfills for any rows created by a pre-versioning
@@ -490,7 +555,12 @@ export class ClaimsStore {
   ): RetrievedClaim[] {
     if (!this.db || !query.trim() || topK <= 0) return [];
 
-    const candidatePool = options.candidatePool ?? Math.max(topK * 4, 12);
+    // Clamp the caller's topK to the hard injection-surface ceiling. Web-sourced
+    // claim text lands in a system message, so the returned-claim count is the
+    // prompt-injection surface; MAX_RETRIEVED_CLAIMS bounds it even against a
+    // hostile or accidental unbounded topK.
+    const effectiveTopK = Math.min(Math.floor(topK), MAX_RETRIEVED_CLAIMS);
+    const candidatePool = options.candidatePool ?? Math.max(effectiveTopK * 4, 12);
     const ftsRows = this.fetchFtsCandidates(query, candidatePool);
     if (ftsRows.length === 0) return [];
 
@@ -508,7 +578,7 @@ export class ClaimsStore {
     }));
 
     const ranked = thompsonSelect(candidates, {
-      topK,
+      topK: effectiveTopK,
       epsilon: options.epsilon,
       rng: options.rng,
     });
