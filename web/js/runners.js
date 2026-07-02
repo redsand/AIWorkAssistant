@@ -615,12 +615,14 @@
     const form = e.target;
     const kind = form.kind.value;
     const isReviewer = kind === "reviewer";
+    const modelInputValue = $("#model-combo .cbx-input")?.value?.trim() || "";
+    const modelValue = modelInputValue || state.modelCombo?.getValue?.() || form.model.value.trim();
 
     // Fields common to both kinds
     const data = {
       name: form.name.value.trim(),
       kind,
-      model: form.model.value.trim() || null,
+      model: modelValue || null,
       apiProvider: form.apiProvider.value || null,
       apiProviderHostId: form.apiProviderHostId.value || null,
       source: form.source.value,

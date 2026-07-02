@@ -30,6 +30,10 @@ data/eval/*
 *.db-shm
 *.db-wal
 
+# Local report artifacts
+.report-prompt.json
+reports/
+
 # IDE
 .vscode/
 .idea/
