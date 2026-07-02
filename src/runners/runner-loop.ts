@@ -80,6 +80,15 @@ export function runnerLogPath(runnerId: string): string {
   return path.join(LOG_DIR, `${runnerId}.log`);
 }
 
+function repoLockKey(runner: Runner): string {
+  const { owner, repo } = splitGithubRepoSlug(runner.source, runner.owner, runner.repo);
+  const scopedRepo =
+    runner.source === "github" && owner && repo
+      ? `${owner}/${repo}`
+      : repo || runner.repoUrl || runner.workspacePath || runner.id;
+  return scopedRepo.trim().toLowerCase();
+}
+
 interface LoopState {
   child: child_process.ChildProcess | null;
   stopRequested: boolean;
@@ -256,6 +265,27 @@ export class RunnerLoop {
     }
 
     const startedAt = new Date().toISOString();
+    const lockRunId = `runner:${this.runnerId}`;
+    let repoLockAcquired = false;
+    if (runner.kind === "aicoder") {
+      const lock = agentRunDatabase.acquireRepoRunLock(
+        runner.source,
+        repoLockKey(runner),
+        lockRunId,
+      );
+      if (!lock.acquired) {
+        const msg = `Another aicoder run is already active for ${runner.source}/${repoLockKey(runner)}: ${lock.existingRunId}`;
+        this.appendLog(msg);
+        agentRunDatabase.setRunnerStatus(this.runnerId, "idle", {
+          lastFinishedAt: startedAt,
+          lastError: msg,
+        });
+        this.emitStatus(this.runnerId);
+        return;
+      }
+      repoLockAcquired = true;
+    }
+
     agentRunDatabase.setRunnerStatus(this.runnerId, "running", {
       lastStartedAt: startedAt,
       lastError: null,
@@ -293,20 +323,26 @@ export class RunnerLoop {
     child.stdout?.on("data", forward);
     child.stderr?.on("data", forward);
 
-    const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-      (resolve) => {
-        child.on("error", (err) => {
-          this.appendLog(`Child spawn error: ${err.message}`);
-          resolve({ code: -1, signal: null });
-        });
-        child.on("close", (code, signal) => {
-          resolve({ code, signal });
-        });
-      },
-    );
-
-    logStream.end();
-    this.state.child = null;
+    let exit: { code: number | null; signal: NodeJS.Signals | null };
+    try {
+      exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+        (resolve) => {
+          child.on("error", (err) => {
+            this.appendLog(`Child spawn error: ${err.message}`);
+            resolve({ code: -1, signal: null });
+          });
+          child.on("close", (code, signal) => {
+            resolve({ code, signal });
+          });
+        },
+      );
+    } finally {
+      logStream.end();
+      this.state.child = null;
+      if (repoLockAcquired) {
+        agentRunDatabase.releaseRepoRunLock(lockRunId);
+      }
+    }
 
     const finishedAt = new Date().toISOString();
     const summary =

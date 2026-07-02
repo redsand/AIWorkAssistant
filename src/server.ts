@@ -737,6 +737,9 @@ async function start() {
     }
     if (env.CRON_ENABLED) {
       cronEngine.start();
+      console.log("[CronEngine] started");
+    } else {
+      console.warn("[CronEngine] disabled (CRON_ENABLED=false)");
     }
     if (env.GATEWAY_ENABLED) {
       const gwDataPath = env.GATEWAY_DATA_PATH;

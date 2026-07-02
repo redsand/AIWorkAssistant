@@ -40,6 +40,18 @@ export function setOnReapCallback(cb: OnReapCallback | null): void {
   onReapCallback = cb;
 }
 
+export function reapStuckRuns(now: Date = new Date()): { count: number; sessionIds: string[] } {
+  const result = agentRunDatabase.reapStuckAicoderRuns(now);
+  if (result.count > 0 && onReapCallback && result.sessionIds.length > 0) {
+    try {
+      onReapCallback(result.sessionIds);
+    } catch (e) {
+      console.error("[AgentRunReaper] onReap callback failed:", e);
+    }
+  }
+  return result;
+}
+
 export function startStaleAgentRunReaper(): void {
   if (reaperTimer) return;
   const staleAfterMs = getStaleAfterMs();
@@ -52,11 +64,15 @@ export function startStaleAgentRunReaper(): void {
       const threshold = getStaleAfterMs();
       if (threshold === 0) return; // disabled mid-flight
       const { count, sessionIds } = agentRunDatabase.reapStaleRunningRuns(threshold);
+      const stuck = reapStuckRuns();
       if (count > 0) {
         console.log(`[AgentRunReaper] marked ${count} stuck run(s) as failed (no activity for ${threshold / 1000}s)`);
         if (onReapCallback && sessionIds.length > 0) {
           try { onReapCallback(sessionIds); } catch (e) { console.error("[AgentRunReaper] onReap callback failed:", e); }
         }
+      }
+      if (stuck.count > 0) {
+        console.log(`[AgentRunReaper] marked ${stuck.count} stuck aicoder run(s) as failed`);
       }
     } catch (err) {
       console.error("[AgentRunReaper] reap failed:", err);

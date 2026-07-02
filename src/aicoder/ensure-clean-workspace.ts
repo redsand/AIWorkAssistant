@@ -26,6 +26,7 @@ export interface EnsureCleanWorkspaceDeps {
 
   isRebaseInProgress: (workspace: string) => boolean;
   recoverFromRebase: (workspace: string) => boolean;
+  validateGitWorkspace: (workspace: string) => boolean;
   gitRun: (args: string[], cwd: string) => boolean;
   gitRunWithOutput: (
     args: string[],
@@ -42,6 +43,14 @@ export function ensureCleanWorkspace(
   deps: EnsureCleanWorkspaceDeps,
 ): boolean {
   const log = deps.logger;
+
+  if (!deps.validateGitWorkspace(deps.workspace)) {
+    log.logGit(
+      "WARN",
+      "Workspace is not a valid git repository — skipping git cleanup; commit/push recovery will preserve changed files",
+    );
+    return true;
+  }
 
   // 1. Recover from mid-rebase
   if (deps.isRebaseInProgress(deps.workspace)) {

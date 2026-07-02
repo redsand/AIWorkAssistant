@@ -34,6 +34,7 @@ import {
   gitRun as _gitRun,
   gitRunWithOutput as _gitRunWithOutput,
   getCurrentBranch as _getCurrentBranch,
+  validateGitWorkspace as _validateGitWorkspace,
   isRebaseInProgress,
   recoverFromRebase as _recoverFromRebase,
   stageAndCommit as _stageAndCommit,
@@ -248,6 +249,7 @@ const getProjectConfig = () => _getProjectConfig(WORKSPACE, runLogger);
 const gitRun = (args: string[], cwd: string) => _gitRun(args, cwd, runLogger);
 const gitRunWithOutput = (args: string[], cwd: string) => _gitRunWithOutput(args, cwd, runLogger);
 const getCurrentBranch = () => _getCurrentBranch(WORKSPACE);
+const validateGitWorkspace = (workspace: string) => _validateGitWorkspace(workspace);
 const recoverFromRebase = (cwd: string) => _recoverFromRebase(cwd, runLogger);
 const stageAndCommit = (message: string) => _stageAndCommit(message, WORKSPACE, runLogger);
 const pushBranch = (branchName: string, options: PushBranchOptions = {}) => _pushBranch(branchName, WORKSPACE, runLogger, options);
@@ -404,6 +406,7 @@ function ensureCleanWorkspaceDeps(): EnsureCleanWorkspaceDeps {
     workspace: WORKSPACE,
     isRebaseInProgress,
     recoverFromRebase,
+    validateGitWorkspace,
     gitRun,
     gitRunWithOutput: (args, cwd) => _gitRunWithOutput(args, cwd),
     stageAndCommit,

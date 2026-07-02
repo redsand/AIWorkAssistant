@@ -204,6 +204,19 @@ class AgentRunDatabase {
     // Added 2026-06-24 — per-host request timeout (seconds). Null = use the
     // provider default. Read on every chat/inference + model-list/delete call.
     this.ensureColumn("provider_hosts", "timeout_seconds", "INTEGER");
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS repo_run_locks (
+        scope_key TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        acquired_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_repo_run_locks_run_id ON repo_run_locks(run_id);
+      CREATE INDEX IF NOT EXISTS idx_repo_run_locks_expires_at ON repo_run_locks(expires_at);
+    `);
   }
 
   startRun(params: AgentRunCreateParams): AgentRun {
@@ -388,7 +401,100 @@ class AgentRunDatabase {
          WHERE status = 'running' AND last_activity_at < ?`,
       )
       .run(Math.round(staleAfterMs / 1000), new Date().toISOString(), new Date().toISOString(), cutoffIso);
+    this.releaseExpiredRepoRunLocks();
     return { count: result.changes, sessionIds };
+  }
+
+  reapStuckAicoderRuns(now: Date = new Date(), options?: {
+    stuckAfterMs?: number;
+    startupStallAfterMs?: number;
+  }): { count: number; sessionIds: string[] } {
+    const stuckAfterMs = options?.stuckAfterMs ?? 15 * 60 * 1000;
+    const startupStallAfterMs = options?.startupStallAfterMs ?? 5 * 60 * 1000;
+    const staleCutoff = new Date(now.getTime() - stuckAfterMs).toISOString();
+    const stallCutoff = new Date(now.getTime() - startupStallAfterMs).toISOString();
+
+    const rows = this.db
+      .prepare(
+        `SELECT id, session_id FROM agent_runs
+         WHERE status = 'running'
+           AND user_id = 'aicoder'
+           AND (
+             COALESCE(last_activity_at, started_at) < ?
+             OR (tool_loop_count = 0 AND COALESCE(last_activity_at, started_at) < ?)
+           )`,
+      )
+      .all(staleCutoff, stallCutoff) as Array<{ id: string; session_id: string | null }>;
+    if (rows.length === 0) {
+      this.releaseExpiredRepoRunLocks(now);
+      return { count: 0, sessionIds: [] };
+    }
+
+    const ids = rows.map((r) => r.id);
+    const placeholders = ids.map(() => "?").join(",");
+    const result = this.db
+      .prepare(
+        `UPDATE agent_runs
+         SET status = 'failed',
+             error_message = COALESCE(error_message, 'Stuck: no aicoder activity detected by watchdog'),
+             completed_at = ?,
+             cancelled_at = COALESCE(cancelled_at, ?),
+             last_activity_at = ?
+         WHERE id IN (${placeholders})`,
+      )
+      .run(now.toISOString(), now.toISOString(), now.toISOString(), ...ids);
+
+    const release = this.db.prepare("DELETE FROM repo_run_locks WHERE run_id = ?");
+    for (const id of ids) release.run(id);
+    this.releaseExpiredRepoRunLocks(now);
+
+    return {
+      count: result.changes,
+      sessionIds: rows.map((r) => r.session_id).filter((s): s is string => !!s),
+    };
+  }
+
+  acquireRepoRunLock(
+    source: string,
+    repo: string,
+    runId: string,
+    ttlMs: number = 30 * 60 * 1000,
+  ): { acquired: true } | { acquired: false; existingRunId: string } {
+    const normalizedSource = source.trim().toLowerCase();
+    const normalizedRepo = repo.trim().toLowerCase();
+    const scopeKey = `${normalizedSource}::${normalizedRepo}`;
+    const now = new Date();
+    this.releaseExpiredRepoRunLocks(now);
+
+    const existing = this.db
+      .prepare("SELECT run_id FROM repo_run_locks WHERE scope_key = ?")
+      .get(scopeKey) as { run_id: string } | undefined;
+    if (existing && existing.run_id !== runId) {
+      return { acquired: false, existingRunId: existing.run_id };
+    }
+
+    this.db
+      .prepare(
+        `INSERT INTO repo_run_locks (scope_key, source, repo, run_id, acquired_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(scope_key) DO UPDATE SET
+           run_id = excluded.run_id,
+           acquired_at = excluded.acquired_at,
+           expires_at = excluded.expires_at`,
+      )
+      .run(scopeKey, normalizedSource, normalizedRepo, runId, now.toISOString(), new Date(now.getTime() + ttlMs).toISOString());
+    return { acquired: true };
+  }
+
+  releaseRepoRunLock(runId: string): void {
+    this.db.prepare("DELETE FROM repo_run_locks WHERE run_id = ?").run(runId);
+  }
+
+  releaseExpiredRepoRunLocks(now: Date = new Date()): number {
+    const result = this.db
+      .prepare("DELETE FROM repo_run_locks WHERE expires_at < ?")
+      .run(now.toISOString());
+    return result.changes;
   }
 
   cancelRun(id: string, errorMessage = "Run cancelled by user"): void {

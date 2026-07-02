@@ -179,9 +179,14 @@ export async function removeWorktree(
 
   try {
     await spawnGit(args, cwd);
-  } catch {
     if (repoPath) {
-      await spawnGit(["worktree", "prune"], repoPath);
+      await spawnGit(["worktree", "prune"], repoPath).catch(() => undefined);
+    }
+    console.log(`[worktree] Removed worktree via git worktree remove: ${wtPath}`);
+  } catch {
+    await removeStaleWorkspaceDir(wtPath, repoPath ?? null);
+    if (repoPath) {
+      await spawnGit(["worktree", "prune"], repoPath).catch(() => undefined);
     }
   }
 }
@@ -248,6 +253,7 @@ async function removeStaleWorkspaceDir(
   if (anchorRepoPath) {
     try {
       await spawnGit(["worktree", "remove", "--force", dir], anchorRepoPath);
+      console.log(`[worktree] Removed worktree via git worktree remove: ${dir}`);
       return; // Success â€” git handled both unregister and delete
     } catch {
       // Fall through to fs.rmSync strategies
@@ -258,15 +264,19 @@ async function removeStaleWorkspaceDir(
   // handles for a few seconds after a process exits. Retry up to 3
   // times with increasing delays.
   const maxRetries = 3;
+  let lastRmError: unknown = null;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       fs.rmSync(dir, { recursive: true, force: true });
+      console.log(`[worktree] Removed worktree via fs.rmSync after retry: ${dir}`);
       return; // Success
     } catch (err) {
+      lastRmError = err;
       const code = (err as NodeJS.ErrnoException).code;
       const isEperm = code === "EPERM" || code === "ENOTEMPTY" ||
         (err instanceof Error && /EPERM|ENOTEMPTY|busy|in use/i.test(err.message));
-      if (!isEperm || attempt === maxRetries) throw err;
+      if (!isEperm) throw err;
+      if (attempt === maxRetries) break;
       // Wait before retrying: 500ms, 1000ms, 2000ms
       await new Promise((r) => setTimeout(r, 500 * attempt));
     }
@@ -286,7 +296,8 @@ async function removeStaleWorkspaceDir(
   } catch (renameErr) {
     // If even rename fails, re-throw the original-style error
     const msg = renameErr instanceof Error ? renameErr.message : String(renameErr);
-    throw new Error(`Could not remove or rename stale workspace ${dir}: ${msg}`);
+    const rmMsg = lastRmError instanceof Error ? lastRmError.message : String(lastRmError ?? "unknown removal error");
+    throw new Error(`Could not remove or rename stale workspace ${dir}: remove failed: ${rmMsg}; rename failed: ${msg}`);
   }
 }
 

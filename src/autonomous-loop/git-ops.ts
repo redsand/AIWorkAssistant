@@ -51,6 +51,130 @@ export function gitRunWithOutput(
   };
 }
 
+export function resolveGitDir(workspace: string): string | null {
+  const gitFile = path.join(workspace, ".git");
+  if (!fs.existsSync(gitFile)) return null;
+
+  try {
+    const stat = fs.statSync(gitFile);
+    if (stat.isDirectory()) return gitFile;
+
+    const content = fs.readFileSync(gitFile, "utf-8").trim();
+    const match = content.match(/^gitdir:\s*(.+)$/);
+    if (!match) return null;
+
+    const gitDir = path.resolve(path.dirname(gitFile), match[1]);
+    return fs.existsSync(gitDir) ? gitDir : null;
+  } catch {
+    return null;
+  }
+}
+
+export function validateGitWorkspace(workspace: string): boolean {
+  if (!resolveGitDir(workspace)) return false;
+  const result = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
+    cwd: workspace,
+    stdio: "pipe",
+    encoding: "utf-8",
+  });
+  return result.status === 0 && result.stdout.trim() === "true";
+}
+
+function shouldPreservePath(relativePath: string): boolean {
+  if (!relativePath || relativePath === ".git") return false;
+  const parts = relativePath.split(/[\\/]+/);
+  return !parts.includes(".git") && !parts.includes("node_modules") && !parts.includes(".aicoder");
+}
+
+function copyChangedFile(workspace: string, backupDir: string, relativePath: string, preserved: string[]): void {
+  const source = path.resolve(workspace, relativePath);
+  const normalizedRelative = path.relative(workspace, source);
+  if (
+    normalizedRelative.startsWith("..") ||
+    path.isAbsolute(normalizedRelative) ||
+    !shouldPreservePath(normalizedRelative) ||
+    !fs.existsSync(source)
+  ) {
+    return;
+  }
+
+  const stat = fs.statSync(source);
+  if (!stat.isFile()) return;
+
+  const target = path.join(backupDir, normalizedRelative);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.copyFileSync(source, target);
+  if (!preserved.includes(normalizedRelative)) preserved.push(normalizedRelative);
+}
+
+function scanWorkspaceFiles(workspace: string): string[] {
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const absolute = path.join(dir, entry.name);
+      const relative = path.relative(workspace, absolute);
+      if (!shouldPreservePath(relative)) continue;
+      if (entry.isDirectory()) {
+        walk(absolute);
+      } else if (entry.isFile()) {
+        files.push(relative);
+      }
+    }
+  };
+  walk(workspace);
+  return files;
+}
+
+export function preserveChangedFiles(workspace: string): string[] {
+  const backupDir = path.join(workspace, ".aicoder", "recovery", `${Date.now()}`);
+  fs.mkdirSync(backupDir, { recursive: true });
+  const preserved: string[] = [];
+
+  const diffResult = spawnSync("git", ["diff", "--name-only"], {
+    cwd: workspace,
+    stdio: "pipe",
+    encoding: "utf-8",
+  });
+  if (diffResult.status === 0) {
+    for (const file of diffResult.stdout.trim().split("\n").filter(Boolean)) {
+      copyChangedFile(workspace, backupDir, file, preserved);
+    }
+  }
+
+  const untrackedResult = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], {
+    cwd: workspace,
+    stdio: "pipe",
+    encoding: "utf-8",
+  });
+  if (untrackedResult.status === 0) {
+    for (const file of untrackedResult.stdout.trim().split("\n").filter(Boolean)) {
+      copyChangedFile(workspace, backupDir, file, preserved);
+    }
+  }
+
+  if (diffResult.status !== 0 && untrackedResult.status !== 0) {
+    for (const file of scanWorkspaceFiles(workspace)) {
+      copyChangedFile(workspace, backupDir, file, preserved);
+    }
+  }
+
+  return preserved;
+}
+
+export function recoverInvalidWorkspace(
+  workspace: string,
+  logger: PipelineLogger = noop,
+): string | null {
+  logger.logGit("WARN", `Workspace is not a valid git repository — preserving changes: ${workspace}`);
+  try {
+    const preserved = preserveChangedFiles(workspace);
+    logger.logGit("Recovery", `Preserved ${preserved.length} file(s) under ${path.join(workspace, ".aicoder", "recovery")}`);
+  } catch (err) {
+    logger.logError(`Workspace recovery backup failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return null;
+}
+
 // ── Branch state ──────────────────────────────────────────────────────────────
 
 export function getCurrentBranch(workspace: string): string | null {
@@ -275,6 +399,12 @@ export function stageAndCommit(
   workspace: string,
   logger: PipelineLogger = noop,
 ): boolean {
+  if (!validateGitWorkspace(workspace)) {
+    recoverInvalidWorkspace(workspace, logger);
+    logger.logError(`Workspace is not a valid git repository: ${workspace}`);
+    return false;
+  }
+
   if (!gitRun(["add", "--all"], workspace, logger)) {
     logger.logGit("git add --all failed — retrying with tracked-only + new files", "");
     gitRun(["add", "-u"], workspace, logger);
@@ -364,7 +494,13 @@ export function pushBranch(
   logger: PipelineLogger = noop,
   options: PushBranchOptions = {},
 ): boolean {
-  ensureOriginRemote(workspace, logger);
+  if (!validateGitWorkspace(workspace)) {
+    recoverInvalidWorkspace(workspace, logger);
+    logger.logError(`Cannot push — workspace is not a valid git repository: ${workspace}`);
+    return false;
+  }
+
+  if (!ensureOriginRemote(workspace, logger)) return false;
   const args = options.forceWithLease
     ? ["push", "--force-with-lease", "origin", branchName]
     : options.force

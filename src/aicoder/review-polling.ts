@@ -44,6 +44,16 @@ export interface GitLabReviewPollClient {
   }>;
 }
 
+function humanReviewCommentHasActionableFindings(body: string): boolean {
+  return (
+    /\b(src|tests|scripts|web|server)\/[\w./-]+\.(ts|tsx|js|jsx|mjs|cjs|py|json|md)\b/i.test(body) ||
+    /\b[\w.-]+\.(ts|tsx|js|jsx|mjs|cjs|py|json|md):\d+\b/i.test(body) ||
+    /\b(findings?|must fix|blocking|bug|security|test gap|fix):/i.test(body) ||
+    body.includes("### Findings") ||
+    body.includes("Findings (must fix)")
+  );
+}
+
 /**
  * Poll a GitHub PR for one of the review-marker comments. Resolves when
  * any terminal state is reached (merged, closed, passed, failed, etc.).
@@ -89,7 +99,9 @@ export async function pollForReviewResult(
         if (body.includes(REVIEW_FAILED_MARKER)) return "failed";
         if (body.includes(REVIEW_POSTPONED_MARKER)) return "postponed";
         if (body.includes(REVIEW_MERGE_CONFLICT_MARKER)) return "conflict";
-        if (body.includes(REVIEW_HUMAN_REVIEW_MARKER)) return "human_review";
+        if (body.includes(REVIEW_HUMAN_REVIEW_MARKER)) {
+          return humanReviewCommentHasActionableFindings(body) ? "failed" : "human_review";
+        }
       }
     } catch {
       // Comments might not be available
@@ -130,7 +142,9 @@ export async function pollForGitLabReviewResult(
         if (body.includes(REVIEW_FAILED_MARKER)) return "failed";
         if (body.includes(REVIEW_POSTPONED_MARKER)) return "postponed";
         if (body.includes(REVIEW_MERGE_CONFLICT_MARKER)) return "conflict";
-        if (body.includes(REVIEW_HUMAN_REVIEW_MARKER)) return "human_review";
+        if (body.includes(REVIEW_HUMAN_REVIEW_MARKER)) {
+          return humanReviewCommentHasActionableFindings(body) ? "failed" : "human_review";
+        }
         if (
           note.author?.username !== "aicoder" &&
           note.author?.username !== "AiRemoteCoder"

@@ -10,6 +10,9 @@ import {
   isRebaseInProgress,
   getConflictFiles,
   stageAndCommit,
+  validateGitWorkspace,
+  resolveGitDir,
+  preserveChangedFiles,
   resolveBaseBranch,
   recoverFromRebase,
   getBranchModifiedFiles,
@@ -131,6 +134,58 @@ describe("stageAndCommit", () => {
     fs.writeFileSync(path.join(repoDir, "init.txt"), "modified");
     const result = stageAndCommit("modify init", repoDir);
     expect(result).toBe(true);
+  });
+
+  it("returns false immediately when workspace is not a git repo", () => {
+    const nonRepo = fs.mkdtempSync(path.join(os.tmpdir(), "non-repo-"));
+    try {
+      fs.writeFileSync(path.join(nonRepo, "work.txt"), "preserve me");
+      expect(stageAndCommit("should not commit", nonRepo)).toBe(false);
+      expect(fs.existsSync(path.join(nonRepo, ".aicoder", "recovery"))).toBe(true);
+    } finally {
+      fs.rmSync(nonRepo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("workspace validation and preservation", () => {
+  it("validates a normal git workspace and resolves its git dir", () => {
+    expect(validateGitWorkspace(repoDir)).toBe(true);
+    expect(resolveGitDir(repoDir)).toBe(path.join(repoDir, ".git"));
+  });
+
+  it("returns false for a directory without .git", () => {
+    const nonRepo = fs.mkdtempSync(path.join(os.tmpdir(), "non-repo-"));
+    try {
+      expect(validateGitWorkspace(nonRepo)).toBe(false);
+      expect(resolveGitDir(nonRepo)).toBeNull();
+    } finally {
+      fs.rmSync(nonRepo, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null when a worktree .git file points at a missing gitdir", () => {
+    const broken = fs.mkdtempSync(path.join(os.tmpdir(), "broken-worktree-"));
+    try {
+      fs.writeFileSync(path.join(broken, ".git"), "gitdir: /path/that/does/not/exist");
+      expect(resolveGitDir(broken)).toBeNull();
+      expect(validateGitWorkspace(broken)).toBe(false);
+    } finally {
+      fs.rmSync(broken, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves changed and untracked files into a recovery directory", () => {
+    fs.writeFileSync(path.join(repoDir, "init.txt"), "changed");
+    fs.writeFileSync(path.join(repoDir, "new.txt"), "new");
+    const preserved = preserveChangedFiles(repoDir);
+    expect(preserved).toEqual(expect.arrayContaining(["init.txt", "new.txt"]));
+    const recoveryRoot = path.join(repoDir, ".aicoder", "recovery");
+    const recoveryDirs = fs.readdirSync(recoveryRoot);
+    expect(recoveryDirs.length).toBeGreaterThan(0);
+    const latest = path.join(recoveryRoot, recoveryDirs[0]);
+    expect(fs.readFileSync(path.join(latest, "init.txt"), "utf-8")).toBe("changed");
+    expect(fs.readFileSync(path.join(latest, "new.txt"), "utf-8")).toBe("new");
   });
 });
 

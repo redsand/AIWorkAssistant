@@ -4,6 +4,7 @@ import crypto from "crypto";
 import { env } from "../config/env";
 import { parseSchedule, shouldFireCron, nextFireTime, type ParsedSchedule } from "./cron-parser";
 import { runJob, type JobRunnerDependencies } from "./job-runner";
+import { reapStuckRuns } from "../agent-runs/reaper";
 
 export interface CronJob {
   id: string;
@@ -131,6 +132,10 @@ export class CronEngine {
     if (!this.acquireLock()) return;
     try {
       const now = this.deps.now();
+      const reaped = reapStuckRuns(now);
+      if (reaped.count > 0) {
+        console.log(`[CronEngine] Reaped ${reaped.count} stuck aicoder run(s) before cron jobs`);
+      }
       const jobs = this.readJobs();
 
       for (const job of jobs) {

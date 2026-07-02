@@ -565,4 +565,32 @@ describe("AgentRunDatabase", () => {
       expect(run!.cancelledAt).toBeNull();
     });
   });
+
+  describe("repo run locks and stuck aicoder reaping", () => {
+    it("allows only one active lock per source/repo and releases it by run id", () => {
+      expect(db.acquireRepoRunLock("github", "redsand/AIWorkAssistant", "run-1").acquired).toBe(true);
+      const blocked = db.acquireRepoRunLock("github", "redsand/AIWorkAssistant", "run-2");
+      expect(blocked).toEqual({ acquired: false, existingRunId: "run-1" });
+
+      db.releaseRepoRunLock("run-1");
+      expect(db.acquireRepoRunLock("github", "redsand/AIWorkAssistant", "run-2").acquired).toBe(true);
+    });
+
+    it("reaps startup-stalled aicoder runs and releases their repo locks", () => {
+      const run = db.startRun({ userId: "aicoder", mode: "code", sessionId: "s1" });
+      expect(db.acquireRepoRunLock("github", "redsand/AIWorkAssistant", run.id).acquired).toBe(true);
+
+      const raw = new Database(path.join(tmpDir, "test.db"));
+      const old = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      raw.prepare("UPDATE agent_runs SET started_at = ?, last_activity_at = ?, tool_loop_count = 0 WHERE id = ?")
+        .run(old, old, run.id);
+      raw.close();
+
+      const result = db.reapStuckAicoderRuns(new Date());
+      expect(result.count).toBe(1);
+      expect(result.sessionIds).toEqual(["s1"]);
+      expect(db.getRun(run.id)?.status).toBe("failed");
+      expect(db.acquireRepoRunLock("github", "redsand/AIWorkAssistant", "run-2").acquired).toBe(true);
+    });
+  });
 });
