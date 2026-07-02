@@ -1,4 +1,4 @@
-import * as child_process from "node:child_process";
+﻿import * as child_process from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -231,6 +231,65 @@ export async function isClean(worktreePath: string): Promise<boolean> {
   return stdout.trim() === "";
 }
 
+/**
+ * Remove a stale workspace directory using multiple strategies.
+ * On Windows, file handles from crashed processes can cause EPERM errors
+ * on fs.rmSync. We try git worktree remove first (which handles the
+ * .git/worktrees registration), then retry fs.rmSync with delays, and
+ * finally fall back to renaming the directory out of the way.
+ */
+async function removeStaleWorkspaceDir(
+  dir: string,
+  anchorRepoPath: string | null,
+): Promise<void> {
+  // Strategy 1: Try git worktree remove --force from the anchor repo.
+  // This properly unregisters the worktree from .git/worktrees/ AND
+  // deletes the directory. Works even when the .git file exists.
+  if (anchorRepoPath) {
+    try {
+      await spawnGit(["worktree", "remove", "--force", dir], anchorRepoPath);
+      return; // Success â€” git handled both unregister and delete
+    } catch {
+      // Fall through to fs.rmSync strategies
+    }
+  }
+
+  // Strategy 2: fs.rmSync with retry-on-EPERM. Windows may hold file
+  // handles for a few seconds after a process exits. Retry up to 3
+  // times with increasing delays.
+  const maxRetries = 3;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return; // Success
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      const isEperm = code === "EPERM" || code === "ENOTEMPTY" ||
+        (err instanceof Error && /EPERM|ENOTEMPTY|busy|in use/i.test(err.message));
+      if (!isEperm || attempt === maxRetries) throw err;
+      // Wait before retrying: 500ms, 1000ms, 2000ms
+      await new Promise((r) => setTimeout(r, 500 * attempt));
+    }
+  }
+
+  // Strategy 3: Rename the stale directory out of the way. This lets
+  // provisioning proceed immediately. The renamed directory will be
+  // cleaned up by the kanban-worktree-cleanup scheduler or manually.
+  // Use a timestamp suffix to avoid collisions.
+  const trashDir = `${dir}.stale-${Date.now()}`;
+  try {
+    fs.renameSync(dir, trashDir);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[worktree] Could not delete stale ${dir}; renamed to ${trashDir} for async cleanup`,
+    );
+  } catch (renameErr) {
+    // If even rename fails, re-throw the original-style error
+    const msg = renameErr instanceof Error ? renameErr.message : String(renameErr);
+    throw new Error(`Could not remove or rename stale workspace ${dir}: ${msg}`);
+  }
+}
+
 function spawnAny(
   cmd: string,
   args: string[],
@@ -289,7 +348,7 @@ export async function ensurePersistentWorktree(opts: {
     }
     // Always prune the anchor's stale worktree registrations BEFORE we
     // try to add. The most common failure isn't a left-behind directory
-    // (the rmSync below covers that) — it's git remembering a now-gone
+    // (the rmSync below covers that) â€” it's git remembering a now-gone
     // worktree path via `.git/worktrees/<id>` so `worktree add` aborts
     // with "missing but already registered worktree". Running prune
     // here makes provisioning self-heal across runner deletes,
@@ -303,18 +362,24 @@ export async function ensurePersistentWorktree(opts: {
       try {
         await spawnGit(["worktree", "prune"], anchorForPrune);
       } catch {
-        // Best-effort — if prune itself fails, the worktree-add retry
+        // Best-effort â€” if prune itself fails, the worktree-add retry
         // path below will still try `-f` as a last resort.
       }
     }
     // Stale-directory recovery: a prior provision attempt may have
-    // created `dir` but failed before writing `.git`. `git worktree add`
+    // created `dir` but failed before writing `.git`, or a prior runner
+    // process crashed leaving file handles locked. `git worktree add`
     // and `git clone` both refuse to operate on a non-empty existing
-    // path. Wipe the orphan and retry — there's nothing in it we want
-    // since it's not a real worktree.
+    // path. Try multiple strategies to clear the path:
+    //   1. git worktree remove --force (properly unregisters + deletes)
+    //   2. fs.rmSync with retry-on-EPERM (Windows releases handles after
+    //      process exit; a 2-second wait often resolves the lock)
+    //   3. Rename the stale dir out of the way so provisioning can proceed
+    //      (the renamed dir gets cleaned up on the next cycle or by the
+    //      kanban-worktree-cleanup scheduler)
     if (fs.existsSync(dir)) {
       try {
-        fs.rmSync(dir, { recursive: true, force: true });
+        await removeStaleWorkspaceDir(dir, anchorForPrune);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         throw new Error(
@@ -326,7 +391,7 @@ export async function ensurePersistentWorktree(opts: {
     //
     //   1. If the user has a local clone whose origin matches our repoUrl
     //      sitting next to .kanban-worktrees, `git worktree add` from there.
-    //      No network, no auth required — git treats it as a local op. This
+    //      No network, no auth required â€” git treats it as a local op. This
     //      is exactly what the existing kanban worktree feature does and
     //      why kanban "just works" while a raw clone here used to fail with
     //      "Host key verification failed."
@@ -338,13 +403,13 @@ export async function ensurePersistentWorktree(opts: {
     const localAnchor = findLocalCloneForRemote(opts.repoUrl, searchRoot);
     if (localAnchor) {
       // Make sure the anchor has the latest base branch fetched before we
-      // create a worktree off it. Best-effort — if fetch fails (e.g. the
+      // create a worktree off it. Best-effort â€” if fetch fails (e.g. the
       // anchor's origin remote uses SSH keys not present here) we still
       // try the worktree add against whatever ref is local.
       try {
         await spawnGit(["fetch", "origin", baseBranch], localAnchor);
       } catch {
-        // Non-fatal — there may already be a local origin/<baseBranch> ref.
+        // Non-fatal â€” there may already be a local origin/<baseBranch> ref.
       }
       // --detach is mandatory here: git refuses to check out the same
       // branch in two worktrees, so if the anchor is already on master,
@@ -359,7 +424,7 @@ export async function ensurePersistentWorktree(opts: {
         );
       } catch (err) {
         // Last-ditch retry: if prune above didn't clear a leftover
-        // registration (rare — e.g. .git/worktrees/<id> file held open
+        // registration (rare â€” e.g. .git/worktrees/<id> file held open
         // by another process during the prune attempt), force the add.
         // "-f" overrides "missing but already registered" without
         // touching unrelated worktrees. Re-throw the original error if
@@ -377,7 +442,7 @@ export async function ensurePersistentWorktree(opts: {
       }
     } else {
       const cloneUrl = injectGitCredentials(opts.repoUrl);
-      // Never log the credentialed URL — pipe through redactCredentials.
+      // Never log the credentialed URL â€” pipe through redactCredentials.
       // eslint-disable-next-line no-console
       console.log(
         `[worktree] No local clone of ${opts.repoUrl} found in ${searchRoot}; ` +
@@ -393,7 +458,7 @@ export async function ensurePersistentWorktree(opts: {
     }
   }
 
-  // Per-cycle refresh — runs every invocation regardless of how the
+  // Per-cycle refresh â€” runs every invocation regardless of how the
   // workspace was provisioned. Never call `git checkout <baseBranch>` here:
   // if this workspace was created as a worktree from a local anchor, the
   // anchor already holds that branch and the checkout would fail with
