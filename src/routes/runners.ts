@@ -465,7 +465,7 @@ export async function runnerRoutes(fastify: FastifyInstance) {
       request.params.id,
     );
     if (dupErr) return reply.code(409).send({ error: dupErr });
-    const updated = runnerManager.update(request.params.id, body);
+    const updated = await runnerManager.update(request.params.id, body);
     if (!updated) return reply.code(404).send({ error: "Runner not found" });
     return updated;
   });

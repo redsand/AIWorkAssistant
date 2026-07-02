@@ -51,7 +51,7 @@ class RunnerManager {
     return runner;
   }
 
-  update(id: string, patch: RunnerUpdateParams): Runner | null {
+  async update(id: string, patch: RunnerUpdateParams): Promise<Runner | null> {
     const before = agentRunDatabase.getRunner(id);
     if (!before) return null;
     const updated = agentRunDatabase.updateRunner(id, patch);
@@ -67,8 +67,10 @@ class RunnerManager {
       // Pause = let the current cycle finish, then exit at the boundary.
       // We don't SIGTERM here — that's `stop`.
       this.loops.get(id)?.runNow(); // wake the sleep so the loop notices the pause
+    } else if (updated.enabled) {
+      await this.restartEnabledLoop(id);
     }
-    return updated;
+    return agentRunDatabase.getRunner(id);
   }
 
   /** Manually enable + start the loop. Idempotent. */
@@ -159,6 +161,28 @@ class RunnerManager {
           this.loops.delete(id);
         }
       });
+  }
+
+  private async restartEnabledLoop(id: string): Promise<void> {
+    const runner = agentRunDatabase.getRunner(id);
+    if (!runner?.enabled) return;
+
+    const loop = this.loops.get(id);
+    if (loop) {
+      agentRunDatabase.setRunnerStatus(id, "stopping", {
+        lastError: "Restarting runner to apply saved configuration",
+      });
+      runnerEvents.emitStatus(agentRunDatabase.getRunner(id)!);
+      loop.stop();
+      await loop.done;
+      if (this.loops.get(id) === loop) {
+        this.loops.delete(id);
+      }
+    }
+
+    if (!this.loops.has(id)) {
+      this.spawnLoop(id);
+    }
   }
 }
 
