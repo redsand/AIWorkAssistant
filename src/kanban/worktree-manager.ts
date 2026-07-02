@@ -346,9 +346,24 @@ export async function ensurePersistentWorktree(opts: {
     ?? (opts.anchorRepoPath
         ? path.join(opts.anchorRepoPath, "..", ".kanban-worktrees")
         : path.join(process.cwd(), "..", ".kanban-worktrees"));
-  const dir = path.resolve(path.join(root, `runner-${opts.runnerId}`));
+  const canonicalDir = path.resolve(path.join(root, `runner-${opts.runnerId}`));
+  let dir = canonicalDir;
 
-  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  fs.mkdirSync(path.dirname(canonicalDir), { recursive: true });
+
+  if (!fs.existsSync(path.join(canonicalDir, ".git"))) {
+    const prefix = `runner-${opts.runnerId}-reprovision-`;
+    const replacement = fs.existsSync(root)
+      ? fs.readdirSync(root, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory() && entry.name.startsWith(prefix))
+          .map((entry) => path.resolve(path.join(root, entry.name)))
+          .filter((candidate) => fs.existsSync(path.join(candidate, ".git")))
+          .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0]
+      : undefined;
+    if (replacement) {
+      dir = replacement;
+    }
+  }
 
   const isRepo = fs.existsSync(path.join(dir, ".git"));
   if (!isRepo) {
@@ -393,9 +408,14 @@ export async function ensurePersistentWorktree(opts: {
         await removeStaleWorkspaceDir(dir, anchorForPrune);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(
-          `Stale workspace ${dir} could not be removed before re-provisioning: ${msg}`,
+        const replacementDir = path.resolve(
+          path.join(root, `runner-${opts.runnerId}-reprovision-${Date.now()}`),
         );
+        console.warn(
+          `[worktree] Stale workspace ${dir} could not be removed before re-provisioning: ${msg}. ` +
+            `Provisioning replacement workspace ${replacementDir}`,
+        );
+        dir = replacementDir;
       }
     }
     // Two-strategy provisioning (see src/util/git-auth.ts header):
