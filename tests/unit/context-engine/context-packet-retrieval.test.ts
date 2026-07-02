@@ -1039,4 +1039,53 @@ describe("assembleContextPacket retrieval and context sections", () => {
     expect(packet.diagnostics.stageTimings.claimsRetrieveMs).toBeGreaterThan(0);
     expect(packet.diagnostics.claimsAcquisition?.retrievedCount).toBe(1);
   });
+
+  // Regression: prior_claims must have its own budget slot. Before the fix,
+  // DEFAULT_SLOT_DEFINITIONS/V2_SLOT_DEFINITIONS had no "prior_claims" entry,
+  // so enforceBudget() silently fell back to UNKNOWN_SECTION_TOKEN_CAP (200
+  // tokens / ~360 chars) instead of the section's documented ~400-token
+  // budget. This content is 450 chars: it fits under the dedicated slot's
+  // allocation (~592 chars at providerMaxTokens=8192/toolTokens=1024) but
+  // would be truncated under the old unbudgeted fallback.
+  it("allocates prior_claims its own budget slot instead of the unknown-section fallback cap", async () => {
+    mockEnv.CLAIMKIT_ENABLED = false;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = false;
+    const tailMarker = "END-OF-RESOLUTION-MARKER";
+    const filler = "x".repeat(450 - tailMarker.length - 1);
+    const longResolution = `${filler} ${tailMarker}`;
+    mockClaimsStoreRetrieve.mockReturnValue([
+      {
+        id: "prior-long-1",
+        query: "auth runbook",
+        resolution: longResolution,
+        cascadeLevel: "teacher_verify",
+        confidence: 0.9,
+        source: "teacher:glm-5.2",
+        alpha: 3,
+        beta: 1,
+        createdAt: new Date(),
+        lastRetrievedAt: new Date(),
+        sampledUtility: 0.8,
+        similarity: 0.85,
+        combinedScore: 0.68,
+        explored: false,
+      },
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    const priorKnowledgeMessage = packet.messages.find(
+      (m) => m.role === "system" && m.content?.includes("PRIOR KNOWLEDGE"),
+    );
+    expect(priorKnowledgeMessage).toBeDefined();
+    expect(priorKnowledgeMessage?.content).toContain(tailMarker);
+    expect(priorKnowledgeMessage?.content).not.toContain("[truncated]");
+  });
 });

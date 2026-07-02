@@ -381,15 +381,25 @@ export const DEFAULT_SLOT_DEFINITIONS: BudgetSlotDefinition[] = [
   // about a specific entity, this section should never be the first thing
   // squeezed for budget.
   { name: "entity_claims", priority: 70, fraction: 0.05, overflowTarget: "claimkit_evidence" },
+  // prior_claims (issue #247): durable cascade resolutions retrieved before
+  // the ClaimKit probe. Sits just above claimkit_evidence in priority (it's
+  // already-verified prior knowledge) but below entity_claims (exact facts
+  // still win). Without an explicit slot this section falls through to
+  // enforceBudget's generic 200-token unknown-section cap instead of its
+  // documented ~400-token content budget (see MAX_PRIOR_CLAIMS_TOKENS in
+  // context-packet.ts).
+  { name: "prior_claims", priority: 58, fraction: 0.07, overflowTarget: "claimkit_evidence" },
   { name: "health", priority: 20, fraction: 0.05, overflowTarget: null },
 ];
 
 export const V2_SLOT_DEFINITIONS: BudgetSlotDefinition[] = [
   { name: "system", priority: 100, fraction: 0.18, overflowTarget: "history" },
   { name: "history", priority: 80, fraction: 0.23, overflowTarget: "documents" },
-  { name: "documents", priority: 60, fraction: 0.18, overflowTarget: "graph" },
+  { name: "documents", priority: 60, fraction: 0.13, overflowTarget: "graph" },
   { name: "claimkit_evidence", priority: 55, fraction: 0.12, overflowTarget: "documents" },
   { name: "entity_claims", priority: 70, fraction: 0.08, overflowTarget: "claimkit_evidence" },
+  // prior_claims (issue #247): see the matching comment on DEFAULT_SLOT_DEFINITIONS.
+  { name: "prior_claims", priority: 58, fraction: 0.05, overflowTarget: "claimkit_evidence" },
   { name: "graph", priority: 40, fraction: 0.07, overflowTarget: "health" },
   { name: "recent_sessions", priority: 35, fraction: 0.04, overflowTarget: "graph" },
   { name: "health", priority: 20, fraction: 0.03, overflowTarget: null },
