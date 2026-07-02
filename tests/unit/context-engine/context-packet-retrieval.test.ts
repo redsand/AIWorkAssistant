@@ -35,6 +35,7 @@ const mockSaveLiveComparison = vi.fn();
 const mockCascadeRun = vi.fn();
 const mockClaimsStoreRetrieve = vi.fn();
 const mockClaimsStoreStore = vi.fn();
+const mockFormatClaimsSection = vi.fn<(claims: unknown[]) => string | null>();
 
 const mockEnv = {
   AI_PROVIDER: "test",
@@ -167,7 +168,7 @@ function installMocks() {
       retrieveClaims: mockClaimsStoreRetrieve,
       storeClaim: mockClaimsStoreStore,
     },
-    formatClaimsSection: vi.fn(() => null),
+    formatClaimsSection: mockFormatClaimsSection,
   }));
 }
 
@@ -244,6 +245,17 @@ describe("assembleContextPacket retrieval and context sections", () => {
     mockClaimsStoreRetrieve.mockReturnValue([]);
     mockClaimsStoreStore.mockReset();
     mockClaimsStoreStore.mockReturnValue(null);
+    mockFormatClaimsSection.mockReset();
+    // Default: render a simple untrusted-framed section from whatever claims
+    // were retrieved so injection tests exercise the real message path.
+    mockFormatClaimsSection.mockImplementation((claims: unknown[]) =>
+      claims.length === 0
+        ? null
+        : "=== PRIOR KNOWLEDGE (untrusted reference) ===\n" +
+          claims
+            .map((c) => `- ${(c as { resolution: string }).resolution}`)
+            .join("\n"),
+    );
   });
 
   it("assembles retrieved knowledge, code, graph, memory, sessions, and health context", async () => {
@@ -764,27 +776,97 @@ describe("assembleContextPacket retrieval and context sections", () => {
     expect(packet.diagnostics.documentsRetrieved).toBeGreaterThan(0);
   });
 
-  // Finding #3 rework: when fell_back_to_rag fires with an empty probe answer
-  // the resolution is meaningless. Persisting it would create a claim that
-  // matches anything (FTS sees empty resolution as universal match) and
-  // surfaces as "PRIOR KNOWLEDGE" with no signal on future similar queries.
-  // The skip must be visible in the diagnostics so a downstream dashboard
-  // can tell "no claim attempted" from "claim attempted but rejected."
-  it("skips persisting a fell_back_to_rag claim when the probe answer is empty", async () => {
+  // Critical rework (PR #251 findings): the durable claim must store the
+  // cascade's VERIFIED resolution text, not the low-confidence ClaimKit probe
+  // answer that triggered escalation. The probe answer was, by definition, weak
+  // enough to require the cascade; persisting it would recycle a bad answer.
+  it("persists a teacher_confirmed claim using the cascade resolution text, not the probe answer", async () => {
     mockEnv.CLAIMKIT_ENABLED = true;
     mockEnv.CLAIMKIT_FIRST_ROUTING = true;
     mockEnv.CASCADE_ENABLED = true;
     mockClaimKitAdapter.isAvailable.mockReturnValue(true);
     mockClaimKitAdapter.initialize.mockResolvedValue(true);
-    mockClaimKitAdapter.query.mockResolvedValue({
-      ...ckResult(0.6, "partially-answerable"),
-      answer: "   ",
+    // The probe answer is "ClaimKit structured answer." — it must NOT be what
+    // gets stored. The teacher endorsed this candidate at high confidence.
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.6, "partially-answerable"));
+    mockCascadeRun.mockResolvedValue({
+      level: "teacher_verify",
+      tokensUsed: 950,
+      confidence: 0.9,
+      outcome: "teacher_confirmed",
+      resolution: "ClaimKit structured answer.",
     });
+    mockClaimsStoreStore.mockReturnValue("teacher-claim-1");
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockClaimsStoreStore).toHaveBeenCalledTimes(1);
+    const stored = mockClaimsStoreStore.mock.calls[0][0];
+    expect(stored.resolution).toBe("ClaimKit structured answer.");
+    expect(stored.cascadeLevel).toBe("teacher_verify");
+    expect(stored.confidence).toBe(0.9);
+    expect(stored.source).toBe("teacher:default");
+    expect(packet.diagnostics.claimsAcquisition?.storedClaimId).toBe("teacher-claim-1");
+    expect(packet.diagnostics.claimsAcquisition?.skippedClaimReason).toBeNull();
+  });
+
+  it("persists a tool_confirmed claim using the web evidence as the resolution", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CASCADE_ENABLED = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.4, "answerable"));
+    mockCascadeRun.mockResolvedValue({
+      level: "tool_research",
+      tokensUsed: 1800,
+      confidence: 0.88,
+      outcome: "tool_confirmed",
+      resolution: "Web evidence: the deploy pipeline runs deploy.sh nightly.",
+    });
+    mockClaimsStoreStore.mockReturnValue("tool-claim-1");
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "deploy process",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockClaimsStoreStore).toHaveBeenCalledTimes(1);
+    const stored = mockClaimsStoreStore.mock.calls[0][0];
+    expect(stored.resolution).toBe(
+      "Web evidence: the deploy pipeline runs deploy.sh nightly.",
+    );
+    expect(stored.cascadeLevel).toBe("tool_research");
+    expect(stored.source).toBe("web_search");
+    expect(packet.diagnostics.claimsAcquisition?.storedClaimId).toBe("tool-claim-1");
+  });
+
+  // fell_back_to_rag carries no verified resolution (full RAG owns the answer),
+  // so nothing is persisted — no claim attempt at all, skippedClaimReason null.
+  it("does not persist a claim for a fell_back_to_rag outcome", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CASCADE_ENABLED = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.6, "partially-answerable"));
     mockCascadeRun.mockResolvedValue({
       level: "full_rag",
       tokensUsed: 2400,
       confidence: 0.3,
       outcome: "fell_back_to_rag",
+      resolution: "",
     });
     mockKnowledgeSearch.mockReturnValue([
       knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
@@ -801,12 +883,10 @@ describe("assembleContextPacket retrieval and context sections", () => {
 
     expect(mockClaimsStoreStore).not.toHaveBeenCalled();
     expect(packet.diagnostics.claimsAcquisition?.storedClaimId).toBeNull();
-    expect(packet.diagnostics.claimsAcquisition?.skippedClaimReason).toBe(
-      "empty_probe_answer",
-    );
+    expect(packet.diagnostics.claimsAcquisition?.skippedClaimReason).toBeNull();
   });
 
-  it("skips persisting a fell_back_to_rag claim when the cascade confidence collapses to ~0", async () => {
+  it("skips persisting a teacher/tool outcome when the resolution text is empty", async () => {
     mockEnv.CLAIMKIT_ENABLED = true;
     mockEnv.CLAIMKIT_FIRST_ROUTING = true;
     mockEnv.CASCADE_ENABLED = true;
@@ -814,10 +894,44 @@ describe("assembleContextPacket retrieval and context sections", () => {
     mockClaimKitAdapter.initialize.mockResolvedValue(true);
     mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.6, "partially-answerable"));
     mockCascadeRun.mockResolvedValue({
-      level: "full_rag",
-      tokensUsed: 2400,
+      level: "tool_research",
+      tokensUsed: 1800,
+      confidence: 0.85,
+      outcome: "tool_confirmed",
+      resolution: "   ",
+    });
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockClaimsStoreStore).not.toHaveBeenCalled();
+    expect(packet.diagnostics.claimsAcquisition?.skippedClaimReason).toBe(
+      "empty_resolution",
+    );
+  });
+
+  it("skips persisting a teacher/tool outcome when confidence collapses below the floor", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CASCADE_ENABLED = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.6, "partially-answerable"));
+    mockCascadeRun.mockResolvedValue({
+      level: "teacher_verify",
+      tokensUsed: 950,
       confidence: 0.01,
-      outcome: "fell_back_to_rag",
+      outcome: "teacher_confirmed",
+      resolution: "some text that would otherwise be stored",
     });
     mockKnowledgeSearch.mockReturnValue([
       knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
@@ -838,23 +952,30 @@ describe("assembleContextPacket retrieval and context sections", () => {
     );
   });
 
-  it("persists a fell_back_to_rag claim when the probe answer is non-empty and confidence is non-trivial", async () => {
-    mockEnv.CLAIMKIT_ENABLED = true;
-    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
-    mockEnv.CASCADE_ENABLED = true;
-    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
-    mockClaimKitAdapter.initialize.mockResolvedValue(true);
-    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.6, "partially-answerable"));
-    mockCascadeRun.mockResolvedValue({
-      level: "full_rag",
-      tokensUsed: 2400,
-      confidence: 0.35,
-      outcome: "fell_back_to_rag",
-    });
-    mockKnowledgeSearch.mockReturnValue([
-      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+  // Integration: a retrieved prior claim is injected as a "PRIOR KNOWLEDGE"
+  // system message before the ClaimKit probe, and its id is traced so a
+  // downstream outcome can update its Beta utility.
+  it("injects retrieved prior claims as a system message and traces their ids", async () => {
+    mockEnv.CLAIMKIT_ENABLED = false;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = false;
+    mockClaimsStoreRetrieve.mockReturnValue([
+      {
+        id: "prior-1",
+        query: "auth runbook",
+        resolution: "Set AUTH_MODE=oidc in the gateway config.",
+        cascadeLevel: "teacher_verify",
+        confidence: 0.9,
+        source: "teacher:glm-5.2",
+        alpha: 3,
+        beta: 1,
+        createdAt: new Date(),
+        lastRetrievedAt: new Date(),
+        sampledUtility: 0.8,
+        similarity: 0.85,
+        combinedScore: 0.68,
+        explored: false,
+      },
     ]);
-    mockClaimsStoreStore.mockReturnValue("claim-id-1234");
 
     const { assembleContextPacket } = await loadContextPacket();
     const packet = await assembleContextPacket({
@@ -865,11 +986,12 @@ describe("assembleContextPacket retrieval and context sections", () => {
       toolTokens: 1024,
     });
 
-    expect(mockClaimsStoreStore).toHaveBeenCalledTimes(1);
-    expect(packet.diagnostics.claimsAcquisition?.storedClaimId).toBe(
-      "claim-id-1234",
+    const injected = packet.messages.some(
+      (m) => m.role === "system" && m.content?.includes("PRIOR KNOWLEDGE"),
     );
-    expect(packet.diagnostics.claimsAcquisition?.skippedClaimReason).toBeNull();
+    expect(injected).toBe(true);
+    expect(packet.diagnostics.claimsAcquisition?.retrievedClaimIds).toContain("prior-1");
+    expect(packet.diagnostics.claimsAcquisition?.injectedInMessages).toBe(true);
   });
 
   // Finding #4 rework: claimsRetrieveMs must reflect the real retrieveClaims

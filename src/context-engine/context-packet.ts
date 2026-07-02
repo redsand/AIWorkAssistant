@@ -414,62 +414,57 @@ export async function assembleContextPacket(
   }
 
   // ── Persist the cascade resolution as a durable claim (issue #247) ────
-  // When the cascade resolves via teacher verification or tool research (not
-  // the trivial ClaimKit-high-confidence short-circuit), persist the
-  // resolution so the next similar query can skip the expensive escalation
-  // and inject this claim as prior knowledge. Source provenance is derived
-  // from the resolving cascade level so each claim's origin is auditable.
+  // Only teacher verification and tool research produce a durable resolution
+  // worth persisting. Crucially we store `cascadeResolution.resolution` — the
+  // teacher-endorsed answer or the web evidence the tool step acquired — NOT
+  // the low-confidence ClaimKit probe answer that triggered escalation. The
+  // probe answer was, by definition, weak enough to require the cascade; the
+  // cascade's verified output is what should be reusable next time.
   //
-  // The `fell_back_to_rag` outcome must skip persistence when the ClaimKit
-  // probe answer is empty — an empty resolution claim pollutes future
-  // retrievals (it MATCHes anything, surfaces as prior knowledge with no
-  // signal, and never ages out because pruneStaleClaims only drops
-  // never-retrieved rows). The same skip fires when the cascade confidence
-  // collapses to ~0, which is the textbook "we have no real answer" signal.
+  // `ck_high_confidence` needs no persistence (re-probing ClaimKit is cheap).
+  // `budget_exhausted` and `fell_back_to_rag` carry an empty resolution: full
+  // RAG owns the answer and the cascade produced nothing verified. An empty
+  // resolution claim would pollute future retrievals (it MATCHes anything,
+  // surfaces as signal-free prior knowledge, and never ages out because
+  // pruneStaleClaims only drops never-retrieved rows), so we skip it. The same
+  // skip fires when confidence collapses to ~0 — the "no real answer" signal.
   const CLAIM_MIN_PERSIST_CONFIDENCE = 0.05;
   let storedClaimId: string | null = null;
   let storedCascadeLevel: string | null = null;
   let skippedClaimReason:
-    | "empty_probe_answer"
+    | "empty_resolution"
     | "below_min_confidence"
     | null = null;
   if (
     cascadeResolution &&
     (cascadeResolution.outcome === "teacher_confirmed" ||
-      cascadeResolution.outcome === "tool_confirmed" ||
-      cascadeResolution.outcome === "fell_back_to_rag")
+      cascadeResolution.outcome === "tool_confirmed")
   ) {
     const cascadeLevelForClaim = cascadeResolution.level as
       | "teacher_verify"
-      | "tool_research"
-      | "full_rag";
-    const probeAnswer = (ckProbe?.answer ?? "").trim();
+      | "tool_research";
+    const resolutionText = (cascadeResolution.resolution ?? "").trim();
     if (
-      cascadeResolution.outcome === "fell_back_to_rag" &&
-      (probeAnswer.length === 0 ||
-        cascadeResolution.confidence < CLAIM_MIN_PERSIST_CONFIDENCE)
+      resolutionText.length === 0 ||
+      cascadeResolution.confidence < CLAIM_MIN_PERSIST_CONFIDENCE
     ) {
       skippedClaimReason =
-        probeAnswer.length === 0
-          ? "empty_probe_answer"
-          : "below_min_confidence";
+        resolutionText.length === 0 ? "empty_resolution" : "below_min_confidence";
       console.log(
-        `[ClaimsStore] skipped persisting fell_back_to_rag claim | ` +
+        `[ClaimsStore] skipped persisting ${cascadeResolution.outcome} claim | ` +
         `reason=${skippedClaimReason} | confidence=${(cascadeResolution.confidence * 100).toFixed(0)}%`,
       );
     } else {
       try {
         storedClaimId = claimsStore.storeClaim({
           query: retrievalQuery,
-          resolution: probeAnswer,
+          resolution: resolutionText,
           cascadeLevel: cascadeLevelForClaim,
           confidence: cascadeResolution.confidence,
           source:
             cascadeResolution.outcome === "teacher_confirmed"
               ? `teacher:${env.CASCADE_TEACHER_MODEL || "default"}`
-              : cascadeResolution.outcome === "tool_confirmed"
-                ? "web_search"
-                : "full_rag",
+              : "web_search",
         });
         storedCascadeLevel = cascadeLevelForClaim;
         if (storedClaimId) {
@@ -1113,11 +1108,18 @@ export async function assembleContextPacket(
     const raw = formatClaimsSection(priorClaims);
     if (raw) {
       const tokens = estimateTokens(raw);
+      // Code-point-safe cap: slice by Unicode code points (not UTF-16 units)
+      // so a hard token-budget cut can never split a multi-byte character
+      // mid-sequence. Append an ellipsis so the truncation is visible.
+      let content = raw;
+      if (tokens > MAX_PRIOR_CLAIMS_TOKENS) {
+        const cps = Array.from(raw);
+        const capChars = MAX_PRIOR_CLAIMS_TOKENS * 4;
+        content = cps.length > capChars ? cps.slice(0, capChars).join("") + "…" : raw;
+      }
       priorClaimsSection = {
         name: "prior_claims",
-        content: tokens > MAX_PRIOR_CLAIMS_TOKENS
-          ? raw.substring(0, MAX_PRIOR_CLAIMS_TOKENS * 4)
-          : raw,
+        content,
         tokens: Math.min(tokens, MAX_PRIOR_CLAIMS_TOKENS),
         sourceCount: priorClaims.length,
       };

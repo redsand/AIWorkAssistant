@@ -43,6 +43,24 @@ export interface CascadeResolution {
   tokensUsed: number;
   confidence: number;
   outcome: CascadeOutcome;
+  /**
+   * The actual resolved text this cascade run produced — what should be
+   * persisted as a durable knowledge claim (issue #247). This is NOT the raw
+   * low-confidence ClaimKit probe answer that triggered escalation:
+   *
+   *   - ck_high_confidence : the probe answer (already confident enough).
+   *   - teacher_confirmed  : the candidate answer the teacher endorsed. The
+   *                          teacher verifier returns only confirm/reject, so
+   *                          the durable text is the candidate it validated —
+   *                          but now carries the teacher's high confidence.
+   *   - tool_confirmed     : the web evidence that corroborated the answer —
+   *                          new external knowledge acquired by the tool step.
+   *   - budget_exhausted /
+   *     fell_back_to_rag   : empty. Nothing cheaper resolved the query, so
+   *                          there is no verified resolution worth persisting;
+   *                          full RAG owns the answer.
+   */
+  resolution: string;
 }
 
 export interface CascadeInput {
@@ -120,6 +138,7 @@ export class RetrievalCascade {
         tokensUsed,
         confidence: conf,
         outcome: "ck_high_confidence",
+        resolution: input.claimKitAnswer,
       };
     }
 
@@ -136,6 +155,7 @@ export class RetrievalCascade {
           tokensUsed,
           confidence: conf,
           outcome: "budget_exhausted",
+          resolution: "",
         };
       }
       const verdict = await this.teacher.verify(input);
@@ -146,6 +166,9 @@ export class RetrievalCascade {
           tokensUsed,
           confidence: clamp01(verdict.confidence),
           outcome: "teacher_confirmed",
+          // The teacher endorsed this exact candidate answer; it is now a
+          // teacher-verified resolution, not the low-confidence probe.
+          resolution: input.claimKitAnswer,
         };
       }
       // Teacher rejected (or wasn't confident enough) → escalate to research.
@@ -159,6 +182,7 @@ export class RetrievalCascade {
         tokensUsed,
         confidence: conf,
         outcome: "budget_exhausted",
+        resolution: "",
       };
     }
     const research = await this.researcher.research(input);
@@ -169,15 +193,20 @@ export class RetrievalCascade {
         tokensUsed,
         confidence: clamp01(research.confidence),
         outcome: "tool_confirmed",
+        // The corroborating web evidence is the knowledge the tool step
+        // actually acquired — persist it, not the pre-cascade probe answer.
+        resolution: research.evidence,
       };
     }
 
-    // Level 3 — FULL_RAG fallback. Nothing cheaper resolved the query.
+    // Level 3 — FULL_RAG fallback. Nothing cheaper resolved the query, so
+    // there is no verified resolution to persist; full RAG owns the answer.
     return {
       level: CascadeLevel.FULL_RAG,
       tokensUsed,
       confidence: Math.max(conf, clamp01(research.confidence)),
       outcome: "fell_back_to_rag",
+      resolution: "",
     };
   }
 }

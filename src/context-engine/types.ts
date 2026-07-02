@@ -304,11 +304,12 @@ export interface ContextPacket {
       storedCascadeLevel: string | null;
       /**
        * Reason the cascade resolution was NOT persisted as a claim. Set when
-       * storeClaim was deliberately skipped (e.g. fell_back_to_rag with an
-       * empty probe answer). Null when no claim was eligible to be stored at
-       * all (no cascade resolution) or when the claim was persisted.
+       * storeClaim was deliberately skipped (e.g. a teacher/tool outcome whose
+       * verified resolution text was empty or below the min-confidence floor).
+       * Null when no claim was eligible to be stored at all (no cascade
+       * resolution, or a non-persisting outcome) or when the claim was stored.
        */
-      skippedClaimReason: "empty_probe_answer" | "below_min_confidence" | null;
+      skippedClaimReason: "empty_resolution" | "below_min_confidence" | null;
     };
     createdAt: Date;
   };
