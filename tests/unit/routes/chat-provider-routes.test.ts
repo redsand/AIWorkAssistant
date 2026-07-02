@@ -316,7 +316,7 @@ describe("chat provider routes", () => {
       provider: "openai",
       model: "gpt-next",
     });
-    expect(mocks.setProvider).toHaveBeenCalledWith("openai", "gpt-next");
+    expect(mocks.setProvider).toHaveBeenCalledWith("openai", "gpt-next", undefined);
     expect(mocks.aiRefresh).toHaveBeenCalledTimes(1);
 
     await app.close();
