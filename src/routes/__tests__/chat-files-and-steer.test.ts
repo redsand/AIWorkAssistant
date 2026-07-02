@@ -72,11 +72,11 @@ vi.mock("../../config/constants", () => ({ AGENT_MODES: { PRODUCTIVITY: "product
 
 describe("/chat/sessions/:id/steer", () => {
   let app: FastifyInstance;
-  let chatRoutes: typeof import("../chat").chatRoutes;
+  let chatRoutes: typeof import("../chat.js").chatRoutes;
 
   beforeEach(async () => {
     vi.resetModules();
-    chatRoutes = (await import("../chat")).chatRoutes;
+    chatRoutes = (await import("../chat.js")).chatRoutes;
     app = Fastify({ logger: false });
     await app.register(chatRoutes);
     await app.ready();
@@ -111,7 +111,7 @@ describe("/chat/sessions/:id/steer", () => {
 
 describe("/chat/files/download — sandbox", () => {
   let app: FastifyInstance;
-  let chatRoutes: typeof import("../chat").chatRoutes;
+  let chatRoutes: typeof import("../chat.js").chatRoutes;
   let tmpDir: string;
   let originalCwd: string;
 
@@ -120,7 +120,7 @@ describe("/chat/files/download — sandbox", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "chat-download-"));
     process.chdir(tmpDir);
     vi.resetModules();
-    chatRoutes = (await import("../chat")).chatRoutes;
+    chatRoutes = (await import("../chat.js")).chatRoutes;
     app = Fastify({ logger: false });
     await app.register(chatRoutes);
     await app.ready();
@@ -183,7 +183,7 @@ describe("/chat/files/download — sandbox", () => {
 
 describe("/chat/sessions/:id/files — upload sandbox", () => {
   let app: FastifyInstance;
-  let chatRoutes: typeof import("../chat").chatRoutes;
+  let chatRoutes: typeof import("../chat.js").chatRoutes;
   let tmpDir: string;
   let originalCwd: string;
 
@@ -192,7 +192,7 @@ describe("/chat/sessions/:id/files — upload sandbox", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "chat-upload-"));
     process.chdir(tmpDir);
     vi.resetModules();
-    chatRoutes = (await import("../chat")).chatRoutes;
+    chatRoutes = (await import("../chat.js")).chatRoutes;
     app = Fastify({ logger: false });
     await app.register(chatRoutes);
     await app.ready();
