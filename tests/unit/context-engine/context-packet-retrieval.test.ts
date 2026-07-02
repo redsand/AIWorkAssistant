@@ -830,6 +830,7 @@ describe("assembleContextPacket retrieval and context sections", () => {
       confidence: 0.88,
       outcome: "tool_confirmed",
       resolution: "Web evidence: the deploy pipeline runs deploy.sh nightly.",
+      provider: "tavily",
     });
     mockClaimsStoreStore.mockReturnValue("tool-claim-1");
 
@@ -848,7 +849,7 @@ describe("assembleContextPacket retrieval and context sections", () => {
       "Web evidence: the deploy pipeline runs deploy.sh nightly.",
     );
     expect(stored.cascadeLevel).toBe("tool_research");
-    expect(stored.source).toBe("web_search");
+    expect(stored.source).toBe("web_search:tavily");
     expect(packet.diagnostics.claimsAcquisition?.storedClaimId).toBe("tool-claim-1");
   });
 

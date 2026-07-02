@@ -110,12 +110,13 @@ describe("createBudget", () => {
     // DEFAULT (V1) budgets only these slots; soul/recent_sessions are emitted
     // by context-packet.ts but left unbudgeted (Infinity) — see V2_SLOT_DEFINITIONS.
     // system (100) > history (80) > entity_claims (70) > documents (60) >
-    // claimkit_evidence (55) > graph (40) > health (20)
+    // prior_claims (58) > claimkit_evidence (55) > graph (40) > health (20)
     expect(names).toEqual([
       "system",
       "history",
       "entity_claims",
       "documents",
+      "prior_claims",
       "claimkit_evidence",
       "graph",
       "health",

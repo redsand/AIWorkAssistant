@@ -464,7 +464,7 @@ export async function assembleContextPacket(
           source:
             cascadeResolution.outcome === "teacher_confirmed"
               ? `teacher:${env.CASCADE_TEACHER_MODEL || "default"}`
-              : "web_search",
+              : `web_search:${cascadeResolution.provider || "unknown"}`,
         });
         storedCascadeLevel = cascadeLevelForClaim;
         if (storedClaimId) {

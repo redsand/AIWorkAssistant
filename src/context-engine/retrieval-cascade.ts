@@ -61,6 +61,8 @@ export interface CascadeResolution {
    *                          full RAG owns the answer.
    */
   resolution: string;
+  /** Search backend that produced `resolution` for `tool_confirmed` (e.g. "tavily"); undefined otherwise. */
+  provider?: string;
 }
 
 export interface CascadeInput {
@@ -86,6 +88,8 @@ export interface ToolResearchResult {
   confidence: number;
   evidence: string;
   tokensUsed: number;
+  /** Which search backend produced the evidence, e.g. "tavily" or "google" (issue #247 provenance). */
+  provider?: string;
 }
 
 export interface TeacherVerifier {
@@ -196,6 +200,7 @@ export class RetrievalCascade {
         // The corroborating web evidence is the knowledge the tool step
         // actually acquired — persist it, not the pre-cascade probe answer.
         resolution: research.evidence,
+        provider: research.provider,
       };
     }
 
@@ -331,6 +336,7 @@ export function createDefaultToolResearcher(): ToolResearcher {
           confidence,
           evidence: evidence.slice(0, 4000),
           tokensUsed: estimateTokens(evidence),
+          provider: res.provider,
         };
       } catch (err) {
         console.warn(
