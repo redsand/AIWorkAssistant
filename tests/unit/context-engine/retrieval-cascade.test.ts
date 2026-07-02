@@ -68,6 +68,8 @@ describe("RetrievalCascade.run", () => {
     expect(res.level).toBe(CascadeLevel.CLAIMKIT);
     expect(res.outcome).toBe("ck_high_confidence");
     expect(res.tokensUsed).toBe(0);
+    // The probe answer is already confident enough — it is the resolution.
+    expect(res.resolution).toBe("Run deploy.sh");
     expect(teacher.verify).not.toHaveBeenCalled();
     expect(researcher.research).not.toHaveBeenCalled();
   });
@@ -84,6 +86,9 @@ describe("RetrievalCascade.run", () => {
     expect(res.outcome).toBe("teacher_confirmed");
     expect(res.confidence).toBe(0.9);
     expect(res.tokensUsed).toBe(950);
+    // Teacher endorsed the candidate answer — that is the durable resolution,
+    // now carrying the teacher's high confidence rather than the probe's.
+    expect(res.resolution).toBe("Run deploy.sh");
     expect(teacher.verify).toHaveBeenCalledTimes(1);
     expect(researcher.research).not.toHaveBeenCalled();
   });
@@ -91,7 +96,12 @@ describe("RetrievalCascade.run", () => {
   it("escalates to TOOL_RESEARCH when the teacher rejects, and stops on strong evidence", async () => {
     const { RetrievalCascade, CascadeLevel } = await loadModule();
     const teacher = makeTeacher({ confirmed: false, confidence: 0.2, tokensUsed: 900 });
-    const researcher = makeResearcher({ resolved: true, confidence: 0.85, tokensUsed: 1700 });
+    const researcher = makeResearcher({
+      resolved: true,
+      confidence: 0.85,
+      tokensUsed: 1700,
+      evidence: "Web evidence: run deploy.sh to trigger the release pipeline.",
+    });
     const cascade = new RetrievalCascade(teacher, researcher, baseConfig);
 
     const res = await cascade.run({ ...input, confidence: 0.6 });
@@ -100,6 +110,11 @@ describe("RetrievalCascade.run", () => {
     expect(res.outcome).toBe("tool_confirmed");
     expect(res.confidence).toBe(0.85);
     expect(res.tokensUsed).toBe(900 + 1700);
+    // The corroborating web evidence — not the probe answer — is the durable
+    // resolution the tool step produced.
+    expect(res.resolution).toBe(
+      "Web evidence: run deploy.sh to trigger the release pipeline.",
+    );
     expect(teacher.verify).toHaveBeenCalledTimes(1);
     expect(researcher.research).toHaveBeenCalledTimes(1);
   });
@@ -129,6 +144,9 @@ describe("RetrievalCascade.run", () => {
     expect(res.level).toBe(CascadeLevel.FULL_RAG);
     expect(res.outcome).toBe("fell_back_to_rag");
     expect(res.tokensUsed).toBe(800 + 1600);
+    // Nothing cheaper resolved the query — full RAG owns the answer, so the
+    // cascade carries no durable resolution to persist.
+    expect(res.resolution).toBe("");
   });
 
   it("falls back to FULL_RAG (budget_exhausted) when the teacher step can't be afforded", async () => {
@@ -142,6 +160,7 @@ describe("RetrievalCascade.run", () => {
     expect(res.level).toBe(CascadeLevel.FULL_RAG);
     expect(res.outcome).toBe("budget_exhausted");
     expect(res.tokensUsed).toBe(0);
+    expect(res.resolution).toBe("");
     expect(teacher.verify).not.toHaveBeenCalled();
   });
 
@@ -156,6 +175,7 @@ describe("RetrievalCascade.run", () => {
 
     expect(res.level).toBe(CascadeLevel.FULL_RAG);
     expect(res.outcome).toBe("budget_exhausted");
+    expect(res.resolution).toBe("");
     expect(teacher.verify).toHaveBeenCalledTimes(1);
     expect(researcher.research).not.toHaveBeenCalled();
   });
