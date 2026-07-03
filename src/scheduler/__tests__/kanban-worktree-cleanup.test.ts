@@ -3,6 +3,7 @@ import { runCleanupTick } from '../kanban-worktree-cleanup';
 
 const mockGetSetting = vi.fn();
 const mockListRuns = vi.fn();
+const mockListRunners = vi.fn();
 const mockRemoveWorktree = vi.fn();
 
 vi.mock('../../kanban/worktree-manager', () => ({
@@ -24,13 +25,14 @@ describe('Kanban Worktree Auto-Cleanup Scheduler', () => {
     vi.clearAllMocks();
     mockGetSetting.mockReturnValue('24');
     mockRemoveWorktree.mockResolvedValue(undefined);
+    mockListRunners.mockReturnValue([]);
   });
 
   it('should not clean anything when setting is 0 (disabled)', async () => {
     mockGetSetting.mockReturnValue('0');
     mockListRuns.mockReturnValue({ runs: [], total: 0 });
 
-    const result = await runCleanupTick(new Date(), mockGetSetting, mockListRuns);
+    const result = await runCleanupTick(new Date(), mockGetSetting, mockListRuns, mockListRunners);
 
     expect(result.cleaned).toBe(0);
     expect(result.skipped).toBe(0);
@@ -40,7 +42,7 @@ describe('Kanban Worktree Auto-Cleanup Scheduler', () => {
   it('should not clean anything when no completed runs exist', async () => {
     mockListRuns.mockReturnValue({ runs: [], total: 0 });
 
-    const result = await runCleanupTick(new Date(), mockGetSetting, mockListRuns);
+    const result = await runCleanupTick(new Date(), mockGetSetting, mockListRuns, mockListRunners);
 
     expect(result.cleaned).toBe(0);
     expect(mockRemoveWorktree).not.toHaveBeenCalled();
@@ -55,7 +57,7 @@ describe('Kanban Worktree Auto-Cleanup Scheduler', () => {
       .mockReturnValueOnce({ runs: [{ id: 'r1', worktreePath: '/wt1', completedAt: recent }], total: 1 })
       .mockReturnValueOnce({ runs: [], total: 0 });
 
-    const result = await runCleanupTick(now, mockGetSetting, mockListRuns);
+    const result = await runCleanupTick(now, mockGetSetting, mockListRuns, mockListRunners);
 
     expect(result.cleaned).toBe(0);
     expect(mockRemoveWorktree).not.toHaveBeenCalled();
@@ -70,7 +72,7 @@ describe('Kanban Worktree Auto-Cleanup Scheduler', () => {
       .mockReturnValueOnce({ runs: [{ id: 'r1', worktreePath: '/wt1', completedAt: old }], total: 1 })
       .mockReturnValueOnce({ runs: [], total: 0 });
 
-    const result = await runCleanupTick(now, mockGetSetting, mockListRuns);
+    const result = await runCleanupTick(now, mockGetSetting, mockListRuns, mockListRunners);
 
     expect(result.cleaned).toBe(1);
     expect(mockRemoveWorktree).toHaveBeenCalledWith('/wt1', { force: true });
@@ -84,7 +86,7 @@ describe('Kanban Worktree Auto-Cleanup Scheduler', () => {
       .mockReturnValueOnce({ runs: [{ id: 'r1', worktreePath: '/wt1', completedAt: old }], total: 1 })
       .mockReturnValueOnce({ runs: [{ id: 'r2', worktreePath: '/wt2', completedAt: old }], total: 1 });
 
-    const result = await runCleanupTick(now, mockGetSetting, mockListRuns);
+    const result = await runCleanupTick(now, mockGetSetting, mockListRuns, mockListRunners);
 
     expect(result.cleaned).toBe(2);
   });
@@ -97,7 +99,7 @@ describe('Kanban Worktree Auto-Cleanup Scheduler', () => {
       .mockReturnValueOnce({ runs: [{ id: 'r1', worktreePath: null, completedAt: old }], total: 1 })
       .mockReturnValueOnce({ runs: [], total: 0 });
 
-    const result = await runCleanupTick(now, mockGetSetting, mockListRuns);
+    const result = await runCleanupTick(now, mockGetSetting, mockListRuns, mockListRunners);
 
     expect(result.cleaned).toBe(0);
   });
@@ -111,10 +113,31 @@ describe('Kanban Worktree Auto-Cleanup Scheduler', () => {
       .mockReturnValueOnce({ runs: [], total: 0 });
     mockRemoveWorktree.mockRejectedValue(new Error('locked'));
 
-    const result = await runCleanupTick(now, mockGetSetting, mockListRuns);
+    const result = await runCleanupTick(now, mockGetSetting, mockListRuns, mockListRunners);
 
     expect(result.cleaned).toBe(0);
     expect(result.skipped).toBe(1);
+  });
+
+  it('should not clean a worktree path that is still a runner\'s live persistent workspace', async () => {
+    const now = new Date('2026-01-15T12:00:00Z');
+    // Old run, well past the 24h cutoff — but its worktreePath is the
+    // aicoder runner's reused persistent workspace, currently in use by a
+    // fresh cycle. Must NOT be deleted out from under the live process.
+    const old = new Date('2026-01-14T11:00:00Z').toISOString();
+
+    mockListRuns
+      .mockReturnValueOnce({ runs: [{ id: 'r1', worktreePath: '/wt-persistent', completedAt: old }], total: 1 })
+      .mockReturnValueOnce({ runs: [], total: 0 });
+    mockListRunners.mockReturnValue([
+      { id: 'runner-1', workspacePath: '/wt-persistent' },
+    ]);
+
+    const result = await runCleanupTick(now, mockGetSetting, mockListRuns, mockListRunners);
+
+    expect(result.cleaned).toBe(0);
+    expect(result.skipped).toBe(0);
+    expect(mockRemoveWorktree).not.toHaveBeenCalled();
   });
 
   it('should use default 24h when setting is null', async () => {
@@ -127,7 +150,7 @@ describe('Kanban Worktree Auto-Cleanup Scheduler', () => {
       .mockReturnValueOnce({ runs: [{ id: 'r1', worktreePath: '/wt1', completedAt: old }], total: 1 })
       .mockReturnValueOnce({ runs: [], total: 0 });
 
-    const result = await runCleanupTick(now, mockGetSetting, mockListRuns);
+    const result = await runCleanupTick(now, mockGetSetting, mockListRuns, mockListRunners);
 
     expect(result.cleaned).toBe(1);
   });

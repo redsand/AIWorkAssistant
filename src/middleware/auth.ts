@@ -187,16 +187,29 @@ export function verifyRequestAuth(
 }
 
 /**
- * Per-route preHandler that enforces authentication on sensitive endpoints
+ * Per-route guard that enforces authentication on sensitive endpoints
  * regardless of the global middleware's path exemptions. Use on routes that
  * trigger side effects (e.g. external syncs) so the guard is explicit at the
- * route definition.
+ * route definition. Call as `if (!requireAuth(request, reply)) return;` at
+ * the top of a handler — the boolean return is load-bearing.
  */
-export async function requireAuth(
+export function requireAuth(
+  request: FastifyRequest,
+  reply: FastifyReply,
+): boolean {
+  return verifyRequestAuth(request, reply);
+}
+
+/**
+ * Adapts {@link requireAuth} to Fastify's `preHandler` hook shape, which
+ * only inspects `reply.sent` to decide whether to short-circuit and doesn't
+ * accept a boolean return value.
+ */
+export async function authPreHandler(
   request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<void> {
-  verifyRequestAuth(request, reply);
+  requireAuth(request, reply);
 }
 
 export async function authMiddleware(fastify: FastifyInstance) {

@@ -14,6 +14,15 @@ const TICK_MS = 5 * 60 * 1000; // 5 minutes
  * still exists on disk, remove the worktree if more than `autoCleanupHours`
  * have elapsed since the run completed.
  *
+ * `aicoder` runners reuse a single persistent workspace across every cycle
+ * (see `ensurePersistentWorktree` / `deps.workspace` in run-prelude.ts), so
+ * that same path is stamped onto every run row for that runner — including
+ * ones from hours ago that have long since completed. Deleting it based
+ * solely on an old run's `completedAt` would rip the directory out from
+ * under whatever cycle is *currently* running there. So paths that still
+ * match a runner's live `workspacePath` are always excluded, regardless of
+ * how old the individual run is.
+ *
  * Exported so tests can call it with a fake clock.
  */
 export async function runCleanupTick(
@@ -22,6 +31,8 @@ export async function runCleanupTick(
     agentRunDatabase.getKanbanSetting(key),
   listRuns: typeof agentRunDatabase.listRuns = (f) =>
     agentRunDatabase.listRuns(f),
+  listRunners: typeof agentRunDatabase.listRunners = () =>
+    agentRunDatabase.listRunners(),
 ): Promise<{ cleaned: number; skipped: number }> {
   const rawHours = getSetting("autoCleanupHours");
   const hours = rawHours !== null ? Number(rawHours) : 24;
@@ -33,11 +44,21 @@ export async function runCleanupTick(
 
   const cutoff = new Date(now.getTime() - hours * 60 * 60 * 1000).toISOString();
 
+  const liveWorkspacePaths = new Set(
+    listRunners()
+      .map((r) => r.workspacePath)
+      .filter((p): p is string => !!p),
+  );
+
   // Find completed/failed runs with worktree paths
   const completed = listRuns({ status: "completed", limit: 10000 });
   const failed = listRuns({ status: "failed", limit: 10000 });
   const allDone = [...completed.runs, ...failed.runs].filter(
-    (r) => r.worktreePath && r.completedAt && r.completedAt < cutoff,
+    (r) =>
+      r.worktreePath &&
+      r.completedAt &&
+      r.completedAt < cutoff &&
+      !liveWorkspacePaths.has(r.worktreePath),
   );
 
   let cleaned = 0;

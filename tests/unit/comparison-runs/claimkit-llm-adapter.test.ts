@@ -27,13 +27,14 @@ const mockProvider = {
   name: "test-provider",
 };
 
-import { AIProviderLLMAdapter, stripJsonFromLlmResponse } from "../../../src/context-engine/adapters/claimkit-llm-adapter";
+import { AIProviderLLMAdapter, stripJsonFromLlmResponse, __clearJsonResponseCacheForTests } from "../../../src/context-engine/adapters/claimkit-llm-adapter";
 
 describe("AIProviderLLMAdapter", () => {
   let adapter: AIProviderLLMAdapter;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    __clearJsonResponseCacheForTests();
     adapter = new AIProviderLLMAdapter(mockProvider as any, "test-model");
   });
 

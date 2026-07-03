@@ -63,6 +63,14 @@ const mockEnv = {
   KNOWLEDGE_GRAPH_CACHE_TTL_MS: 30000,
   QUERY_REWRITER_ENABLED: true,
   QUERY_REWRITE_VARIANT_COUNT: 3,
+  CONTEXT_PACKET_V2_BUDGET: false,
+  SESSION_UTILITY_ENABLED: true,
+  SESSION_UTILITY_CANDIDATE_POOL: 10,
+  SESSION_UTILITY_TOP_K: 3,
+  SESSION_UTILITY_EPSILON: 0.2,
+  SESSION_UTILITY_SEMANTIC_EMBED: false,
+  SESSION_UTILITY_PRIOR_ALPHA: 2,
+  SESSION_UTILITY_PRIOR_BETA: 1,
 };
 
 function installMocks() {
@@ -144,9 +152,13 @@ function installMocks() {
   vi.doMock("../../../src/memory/conversation-manager", () => ({
     conversationManager: { searchSessions: mockSearchSessions },
   }));
-  vi.doMock("../../../src/context-engine/entity-claims-injector", () => ({
-    buildEntityClaimsSection: mockBuildEntityClaimsSection,
-  }));
+  vi.doMock("../../../src/context-engine/entity-claims-injector", async (importOriginal) => {
+    const actual = (await importOriginal()) as Record<string, unknown>;
+    return {
+      ...actual,
+      buildEntityClaimsSection: mockBuildEntityClaimsSection,
+    };
+  });
   vi.doMock("../../../src/comparison-runs/auto-capture", () => ({
     saveLiveComparison: mockSaveLiveComparison,
   }));
@@ -269,9 +281,12 @@ describe("assembleContextPacket retrieval and context sections", () => {
     mockRecentReflections.mockReturnValue("Recent reflection");
     mockSearchSessions.mockReturnValue([
       {
+        sessionId: "session-prior-auth",
         title: "Prior auth discussion",
         keyTopics: ["auth", "gateway"],
         summary: "We discussed API gateway authentication.",
+        relevanceScore: 1,
+        createdAt: new Date().toISOString(),
       },
     ]);
 

@@ -4,7 +4,7 @@ import {
   ApprovalRequiredError,
   SelfApprovalError,
 } from "../workflow/workflow-engine";
-import { requireAuth, validateSessionToken } from "../middleware/auth";
+import { authPreHandler, validateSessionToken } from "../middleware/auth";
 
 // Registered under the /api/workflow prefix (see server.ts), matching the
 // prefix-registration pattern used by the other route modules.
@@ -12,14 +12,14 @@ export async function workflowRoutes(fastify: FastifyInstance) {
   // GET /actions — list all built-in workflow actions.
   // Authenticated: action definitions expose internal tool names and step
   // sequences, so they must not be readable by unauthenticated callers.
-  fastify.get("/actions", { preHandler: requireAuth }, async () => {
+  fastify.get("/actions", { preHandler: authPreHandler }, async () => {
     return workflowEngine.listActions();
   });
 
   // GET /actions/:id — fetch a single action definition
   fastify.get(
     "/actions/:id",
-    { preHandler: requireAuth },
+    { preHandler: authPreHandler },
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const action = workflowEngine.getAction(id);
@@ -34,7 +34,7 @@ export async function workflowRoutes(fastify: FastifyInstance) {
   // Authenticated: triggers workflow side effects (incl. security escalation).
   fastify.post(
     "/actions/:id/execute",
-    { preHandler: requireAuth },
+    { preHandler: authPreHandler },
     async (request, reply) => {
       const { id } = request.params as { id: string };
 
@@ -113,7 +113,7 @@ export async function workflowRoutes(fastify: FastifyInstance) {
   // restricted to the identity that triggered or approved the execution.
   fastify.get(
     "/executions/:executionId",
-    { preHandler: requireAuth },
+    { preHandler: authPreHandler },
     async (request, reply) => {
       const { executionId } = request.params as { executionId: string };
       const execution = workflowEngine.getExecution(executionId);

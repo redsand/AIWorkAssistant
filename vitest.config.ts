@@ -6,7 +6,14 @@ export default defineConfig({
     environment: 'node',
     setupFiles: ['./vitest.setup.ts'],
     hookTimeout: 60000,
-    testTimeout: 15000,
+    // A handful of tests import modules that transitively open real, shared
+    // on-disk SQLite singletons (roadmap DB, approval queue, audit log,
+    // memory manager). At full-suite parallelism, many worker processes
+    // contend for those same files, and whichever test's import happens to
+    // land during the contention spike can blow past a tight timeout even
+    // though it's fast in isolation. 30s gives headroom for that without
+    // masking genuinely hung tests.
+    testTimeout: 30000,
     exclude: ['dist/**', 'node_modules/**', '.claude/**', 'tests/smoke/**'],
     coverage: {
       provider: 'v8',

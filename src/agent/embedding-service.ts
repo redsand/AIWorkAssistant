@@ -89,6 +89,12 @@ class EmbeddingService {
   private lastCheck = 0;
   private checkIntervalMs = 5 * 60 * 1000;
   private pullAttempted = false;
+  // True when EMBEDDING_PROVIDER was explicitly pinned (not "auto"). An
+  // explicit pin to "ollama" means the user wants embeddings to stay local
+  // — never silently swap to a cloud fallback just because the local host
+  // hiccuped. "auto"-resolved providers keep the old fallback-chasing
+  // behavior since no explicit choice was made.
+  private readonly explicitProvider = env.EMBEDDING_PROVIDER !== "auto";
   // Locked on first successful embed. Subsequent results with a different
   // dimension are refused — silent provider switches (e.g. Ollama 768d →
   // OpenAI 1536d) otherwise corrupt every vector store that was built
@@ -295,7 +301,10 @@ class EmbeddingService {
     // If primary provider failed, try fallback (OpenAI-compatible endpoint).
     // Blocked once a dimension is locked, because swapping providers under a
     // populated vector store guarantees dim-mismatch errors at query time.
-    if (!this.available && this.fallbackBaseUrl !== this.baseUrl && this.fallbackApiKey) {
+    // Also blocked when the user explicitly pinned "ollama" — a local-only
+    // choice should never silently escape to a cloud endpoint.
+    const explicitOllama = this.explicitProvider && this.provider === "ollama";
+    if (!this.available && !explicitOllama && this.fallbackBaseUrl !== this.baseUrl && this.fallbackApiKey) {
       try {
         this.available = await this.checkOpenAICompatible(
           this.fallbackBaseUrl,

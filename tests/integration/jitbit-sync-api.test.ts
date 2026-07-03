@@ -12,7 +12,8 @@ vi.mock("../../src/middleware/auth", async (importOriginal) => {
     // no-op; end-to-end enforcement is covered by the auth-enforced suite below.
     isAuthConfigured: vi.fn(() => false),
     getApiKeyForAuth: vi.fn(() => ""),
-    requireAuth: vi.fn(async () => {}),
+    requireAuth: vi.fn(() => true),
+    authPreHandler: vi.fn(async () => {}),
   };
 });
 

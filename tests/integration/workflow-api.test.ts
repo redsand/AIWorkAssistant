@@ -9,7 +9,8 @@ vi.mock("../../src/middleware/auth", async (importOriginal) => {
     getApiKeyForAuth: () => "",
     // Bypass the per-route guard here — these tests exercise workflow logic.
     // Auth enforcement is covered separately in workflow-auth.test.ts.
-    requireAuth: async () => {},
+    requireAuth: () => true,
+    authPreHandler: async () => {},
   };
 });
 

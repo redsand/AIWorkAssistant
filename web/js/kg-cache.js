@@ -37,10 +37,15 @@ export async function loadKgCache(force = false) {
 
   cache.loading = (async () => {
     try {
-      const res = await fetch(
-        `${API_BASE}/chat/graph/nodes?limit=${MAX_NODES}`,
-        { headers: authHeaders() },
-      );
+      let res;
+      try {
+        res = await fetch(
+          `${API_BASE}/chat/graph/nodes?limit=${MAX_NODES}`,
+          { headers: authHeaders() },
+        );
+      } catch {
+        return; // Network error — keep whatever's cached, try again next call.
+      }
       if (!res.ok) return;
       const body = await res.json();
       const nodes = Array.isArray(body.nodes) ? body.nodes : [];

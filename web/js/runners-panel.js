@@ -160,7 +160,11 @@
         : r.lastFinishedAt
           ? ` · last ${new Date(r.lastFinishedAt).toLocaleTimeString()}`
           : "";
-      li.querySelector(".rn-panel-row-line2").textContent = `${scope} · ${r.agent}${r.model ? "·" + r.model : ""}${cur}`;
+      // Reviewer runners don't shell out to a coding agent — the field is a
+      // meaningless DB default ("opencode") in that case, so only show it
+      // for aicoder runners (mirrors the Agent/Provider split in runners.js).
+      const agentPart = r.kind === "reviewer" ? "" : ` · ${r.agent}`;
+      li.querySelector(".rn-panel-row-line2").textContent = `${scope}${agentPart}${r.model ? "·" + r.model : ""}${cur}`;
 
       if (r.lastError) {
         const err = li.querySelector("[data-err]");

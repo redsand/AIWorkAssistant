@@ -674,16 +674,26 @@
       // (e.g. an external script preloading the form), but the closure
       // value wins when both are present.
       const editId = state.editingRunnerId || form.id.value || state.queryEditRunnerId || "";
+      let saved;
       if (editId) {
-        await api(`/api/runners/${editId}`, {
+        saved = await api(`/api/runners/${editId}`, {
           method: "PATCH",
           body: JSON.stringify(data),
         });
       } else {
-        await api(`/api/runners`, {
+        saved = await api(`/api/runners`, {
           method: "POST",
           body: JSON.stringify(data),
         });
+      }
+      // Apply the server's response immediately instead of waiting on the
+      // SSE "runner.updated" echo — if that event is delayed, dropped, or
+      // races a stale one, the card grid (and a re-opened edit modal) kept
+      // showing pre-save values even though the write had already landed.
+      if (saved?.id) {
+        const prev = state.runners.get(saved.id);
+        state.runners.set(saved.id, { ...prev, ...saved });
+        renderAll();
       }
       state.editingRunnerId = null;
       state.queryEditRunnerId = null;

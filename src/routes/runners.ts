@@ -55,24 +55,32 @@ function validateCreate(body: Partial<RunnerCreateParams>): string | null {
 }
 
 /**
- * Normalize a runner's (owner, repo) into a stable key so two configs
- * pointing at the same project compare equal regardless of how the
- * fields were filled in. GitHub repos may arrive as "owner/name"
- * slugs in the repo field with owner missing, or as separate
- * owner+name pairs. GitLab uses path-with-namespace in the repo
- * field. Jira / work_items use a project key. The empty string falls
- * through and prevents the uniqueness check from blocking sources
- * that don't bind to a single repo.
+ * Normalize a runner's target into a stable key so two configs pointing at
+ * the same actual code repository compare equal regardless of how the
+ * fields were filled in. GitHub repos may arrive as "owner/name" slugs in
+ * the repo field with owner missing, or as separate owner+name pairs.
+ * GitLab uses path-with-namespace in the repo field.
+ *
+ * Jira / Jitbit / work_items are ticketing sources, not code repositories —
+ * a single Jira project (or Jitbit category) commonly has several repos
+ * associated with it, so scoping on the ticket-source key would wrongly
+ * block legitimate sibling aicoders that share an issue tracker but target
+ * different repos. For those sources the key is scoped by the actual
+ * target repoUrl instead; runners with no repoUrl are never considered
+ * duplicates of one another. The empty string always falls through and
+ * prevents the uniqueness check from blocking sources that don't bind to a
+ * single repo.
  */
 export function runnerScopeKey(
   source: string | undefined,
   owner: string | null | undefined,
   repo: string | null | undefined,
+  repoUrl?: string | null | undefined,
 ): string {
   const src = (source || "").toLowerCase();
-  const r = (repo || "").trim().toLowerCase();
-  if (!r) return "";
   if (src === "github") {
+    const r = (repo || "").trim().toLowerCase();
+    if (!r) return "";
     // Slug form "owner/name" -> just keep the slug. Otherwise prepend
     // the owner so two "AIWorkAssistant" repos under different owners
     // don't collide.
@@ -80,9 +88,17 @@ export function runnerScopeKey(
     const o = (owner || "").trim().toLowerCase();
     return o ? `${src}::${o}/${r}` : `${src}::${r}`;
   }
-  // gitlab path-with-namespace, jira project key, jitbit tag, work_items
-  // tag: the repo field alone is identifying for our purposes.
-  return `${src}::${r}`;
+  if (src === "gitlab") {
+    // path-with-namespace is already an actual code repo identifier.
+    const r = (repo || "").trim().toLowerCase();
+    if (!r) return "";
+    return `${src}::${r}`;
+  }
+  // jira / jitbit / work_items / auto: ticket-source key isn't a repo —
+  // scope by the code repo the user actually pointed the runner at.
+  const url = (repoUrl || "").trim().toLowerCase();
+  if (!url) return "";
+  return `${src}::${url}`;
 }
 
 /**
@@ -98,16 +114,22 @@ export function runnerScopeKey(
  * message naming the existing runner.
  */
 function validateUniqueAicoder(
-  body: { kind?: string; source?: string; owner?: string | null; repo?: string | null },
+  body: {
+    kind?: string;
+    source?: string;
+    owner?: string | null;
+    repo?: string | null;
+    repoUrl?: string | null;
+  },
   excludeId?: string,
 ): string | null {
   if (body.kind !== "aicoder") return null;
-  const key = runnerScopeKey(body.source, body.owner, body.repo);
+  const key = runnerScopeKey(body.source, body.owner, body.repo, body.repoUrl);
   if (!key) return null; // No repo bound — nothing to enforce against.
   const existing = agentRunDatabase.listRunners().find((r) => {
     if (r.id === excludeId) return false;
     if (r.kind !== "aicoder") return false;
-    return runnerScopeKey(r.source, r.owner, r.repo) === key;
+    return runnerScopeKey(r.source, r.owner, r.repo, r.repoUrl) === key;
   });
   if (!existing) return null;
   return `An aicoder already exists for this project (id=${existing.id}, name="${existing.name}"). Only one aicoder is allowed per (source, repo) pair — delete or repurpose the existing one.`;
@@ -465,6 +487,7 @@ export async function runnerRoutes(fastify: FastifyInstance) {
         source: body.source ?? existing?.source,
         owner: body.owner ?? existing?.owner ?? null,
         repo: body.repo ?? existing?.repo ?? null,
+        repoUrl: body.repoUrl ?? existing?.repoUrl ?? null,
       },
       request.params.id,
     );

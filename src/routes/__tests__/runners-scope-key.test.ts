@@ -34,9 +34,19 @@ describe("runnerScopeKey — normalize (source, owner, repo) for uniqueness chec
       .toBe("gitlab::group/sub/project");
   });
 
-  it("uses the Jira project key as the identifier", () => {
-    expect(runnerScopeKey("jira", "IR", "IR")).toBe("jira::ir");
-    expect(runnerScopeKey("jira", null, "IR")).toBe("jira::ir");
+  it("scopes Jira (and other ticketing sources) by the target repoUrl, not the project key — one Jira project can span many repos", () => {
+    // No repoUrl supplied — nothing to enforce against.
+    expect(runnerScopeKey("jira", "IR", "IR")).toBe("");
+    expect(runnerScopeKey("jira", null, "IR")).toBe("");
+
+    // Same Jira project, different target repos — must NOT collide.
+    const a = runnerScopeKey("jira", "IR", "IR", "https://github.com/redsand/service-a.git");
+    const b = runnerScopeKey("jira", "IR", "IR", "https://github.com/redsand/service-b.git");
+    expect(a).not.toBe(b);
+
+    // Same Jira project AND same repoUrl — still one aicoder per actual repo.
+    const c = runnerScopeKey("jira", "IR", "IR", "https://github.com/redsand/service-a.git");
+    expect(a).toBe(c);
   });
 
   it("is case-insensitive — same repo in mixed case still collides", () => {

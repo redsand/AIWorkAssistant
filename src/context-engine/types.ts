@@ -344,22 +344,31 @@ export const DEFAULT_RERANK_OPTIONS: RerankOptions = {
   diversityPenalty: 0.1,
 };
 
-// V1 fractions sum to 1.2 and several sections emitted by context-packet.ts
-// are not budgeted (they get Infinity in enforceBudget). V2 adds explicit
-// slots for every section and rebalances to exactly 1.0. Enable with
-// CONTEXT_PACKET_V2_BUDGET=true after validating on live traffic.
+// Several sections emitted by context-packet.ts still have no explicit slot
+// here (skills, recent_reflections, agent_memory, user_profile) — they get
+// capped at UNKNOWN_SECTION_TOKEN_CAP in enforceBudget instead. V2 adds
+// explicit slots for every section, with fractions rebalanced from scratch.
+// Enable with CONTEXT_PACKET_V2_BUDGET=true after validating on live traffic.
+// Fractions here sum to exactly 1.0 — allocation is a straight priority-order
+// walk that hands each slot its full share of what's left (see createBudget),
+// so any oversum starves every slot below the point where the running total
+// first exceeds 1.0, no matter how large the overall token budget is.
 export const DEFAULT_SLOT_DEFINITIONS: BudgetSlotDefinition[] = [
-  { name: "system", priority: 100, fraction: 0.3, overflowTarget: "history" },
-  { name: "history", priority: 80, fraction: 0.35, overflowTarget: "documents" },
-  { name: "documents", priority: 60, fraction: 0.2, overflowTarget: "graph" },
-  { name: "graph", priority: 40, fraction: 0.1, overflowTarget: "health" },
-  { name: "claimkit_evidence", priority: 55, fraction: 0.15, overflowTarget: "documents" },
+  // soul sits above every other slot — identity/personality instructions
+  // must never be squeezed out by budget pressure.
+  { name: "soul", priority: 110, fraction: 0.01, overflowTarget: "system" },
+  { name: "system", priority: 100, fraction: 0.24, overflowTarget: "history" },
+  { name: "history", priority: 80, fraction: 0.28, overflowTarget: "documents" },
+  { name: "documents", priority: 60, fraction: 0.16, overflowTarget: "graph" },
+  { name: "graph", priority: 40, fraction: 0.08, overflowTarget: "health" },
+  { name: "claimkit_evidence", priority: 55, fraction: 0.12, overflowTarget: "documents" },
   // entity_claims sits above claimkit_evidence in priority because it's
   // exact, structured, query-aligned, and small. When the user is asking
   // about a specific entity, this section should never be the first thing
   // squeezed for budget.
-  { name: "entity_claims", priority: 70, fraction: 0.05, overflowTarget: "claimkit_evidence" },
-  { name: "health", priority: 20, fraction: 0.05, overflowTarget: null },
+  { name: "entity_claims", priority: 70, fraction: 0.04, overflowTarget: "claimkit_evidence" },
+  { name: "recent_sessions", priority: 35, fraction: 0.03, overflowTarget: "graph" },
+  { name: "health", priority: 20, fraction: 0.04, overflowTarget: null },
 ];
 
 export const V2_SLOT_DEFINITIONS: BudgetSlotDefinition[] = [

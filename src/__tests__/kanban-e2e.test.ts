@@ -274,13 +274,13 @@ describe('Kanban Smoke E2E', () => {
   afterAll(async () => {
     if (app) await app.close();
 
-    // Clean up worktrees and temp repo
+    // Clean up the temp repo. The test's own worktree is already removed via
+    // the DELETE /worktrees API call in the test body. We deliberately do NOT
+    // touch the shared `../.kanban-worktrees` directory here — it's the same
+    // sibling-of-repos folder real kanban runners use on this machine, so a
+    // blanket rmSync would race with (and can EPERM against, or delete)
+    // in-use worktrees from other running processes.
     if (tempRepoPath && fs.existsSync(tempRepoPath)) {
-      try { execSync('git worktree prune', { cwd: tempRepoPath, stdio: 'pipe' }); } catch { /* ignore */ }
-      const worktreeRoot = path.resolve(tempRepoPath, '..', '.kanban-worktrees');
-      if (fs.existsSync(worktreeRoot)) {
-        fs.rmSync(worktreeRoot, { recursive: true, force: true });
-      }
       fs.rmSync(tempRepoPath, { recursive: true, force: true });
     }
   }, 20000);
