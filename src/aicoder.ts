@@ -8,7 +8,7 @@ import { prioritizeItems } from "./integrations/ollama-launcher/priority-sorter"
 import { type TicketSourceType, SourceResolver } from "./integrations/source-resolver";
 import { jiraClient } from "./integrations/jira/jira-client";
 import { gitlabClient } from "./integrations/gitlab/gitlab-client";
-// githubClient imported dynamically where needed via github-client module
+import { githubClient } from "./integrations/github/github-client";
 import { agentRunDatabase } from "./agent-runs/database";
 import { createAgentRunsClient } from "./agent-runs/client";
 import { conversationManager } from "./memory/conversation-manager";
@@ -812,6 +812,12 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
 
   // All pre-flight skip checks moved to src/aicoder/issue-precheck.ts.
   if (shouldSkipIssue(issuePrecheckDeps(), issueKey).skip) {
+    // A skipped issue never touched the workspace/main this cycle — treat
+    // it like a dependency block so focusedLoop's for-loop falls through
+    // to the next item instead of stopping the whole cycle on one stuck
+    // issue (e.g. an issue already processed, blacklisted, or locked by a
+    // prior convergence stop must not starve the rest of the queue).
+    depBlockedThisCycle.add(issueKey);
     return null;
   }
 
@@ -1256,6 +1262,7 @@ function reviewLoopDeps(): ReviewLoopDeps {
     gitlabReviewClient: gitlabClient,
     gitlabReworkClient: gitlabClient,
     jiraClient,
+    githubClient,
     reviewPollMs: REVIEW_POLL_MS,
     maxRework: MAX_REWORK,
     autorepairDisabled: AUTOREPAIR_DISABLED,

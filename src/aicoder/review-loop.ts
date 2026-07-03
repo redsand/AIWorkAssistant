@@ -111,6 +111,26 @@ export interface ReviewLoopJiraClient extends JiraReworkClient {
   addComment(issueKey: string, body: string): Promise<unknown>;
 }
 
+export interface ReviewLoopGithubClient {
+  getIssue(
+    issueNumber: number,
+    owner?: string,
+    repo?: string,
+  ): Promise<{ labels?: Array<{ name?: string } | string> }>;
+  updateIssue(
+    issueNumber: number,
+    params: { labels?: string[] },
+    owner?: string,
+    repo?: string,
+  ): Promise<unknown>;
+  addIssueComment(
+    issueNumber: number,
+    body: string,
+    owner?: string,
+    repo?: string,
+  ): Promise<unknown>;
+}
+
 export interface ReviewLoopAgentResult {
   finDetected: boolean;
   exitCode: number | null;
@@ -131,6 +151,7 @@ export interface ReviewLoopDeps {
   gitlabReviewClient: GitLabReviewPollClient;
   gitlabReworkClient: GitLabReworkClient;
   jiraClient: ReviewLoopJiraClient;
+  githubClient: ReviewLoopGithubClient;
 
   // Tunables
   reviewPollMs: number;
@@ -199,6 +220,58 @@ function toSemanticFindings(
     file: finding.file || "unknown",
     message: finding.message || `Finding in ${finding.file || "unknown file"}`,
   }));
+}
+
+const HUMAN_ESCALATION_LABEL = "needs-human";
+
+/**
+ * Surface a "this needs a human now" state somewhere visible outside the
+ * runner logs. Jira gets a comment (existing behavior); GitHub additionally
+ * gets a distinctly-worded comment plus a `needs-human` label, since the
+ * normal per-round review comment ("Review Failed — Rework Required") looks
+ * identical whether or not this round was the one that gave up for good.
+ * Both are best-effort — a notification failure must not block the
+ * already-decided escalation exit.
+ */
+async function postHumanEscalationNotice(
+  deps: ReviewLoopDeps,
+  item: WorkItem,
+  platform: string,
+  owner: string,
+  repo: string,
+  report: string,
+): Promise<void> {
+  if (deps.jiraClient.isConfigured()) {
+    try {
+      await deps.jiraClient.addComment(item.id, report);
+    } catch {
+      // best-effort
+    }
+  }
+  if (platform === "github" && owner && repo && item.number) {
+    const body = `🚨 **Human review required** — the AI coder/reviewer loop stopped making progress on this issue and will not retry automatically.\n\n${report}`;
+    try {
+      await deps.githubClient.addIssueComment(item.number, body, owner, repo);
+    } catch {
+      // best-effort
+    }
+    try {
+      const current = await deps.githubClient.getIssue(item.number, owner, repo);
+      const currentLabels = (current?.labels || []).map((l) =>
+        typeof l === "string" ? l : l?.name ?? "",
+      );
+      if (!currentLabels.some((l) => l.toLowerCase() === HUMAN_ESCALATION_LABEL)) {
+        await deps.githubClient.updateIssue(
+          item.number,
+          { labels: [...currentLabels, HUMAN_ESCALATION_LABEL] },
+          owner,
+          repo,
+        );
+      }
+    } catch {
+      // best-effort
+    }
+  }
 }
 
 export async function runReviewLoop(
@@ -524,11 +597,7 @@ export async function runReviewLoop(
         );
         deps.logger.logWork(report);
         deps.setLastPipelineExitCode(deps.exits.reviewFailed);
-        if (deps.jiraClient.isConfigured()) {
-          try {
-            await deps.jiraClient.addComment(item.id, report);
-          } catch {}
-        }
+        await postHumanEscalationNotice(deps, item, platform, owner, repo, report);
         deps.saveProcessedIssue(item.id);
         deps.clearRunState(item.id);
         return;
@@ -683,18 +752,16 @@ export async function runReviewLoop(
               ? deps.exits.noChanges
               : deps.exits.maxRework,
           );
-          if (deps.jiraClient.isConfigured()) {
-            try {
-              await deps.jiraClient.addComment(
-                item.id,
-                autorepairOutcome
-                  ? `${report}\n\n_Autorepair attempted with outcome: \`${autorepairOutcome}\`._`
-                  : report,
-              );
-            } catch {
-              // Non-fatal: convergence report is best-effort
-            }
-          }
+          await postHumanEscalationNotice(
+            deps,
+            item,
+            platform,
+            owner,
+            repo,
+            autorepairOutcome
+              ? `${report}\n\n_Autorepair attempted with outcome: \`${autorepairOutcome}\`._`
+              : report,
+          );
           deps.saveProcessedIssue(item.id);
           deps.clearRunState(item.id);
           return;
@@ -711,6 +778,7 @@ export async function runReviewLoop(
           const escalationPrompt = generateStrategyPrompt(strategy, strategyContext);
           deps.logger.logError(escalationPrompt);
           deps.setLastPipelineExitCode(deps.exits.reviewFailed);
+          await postHumanEscalationNotice(deps, item, platform, owner, repo, escalationPrompt);
           deps.saveProcessedIssue(item.id);
           deps.clearRunState(item.id);
           return;
@@ -803,11 +871,7 @@ export async function runReviewLoop(
             convergenceConfig,
           );
           deps.logger.logWork(report);
-          if (deps.jiraClient.isConfigured()) {
-            try {
-              await deps.jiraClient.addComment(item.id, report);
-            } catch {}
-          }
+          await postHumanEscalationNotice(deps, item, platform, owner, repo, report);
           deps.setLastPipelineExitCode(deps.exits.noChanges);
           deps.clearRunState(item.id);
           return;
@@ -933,11 +997,7 @@ export async function runReviewLoop(
               convergenceConfig,
             );
             deps.logger.logWork(report);
-            if (deps.jiraClient.isConfigured()) {
-              try {
-                await deps.jiraClient.addComment(item.id, report);
-              } catch {}
-            }
+            await postHumanEscalationNotice(deps, item, platform, owner, repo, report);
             deps.clearRunState(item.id);
             return;
           }

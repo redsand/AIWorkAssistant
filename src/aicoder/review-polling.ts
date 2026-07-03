@@ -73,26 +73,51 @@ export async function pollForReviewResult(
     Accept: "application/vnd.github+json",
   };
   const since = sinceIso ? new Date(sinceIso) : null;
+  // Bare axios calls have no default timeout — a stalled TCP connection
+  // (observed live: an ESTABLISHED-but-silent socket to GitHub) hangs the
+  // promise forever with no error, no log, and no recovery, wedging the
+  // whole review-polling loop indefinitely. Every other HTTP client in
+  // this codebase sets a timeout; this one didn't.
+  const REQUEST_TIMEOUT_MS = 30_000;
   while (true) {
     try {
       const prResp = await axios.get(
         `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
-        { headers },
+        { headers, timeout: REQUEST_TIMEOUT_MS },
       );
       const pr = prResp.data;
       if (pr.merged_at) return "merged";
       if (pr.state === "closed") return "closed";
       if (pr.mergeable === false && pr.mergeable_state === "dirty") return "conflict";
     } catch {
-      // PR might not exist yet
+      // PR might not exist yet, or request timed out — retry next cycle
     }
 
     try {
+      // GitHub's per-issue comments endpoint
+      // (/repos/{owner}/{repo}/issues/{n}/comments) does NOT support the
+      // `sort`/`direction` query params — those only apply to the
+      // repo-wide comments endpoint. This endpoint always returns
+      // comments in ascending (oldest-first) order regardless of what's
+      // passed. Passing per_page:10 here silently truncated to the 10
+      // OLDEST comments, so once a PR/issue accumulated more than 10
+      // comments the newest ones — including the terminal review-marker
+      // comment the whole loop is waiting on — were never fetched,
+      // wedging review_polling forever with no error and no log.
+      // Fetch a generous page and sort client-side instead of trusting
+      // server-side params that don't apply to this endpoint.
       const commentsResp = await axios.get(
         `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments`,
-        { headers, params: { per_page: 10, sort: "created", direction: "desc" } },
+        {
+          headers,
+          params: { per_page: 100 },
+          timeout: REQUEST_TIMEOUT_MS,
+        },
       );
-      for (const c of commentsResp.data || []) {
+      const comments = [...(commentsResp.data || [])].sort(
+        (a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime(),
+      );
+      for (const c of comments) {
         if (since && c.created_at && new Date(c.created_at) < since) continue;
         const body: string = c.body || "";
         if (body.includes(REVIEW_PASSED_MARKER)) return "passed";
@@ -104,7 +129,7 @@ export async function pollForReviewResult(
         }
       }
     } catch {
-      // Comments might not be available
+      // Comments might not be available, or request timed out — retry next cycle
     }
 
     await new Promise((r) => setTimeout(r, pollMs));

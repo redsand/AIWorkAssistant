@@ -955,9 +955,30 @@ async function pollMergeRequests(
       // Check for empty MR — skip review and DO NOT merge empty diffs
       const diff = await vcs.getDiff(target.name, mr.number);
       if (!diff || diff.trim().length === 0) {
-        log.warn(`MR !${mr.number} has no changes (empty diff) — skipping review, not merging`);
-        await vcs.addComment(target.name, mr.number, "## ⚠️ Empty MR — No Changes Detected\n\nThis MR has no code changes. It will not be reviewed or merged. Please add substantive changes or close this MR.");
+        log.warn(`MR !${mr.number} has no changes (empty diff) — treating as a failed review so the aicoder reworks it`);
+        // Must route through postReworkPrompt (not a plain markerless comment) —
+        // it's the only path that posts the terminal "Review Failed" marker the
+        // aicoder's pollForGitLabReviewResult/pollForReviewResult is blocked on.
+        // A markerless comment here left empty-diff MRs polled forever with no
+        // way to ever un-hang (MR !23 in siem/octorepl sat stuck 7+ hours this way).
+        // Also record the SHA/time so the next reviewer cycle uses the normal
+        // SHA-diff + backoff + eventual give-up path instead of the unconditional
+        // "already reviewed" skip, which never re-checks or escalates.
+        await postReworkPrompt(vcs, target.name, mr, {
+          clean: false,
+          findings: [{
+            severity: "high",
+            category: "quality",
+            file: "(no files changed)",
+            message: "MR contains an empty diff — no substantive changes were pushed.",
+            suggestion: "Push real code changes addressing the linked issue.",
+          }],
+          summary: "This MR has no code changes.",
+        });
         reviewedMRs.add(mrKey);
+        const emptySha = await vcs.getLatestCommitSha(target.name, mr.number).catch(() => undefined);
+        if (emptySha) reviewedMRShas.set(mrKey, emptySha);
+        reviewedMRTimes.set(mrKey, Date.now());
         saveReviewerState();
         continue;
       }
