@@ -81,6 +81,118 @@ describe('AgentRunDatabase', () => {
       expect(stats.runningRuns).toBe(0);
     });
   });
+
+  describe('reapStuckAicoderRuns', () => {
+    function backdateActivity(runId: string, iso: string) {
+      (db as unknown as { db: { prepare(sql: string): { run(...args: unknown[]): unknown } } })
+        .db.prepare('UPDATE agent_runs SET last_activity_at = ?, started_at = ? WHERE id = ?')
+        .run(iso, iso, runId);
+    }
+
+    it('marks a long-silent aicoder run as failed', () => {
+      const run = db.startRun({ userId: 'aicoder', mode: 'engineering' });
+      const now = new Date('2026-07-03T12:00:00Z');
+      backdateActivity(run.id, new Date(now.getTime() - 20 * 60 * 1000).toISOString());
+
+      const result = db.reapStuckAicoderRuns(now);
+
+      expect(result.count).toBe(1);
+      const reaped = db.getRun(run.id);
+      expect(reaped?.status).toBe('failed');
+      expect(reaped?.errorMessage).toMatch(/Stuck/);
+    });
+
+    it('marks a run with zero tool-loop activity as failed after the startup-stall threshold', () => {
+      const run = db.startRun({ userId: 'aicoder', mode: 'engineering' });
+      const now = new Date('2026-07-03T12:00:00Z');
+      backdateActivity(run.id, new Date(now.getTime() - 6 * 60 * 1000).toISOString());
+
+      const result = db.reapStuckAicoderRuns(now);
+
+      expect(result.count).toBe(1);
+      expect(db.getRun(run.id)?.status).toBe('failed');
+    });
+
+    it('leaves a recently-active aicoder run alone', () => {
+      const run = db.startRun({ userId: 'aicoder', mode: 'engineering' });
+      db.updateToolLoopCount(run.id, 3);
+      const now = new Date('2026-07-03T12:00:00Z');
+
+      const result = db.reapStuckAicoderRuns(now);
+
+      expect(result.count).toBe(0);
+      expect(db.getRun(run.id)?.status).toBe('running');
+    });
+
+    it('does not touch stuck runs belonging to a different user_id', () => {
+      const run = db.startRun({ userId: 'user-1', mode: 'productivity' });
+      const now = new Date('2026-07-03T12:00:00Z');
+      backdateActivity(run.id, new Date(now.getTime() - 20 * 60 * 1000).toISOString());
+
+      const result = db.reapStuckAicoderRuns(now);
+
+      expect(result.count).toBe(0);
+      expect(db.getRun(run.id)?.status).toBe('running');
+    });
+
+    it('clears the repo run lock held by a reaped run', () => {
+      const run = db.startRun({ userId: 'aicoder', mode: 'engineering' });
+      db.acquireRepoRunLock('github', 'redsand/claimkit', run.id);
+      const now = new Date('2026-07-03T12:00:00Z');
+      backdateActivity(run.id, new Date(now.getTime() - 20 * 60 * 1000).toISOString());
+
+      db.reapStuckAicoderRuns(now);
+
+      const reacquired = db.acquireRepoRunLock('github', 'redsand/claimkit', 'some-other-run');
+      expect(reacquired).toEqual({ acquired: true });
+    });
+  });
+
+  describe('repo run locks', () => {
+    it('acquires a lock for a free (source, repo) scope', () => {
+      const result = db.acquireRepoRunLock('github', 'redsand/claimkit', 'run-1');
+      expect(result).toEqual({ acquired: true });
+    });
+
+    it('rejects a second run for the same (source, repo) scope', () => {
+      db.acquireRepoRunLock('github', 'redsand/claimkit', 'run-1');
+      const result = db.acquireRepoRunLock('github', 'redsand/claimkit', 'run-2');
+      expect(result).toEqual({ acquired: false, existingRunId: 'run-1' });
+    });
+
+    it('is idempotent for the same run re-acquiring its own lock', () => {
+      db.acquireRepoRunLock('github', 'redsand/claimkit', 'run-1');
+      const result = db.acquireRepoRunLock('github', 'redsand/claimkit', 'run-1');
+      expect(result).toEqual({ acquired: true });
+    });
+
+    it('treats source/repo as case-insensitive when scoping the lock', () => {
+      db.acquireRepoRunLock('GitHub', 'Redsand/ClaimKit', 'run-1');
+      const result = db.acquireRepoRunLock('github', 'redsand/claimkit', 'run-2');
+      expect(result).toEqual({ acquired: false, existingRunId: 'run-1' });
+    });
+
+    it('allows a different repo to acquire its own lock concurrently', () => {
+      db.acquireRepoRunLock('github', 'redsand/claimkit', 'run-1');
+      const result = db.acquireRepoRunLock('github', 'redsand/aiworkassistant', 'run-2');
+      expect(result).toEqual({ acquired: true });
+    });
+
+    it('releaseRepoRunLock frees the scope for a new run', () => {
+      db.acquireRepoRunLock('github', 'redsand/claimkit', 'run-1');
+      db.releaseRepoRunLock('run-1');
+      const result = db.acquireRepoRunLock('github', 'redsand/claimkit', 'run-2');
+      expect(result).toEqual({ acquired: true });
+    });
+
+    it('an expired lock (past its TTL) is auto-released on the next acquire attempt', () => {
+      db.acquireRepoRunLock('github', 'redsand/claimkit', 'run-1', 1000);
+      const later = new Date(Date.now() + 5000);
+      db.releaseExpiredRepoRunLocks(later);
+      const result = db.acquireRepoRunLock('github', 'redsand/claimkit', 'run-2');
+      expect(result).toEqual({ acquired: true });
+    });
+  });
 });
 
 // File: src/agent-runs/__tests__/sanitizer.test.ts

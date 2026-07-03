@@ -511,7 +511,7 @@ const envSchema = z.object({
   CRON_ENABLED: z
     .string()
     .transform((s) => s === "true")
-    .default("false"),
+    .default("true"),
   CRON_PATH: z.string().default("data/cron"),
 
   // HAWK Incident Response (ir.hawk.io)
