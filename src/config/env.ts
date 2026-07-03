@@ -129,6 +129,17 @@ const envSchema = z.object({
   // Agent Memory (MEMORY.md / USER.md)
   AGENT_MEMORY_PATH: z.string().default("data/memories"),
 
+  // Active knowledge acquisition (issue #247). Directory holding the
+  // claims.db SQLite store that persists retrieval-cascade resolutions as
+  // durable knowledge claims. Empty (default) falls back to the profile-scoped
+  // memories directory (resolvePath("memories") →
+  // HERMES_HOME/profiles/{ACTIVE_PROFILE}/memories) so the claims database
+  // lives alongside the rest of the agent's profile state unless an operator
+  // wants it on a separate volume. Note: this is NOT AGENT_MEMORY_PATH — that
+  // var is not consulted here, so relocating AGENT_MEMORY_PATH will not move
+  // the claims DB.
+  CLAIMS_STORE_PATH: z.string().default(""),
+
   // Agent Soul (SOUL.md)
   SOUL_PATH: z.string().default(""),
   DEFAULT_SOUL: z.string().default(""),
@@ -458,6 +469,16 @@ const envSchema = z.object({
   CASCADE_TEACHER_COST_TOKENS: z.coerce.number().default(1000),
   // Estimated token cost charged against the budget for the tool-research step.
   CASCADE_TOOL_COST_TOKENS: z.coerce.number().default(2000),
+
+  // ── Active knowledge acquisition (issue #247) ────────────────────────
+  // CLAIMS_STORE_PATH is declared above alongside AGENT_MEMORY_PATH.
+  // Top-k claims surfaced per query as "Prior Knowledge" context.
+  CLAIMS_RETRIEVE_TOP_K: z.coerce.number().default(3),
+  // Minimum cascade confidence required to persist a claim. Below this, the
+  // resolution isn't trustworthy enough to reuse on future queries.
+  CLAIMS_MIN_PERSIST_CONFIDENCE: z.coerce.number().default(0.7),
+  // Claims older than this are pruned on server startup.
+  CLAIMS_MAX_AGE_DAYS: z.coerce.number().default(30),
 
   // Knowledge graph retrieval controls
   KNOWLEDGE_GRAPH_QUERY_ENABLED: z

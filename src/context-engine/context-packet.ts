@@ -49,6 +49,11 @@ import { buildEntityClaimsSection, extractEntityIds } from "./entity-claims-inje
 import { entityMemory } from "../memory/entity-memory";
 import { entityMarkdown } from "../memory/entity-markdown";
 import type { MemoryEntity } from "../memory/entity-types";
+import {
+  claimsStore,
+  formatClaimsSection,
+  type RetrievedClaim,
+} from "../memory/claims-store";
 
 export interface RoutingDecision {
   tier: RoutingTier;
@@ -198,6 +203,11 @@ export async function assembleContextPacket(
   } = params;
 
   const budget = createBudget(env.CONTEXT_PACKET_V2_BUDGET, providerMaxTokens, toolTokens);
+  // Computed early (not just at session-retrieval time below) because the
+  // claims-store feedback signal (issue #247) needs it before the prior-claims
+  // retrieval block runs, further up the function than session retrieval.
+  const previousUserMessage =
+    [...sessionMessages].reverse().find((m) => m.role === "user")?.content ?? "";
   const stageTimings: Record<string, number> = {};
   const timeStage = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
     const start = Date.now();
@@ -300,6 +310,55 @@ export async function assembleContextPacket(
     );
   }
 
+  // ── Active knowledge acquisition — prior claims injection (issue #247) ──
+  // Before paying for the cascade, ask the claims store for resolutions
+  // persisted from prior cascade runs against similar queries. The store uses
+  // the same SA-CTS retrieval as session utility, so high-utility, semantically
+  // similar claims surface first. The surfaced IDs are tracked on the packet
+  // so a downstream task outcome can update each claim's Beta distribution
+  // via ClaimsStore.updateClaimUtility(). The block is wrapped in try/catch
+  // and never blocks context assembly — a broken claims store degrades to
+  // "no prior knowledge" rather than failing the whole packet.
+  //
+  // Downstream feedback (mirrors retrieveUtilityRankedSessions in
+  // session-utility.ts): the new user turn either builds on the claims
+  // surfaced last turn (follow-up ⇒ success) or re-asks the same thing
+  // (rephrase ⇒ failure). Attribute that signal to LAST turn's claims before
+  // this turn's retrieval overwrites the remembered set.
+  if (previousUserMessage) {
+    const signal = classifyFollowUpSignal(previousUserMessage, query);
+    if (signal) {
+      const updated = claimsStore.recordTurnOutcome(params.sessionId, signal === "success");
+      if (updated > 0) {
+        console.log(
+          `[ClaimsStore] feedback ${signal} → updated ${updated} prior claim(s) for ${params.sessionId.substring(0, 8)}`,
+        );
+      }
+    }
+  }
+  let priorClaims: RetrievedClaim[] = [];
+  const priorClaimIds: string[] = [];
+  const claimsRetrieveStart = Date.now();
+  try {
+    priorClaims = claimsStore.retrieveClaims(retrievalQuery, 3);
+    for (const c of priorClaims) priorClaimIds.push(c.id);
+    claimsStore.rememberRetrieval(params.sessionId, priorClaimIds);
+    stageTimings.claimsRetrieveMs = Date.now() - claimsRetrieveStart;
+    if (priorClaims.length > 0) {
+      console.log(
+        `[ClaimsStore] retrieved ${priorClaims.length} prior claim(s) for query | ` +
+        `ids=[${priorClaimIds.slice(0, 5).map((id) => id.substring(0, 8)).join(", ")}] | ` +
+        `top_combined=${priorClaims[0].combinedScore.toFixed(2)} | ${stageTimings.claimsRetrieveMs}ms`,
+      );
+    }
+  } catch (err) {
+    stageTimings.claimsRetrieveMs = Date.now() - claimsRetrieveStart;
+    console.warn(
+      "[ClaimsStore] retrieveClaims failed, skipping prior-knowledge injection:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   // ── ClaimKit-first pre-flight probe (issue #229) ─────────────────────
   // Query ClaimKit BEFORE running RAG. A high-confidence probe lets us skip
   // RAG entirely; medium confidence runs both in parallel; low confidence /
@@ -374,6 +433,75 @@ export async function assembleContextPacket(
         "[ContextPacket] retrieval cascade failed:",
         err instanceof Error ? err.message : err,
       );
+    }
+  }
+
+  // ── Persist the cascade resolution as a durable claim (issue #247) ────
+  // Only teacher verification and tool research produce a durable resolution
+  // worth persisting. Crucially we store `cascadeResolution.resolution` — the
+  // teacher-endorsed answer or the web evidence the tool step acquired — NOT
+  // the low-confidence ClaimKit probe answer that triggered escalation. The
+  // probe answer was, by definition, weak enough to require the cascade; the
+  // cascade's verified output is what should be reusable next time.
+  //
+  // `ck_high_confidence` needs no persistence (re-probing ClaimKit is cheap).
+  // `budget_exhausted` and `fell_back_to_rag` carry an empty resolution: full
+  // RAG owns the answer and the cascade produced nothing verified. An empty
+  // resolution claim would pollute future retrievals (it MATCHes anything,
+  // surfaces as signal-free prior knowledge, and never ages out because
+  // pruneStaleClaims only drops never-retrieved rows), so we skip it. The same
+  // skip fires when confidence collapses to ~0 — the "no real answer" signal.
+  const CLAIM_MIN_PERSIST_CONFIDENCE = 0.05;
+  let storedClaimId: string | null = null;
+  let storedCascadeLevel: string | null = null;
+  let skippedClaimReason:
+    | "empty_resolution"
+    | "below_min_confidence"
+    | null = null;
+  if (
+    cascadeResolution &&
+    (cascadeResolution.outcome === "teacher_confirmed" ||
+      cascadeResolution.outcome === "tool_confirmed")
+  ) {
+    const cascadeLevelForClaim = cascadeResolution.level as
+      | "teacher_verify"
+      | "tool_research";
+    const resolutionText = (cascadeResolution.resolution ?? "").trim();
+    if (
+      resolutionText.length === 0 ||
+      cascadeResolution.confidence < CLAIM_MIN_PERSIST_CONFIDENCE
+    ) {
+      skippedClaimReason =
+        resolutionText.length === 0 ? "empty_resolution" : "below_min_confidence";
+      console.log(
+        `[ClaimsStore] skipped persisting ${cascadeResolution.outcome} claim | ` +
+        `reason=${skippedClaimReason} | confidence=${(cascadeResolution.confidence * 100).toFixed(0)}%`,
+      );
+    } else {
+      try {
+        storedClaimId = claimsStore.storeClaim({
+          query: retrievalQuery,
+          resolution: resolutionText,
+          cascadeLevel: cascadeLevelForClaim,
+          confidence: cascadeResolution.confidence,
+          source:
+            cascadeResolution.outcome === "teacher_confirmed"
+              ? `teacher:${env.CASCADE_TEACHER_MODEL || "default"}`
+              : `web_search:${cascadeResolution.provider || "unknown"}`,
+        });
+        storedCascadeLevel = cascadeLevelForClaim;
+        if (storedClaimId) {
+          console.log(
+            `[ClaimsStore] persisted claim ${storedClaimId.substring(0, 8)} | ` +
+            `level=${cascadeLevelForClaim} | confidence=${(cascadeResolution.confidence * 100).toFixed(0)}%`,
+          );
+        }
+      } catch (err) {
+        console.warn(
+          "[ClaimsStore] storeClaim failed:",
+          err instanceof Error ? err.message : err,
+        );
+      }
     }
   }
 
@@ -460,8 +588,6 @@ export async function assembleContextPacket(
   // user turn (if any) carries the follow-up/rephrase feedback signal that
   // updates the PREVIOUS turn's surfaced sessions before this turn overwrites
   // the remembered retrieval.
-  const previousUserMessage =
-    [...sessionMessages].reverse().find((m) => m.role === "user")?.content ?? "";
   const sessionsPromise = retrieveUtilityRankedSessions(
     query,
     params.sessionId,
@@ -991,6 +1117,42 @@ export async function assembleContextPacket(
     ? { name: "health", content: healthText, tokens: estimateTokens(healthText) }
     : null;
 
+  // Prior-knowledge section from persisted cascade resolutions (issue #247).
+  // Built from the claims retrieved at the top of the assembler, BEFORE the
+  // ClaimKit probe. Surfaces resolutions from past teacher-LLM / tool-research
+  // escalations so the agent can answer similar queries without paying for the
+  // cascade again. Budgeted at 400 tokens so the section never crowds out
+  // primary evidence.
+  const MAX_PRIOR_CLAIMS_TOKENS = 400;
+  let priorClaimsSection: ContextSection | null = null;
+  if (priorClaims.length > 0) {
+    const raw = formatClaimsSection(priorClaims);
+    if (raw) {
+      const tokens = estimateTokens(raw);
+      // Code-point-safe cap: slice by Unicode code points (not UTF-16 units)
+      // so a hard token-budget cut can never split a multi-byte character
+      // mid-sequence. Append an ellipsis so the truncation is visible.
+      let content = raw;
+      if (tokens > MAX_PRIOR_CLAIMS_TOKENS) {
+        const cps = Array.from(raw);
+        const capChars = MAX_PRIOR_CLAIMS_TOKENS * 4;
+        content = cps.length > capChars ? cps.slice(0, capChars).join("") + "…" : raw;
+      }
+      // Re-estimate on the final content rather than assuming the cap: the
+      // char-level truncation is approximate (a 4-chars-per-token heuristic
+      // that won't line up with the real token count of the sliced text), so
+      // reporting min(tokens, cap) would under-report the budget the section
+      // actually consumes. Estimating the emitted content keeps the packet's
+      // token accounting honest.
+      priorClaimsSection = {
+        name: "prior_claims",
+        content,
+        tokens: estimateTokens(content),
+        sourceCount: priorClaims.length,
+      };
+    }
+  }
+
   const sections: ContextSection[] = [];
 
   // SOUL.md — absolute first section (slot #0, before everything)
@@ -1026,6 +1188,14 @@ export async function assembleContextPacket(
 
   if (entityProfilesSection) {
     sections.push(entityProfilesSection);
+  }
+
+  // Prior-knowledge claims (issue #247): durable cascade resolutions from
+  // prior turns. Sits BEFORE ClaimKit/RAG so the agent sees what the system
+  // already learned and can short-circuit conclusions that have already been
+  // verified by a teacher LLM or corroborated by web research.
+  if (priorClaimsSection) {
+    sections.push(priorClaimsSection);
   }
 
   if (claimKitSection) {
@@ -1092,6 +1262,17 @@ export async function assembleContextPacket(
   const entityProfilesEnforced = enforced.find((s) => s.name === "entity_profiles");
   if (entityProfilesEnforced?.content.trim()) {
     messages.push({ role: "system", content: entityProfilesEnforced.content });
+  }
+
+  // Prior-knowledge claims (issue #247): inject BEFORE paid retrieval so the
+  // agent treats durable cascade resolutions as the authoritative starting
+  // point and only escalates to ClaimKit/RAG when prior knowledge is missing
+  // or contradicted.
+  const priorClaimsEnforced = enforced.find((s) => s.name === "prior_claims");
+  let priorClaimsInjected = false;
+  if (priorClaimsEnforced?.content.trim()) {
+    messages.push({ role: "system", content: priorClaimsEnforced.content });
+    priorClaimsInjected = true;
   }
 
   if (routing.tier === "ck_primary" && claimKitEnforced?.content.trim()) {
@@ -1344,6 +1525,14 @@ export async function assembleContextPacket(
         claimCount: claimKitResult?.metadata.claimCount ?? null,
         sourceCount: claimKitResult?.metadata.sourceIds.length ?? null,
         retrievalScore: claimKitResult?.metadata.retrievalScore ?? null,
+      },
+      claimsAcquisition: {
+        retrievedClaimIds: priorClaimIds,
+        retrievedCount: priorClaims.length,
+        injectedInMessages: priorClaimsInjected,
+        storedClaimId,
+        storedCascadeLevel,
+        skippedClaimReason,
       },
       createdAt: new Date(),
     },

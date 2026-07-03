@@ -5,6 +5,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
+import fs from "fs";
 import { env } from "./config/env";
 import { healthRoutes } from "./routes/health";
 import { chatRoutes } from "./routes/chat";
@@ -28,6 +29,7 @@ import { ctoRoutes } from "./routes/cto";
 import { personalOsRoutes } from "./routes/personal-os";
 import { productRoutes } from "./routes/product";
 import { memoryRoutes } from "./routes/memory";
+import { runStartupClaimPrune, getClaimsStoreBasePath } from "./memory/claims-store";
 import { codeReviewRoutes } from "./routes/code-review";
 import { pushSubscriptionRoutes } from "./routes/push-subscriptions";
 import { pushAcknowledgeRoutes } from "./routes/push-acknowledge";
@@ -578,6 +580,39 @@ async function start() {
       }
     }, 60_000);
     staleRunInterval.unref();
+
+    // ─── Active knowledge acquisition: prune stale claims (issue #247) ───
+    // Cascade resolutions persist as durable claims so future similar queries
+    // can skip the expensive escalation. Claims that haven't been retrieved
+    // in 30 days are pruned on startup so the store doesn't grow unbounded
+    // with stale, never-used knowledge. Best-effort — failures log but never
+    // block server startup.
+    //
+    // The claims-store base directory is mkdir'd here BEFORE the singleton
+    // opens its SQLite handle: if the operator pointed CLAIMS_STORE_PATH at
+    // a path whose parent doesn't exist (or is read-only) the store's
+    // constructor silently disabled itself and the next server start would
+    // surface the failure as a confusing "no prior knowledge" symptom.
+    // Creating the directory up-front surfaces permission/path errors at the
+    // server boot banner instead.
+    try {
+      const claimsBase = getClaimsStoreBasePath();
+      try {
+        fs.mkdirSync(claimsBase, { recursive: true });
+      } catch (mkdirErr) {
+        console.warn(
+          `[ClaimsStore] could not create claims directory at ${claimsBase} ` +
+          `(continuing; claims store may self-disable):`,
+          mkdirErr instanceof Error ? mkdirErr.message : mkdirErr,
+        );
+      }
+      runStartupClaimPrune(30);
+    } catch (err) {
+      console.warn(
+        "[ClaimsStore] startup prune failed (continuing):",
+        err instanceof Error ? err.message : err,
+      );
+    }
 
     console.log(`
 ╔════════════════════════════════════════════════════════════╗

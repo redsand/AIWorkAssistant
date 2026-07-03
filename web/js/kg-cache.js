@@ -62,6 +62,9 @@ export async function loadKgCache(force = false) {
         });
       }
       cache.loadedAt = Date.now();
+    } catch {
+      // Best-effort warm: a failed fetch must not surface as an unhandled
+      // rejection in fire-and-forget callers (e.g. `void loadKgCache()`).
     } finally {
       cache.loading = null;
     }
