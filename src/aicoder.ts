@@ -119,6 +119,8 @@ import {
 import type { RebaseLoopDeps } from "./aicoder/rebase-loop";
 import { runReviewLoop as _runReviewLoop } from "./aicoder/review-loop";
 import type { ReviewLoopDeps } from "./aicoder/review-loop";
+import { recoverFromRejectedPush } from "./aicoder/push-recovery";
+import type { PushRecoveryDeps } from "./aicoder/push-recovery";
 import { resumeFromCheckpoint as _resumeFromCheckpoint } from "./aicoder/checkpoint-resumers";
 import type { CheckpointResumerDeps } from "./aicoder/checkpoint-resumers";
 import { shouldSkipIssue } from "./aicoder/issue-precheck";
@@ -476,6 +478,20 @@ function rebaseLoopDeps(): RebaseLoopDeps {
 }
 const rebaseAndResolveConflicts = (branchName: string) =>
   _rebaseAndResolveConflicts(rebaseLoopDeps(), branchName);
+
+// recoverFromRejectedPush moved to src/aicoder/push-recovery.ts
+function pushRecoveryDeps(runId: string): PushRecoveryDeps {
+  return {
+    logger: runLogger,
+    workspace: WORKSPACE,
+    pushBranch,
+    isRebaseInProgress,
+    recoverFromRebase,
+    rebaseAndResolveConflicts,
+    trackStep: (message, toolName, options) =>
+      trackStep(runId, "tool_call", message, { toolName, ...options }),
+  };
+}
 
 
 
@@ -1053,38 +1069,16 @@ async function processWorkItem(cfg: ServerConfig, item: WorkItem): Promise<{ prN
   saveRunState({ ...currentState, checkpoint: "tests_passed" });
 
   if (!pushBranch(branchName)) {
-    // Non-force push may fail if remote has commits from a previous rework
-    // Attempt rebase on top of remote and retry
-    runLogger.logGit(`Push rejected — rebasing on remote and retrying`);
-    if (gitRun(["pull", "--rebase", "origin", branchName], WORKSPACE)) {
-      if (pushBranch(branchName)) {
-        trackStep(run.id, "tool_call", `Pushed branch after rebase: ${branchName}`, { toolName: "git_push" });
-      } else {
-        runLogger.logError(`Push failed after rebase — PR not created`);
-        lastPipelineExitCode = EXIT_GIT_FAILURE;
-        runLogger.endRun(EXIT_GIT_FAILURE);
-        trackStep(run.id, "tool_call", "Push failed after rebase", { toolName: "git_push", success: false });
-        failRunTrack(run.id, "Push failed after rebase");
-        return null;
-      }
-    } else {
-      // Rebase failed — stale commits from a previous run are on the remote branch.
-      // The aicoder owns ai/issue-* branches exclusively, so force push is safe.
-      runLogger.logGit(`Rebase failed — aborting and force pushing to replace stale remote branch`);
-      gitRun(["rebase", "--abort"], WORKSPACE);
-      if (pushBranch(branchName, { forceWithLease: true })) {
-        trackStep(run.id, "tool_call", `Force pushed branch after rebase failure: ${branchName}`, { toolName: "git_push" });
-      } else {
-        runLogger.logError(`Force push failed after rebase failure — PR not created`);
-        lastPipelineExitCode = EXIT_GIT_FAILURE;
-        runLogger.endRun(EXIT_GIT_FAILURE);
-        trackStep(run.id, "tool_call", "Force push failed after rebase failure", { toolName: "git_push", success: false });
-        failRunTrack(run.id, "Force push failed after rebase failure");
-        return null;
-      }
+    const recovery = await recoverFromRejectedPush(pushRecoveryDeps(run.id), branchName);
+    if (!recovery.ok) {
+      lastPipelineExitCode = EXIT_GIT_FAILURE;
+      runLogger.endRun(EXIT_GIT_FAILURE);
+      failRunTrack(run.id, recovery.errorMessage);
+      return null;
     }
+  } else {
+    trackStep(run.id, "tool_call", `Pushed branch: ${branchName}`, { toolName: "git_push" });
   }
-  trackStep(run.id, "tool_call", `Pushed branch: ${branchName}`, { toolName: "git_push" });
 
   // Checkpoint: branch pushed
   saveRunState({ ...currentState, checkpoint: "branch_pushed" });
