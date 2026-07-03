@@ -224,23 +224,58 @@ class ReviewAssistant {
       lines.push("");
     }
 
+    // Files are listed alphabetically (as returned by the GitHub/GitLab API),
+    // which reliably sorts `tests/**` after the `src/**` file it covers. A
+    // single trailing slice() at MAX_TOTAL_CHARS silently dropped whichever
+    // files landed late in that order in their entirety — including, in
+    // practice, the exact test file a review was complaining was missing.
+    // Give every file a fair per-file share of the remaining budget instead,
+    // so a handful of large files can't crowd every later file out completely.
+    const preambleLength = lines.join("\n").length;
+    const fileSectionBudget = Math.max(MAX_TOTAL_CHARS - preambleLength, 0);
+    const perFileBudget = changeSet.files.length > 0
+      ? Math.floor(fileSectionBudget / changeSet.files.length)
+      : fileSectionBudget;
+
     lines.push("Changed files:");
     for (const file of changeSet.files) {
-      lines.push(`  ${file.status} ${file.filename} (+${file.additions} -${file.deletions})`);
+      // The header always gets pushed regardless of budget — every changed
+      // file must be named in the summary even if its patch content doesn't
+      // fit, otherwise a reviewer can't even know the file was touched.
+      const header = `  ${file.status} ${file.filename} (+${file.additions} -${file.deletions})`;
+      lines.push(header);
+
       if (file.patch) {
         const isNew = file.status === "added";
         const limit = isNew ? NEW_FILE_MAX_LINES : MAX_PATCH_LINES;
-        const patchLines = file.patch.split("\n");
-        const totalLines = patchLines.length;
-        const shownLines = patchLines.slice(0, limit);
+        const patchLines = file.patch.split("\n").slice(0, limit);
+        const totalLines = file.patch.split("\n").length;
+
+        // Fit lines one at a time against this file's fair share of the
+        // budget (accounting for the 4-char indent + newline each costs),
+        // rather than slicing the joined text — that kept the last file's
+        // header from blowing the running total when patch lines are long.
+        const overhead = header.length + 60; // header + blank line + truncation note
+        let charsLeft = Math.max(perFileBudget - overhead, 0);
+        const shownLines: string[] = [];
+        for (const line of patchLines) {
+          const cost = line.length + 5;
+          if (cost > charsLeft) break;
+          charsLeft -= cost;
+          shownLines.push(line);
+        }
+
         lines.push(...shownLines.map((l) => "    " + l));
-        if (totalLines > limit) {
-          lines.push(`    ...(truncated: ${totalLines} total lines, showing ${limit})`);
+        if (totalLines > shownLines.length) {
+          lines.push(`    ...(truncated: ${totalLines} total lines, showing ${shownLines.length})`);
         }
       }
       lines.push("");
     }
 
+    // Safety net only: the per-file budgeting above should already keep the
+    // result close to MAX_TOTAL_CHARS, but preamble content (description,
+    // issue text, prior comments) isn't hard-capped against it.
     const result = lines.join("\n");
     return result.length > MAX_TOTAL_CHARS
       ? result.slice(0, MAX_TOTAL_CHARS) + "\n...(truncated)"

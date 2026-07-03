@@ -880,3 +880,84 @@ describe("regression: AI review truncated mid-JSON (IR-106 / breakglass MR)", ()
     expect(mockAiChat).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 65536 }));
   });
 });
+
+// ── Regression: reviewer.ts issue #247 — summarizeDiff dropping late files ──
+//
+// A single trailing slice() at MAX_TOTAL_CHARS truncated the *concatenated*
+// diff summary, so whichever files sorted last alphabetically (files are
+// listed in API order, which is alphabetical) got dropped in their entirety.
+// In production this silently excluded tests/unit/memory/claims-store.test.ts
+// (which sorts after the much larger src/memory/claims-store.ts) from every
+// review pass, so the reviewer kept reporting "no tests" for 12 cycles even
+// though a comprehensive test file existed the whole time.
+
+describe("reviewAssistant.summarizeDiff — per-file truncation budget", () => {
+  const bigPatch = (lines: number, prefix: string) =>
+    Array.from({ length: lines }, (_, i) => `+${prefix} line ${i}`).join("\n");
+
+  const base: ChangeSet = {
+    platform: "github",
+    title: "Add active knowledge acquisition",
+    description: "",
+    author: "aicoder",
+    sourceBranch: "ai/issue-247",
+    targetBranch: "main",
+    url: "https://example.com/pr/251",
+    files: [],
+    linesAdded: 0,
+    linesRemoved: 0,
+    ciStatus: "success",
+    existingComments: [],
+    hasMigration: false,
+    hasTests: true,
+    hasConfigChange: false,
+  };
+
+  it("does not drop a late-sorted test file entirely behind a large early file", () => {
+    const cs: ChangeSet = {
+      ...base,
+      files: [
+        { filename: "src/memory/claims-store.ts", status: "added", additions: 862, deletions: 0, patch: bigPatch(862, "prod") },
+        { filename: "tests/unit/memory/claims-store.test.ts", status: "added", additions: 815, deletions: 0, patch: bigPatch(815, "test") },
+      ],
+    };
+
+    const summary = reviewAssistant.summarizeDiff(cs);
+
+    expect(summary).toContain("tests/unit/memory/claims-store.test.ts");
+    // The test file's own patch content must actually appear, not just its header line.
+    expect(summary).toMatch(/\+test line 0/);
+  });
+
+  it("gives every file at least some representation when there are many files", () => {
+    const cs: ChangeSet = {
+      ...base,
+      files: Array.from({ length: 19 }, (_, i) => ({
+        filename: `src/file-${String(i).padStart(2, "0")}.ts`,
+        status: "modified" as const,
+        additions: 200,
+        deletions: 0,
+        patch: bigPatch(200, `f${i}`),
+      })),
+    };
+
+    const summary = reviewAssistant.summarizeDiff(cs);
+
+    for (let i = 0; i < 19; i++) {
+      expect(summary).toContain(`src/file-${String(i).padStart(2, "0")}.ts`);
+    }
+  });
+
+  it("still respects the overall MAX_TOTAL_CHARS safety net", () => {
+    const cs: ChangeSet = {
+      ...base,
+      description: "x".repeat(2000),
+      files: [
+        { filename: "src/a.ts", status: "added", additions: 5000, deletions: 0, patch: bigPatch(5000, "a") },
+      ],
+    };
+
+    const summary = reviewAssistant.summarizeDiff(cs);
+    expect(summary.length).toBeLessThanOrEqual(32000 + "\n...(truncated)".length);
+  });
+});
