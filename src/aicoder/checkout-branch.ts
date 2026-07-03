@@ -126,7 +126,17 @@ export async function checkoutBranch(
     if (!deps.forceCheckout(branchName, deps.workspace)) {
       log.logGit("WARN", `Could not switch back to ${branchName} after pull`);
     }
-    deps.gitRun(["rebase", deps.getBaseBranch()], deps.workspace);
+    const rebaseOk = deps.gitRun(["rebase", deps.getBaseBranch()], deps.workspace);
+    if (!rebaseOk && !deps.isRebaseInProgress(deps.workspace)) {
+      // `git rebase` failed outright (bad ref, dirty tree, etc.) rather than
+      // stopping mid-conflict — resolveRebaseConflictsInPlace would see no
+      // rebase in progress and report success, silently leaving the branch
+      // un-rebased. Treat this as a real failure.
+      log.logError(
+        `Rebase of ${branchName} onto ${deps.getBaseBranch()} failed outright — not a conflict state`,
+      );
+      return false;
+    }
     if (!(await deps.resolveRebaseConflictsInPlace(branchName))) {
       return false;
     }
@@ -202,7 +212,14 @@ export async function checkoutBranch(
       syncRemoteBranch(deps, branchName);
       deps.stageAndCommit(`[AI] resume: staged pending changes on ${branchName}`);
       log.logGit("Rebasing existing branch onto latest", deps.getBaseBranch());
-      deps.gitRun(["rebase", deps.getBaseBranch()], deps.workspace);
+      const rebaseOk1 = deps.gitRun(["rebase", deps.getBaseBranch()], deps.workspace);
+      if (!rebaseOk1 && !deps.isRebaseInProgress(deps.workspace)) {
+        log.logError(
+          `Rebase of ${branchName} onto ${deps.getBaseBranch()} failed outright — not a conflict state`,
+        );
+        deps.safeStashPop(deps.workspace);
+        return false;
+      }
       if (!(await deps.resolveRebaseConflictsInPlace(branchName))) {
         deps.safeStashPop(deps.workspace);
         return false;
@@ -213,7 +230,13 @@ export async function checkoutBranch(
       syncRemoteBranch(deps, branchName);
       deps.stageAndCommit(`[AI] resume: staged pending changes on ${branchName}`);
       log.logGit("Rebasing existing branch onto latest", deps.getBaseBranch());
-      deps.gitRun(["rebase", deps.getBaseBranch()], deps.workspace);
+      const rebaseOk2 = deps.gitRun(["rebase", deps.getBaseBranch()], deps.workspace);
+      if (!rebaseOk2 && !deps.isRebaseInProgress(deps.workspace)) {
+        log.logError(
+          `Rebase of ${branchName} onto ${deps.getBaseBranch()} failed outright — not a conflict state`,
+        );
+        return false;
+      }
       if (!(await deps.resolveRebaseConflictsInPlace(branchName))) {
         return false;
       }

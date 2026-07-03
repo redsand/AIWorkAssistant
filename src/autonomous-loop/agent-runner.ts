@@ -230,6 +230,7 @@ export async function runAgentDirect(
 
     let finDetected = false;
     let outputBuf = "";
+    let decodedBuf = "";
     let stderrBuf = "";
     let capturedSessionId: string | undefined;
     const formatter = createStreamFormatter(cfg.agent, cfg.workspace, {
@@ -295,14 +296,20 @@ export async function runAgentDirect(
       const formatted = formatter.push(text);
       if (formatted) process.stdout.write(formatted);
       outputBuf += text;
+      // FIN detection runs against the *decoded* text (formatter output), not
+      // the raw NDJSON stdout — claude/codex/opencode wrap agent text inside a
+      // JSON string, so a FIN the model puts on its own line is escaped to
+      // literal `\n` characters in the raw bytes and never touches real
+      // whitespace, silently defeating the boundary-anchored regexes below.
+      decodedBuf += formatted;
       onStep?.({ output: text });
       resetIdleTimer();
 
-      if (!finDetected && (finLineRegex.test(outputBuf) || finRegex.test(outputBuf))) {
+      if (!finDetected && (finLineRegex.test(decodedBuf) || finRegex.test(decodedBuf))) {
         finDetected = true;
-        const idx = outputBuf.lastIndexOf(finToken);
+        const idx = decodedBuf.lastIndexOf(finToken);
         logger.logAgent(
-          `FIN signal detected near: ...${outputBuf.slice(Math.max(0, idx - 40), idx + finToken.length + 40)}...`,
+          `FIN signal detected near: ...${decodedBuf.slice(Math.max(0, idx - 40), idx + finToken.length + 40)}...`,
         );
         child.kill("SIGTERM");
       }
@@ -313,6 +320,10 @@ export async function runAgentDirect(
       if (idleTimer) clearTimeout(idleTimer);
       const remaining = formatter.flush();
       if (remaining) process.stdout.write(remaining);
+      decodedBuf += remaining;
+      if (!finDetected && (finLineRegex.test(decodedBuf) || finRegex.test(decodedBuf))) {
+        finDetected = true;
+      }
       const stderr = stderrBuf.trim();
       if (stderr && code !== 0) {
         // Truncate to last 2KB — the actionable part of API errors is at the end
@@ -370,6 +381,7 @@ export async function runAgentViaLauncher(
         onChildReady?.(child);
         let finDetected = false;
         let outputBuf = "";
+        let decodedBuf = "";
         const formatter = createStreamFormatter(cfg.agent, cfg.workspace, {
           debug: cfg.debug ?? false,
           workspace: cfg.workspace,
@@ -414,14 +426,17 @@ export async function runAgentViaLauncher(
           const formatted = formatter.push(text);
           if (formatted) process.stdout.write(formatted);
           outputBuf += text;
+          // See runAgentDirect for why FIN detection runs against the decoded
+          // formatter output rather than raw NDJSON stdout.
+          decodedBuf += formatted;
           onStep?.({ output: text });
           resetIdleTimer();
 
-          if (!finDetected && (finLineRegex.test(outputBuf) || finRegex.test(outputBuf))) {
+          if (!finDetected && (finLineRegex.test(decodedBuf) || finRegex.test(decodedBuf))) {
             finDetected = true;
-            const idx = outputBuf.lastIndexOf(finToken);
+            const idx = decodedBuf.lastIndexOf(finToken);
             logger.logAgent(
-              `FIN signal detected near: ...${outputBuf.slice(Math.max(0, idx - 40), idx + finToken.length + 40)}...`,
+              `FIN signal detected near: ...${decodedBuf.slice(Math.max(0, idx - 40), idx + finToken.length + 40)}...`,
             );
             child.kill("SIGTERM");
           }
@@ -436,6 +451,10 @@ export async function runAgentViaLauncher(
           if (idleTimer) clearTimeout(idleTimer);
           const remaining = formatter.flush();
           if (remaining) process.stdout.write(remaining);
+          decodedBuf += remaining;
+          if (!finDetected && (finLineRegex.test(decodedBuf) || finRegex.test(decodedBuf))) {
+            finDetected = true;
+          }
           resolve({ finDetected, exitCode: code, ranTests: formatter.ranTests, sessionId: capturedSessionId });
         });
 

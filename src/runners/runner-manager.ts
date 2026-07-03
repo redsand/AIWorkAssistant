@@ -169,9 +169,10 @@ class RunnerManager {
 
     const loop = this.loops.get(id);
     if (loop) {
-      agentRunDatabase.setRunnerStatus(id, "stopping", {
-        lastError: "Restarting runner to apply saved configuration",
-      });
+      // "stopping" status alone tells the UI a restart is in progress; the
+      // error banner is reserved for genuine failures, so don't set lastError
+      // here — that used to flash a false "error" state on every config save.
+      agentRunDatabase.setRunnerStatus(id, "stopping", { lastError: null });
       runnerEvents.emitStatus(agentRunDatabase.getRunner(id)!);
       loop.stop();
       await loop.done;

@@ -882,7 +882,19 @@ async function pollMergeRequests(
       if (reviewedMRs.has(mrKey)) {
         // Already reviewed — check if MR has been updated since (new push from aicoder rework)
         const lastSha = reviewedMRShas.get(mrKey);
-        if (lastSha) {
+        if (!lastSha) {
+          // We marked this MR reviewed but never managed to record its SHA —
+          // almost always a transient getLatestCommitSha failure right after
+          // the review completed. Without a baseline SHA this used to fall
+          // into the unconditional "already reviewed" skip below forever,
+          // with no skip counter and no escalation path. Backfill the SHA now
+          // so the very next cycle can compare normally.
+          const currentSha = await vcs.getLatestCommitSha(target.name, mr.number).catch(() => undefined);
+          if (currentSha) reviewedMRShas.set(mrKey, currentSha);
+          log.skip(`MR !${mr.number}${mrIssueTag(vcs, mr)} already reviewed (SHA was never recorded — backfilling) — waiting for rework`);
+          continue;
+        }
+        {
           const currentSha = await vcs.getLatestCommitSha(target.name, mr.number).catch(() => undefined);
           const issueTag = mrIssueTag(vcs, mr);
           if (currentSha && currentSha !== lastSha) {
@@ -937,15 +949,12 @@ async function pollMergeRequests(
               mrSkipCounts.delete(mrKey);
               currentPollIntervalMs = null;
             } else {
-              // Apply exponential backoff: each skip doubles the wait, capped at MAX_POLL_INTERVAL_MS
+              // Apply backoff: each skip multiplies the wait by 1.5x, capped at MAX_POLL_INTERVAL_MS
               const base = currentPollIntervalMs ?? BASE_POLL_INTERVAL_MS;
               currentPollIntervalMs = Math.min(base * 1.5, MAX_POLL_INTERVAL_MS);
             }
             continue;
           }
-        } else {
-          log.skip(`MR !${mr.number}${mrIssueTag(vcs, mr)} already reviewed — waiting for rework`);
-          continue;
         }
       }
 
@@ -1651,12 +1660,18 @@ async function mergeWithSummary(
         `## ⚠️ Review Passed — Merge Conflict\n\n${result.summary}\n\n${agentLine}\n\nMerge failed due to conflicts: ${errMsg}`).catch(() => {});
       return "conflict";
     } else if (isPipelineBlocked) {
+      // gitlab-client.ts's acceptMergeRequest already retries once internally
+      // with merge_when_pipeline_succeeds on a 405 — reaching this branch means
+      // that retry ALSO failed, so nothing is actually scheduled to merge.
+      // Reporting "merged" here previously left the MR recorded as reviewed
+      // forever with a comment falsely promising an automatic merge that was
+      // never going to happen.
       await vcs.addComment(
         project,
         mr.number,
-        `## ⏳ Review Passed — Merge Pending Pipeline\n\n${result.summary}\n\n${agentLine}\n\nMerge is waiting for the pipeline to complete: ${errMsg}\n\nThis MR will be merged automatically when the pipeline succeeds.`,
+        `## ⚠️ Review Passed — Merge Blocked by Pipeline\n\n${result.summary}\n\n${agentLine}\n\nMerge could not be scheduled: ${errMsg}\n\nManual merge required once the pipeline/approval conditions are satisfied.`,
       ).catch(() => {});
-      return "merged";
+      return "failed";
     } else {
       await vcs.addComment(
         project,
