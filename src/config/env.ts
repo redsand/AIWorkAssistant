@@ -470,6 +470,16 @@ const envSchema = z.object({
   // Estimated token cost charged against the budget for the tool-research step.
   CASCADE_TOOL_COST_TOKENS: z.coerce.number().default(2000),
 
+  // ── Active knowledge acquisition (issue #247) ────────────────────────
+  // CLAIMS_STORE_PATH is declared above alongside AGENT_MEMORY_PATH.
+  // Top-k claims surfaced per query as "Prior Knowledge" context.
+  CLAIMS_RETRIEVE_TOP_K: z.coerce.number().default(3),
+  // Minimum cascade confidence required to persist a claim. Below this, the
+  // resolution isn't trustworthy enough to reuse on future queries.
+  CLAIMS_MIN_PERSIST_CONFIDENCE: z.coerce.number().default(0.7),
+  // Claims older than this are pruned on server startup.
+  CLAIMS_MAX_AGE_DAYS: z.coerce.number().default(30),
+
   // Knowledge graph retrieval controls
   KNOWLEDGE_GRAPH_QUERY_ENABLED: z
     .string()

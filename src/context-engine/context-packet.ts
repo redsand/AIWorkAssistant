@@ -203,6 +203,11 @@ export async function assembleContextPacket(
   } = params;
 
   const budget = createBudget(env.CONTEXT_PACKET_V2_BUDGET, providerMaxTokens, toolTokens);
+  // Computed early (not just at session-retrieval time below) because the
+  // claims-store feedback signal (issue #247) needs it before the prior-claims
+  // retrieval block runs, further up the function than session retrieval.
+  const previousUserMessage =
+    [...sessionMessages].reverse().find((m) => m.role === "user")?.content ?? "";
   const stageTimings: Record<string, number> = {};
   const timeStage = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
     const start = Date.now();
@@ -314,12 +319,30 @@ export async function assembleContextPacket(
   // via ClaimsStore.updateClaimUtility(). The block is wrapped in try/catch
   // and never blocks context assembly — a broken claims store degrades to
   // "no prior knowledge" rather than failing the whole packet.
+  //
+  // Downstream feedback (mirrors retrieveUtilityRankedSessions in
+  // session-utility.ts): the new user turn either builds on the claims
+  // surfaced last turn (follow-up ⇒ success) or re-asks the same thing
+  // (rephrase ⇒ failure). Attribute that signal to LAST turn's claims before
+  // this turn's retrieval overwrites the remembered set.
+  if (previousUserMessage) {
+    const signal = classifyFollowUpSignal(previousUserMessage, query);
+    if (signal) {
+      const updated = claimsStore.recordTurnOutcome(params.sessionId, signal === "success");
+      if (updated > 0) {
+        console.log(
+          `[ClaimsStore] feedback ${signal} → updated ${updated} prior claim(s) for ${params.sessionId.substring(0, 8)}`,
+        );
+      }
+    }
+  }
   let priorClaims: RetrievedClaim[] = [];
   const priorClaimIds: string[] = [];
   const claimsRetrieveStart = Date.now();
   try {
     priorClaims = claimsStore.retrieveClaims(retrievalQuery, 3);
     for (const c of priorClaims) priorClaimIds.push(c.id);
+    claimsStore.rememberRetrieval(params.sessionId, priorClaimIds);
     stageTimings.claimsRetrieveMs = Date.now() - claimsRetrieveStart;
     if (priorClaims.length > 0) {
       console.log(
@@ -565,8 +588,6 @@ export async function assembleContextPacket(
   // user turn (if any) carries the follow-up/rephrase feedback signal that
   // updates the PREVIOUS turn's surfaced sessions before this turn overwrites
   // the remembered retrieval.
-  const previousUserMessage =
-    [...sessionMessages].reverse().find((m) => m.role === "user")?.content ?? "";
   const sessionsPromise = retrieveUtilityRankedSessions(
     query,
     params.sessionId,

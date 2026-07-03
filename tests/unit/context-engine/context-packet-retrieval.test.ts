@@ -35,6 +35,8 @@ const mockSaveLiveComparison = vi.fn();
 const mockCascadeRun = vi.fn();
 const mockClaimsStoreRetrieve = vi.fn();
 const mockClaimsStoreStore = vi.fn();
+const mockClaimsStoreRemember = vi.fn();
+const mockClaimsStoreRecordOutcome = vi.fn();
 const mockFormatClaimsSection = vi.fn<(claims: unknown[]) => string | null>();
 
 const mockEnv = {
@@ -167,6 +169,8 @@ function installMocks() {
     claimsStore: {
       retrieveClaims: mockClaimsStoreRetrieve,
       storeClaim: mockClaimsStoreStore,
+      rememberRetrieval: mockClaimsStoreRemember,
+      recordTurnOutcome: mockClaimsStoreRecordOutcome,
     },
     formatClaimsSection: mockFormatClaimsSection,
   }));
@@ -245,6 +249,9 @@ describe("assembleContextPacket retrieval and context sections", () => {
     mockClaimsStoreRetrieve.mockReturnValue([]);
     mockClaimsStoreStore.mockReset();
     mockClaimsStoreStore.mockReturnValue(null);
+    mockClaimsStoreRemember.mockReset();
+    mockClaimsStoreRecordOutcome.mockReset();
+    mockClaimsStoreRecordOutcome.mockReturnValue(0);
     mockFormatClaimsSection.mockReset();
     // Default: render a simple untrusted-framed section from whatever claims
     // were retrieved so injection tests exercise the real message path.
@@ -953,6 +960,61 @@ describe("assembleContextPacket retrieval and context sections", () => {
     );
   });
 
+  // A broken claims store must never fail context assembly — both the prior-
+  // claims lookup and the post-cascade persistence call are wrapped in
+  // try/catch in context-packet.ts specifically so a ClaimsStore throw (e.g.
+  // a locked/corrupt claims.db) degrades to "no prior knowledge" / "nothing
+  // persisted" instead of surfacing to the caller.
+  it("degrades gracefully when claimsStore.retrieveClaims throws", async () => {
+    mockClaimsStoreRetrieve.mockImplementation(() => {
+      throw new Error("claims.db is locked");
+    });
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(packet.diagnostics.claimsAcquisition?.retrievedCount).toBe(0);
+    expect(packet.diagnostics.claimsAcquisition?.retrievedClaimIds).toEqual([]);
+    expect(packet.diagnostics.claimsAcquisition?.injectedInMessages).toBe(false);
+  });
+
+  it("degrades gracefully when claimsStore.storeClaim throws", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CASCADE_ENABLED = true;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.6, "partially-answerable"));
+    mockCascadeRun.mockResolvedValue({
+      level: "teacher_verify",
+      tokensUsed: 950,
+      confidence: 0.9,
+      outcome: "teacher_confirmed",
+      resolution: "ClaimKit structured answer.",
+    });
+    mockClaimsStoreStore.mockImplementation(() => {
+      throw new Error("claims.db is locked");
+    });
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockClaimsStoreStore).toHaveBeenCalledTimes(1);
+    expect(packet.diagnostics.claimsAcquisition?.storedClaimId).toBeNull();
+  });
+
   // Integration: a retrieved prior claim is injected as a "PRIOR KNOWLEDGE"
   // system message before the ClaimKit probe, and its id is traced so a
   // downstream outcome can update its Beta utility.
@@ -1088,5 +1150,99 @@ describe("assembleContextPacket retrieval and context sections", () => {
     expect(priorKnowledgeMessage).toBeDefined();
     expect(priorKnowledgeMessage?.content).toContain(tailMarker);
     expect(priorKnowledgeMessage?.content).not.toContain("[truncated]");
+  });
+
+  // Issue #247 requires that "after task completion, ClaimsStore.
+  // updateClaimUtility() is called for claims that were used." Task
+  // completion isn't visible inside assembleContextPacket, so — mirroring
+  // retrieveUtilityRankedSessions's session feedback loop in
+  // session-utility.ts — the signal is inferred from the NEXT user turn:
+  // rememberRetrieval() records this turn's surfaced claim ids per chat
+  // session, and recordTurnOutcome() applies a follow-up (success) or
+  // rephrase (failure) signal to last turn's claims before this turn's
+  // retrieval overwrites the remembered set.
+  it("remembers this turn's retrieved claim ids against the chat session", async () => {
+    mockClaimsStoreRetrieve.mockReturnValue([
+      {
+        id: "prior-1",
+        query: "auth runbook",
+        resolution: "Set AUTH_MODE=oidc in the gateway config.",
+        cascadeLevel: "teacher_verify",
+        confidence: 0.9,
+        source: "teacher:glm-5.2",
+        alpha: 3,
+        beta: 1,
+        createdAt: new Date(),
+        lastRetrievedAt: new Date(),
+        sampledUtility: 0.8,
+        similarity: 0.85,
+        combinedScore: 0.68,
+        explored: false,
+      },
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      sessionId: "chat-abc",
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockClaimsStoreRemember).toHaveBeenCalledWith("chat-abc", ["prior-1"]);
+  });
+
+  it("applies a success signal via recordTurnOutcome when the new query is a distinct follow-up", async () => {
+    mockClaimsStoreRetrieve.mockReturnValue([]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    await assembleContextPacket({
+      mode: "engineering",
+      query: "what's the weather forecast for tomorrow",
+      sessionMessages: [
+        { role: "user", content: "how do I configure the auth gateway" },
+      ],
+      sessionId: "chat-abc",
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockClaimsStoreRecordOutcome).toHaveBeenCalledWith("chat-abc", true);
+  });
+
+  it("applies a failure signal via recordTurnOutcome when the new query rephrases the previous one", async () => {
+    mockClaimsStoreRetrieve.mockReturnValue([]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    await assembleContextPacket({
+      mode: "engineering",
+      query: "how do I configure the auth gateway",
+      sessionMessages: [
+        { role: "user", content: "how do I configure the auth gateway" },
+      ],
+      sessionId: "chat-abc",
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockClaimsStoreRecordOutcome).toHaveBeenCalledWith("chat-abc", false);
+  });
+
+  it("does not call recordTurnOutcome when there is no previous user message", async () => {
+    mockClaimsStoreRetrieve.mockReturnValue([]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      sessionId: "chat-abc",
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockClaimsStoreRecordOutcome).not.toHaveBeenCalled();
   });
 });

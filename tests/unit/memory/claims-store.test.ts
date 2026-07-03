@@ -141,6 +141,66 @@ describe("ClaimsStore", () => {
     expect(store.allClaims()).toHaveLength(0);
   });
 
+  it("recordTurnOutcome applies the signal to every claim remembered for that chat session", () => {
+    const idA = store.storeClaim({
+      query: "q-a",
+      resolution: "r-a",
+      cascadeLevel: "teacher_verify",
+      confidence: 0.8,
+      source: "teacher",
+    });
+    const idB = store.storeClaim({
+      query: "q-b",
+      resolution: "r-b",
+      cascadeLevel: "tool_research",
+      confidence: 0.8,
+      source: "web_search",
+    });
+    const baseA = store.allClaims().find((c) => c.id === idA)!;
+    const baseB = store.allClaims().find((c) => c.id === idB)!;
+
+    store.rememberRetrieval("chat-1", [idA, idB]);
+    const updatedCount = store.recordTurnOutcome("chat-1", true);
+
+    expect(updatedCount).toBe(2);
+    const afterA = store.allClaims().find((c) => c.id === idA)!;
+    const afterB = store.allClaims().find((c) => c.id === idB)!;
+    expect(afterA.alpha).toBe(baseA.alpha + 1);
+    expect(afterB.alpha).toBe(baseB.alpha + 1);
+  });
+
+  it("recordTurnOutcome clears the remembered retrieval so it cannot be double-counted", () => {
+    const id = store.storeClaim({
+      query: "q1",
+      resolution: "r1",
+      cascadeLevel: "teacher_verify",
+      confidence: 0.8,
+      source: "teacher",
+    });
+    store.rememberRetrieval("chat-1", [id]);
+
+    expect(store.recordTurnOutcome("chat-1", true)).toBe(1);
+    expect(store.recordTurnOutcome("chat-1", true)).toBe(0);
+  });
+
+  it("recordTurnOutcome is a no-op for a chat session with no remembered retrieval", () => {
+    expect(store.recordTurnOutcome("never-seen", false)).toBe(0);
+  });
+
+  it("rememberRetrieval with an empty id list clears any previously remembered retrieval", () => {
+    const id = store.storeClaim({
+      query: "q1",
+      resolution: "r1",
+      cascadeLevel: "teacher_verify",
+      confidence: 0.8,
+      source: "teacher",
+    });
+    store.rememberRetrieval("chat-1", [id]);
+    store.rememberRetrieval("chat-1", []);
+
+    expect(store.recordTurnOutcome("chat-1", true)).toBe(0);
+  });
+
   it("pruneStaleClaims removes claims unretrieved past the max-age window", () => {
     const freshId = store.storeClaim({
       query: "fresh query",

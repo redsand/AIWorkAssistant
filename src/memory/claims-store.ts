@@ -291,6 +291,13 @@ function ftsFallbackSimilarities(rows: ScoredClaimRow[]): number[] {
 export class ClaimsStore {
   private db: Database.Database | null = null;
   private readonly basePath: string;
+  /**
+   * Claim IDs surfaced per chat session on its most recent turn, so a later
+   * follow-up/rephrase signal can be attributed back to them. Mirrors
+   * SessionUtilityStore.lastRetrieval (session-utility.ts) — in-memory only,
+   * intentionally not persisted, since the feedback window is a single turn.
+   */
+  private readonly lastRetrieval = new Map<string, string[]>();
 
   constructor(basePath?: string) {
     this.basePath = basePath ?? resolveBasePath();
@@ -719,6 +726,35 @@ export class ClaimsStore {
         err instanceof Error ? err.message : err,
       );
     }
+  }
+
+  /**
+   * Record which claim IDs were surfaced for a chat session this turn, so a
+   * later outcome signal (issue #247's "after task completion" feedback) can
+   * be attributed back to them. Mirrors
+   * SessionUtilityStore.rememberRetrieval (session-utility.ts).
+   */
+  rememberRetrieval(chatSessionId: string, retrievedClaimIds: string[]): void {
+    if (!chatSessionId) return;
+    if (retrievedClaimIds.length === 0) {
+      this.lastRetrieval.delete(chatSessionId);
+      return;
+    }
+    this.lastRetrieval.set(chatSessionId, [...retrievedClaimIds]);
+  }
+
+  /**
+   * Apply a success/failure signal to every claim surfaced on the chat
+   * session's most recent turn via updateClaimUtility(), then clear the
+   * pending retrieval so the same observation can't be double-counted.
+   * Returns the number of claims updated.
+   */
+  recordTurnOutcome(chatSessionId: string, success: boolean): number {
+    const ids = this.lastRetrieval.get(chatSessionId);
+    if (!ids || ids.length === 0) return 0;
+    for (const id of ids) this.updateClaimUtility(id, success);
+    this.lastRetrieval.delete(chatSessionId);
+    return ids.length;
   }
 
   /**
