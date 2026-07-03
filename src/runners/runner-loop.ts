@@ -196,13 +196,14 @@ export class RunnerLoop {
         const refreshed = agentRunDatabase.getRunner(this.runnerId);
         if (!refreshed) break;
 
-        // Target-issue mode: one-shot. Disable runner and exit loop.
+        // Target-issue mode: one-shot. Clear the target and resume normal
+        // polling instead of disabling — disabling left runners silently
+        // parked at enabled=0 with no one watching to re-enable them.
         if (refreshed.targetIssue && refreshed.targetIssue.trim().length > 0) {
-          agentRunDatabase.updateRunner(this.runnerId, { enabled: false });
+          agentRunDatabase.updateRunner(this.runnerId, { targetIssue: null });
           agentRunDatabase.setRunnerStatus(this.runnerId, "idle");
           this.emitStatus(this.runnerId);
-          this.appendLog(`Target issue ${refreshed.targetIssue} cycle complete — disabling runner`);
-          break;
+          this.appendLog(`Target issue ${refreshed.targetIssue} cycle complete — resuming normal polling`);
         }
 
         if (this.state.stopRequested) break;
