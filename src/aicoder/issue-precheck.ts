@@ -86,9 +86,36 @@ export function shouldSkipIssue(
   }
 
   if (deps.processedIssues.has(issueKey) && !deps.force) {
-    const reason = `Issue ${issueKey} already processed (use --force to re-process)`;
-    deps.logger.logSkip(reason);
-    return { skip: true, reason };
+    // A previously-processed issue only reappears in the work queue if it
+    // still carries the reviewer's "ready-for-agent" label — i.e. the
+    // reviewer explicitly requested rework. Consult convergence state to
+    // decide whether that request is still within budget before honoring
+    // the blanket "already processed" skip, otherwise a legitimate rework
+    // request can never get back in front of the aicoder.
+    const existingConvergence = deps.convergence.loadConvergenceState(issueKey);
+    if (existingConvergence.roundNumber > 0) {
+      const convergenceCheck = deps.convergence.checkConvergence(
+        existingConvergence,
+        deps.convergence.config,
+      );
+      if (convergenceCheck.shouldStop) {
+        const reason =
+          `Skipping ${issueKey} — convergence already fired (${convergenceCheck.reason}). ` +
+          `Round ${existingConvergence.roundNumber}, no-progress count: ${existingConvergence.noProgressCount}. ` +
+          `Use --force to override.`;
+        deps.logger.logError(reason);
+        return { skip: true, reason };
+      }
+      deps.logger.logConfig(
+        `Issue ${issueKey} was already processed but the reviewer requested rework (round ${existingConvergence.roundNumber}, still within budget) — re-processing`,
+      );
+      deps.processedIssues.delete(issueKey);
+      deps.agentRunDatabase.unmarkIssueProcessed(issueKey);
+    } else {
+      const reason = `Issue ${issueKey} already processed (use --force to re-process)`;
+      deps.logger.logSkip(reason);
+      return { skip: true, reason };
+    }
   }
 
   // Blacklist pre-check: permanently skip issues that failed too many times
@@ -101,9 +128,9 @@ export function shouldSkipIssue(
     return { skip: true, reason };
   }
 
-  // Convergence pre-check: if a previous run already determined this issue
-  // is stuck (no progress across multiple rounds), refuse to re-run even if
-  // the reviewer re-added the ready-for-agent label. --force overrides.
+  // Convergence pre-check: covers issues that were never marked processed
+  // (e.g. a fresh --force run) but still carry stale convergence state from
+  // an earlier crashed/interrupted attempt. Refuse to re-run those too.
   if (!deps.force) {
     const existingConvergence = deps.convergence.loadConvergenceState(issueKey);
     if (existingConvergence.roundNumber > 0) {

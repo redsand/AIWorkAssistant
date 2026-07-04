@@ -1781,6 +1781,22 @@ async function postReworkPrompt(
   } else {
     // Numeric GitHub issue
     const issueNumber = parseInt(issueKey, 10);
+    const convState = loadConvergenceState(issueKey);
+    if (convState.roundNumber > 0) {
+      const convCheck = checkConvergence(convState, DEFAULT_CONVERGENCE_CONFIG);
+      if (convCheck.shouldStop) {
+        log.warn(`Convergence already fired for #${issueNumber} (${convCheck.reason}, round ${convState.roundNumber}) — posting findings as comment only, NOT re-labeling ready-for-agent`);
+        await vcs.addCommentToIssue(
+          project,
+          issueNumber,
+          `## ⚠️ Review Findings — Human Review Required\n\nThe autonomous agent has exhausted its retry budget for this issue (${convCheck.reason} after ${convState.roundNumber} rounds). The following findings were identified but could not be automatically resolved:\n\n${buildReworkPrompt(result)}\n\n**Please review manually.**`,
+        );
+        await vcs.addLabelToIssue(project, issueNumber, "needs-human").catch(() => {
+          log.warn(`Could not add needs-human label to issue #${issueNumber}`);
+        });
+        return;
+      }
+    }
     await vcs.addCommentToIssue(project, issueNumber, buildReworkPrompt(result));
     // Also post the review findings to the source issue for continuity
     await postReviewToSourceIssue(vcs, project, mr, formatReviewFindings(result));
