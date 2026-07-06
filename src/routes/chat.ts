@@ -2811,9 +2811,21 @@ export async function chatRoutes(fastify: FastifyInstance) {
     const cwd = process.cwd();
     const uploadsRoot = path.resolve(cwd, "data", "profiles", "default", "uploads");
     const reportsRoot = path.resolve(cwd, getReportsBaseDir());
-    // Accept either absolute or relative — but always resolve to absolute
-    // and verify against the sandbox roots.
-    const abs = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(cwd, raw);
+    // Accept either absolute or workspace-relative — but always resolve to
+    // absolute and verify against the sandbox roots. On win32, a bare
+    // leading-slash path like "/report.html" is `path.isAbsolute() === true`
+    // but resolves against the current drive ROOT (e.g. "C:\report.html"),
+    // not against cwd — so a workspace-root-relative path the model writes
+    // POSIX-style (matching the "/chat/files/download?path=/x" doc form)
+    // would fall outside every sandbox root. Only drive-letter ("C:\...")
+    // and UNC ("\\server\share") paths are genuine Windows absolute paths;
+    // treat everything else as relative to the workspace root.
+    const isWindowsRootedNotDrive =
+      process.platform === "win32" && path.isAbsolute(raw) && !/^[a-zA-Z]:[\\/]|^\\\\/.test(raw);
+    const abs =
+      path.isAbsolute(raw) && !isWindowsRootedNotDrive
+        ? path.resolve(raw)
+        : path.resolve(cwd, raw.replace(/^[\\/]+/, ""));
     const inWorkspace =
       abs === cwd || abs.startsWith(cwd + path.sep);
     const inUploads =

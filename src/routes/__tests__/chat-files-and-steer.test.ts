@@ -180,6 +180,23 @@ describe("/chat/files/download — sandbox", () => {
     expect(res.body).toBe(body);
   });
 
+  it("treats a bare leading-slash path as workspace-root-relative, not OS-absolute", async () => {
+    // Regression: on win32, path.isAbsolute("/x.html") is true but
+    // path.resolve("/x.html") anchors to the current drive root (e.g.
+    // "C:\x.html"), not cwd — so a workspace-relative link the model wrote
+    // POSIX-style ("/vulnerability_report.html") was rejected as outside
+    // every sandbox root even though the file lives right in the workspace.
+    const f = path.join(tmpDir, "vulnerability_report.html");
+    const body = "<html>report</html>";
+    fs.writeFileSync(f, body);
+    const res = await app.inject({
+      method: "GET",
+      url: "/chat/files/download?path=%2Fvulnerability_report.html",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe(body);
+  });
+
   it("streams a file under the default (in-workspace) reports directory", async () => {
     const reportsDir = path.join(tmpDir, "reports", "abc123");
     fs.mkdirSync(reportsDir, { recursive: true });

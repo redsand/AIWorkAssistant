@@ -32,7 +32,7 @@ data/eval/*
 
 # Local report artifacts
 .report-prompt.json
-reports/
+/reports/
 
 # IDE
 .vscode/
