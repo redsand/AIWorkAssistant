@@ -18,6 +18,7 @@ import { loadConvergenceState } from "./autonomous-loop/convergence-state";
 import { closeSourceIssue } from "./autonomous-loop/close-source-issue";
 import { isGatePaused as isAutorepairPaused, isGateEscalated as isAutorepairEscalated } from "./autonomous-loop/autorepair-gate";
 import { conversationManager } from "./memory/conversation-manager";
+import { hasActionableFindings } from "./reviewer/actionable-findings";
 
 // ── ANSI color helpers ──────────────────────────────────────────────────────
 const useColor = process.stdout.isTTY && process.env.NO_COLOR !== "1";
@@ -544,16 +545,6 @@ function isAicoderMergeRequest(mr: MergeRequest): boolean {
     haystack.includes("autonomous agent") ||
     mr.title.startsWith("[AI]") ||
     (mr.sourceBranch ?? "").startsWith("ai/")
-  );
-}
-
-function hasActionableFindings(findings: ReviewFinding[]): boolean {
-  return findings.some(
-    (f) =>
-      Boolean(f.file && f.file !== "unknown") ||
-      f.category === "qa" ||
-      f.severity === "critical" ||
-      f.severity === "high",
   );
 }
 
