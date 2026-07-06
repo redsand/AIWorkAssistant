@@ -43,6 +43,11 @@ function getBaseDir(): string {
   return resolvePath(STATE_BASE_SUBDIR);
 }
 
+/** The root directory reports are stored under — same resolution rules as getBaseDir(). */
+export function getReportsBaseDir(): string {
+  return getBaseDir();
+}
+
 function getDbPath(): string {
   return path.join(getBaseDir(), "reports.db");
 }

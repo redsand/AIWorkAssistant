@@ -179,6 +179,52 @@ describe("/chat/files/download — sandbox", () => {
     expect(res.headers["content-disposition"]).toMatch(/incident_report\.docx/);
     expect(res.body).toBe(body);
   });
+
+  it("streams a file under the default (in-workspace) reports directory", async () => {
+    const reportsDir = path.join(tmpDir, "reports", "abc123");
+    fs.mkdirSync(reportsDir, { recursive: true });
+    const f = path.join(reportsDir, "report.docx");
+    const body = Buffer.from("fake report body").toString();
+    fs.writeFileSync(f, body);
+    const res = await app.inject({
+      method: "GET",
+      url: `/chat/files/download?path=${encodeURIComponent(f)}`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe(body);
+  });
+
+  it("streams a file under REPORTS_BASE_PATH even when it lives outside the workspace (e.g. a shared drive)", async () => {
+    const externalReportsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "reports-external-"));
+    const previous = process.env.REPORTS_BASE_PATH;
+    process.env.REPORTS_BASE_PATH = externalReportsRoot;
+    try {
+      vi.resetModules();
+      chatRoutes = (await import("../chat.js")).chatRoutes;
+      const externalApp = Fastify({ logger: false });
+      await externalApp.register(chatRoutes);
+      await externalApp.ready();
+      try {
+        const reportsDir = path.join(externalReportsRoot, "abc123");
+        fs.mkdirSync(reportsDir, { recursive: true });
+        const f = path.join(reportsDir, "report.docx");
+        const body = Buffer.from("fake external report body").toString();
+        fs.writeFileSync(f, body);
+        const res = await externalApp.inject({
+          method: "GET",
+          url: `/chat/files/download?path=${encodeURIComponent(f)}`,
+        });
+        expect(res.statusCode).toBe(200);
+        expect(res.body).toBe(body);
+      } finally {
+        await externalApp.close();
+      }
+    } finally {
+      if (previous === undefined) delete process.env.REPORTS_BASE_PATH;
+      else process.env.REPORTS_BASE_PATH = previous;
+      fs.rmSync(externalReportsRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("/chat/sessions/:id/files — upload sandbox", () => {

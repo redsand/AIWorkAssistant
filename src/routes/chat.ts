@@ -2791,9 +2791,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   /**
    * Download a file the model produced (or the user uploaded). Sandbox:
-   * the resolved absolute path must live inside either the workspace
-   * (process.cwd()) or the per-session uploads directory. Anything else
-   * is rejected.
+   * the resolved absolute path must live inside the workspace
+   * (process.cwd()), the per-session uploads directory, or the reports
+   * output directory. Anything else is rejected.
    *
    * Query: ?path=<absolute or workspace-relative>
    * Auth: same X-API-Key middleware as the rest of /chat.
@@ -2801,6 +2801,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
   fastify.get("/chat/files/download", async (request, reply) => {
     const fs = await import("fs");
     const path = await import("path");
+    const { getReportsBaseDir } = await import("../reports/storage");
     const query = request.query as { path?: string; sessionId?: string };
     const raw = (query.path || "").trim();
     if (!raw) {
@@ -2809,6 +2810,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
     }
     const cwd = process.cwd();
     const uploadsRoot = path.resolve(cwd, "data", "profiles", "default", "uploads");
+    const reportsRoot = path.resolve(cwd, getReportsBaseDir());
     // Accept either absolute or relative — but always resolve to absolute
     // and verify against the sandbox roots.
     const abs = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(cwd, raw);
@@ -2816,16 +2818,19 @@ export async function chatRoutes(fastify: FastifyInstance) {
       abs === cwd || abs.startsWith(cwd + path.sep);
     const inUploads =
       abs === uploadsRoot || abs.startsWith(uploadsRoot + path.sep);
-    if (!inWorkspace && !inUploads) {
+    const inReports =
+      abs === reportsRoot || abs.startsWith(reportsRoot + path.sep);
+    if (!inWorkspace && !inUploads && !inReports) {
       reply.code(400);
       return {
-        error: "Path is outside the workspace + uploads sandbox",
-        sandbox: [cwd, uploadsRoot],
+        error: "Path is outside the workspace + uploads + reports sandbox",
+        sandbox: [cwd, uploadsRoot, reportsRoot],
       };
     }
     // Block obviously-sensitive paths even inside the workspace.
     const blocked = /(?:^|[\\/])\.env(?:$|[\\/])|(?:^|[\\/])\.git(?:$|[\\/])/i;
-    if (blocked.test(abs.slice(cwd.length))) {
+    const relativeToCwd = abs.startsWith(cwd) ? abs.slice(cwd.length) : abs;
+    if (blocked.test(relativeToCwd)) {
       reply.code(403);
       return { error: "Refused to download a sensitive workspace path" };
     }
