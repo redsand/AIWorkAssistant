@@ -80,15 +80,35 @@ describe("ComparisonRunDatabase — diagnostic fields", () => {
               contradictions: 0,
             },
             routingStrategy: "claimkit_first_skip_rag",
+            ckFirstProbeLatencyMs: 42,
+            ckFirstRagSkipped: true,
+            ckFirstLatencyDeltaMs: 0,
+            cascadeLevel: "teacher_verify",
+            cascadeOutcome: "teacher_confirmed",
+            cascadeTokensUsed: 18,
+            cascadeConfidence: 0.88,
+            queryRewriteEnabled: true,
+            queryRewriteLatencyMs: 3,
+            queryRewriteVariantCount: 1,
+            queryRewriteEntityRefCount: 2,
+            queryRewriteAbbreviationCount: 1,
           },
         ],
       });
 
       expect(run.cases[0].routing_strategy).toBe("claimkit_first_skip_rag");
+      expect(run.cases[0].ck_first_probe_latency_ms).toBe(42);
+      expect(run.cases[0].ck_first_rag_skipped).toBe(true);
+      expect(run.cases[0].cascade_outcome).toBe("teacher_confirmed");
+      expect(run.cases[0].query_rewrite_entity_ref_count).toBe(2);
 
       // Survives a fresh read from disk (not just the in-memory create result).
       const reloaded = db.getRun(run.id);
       expect(reloaded!.cases[0].routing_strategy).toBe("claimkit_first_skip_rag");
+      expect(reloaded!.cases[0].ck_first_probe_latency_ms).toBe(42);
+      expect(reloaded!.cases[0].ck_first_rag_skipped).toBe(true);
+      expect(reloaded!.cases[0].cascade_tokens_used).toBe(18);
+      expect(reloaded!.cases[0].query_rewrite_abbreviation_count).toBe(1);
     });
 
     it("stores null routing_strategy when the case omits it", () => {
@@ -387,6 +407,24 @@ describe("saveLiveComparison — diagnostic fields", () => {
       ckRetrievalScore: 0.33,
       ckSourceCount: 2,
       ckMissingEvidence: "rate limiting mechanism",
+      ckCitations: [{ claimId: "c1", sourceId: "s1", text: "The auth system works via tokens." }],
+      citationBoostApplied: 2,
+      gapFillDocsAdded: 1,
+      entityClaimsInjected: 4,
+      contradictionsFlagged: 1,
+      routingStrategy: "claimkit_first_parallel",
+      ckFirstProbeLatencyMs: 25,
+      ckFirstRagSkipped: false,
+      ckFirstLatencyDeltaMs: 25,
+      cascadeLevel: "tool_research",
+      cascadeOutcome: "tool_confirmed",
+      cascadeTokensUsed: 120,
+      cascadeConfidence: 0.7,
+      queryRewriteEnabled: true,
+      queryRewriteLatencyMs: 5,
+      queryRewriteVariantCount: 2,
+      queryRewriteEntityRefCount: 1,
+      queryRewriteAbbreviationCount: 1,
       db,
     });
 
@@ -399,6 +437,15 @@ describe("saveLiveComparison — diagnostic fields", () => {
     expect(c.ck_retrieval_score).toBe(0.33);
     expect(c.ck_source_count).toBe(2);
     expect(c.ck_missing_evidence).toBe("rate limiting mechanism");
+    expect(c.ck_citations).toContain("The auth system works via tokens.");
+    expect(c.citation_boost_applied).toBe(2);
+    expect(c.gap_fill_docs_added).toBe(1);
+    expect(c.entity_claims_injected).toBe(4);
+    expect(c.contradictions_flagged).toBe(1);
+    expect(c.routing_strategy).toBe("claimkit_first_parallel");
+    expect(c.ck_first_probe_latency_ms).toBe(25);
+    expect(c.cascade_outcome).toBe("tool_confirmed");
+    expect(c.query_rewrite_variant_count).toBe(2);
     expect(c.winner_reason).toBe("low_confidence");
   });
 

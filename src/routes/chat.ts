@@ -2801,7 +2801,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
   fastify.get("/chat/files/download", async (request, reply) => {
     const fs = await import("fs");
     const path = await import("path");
-    const { getReportsBaseDir } = await import("../reports/storage");
+    const { getReportsBaseDir } = await import("../reports/storage.js");
     const query = request.query as { path?: string; sessionId?: string };
     const raw = (query.path || "").trim();
     if (!raw) {

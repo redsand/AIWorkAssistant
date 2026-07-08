@@ -130,16 +130,20 @@ export interface ClaimKitQueryResult {
  * the query embed itself is shared with ClaimKit's own retrieve()
  * via the EmbeddingService LRU.
  *
- * Returns FALSE only for confident `fact_lookup` matches — every
- * other intent (comparison / verification / temporal_audit / general
- * / low-confidence) runs the contradiction stage. Bias is
- * deliberately conservative: skipping when we shouldn't only loses a
- * cross-source warning, but running when we didn't need to costs
- * ~200ms of LLM time. We lean toward the cheaper failure mode.
+ * Returns FALSE only for confident `procedural` matches (UI /
+ * navigation / "show me" requests with no factual assertion for
+ * sources to disagree on) — every other intent (fact_lookup /
+ * comparison / verification / temporal_audit / general /
+ * low-confidence) runs the contradiction stage. `fact_lookup`
+ * deliberately runs it: a single-valued fact ("who is the owner") is
+ * exactly where two sources asserting different values is the core
+ * hazard, and skipping there turns a detectable conflict into a
+ * confidently wrong answer. Running when we didn't need to costs one
+ * batched LLM call (~200ms); we lean toward the cheaper failure mode.
  */
 export async function shouldRunContradictionCheck(question: string): Promise<boolean> {
   const result = await classifyIntent(question);
-  return result.intent !== "fact_lookup";
+  return result.intent !== "procedural";
 }
 
 function buildLiteCitationDigest(
@@ -259,27 +263,55 @@ export class ClaimKitAdapter {
           const prefix = `${basePrefix}:${modelSlug}`;
           const dim = embeddings.dimensions;
 
-          // Detect and auto-repair vector dimension mismatch from a previous
-          // embedding model. If stored dim differs, flush stale keys so the
-          // new model starts with a clean namespace. The flush runs in the
-          // background using SCAN + UNLINK to avoid blocking Redis.
+          // Resolve the vector backend. "auto" probes for the RediSearch
+          // module: when present we use the in-engine HNSW index
+          // (~O(log n) approximate KNN) instead of fetching every vector
+          // into Node and scoring it there (bruteForce, O(n)).
+          let vectorMode: "bruteForce" | "redisSearch";
+          if (env.CLAIMKIT_VECTOR_MODE === "auto") {
+            vectorMode = (await this.probeRediSearch(client))
+              ? "redisSearch"
+              : "bruteForce";
+            console.log(
+              `[ClaimKit] Vector mode auto-detected: ${vectorMode}`,
+            );
+          } else {
+            vectorMode = env.CLAIMKIT_VECTOR_MODE;
+          }
+
+          // Detect and auto-repair a stored dimension or vector-mode
+          // mismatch from a previous configuration. The two vector modes
+          // use WRONGTYPE-incompatible key formats (JSON strings vs
+          // hashes), so either change requires flushing stale keys. The
+          // flush runs in the background using SCAN + UNLINK to avoid
+          // blocking Redis.
           const metaKey = `${prefix}:meta:vector-dim`;
+          const modeMetaKey = `${prefix}:meta:vector-mode`;
           const rc = client as unknown as {
             get(k: string): Promise<string | null>;
             set(k: string, v: string): Promise<unknown>;
             scan(cursor: number, options: { MATCH: string; COUNT: number }): Promise<{ cursor: number; keys: string[] }>;
             unlink(keys: string[]): Promise<number>;
           };
-          const storedDim = await rc.get(metaKey);
+          const [storedDim, storedMode] = await Promise.all([
+            rc.get(metaKey),
+            rc.get(modeMetaKey),
+          ]);
+          const dimMismatch =
+            storedDim !== null && parseInt(storedDim, 10) !== dim;
+          const modeMismatch =
+            storedMode !== null && storedMode !== vectorMode;
           if (
             env.CLAIMKIT_REPAIR_ON_DIMENSION_MISMATCH &&
-            storedDim !== null &&
-            parseInt(storedDim, 10) !== dim
+            (dimMismatch || modeMismatch)
           ) {
+            const reason = dimMismatch
+              ? `Dimension changed (${storedDim}d → ${dim}d)`
+              : `Vector mode changed (${storedMode} → ${vectorMode})`;
             console.warn(
-              `[ClaimKit] Dimension changed (${storedDim}d → ${dim}d) — flushing stale Redis keys for "${prefix}" in the background...`,
+              `[ClaimKit] ${reason} — flushing stale Redis keys for "${prefix}" in the background...`,
             );
-            this.repairStaleKeys(rc, metaKey, prefix, dim).catch((err) => {
+            this.repairStaleKeys(rc, metaKey, modeMetaKey, prefix, dim, vectorMode).catch((err) => {
               console.error(
                 `[ClaimKit] Background Redis repair failed: ${
                   err instanceof Error ? err.message : String(err)
@@ -287,17 +319,20 @@ export class ClaimKitAdapter {
               );
             });
           } else {
-            await rc.set(metaKey, String(dim));
+            await Promise.all([
+              rc.set(metaKey, String(dim)),
+              rc.set(modeMetaKey, vectorMode),
+            ]);
           }
 
           stores = createRedisStores({
             client,
             prefix,
-            vectorMode: "bruteForce",
+            vectorMode,
             vectorOptions: { vectorDim: dim },
           });
           console.log(
-            `[ClaimKit] Stores: redis (prefix: ${prefix}, dim: ${dim})`,
+            `[ClaimKit] Stores: redis (prefix: ${prefix}, dim: ${dim}, vectors: ${vectorMode})`,
           );
         } catch (redisErr) {
           console.warn(
@@ -329,12 +364,10 @@ export class ClaimKitAdapter {
           },
           contradiction: {
             useLLM: !env.CLAIMKIT_DISABLE_CONTRADICTION_LLM,
-            // Cap how many pairs the detector classifies per query so
-            // the parallel LLM fan-out can't blow up the claimkit
-            // concurrency bucket. SDK default is 200; on real chat
-            // turns we see ~20-40 surviving the isCandidatePair filter
-            // so 50 keeps the high-priority pairs while saving 3-10
-            // pair-LLM round-trips per turn on average. Env-tunable.
+            // Cap how many pairs the detector classifies per query.
+            // The SDK batches survivors ~20 per LLM call after blocking
+            // and deterministic rules, so this is a recall knob more
+            // than a cost knob. Env-tunable.
             detectorOptions: {
               maxPairsToCheck: env.CLAIMKIT_MAX_CONTRADICTION_PAIRS,
             },
@@ -352,6 +385,17 @@ export class ClaimKitAdapter {
     }
   }
 
+  private async probeRediSearch(client: unknown): Promise<boolean> {
+    try {
+      await (
+        client as { sendCommand(args: string[]): Promise<unknown> }
+      ).sendCommand(["FT._LIST"]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private async repairStaleKeys(
     rc: {
       get(k: string): Promise<string | null>;
@@ -360,8 +404,10 @@ export class ClaimKitAdapter {
       unlink(keys: string[]): Promise<number>;
     },
     metaKey: string,
+    modeMetaKey: string,
     prefix: string,
     dim: number,
+    vectorMode: string,
   ): Promise<void> {
     let cursor = 0;
     let total = 0;
@@ -375,7 +421,10 @@ export class ClaimKitAdapter {
       }
     } while (cursor !== 0);
 
-    await rc.set(metaKey, String(dim));
+    await Promise.all([
+      rc.set(metaKey, String(dim)),
+      rc.set(modeMetaKey, vectorMode),
+    ]);
     console.log(`[ClaimKit] Flushed ${total} stale key(s) for "${prefix}"`);
   }
 

@@ -143,6 +143,22 @@
         </div>
       </div>
 
+      <div class="section" id="agentic-rag-section">
+        <div class="section-title">Agentic RAG - routing and retrieval efficiency</div>
+        <p class="section-blurb">
+          ClaimKit now acts as a retrieval controller: probe first, skip RAG when structured evidence is enough,
+          escalate through cheaper checks when uncertain, and rewrite noisy queries before retrieval.
+        </p>
+        <div class="stats-bar">
+          <div class="stat-chip"><div class="stat-value green" id="stat-rag-skipped">â€”</div><div class="stat-label">RAG Skipped</div></div>
+          <div class="stat-chip"><div class="stat-value" id="stat-probe-ms">â€”</div><div class="stat-label">Avg Probe</div></div>
+          <div class="stat-chip"><div class="stat-value" id="stat-cascade-resolved">â€”</div><div class="stat-label">Cascade Resolved</div></div>
+          <div class="stat-chip"><div class="stat-value warn" id="stat-cascade-fallback">â€”</div><div class="stat-label">Cascade Fallbacks</div></div>
+          <div class="stat-chip"><div class="stat-value blue" id="stat-query-rewrite">â€”</div><div class="stat-label">Query Rewrite Fired</div></div>
+          <div class="stat-chip"><div class="stat-value" id="stat-query-rewrite-ms">â€”</div><div class="stat-label">Avg Rewrite</div></div>
+        </div>
+      </div>
+
       <!-- Collaboration Trend Chart (E: uptake over time) -->
       <div class="section" id="collab-trend-section">
         <div class="section-title">Collaboration Trend — feature uptake over time</div>

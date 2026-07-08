@@ -117,6 +117,18 @@ class ComparisonRunDatabase {
       // simply omit the column and SQLite stores NULL. Rolling the schema
       // forward is idempotent (the ALTER below no-ops once the column exists).
       { col: "routing_strategy", def: "TEXT" },
+      { col: "ck_first_probe_latency_ms", def: "INTEGER" },
+      { col: "ck_first_rag_skipped", def: "INTEGER" },
+      { col: "ck_first_latency_delta_ms", def: "INTEGER" },
+      { col: "cascade_level", def: "TEXT" },
+      { col: "cascade_outcome", def: "TEXT" },
+      { col: "cascade_tokens_used", def: "INTEGER" },
+      { col: "cascade_confidence", def: "REAL" },
+      { col: "query_rewrite_enabled", def: "INTEGER" },
+      { col: "query_rewrite_latency_ms", def: "INTEGER" },
+      { col: "query_rewrite_variant_count", def: "INTEGER" },
+      { col: "query_rewrite_entity_ref_count", def: "INTEGER" },
+      { col: "query_rewrite_abbreviation_count", def: "INTEGER" },
       // Cited evidence (post lite-mode switch): a JSON-encoded array of
       // { claimId, sourceId, text } the dashboard renders so operators can
       // see "what data ClaimKit actually used". Before this, ck_answer
@@ -182,6 +194,18 @@ class ComparisonRunDatabase {
           ck_section_tokens INTEGER,
           confidence_trace TEXT,
           routing_strategy TEXT,
+          ck_first_probe_latency_ms INTEGER,
+          ck_first_rag_skipped INTEGER,
+          ck_first_latency_delta_ms INTEGER,
+          cascade_level TEXT,
+          cascade_outcome TEXT,
+          cascade_tokens_used INTEGER,
+          cascade_confidence REAL,
+          query_rewrite_enabled INTEGER,
+          query_rewrite_latency_ms INTEGER,
+          query_rewrite_variant_count INTEGER,
+          query_rewrite_entity_ref_count INTEGER,
+          query_rewrite_abbreviation_count INTEGER,
           ck_citations TEXT,
           created_at TEXT NOT NULL,
           FOREIGN KEY (run_id) REFERENCES comparison_runs(id) ON DELETE CASCADE
@@ -197,6 +221,9 @@ class ComparisonRunDatabase {
                  NULL,
                  NULL,
                  NULL,
+                 NULL, NULL, NULL,
+                 NULL, NULL, NULL, NULL,
+                 NULL, NULL, NULL, NULL, NULL,
                  ck_citations,
                  created_at
           FROM comparison_cases_old;
@@ -230,9 +257,21 @@ class ComparisonRunDatabase {
           ck_section_tokens,
           confidence_trace,
           routing_strategy,
+          ck_first_probe_latency_ms,
+          ck_first_rag_skipped,
+          ck_first_latency_delta_ms,
+          cascade_level,
+          cascade_outcome,
+          cascade_tokens_used,
+          cascade_confidence,
+          query_rewrite_enabled,
+          query_rewrite_latency_ms,
+          query_rewrite_variant_count,
+          query_rewrite_entity_ref_count,
+          query_rewrite_abbreviation_count,
           ck_citations,
           created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     const txn = this.db.transaction(() => {
@@ -268,6 +307,18 @@ class ComparisonRunDatabase {
           c.ckSectionTokens ?? null,
           c.confidenceTrace ? JSON.stringify(c.confidenceTrace) : null,
           c.routingStrategy ?? null,
+          c.ckFirstProbeLatencyMs ?? null,
+          c.ckFirstRagSkipped != null ? (c.ckFirstRagSkipped ? 1 : 0) : null,
+          c.ckFirstLatencyDeltaMs ?? null,
+          c.cascadeLevel ?? null,
+          c.cascadeOutcome ?? null,
+          c.cascadeTokensUsed ?? null,
+          c.cascadeConfidence ?? null,
+          c.queryRewriteEnabled != null ? (c.queryRewriteEnabled ? 1 : 0) : null,
+          c.queryRewriteLatencyMs ?? null,
+          c.queryRewriteVariantCount ?? null,
+          c.queryRewriteEntityRefCount ?? null,
+          c.queryRewriteAbbreviationCount ?? null,
           c.claimkit?.citations
             ? JSON.stringify(c.claimkit.citations.slice(0, 20))
             : null,
@@ -519,7 +570,19 @@ class ComparisonRunDatabase {
            AVG(CASE WHEN ck_section_tokens IS NOT NULL THEN ck_section_tokens END) as avg_ck_tokens,
            SUM(CASE WHEN ck_section_tokens IS NOT NULL AND ck_section_tokens < rag_tokens
                      THEN (rag_tokens - ck_section_tokens) ELSE 0 END) as total_tokens_saved,
-           SUM(CASE WHEN ck_section_tokens IS NOT NULL THEN 1 ELSE 0 END) as token_measured_n
+           SUM(CASE WHEN ck_section_tokens IS NOT NULL THEN 1 ELSE 0 END) as token_measured_n,
+           SUM(CASE WHEN ck_first_rag_skipped = 1 THEN 1 ELSE 0 END) as ck_first_rag_skipped_n,
+           AVG(CASE WHEN ck_first_probe_latency_ms IS NOT NULL THEN ck_first_probe_latency_ms END) as avg_ck_first_probe_ms,
+           AVG(CASE WHEN ck_first_latency_delta_ms IS NOT NULL THEN ck_first_latency_delta_ms END) as avg_ck_first_delta_ms,
+           SUM(CASE WHEN cascade_outcome IS NOT NULL AND cascade_outcome != 'fell_back_to_rag' THEN 1 ELSE 0 END) as cascade_resolved_n,
+           SUM(CASE WHEN cascade_outcome = 'fell_back_to_rag' THEN 1 ELSE 0 END) as cascade_fallback_n,
+           SUM(CASE WHEN cascade_tokens_used IS NOT NULL THEN cascade_tokens_used ELSE 0 END) as cascade_tokens_used_sum,
+           SUM(CASE WHEN query_rewrite_enabled = 1 AND (
+                     query_rewrite_variant_count > 0 OR
+                     query_rewrite_entity_ref_count > 0 OR
+                     query_rewrite_abbreviation_count > 0
+                   ) THEN 1 ELSE 0 END) as query_rewrite_fired_n,
+           AVG(CASE WHEN query_rewrite_enabled = 1 THEN query_rewrite_latency_ms END) as avg_query_rewrite_ms
          FROM comparison_cases cc
          JOIN comparison_runs cr ON cr.id = cc.run_id
          ${whereClause}`,
@@ -547,6 +610,14 @@ class ComparisonRunDatabase {
         avg_ck_tokens: number | null;
         total_tokens_saved: number | null;
         token_measured_n: number | null;
+        ck_first_rag_skipped_n: number | null;
+        avg_ck_first_probe_ms: number | null;
+        avg_ck_first_delta_ms: number | null;
+        cascade_resolved_n: number | null;
+        cascade_fallback_n: number | null;
+        cascade_tokens_used_sum: number | null;
+        query_rewrite_fired_n: number | null;
+        avg_query_rewrite_ms: number | null;
       };
 
     const totalRunsRow = this.db
@@ -611,6 +682,16 @@ class ComparisonRunDatabase {
             ? (winRow.total_tokens_saved ?? 0) / winRow.token_measured_n
             : 0,
         measuredCases: winRow.token_measured_n ?? 0,
+      },
+      agenticRag: {
+        ragSkipped: winRow.ck_first_rag_skipped_n ?? 0,
+        avgProbeLatencyMs: winRow.avg_ck_first_probe_ms ?? 0,
+        avgLatencyDeltaMs: winRow.avg_ck_first_delta_ms ?? 0,
+        cascadeResolved: winRow.cascade_resolved_n ?? 0,
+        cascadeFallbacks: winRow.cascade_fallback_n ?? 0,
+        cascadeTokensUsed: winRow.cascade_tokens_used_sum ?? 0,
+        queryRewriteFired: winRow.query_rewrite_fired_n ?? 0,
+        avgQueryRewriteLatencyMs: winRow.avg_query_rewrite_ms ?? 0,
       },
       lowConfidenceBreakdown: this.computeLowConfidenceBreakdown(options),
       byCategory: catRows.map((r) => ({
@@ -969,6 +1050,22 @@ class ComparisonRunDatabase {
       ck_section_tokens: row.ck_section_tokens as number | null,
       confidence_trace: (row.confidence_trace as string | null) ?? null,
       routing_strategy: (row.routing_strategy as string | null) ?? null,
+      ck_first_probe_latency_ms: row.ck_first_probe_latency_ms as number | null,
+      ck_first_rag_skipped: row.ck_first_rag_skipped != null ? Boolean(row.ck_first_rag_skipped) : null,
+      ck_first_latency_delta_ms: row.ck_first_latency_delta_ms as number | null,
+      cascade_level: (row.cascade_level as string | null) ?? null,
+      cascade_outcome: (row.cascade_outcome as string | null) ?? null,
+      cascade_tokens_used: row.cascade_tokens_used as number | null,
+      cascade_confidence: row.cascade_confidence as number | null,
+      query_rewrite_enabled: row.query_rewrite_enabled != null ? Boolean(row.query_rewrite_enabled) : null,
+      query_rewrite_latency_ms: row.query_rewrite_latency_ms as number | null,
+      query_rewrite_variant_count: row.query_rewrite_variant_count as number | null,
+      query_rewrite_entity_ref_count: row.query_rewrite_entity_ref_count as number | null,
+      query_rewrite_abbreviation_count: row.query_rewrite_abbreviation_count as number | null,
+      citation_boost_applied: row.citation_boost_applied as number | null,
+      gap_fill_docs_added: row.gap_fill_docs_added as number | null,
+      entity_claims_injected: row.entity_claims_injected as number | null,
+      contradictions_flagged: row.contradictions_flagged as number | null,
       ck_citations: (row.ck_citations as string | null) ?? null,
       created_at: row.created_at as string,
     };

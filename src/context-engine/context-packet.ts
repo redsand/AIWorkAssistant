@@ -140,6 +140,9 @@ export function determineRoutingStrategy(
   return "claimkit_first_fallback";
 }
 
+/** Sentinel returned by a timed race when the underlying promise is still pending. */
+const PROBE_PENDING = Symbol("claimkit-probe-pending");
+
 async function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
@@ -309,24 +312,48 @@ export async function assembleContextPacket(
   let routingStrategy: RoutingStrategy = "rag_first";
   let ckProbe: ClaimKitQueryResult | null = null;
   let probeLatencyMs = 0;
+  // Single-flight probe: when the probe misses its routing window we keep the
+  // in-flight queryLite alive (promise + controller below) instead of
+  // aborting it, so the second-pass ClaimKit query can await the SAME work
+  // rather than re-running the planner+embed+retrieve pipeline from scratch.
+  let probeInFlight: Promise<ClaimKitQueryResult> | null = null;
+  let probeController: AbortController | null = null;
+  let probeStartedAt = 0;
   if (env.CLAIMKIT_FIRST_ROUTING && env.CLAIMKIT_ENABLED && claimKitAvailable) {
     onProgress?.("Probing structured claims...");
-    const probeStart = Date.now();
+    probeStartedAt = Date.now();
+    probeController = new AbortController();
+    // Probe uses queryLite — plan + embed + retrieve + compile only.
+    // Skips the generate + verify LLM calls that the routing decision
+    // never reads (it reads confidence, answerability, claimCount).
+    // Saves 2 LLM round-trips on every chat message.
+    probeInFlight = claimKitAdapter.queryLite(retrievalQuery, { signal: probeController.signal });
+    // Detach a no-op handler so an abandoned probe can never surface as an
+    // unhandled rejection; awaiting call sites still see the original error.
+    probeInFlight.catch(() => {});
     try {
-      // Probe uses queryLite — plan + embed + retrieve + compile only.
-      // Skips the generate + verify LLM calls that the routing decision
-      // never reads (it reads confidence, answerability, claimCount).
-      // Saves 2 LLM round-trips on every chat message.
-      ckProbe = await withAbortableTimeout(
-        (signal) => claimKitAdapter.queryLite(retrievalQuery, { signal }),
+      const raced = await withTimeout<ClaimKitQueryResult | typeof PROBE_PENDING>(
+        probeInFlight,
         env.CLAIMKIT_FIRST_PROBE_TIMEOUT_MS,
-        null,
+        PROBE_PENDING,
       );
+      if (raced === PROBE_PENDING) {
+        // Routing window elapsed with the probe still running. Deliberately
+        // NOT aborted — the second pass reuses this promise under the
+        // remaining CLAIMKIT_QUERY_TIMEOUT_MS budget.
+        ckProbe = null;
+      } else {
+        ckProbe = raced;
+        probeInFlight = null;
+        probeController = null;
+      }
     } catch (err) {
       ckProbe = null;
+      probeInFlight = null;
+      probeController = null;
       console.warn("[ContextPacket] ClaimKit-first probe failed:", err instanceof Error ? err.message : err);
     }
-    probeLatencyMs = Date.now() - probeStart;
+    probeLatencyMs = Date.now() - probeStartedAt;
     stageTimings.claimkitProbeMs = probeLatencyMs;
     routingStrategy = determineRoutingStrategy(ckProbe);
     console.log(
@@ -522,13 +549,6 @@ export async function assembleContextPacket(
     onProgress?.("Extracting knowledge claims...");
     const seedStart = Date.now();
     const seedTimeoutMs = env.CLAIMKIT_SEED_TIMEOUT_MS;
-    const seedPromise = withAbortableTimeout(
-      (signal) => ingestScoredDocumentsForQuery(docs, query, env.CLAIMKIT_QUERY_SEED_LIMIT, signal)
-        .catch((err) => { console.warn("[ClaimKit] Query seed failed:", err); })
-        .then(() => true as const),
-      seedTimeoutMs,
-      false as const,
-    );
     if (env.CLAIMKIT_AWAIT_SEED) {
       // Hard cap the seed wait. Without this, a slow LLM extractor on 15
       // seeded docs could take 56+ minutes (real production observation,
@@ -537,7 +557,13 @@ export async function assembleContextPacket(
       // slow seed degrades gracefully into "continue without these claims"
       // rather than poisoning the whole context assembly. The abortable
       // timeout cancels pending ingest work when the cap is hit.
-      const seedFinished = await seedPromise;
+      const seedFinished = await withAbortableTimeout(
+        (signal) => ingestScoredDocumentsForQuery(docs, query, env.CLAIMKIT_QUERY_SEED_LIMIT, signal)
+          .catch((err) => { console.warn("[ClaimKit] Query seed failed:", err); })
+          .then(() => true as const),
+        seedTimeoutMs,
+        false as const,
+      );
       if (!seedFinished) {
         console.warn(
           `[ClaimKit] Seed wait timed out after ${seedTimeoutMs}ms — ` +
@@ -546,6 +572,9 @@ export async function assembleContextPacket(
         );
         stageTimings.claimkitSeedTimedOutMs = seedTimeoutMs;
       }
+    } else {
+      void ingestScoredDocumentsForQuery(docs, query, env.CLAIMKIT_QUERY_SEED_LIMIT)
+        .catch((err) => { console.warn("[ClaimKit] Query seed failed:", err); });
     }
     stageTimings.claimkitSeedMs = Date.now() - seedStart;
 
@@ -576,14 +605,43 @@ export async function assembleContextPacket(
       onProgress?.("Querying knowledge graph...");
       const ckStart = Date.now();
       try {
-        // Second-pass query also uses queryLite — same rationale as the
-        // probe: the chat doesn't render the LLM-generated answer text,
-        // and routing decisions only need confidence + claim count.
-        claimKitResult = await withAbortableTimeout(
-          (signal) => claimKitAdapter.queryLite(retrievalQuery, { signal }),
-          env.CLAIMKIT_QUERY_TIMEOUT_MS,
-          null,
-        );
+        if (probeInFlight !== null && env.CLAIMKIT_AWAIT_SEED) {
+          // Seeding was awaited, so the claim store changed after the probe
+          // started — the stale in-flight probe would miss the fresh claims.
+          // Cancel it and fall through to a fresh query below.
+          probeController?.abort();
+          probeInFlight = null;
+        }
+        if (probeInFlight !== null) {
+          // Single-flight reuse: the probe's queryLite is still running.
+          // Await the same promise under the remaining query budget instead
+          // of starting a duplicate planner+embed+retrieve pipeline.
+          const remainingMs = Math.max(
+            env.CLAIMKIT_QUERY_TIMEOUT_MS - (Date.now() - probeStartedAt),
+            0,
+          );
+          const raced = await withTimeout<ClaimKitQueryResult | typeof PROBE_PENDING>(
+            probeInFlight,
+            remainingMs,
+            PROBE_PENDING,
+          );
+          if (raced === PROBE_PENDING) {
+            probeController?.abort();
+            claimKitResult = null;
+          } else {
+            claimKitResult = raced;
+          }
+          probeInFlight = null;
+        } else {
+          // Second-pass query also uses queryLite — same rationale as the
+          // probe: the chat doesn't render the LLM-generated answer text,
+          // and routing decisions only need confidence + claim count.
+          claimKitResult = await withAbortableTimeout(
+            (signal) => claimKitAdapter.queryLite(retrievalQuery, { signal }),
+            env.CLAIMKIT_QUERY_TIMEOUT_MS,
+            null,
+          );
+        }
         ckMs = Date.now() - ckStart;
         stageTimings.claimkitQueryMs = ckMs;
         if (!claimKitResult) {
@@ -857,6 +915,7 @@ export async function assembleContextPacket(
       ckRetrievalScore: claimKitResult?.metadata.retrievalScore ?? null,
       ckSourceCount: claimKitResult?.metadata.sourceIds.length ?? null,
       ckMissingEvidence: claimKitResult?.missingEvidence?.join(", ") ?? null,
+      ckCitations: claimKitResult?.citations ?? null,
       overallWinner: routing.overallWinner,
       winnerReason: routing.routingReason,
       ckStatus,
@@ -872,6 +931,18 @@ export async function assembleContextPacket(
       // ClaimKit-first routing strategy (issue #229) so the dashboard can
       // measure RAG-skip rate and latency delta vs. the old RAG-first path.
       routingStrategy,
+      ckFirstProbeLatencyMs: probeLatencyMs,
+      ckFirstRagSkipped: ragSkipped,
+      ckFirstLatencyDeltaMs: latencyDeltaMs,
+      cascadeLevel: cascadeResolution?.level ?? null,
+      cascadeOutcome: cascadeResolution?.outcome ?? null,
+      cascadeTokensUsed: cascadeResolution?.tokensUsed ?? null,
+      cascadeConfidence: cascadeResolution?.confidence ?? null,
+      queryRewriteEnabled: env.QUERY_REWRITER_ENABLED,
+      queryRewriteLatencyMs: rewritten.rewriteLatencyMs,
+      queryRewriteVariantCount: rewritten.variants.length,
+      queryRewriteEntityRefCount: rewritten.entityRefs.length,
+      queryRewriteAbbreviationCount: rewritten.abbreviationExpansions.size,
     });
 
     // Stash the case ID + compressed RAG evidence so chat.ts can run live

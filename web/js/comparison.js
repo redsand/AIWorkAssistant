@@ -561,6 +561,22 @@
             diagHtml += "<div class='diag-row'><span class='diag-label'>Collaboration:</span> <span class='diag-value'>" + collabBits.join(" · ") + "</span></div>";
           }
 
+          var agenticBits = [];
+          if (c.routing_strategy) agenticBits.push("route " + c.routing_strategy);
+          if (c.ck_first_probe_latency_ms !== null && c.ck_first_probe_latency_ms !== undefined) agenticBits.push("probe " + c.ck_first_probe_latency_ms + "ms");
+          if (c.ck_first_rag_skipped) agenticBits.push("RAG skipped");
+          if (c.cascade_outcome) agenticBits.push("cascade " + c.cascade_outcome + " (" + (c.cascade_tokens_used || 0) + " tokens)");
+          if (c.query_rewrite_enabled) {
+            var rewriteParts = [];
+            if (c.query_rewrite_variant_count) rewriteParts.push(c.query_rewrite_variant_count + " variants");
+            if (c.query_rewrite_entity_ref_count) rewriteParts.push(c.query_rewrite_entity_ref_count + " entities");
+            if (c.query_rewrite_abbreviation_count) rewriteParts.push(c.query_rewrite_abbreviation_count + " abbreviations");
+            if (rewriteParts.length > 0) agenticBits.push("rewrite " + rewriteParts.join(", "));
+          }
+          if (agenticBits.length > 0) {
+            diagHtml += "<div class='diag-row'><span class='diag-label'>Agentic RAG:</span> <span class='diag-value'>" + escapeHtml(agenticBits.join(" | ")) + "</span></div>";
+          }
+
           // Grounding result (Idea 1: live shadow grounding).
           if (c.rag_hallucination_rate !== null) {
             var groundBadge = c.rag_grounded
@@ -672,6 +688,16 @@
     renderStat("stat-contradictions", c.contradictionsFlagged || 0);
   }
 
+  function renderAgenticRagPanel(stats) {
+    var a = stats.agenticRag || {};
+    renderStat("stat-rag-skipped", a.ragSkipped || 0);
+    renderStat("stat-probe-ms", Math.round(a.avgProbeLatencyMs || 0) + "ms");
+    renderStat("stat-cascade-resolved", a.cascadeResolved || 0);
+    renderStat("stat-cascade-fallback", a.cascadeFallbacks || 0);
+    renderStat("stat-query-rewrite", a.queryRewriteFired || 0);
+    renderStat("stat-query-rewrite-ms", Math.round(a.avgQueryRewriteLatencyMs || 0) + "ms");
+  }
+
   function formatTokens(n) {
     if (!n || !Number.isFinite(n)) return "—";
     if (Math.abs(n) >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
@@ -770,6 +796,8 @@
 
         // Collaboration panel (Ideas 2-5: features actually firing in prod)
         renderCollaborationPanel(stats);
+
+        renderAgenticRagPanel(stats);
 
         // Charts
         if (stats.totalCases > 0) {

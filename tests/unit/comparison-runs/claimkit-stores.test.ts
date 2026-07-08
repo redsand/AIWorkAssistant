@@ -31,6 +31,7 @@ vi.mock("../../../src/config/env", () => ({
     CLAIMKIT_LLM_PROVIDER: "memory",
     CLAIMKIT_REDIS_URL: "",
     CLAIMKIT_REDIS_PREFIX: "aiworkassistant",
+    CLAIMKIT_VECTOR_MODE: "auto",
     CLAIMKIT_TOP_K: 10,
     CLAIMKIT_MIN_SCORE: 0.0,
     CLAIMKIT_MAX_EVIDENCE_ITEMS: 20,
@@ -198,6 +199,120 @@ describe("ClaimKitAdapter stores", () => {
     expect(fakeClient.unlink).toHaveBeenCalledWith(staleKeys);
     // set() was called to write new dim after the flush
     expect(fakeClient.set).toHaveBeenCalledWith(expect.stringContaining(":meta:vector-dim"), "1536");
+
+    (env as any).CLAIMKIT_REDIS_URL = "";
+    (env as any).CLAIMKIT_REPAIR_ON_DIMENSION_MISMATCH = undefined;
+  });
+
+  it("auto-detects redisSearch when the RediSearch module is present", async () => {
+    (env as any).CLAIMKIT_REDIS_URL = "redis://localhost:6379";
+    (env as any).CLAIMKIT_VECTOR_MODE = "auto";
+
+    const fakeClient = {
+      ping: vi.fn().mockResolvedValue("PONG"),
+      get: vi.fn().mockResolvedValue(null),
+      set: vi.fn().mockResolvedValue("OK"),
+      sendCommand: vi.fn().mockResolvedValue([]),
+    };
+    mockCreateRedisClient.mockReturnValue(fakeClient);
+    mockConnectRedis.mockResolvedValue(undefined);
+    mockCreateRedisStores.mockReturnValue(makeStores());
+
+    await adapter.initialize();
+
+    expect(fakeClient.sendCommand).toHaveBeenCalledWith(["FT._LIST"]);
+    expect(mockCreateRedisStores).toHaveBeenCalledWith(
+      expect.objectContaining({ vectorMode: "redisSearch" }),
+    );
+    expect(fakeClient.set).toHaveBeenCalledWith(
+      expect.stringContaining(":meta:vector-mode"),
+      "redisSearch",
+    );
+
+    (env as any).CLAIMKIT_REDIS_URL = "";
+  });
+
+  it("falls back to bruteForce when the RediSearch probe fails", async () => {
+    (env as any).CLAIMKIT_REDIS_URL = "redis://localhost:6379";
+    (env as any).CLAIMKIT_VECTOR_MODE = "auto";
+
+    const fakeClient = {
+      ping: vi.fn().mockResolvedValue("PONG"),
+      get: vi.fn().mockResolvedValue(null),
+      set: vi.fn().mockResolvedValue("OK"),
+      sendCommand: vi.fn().mockRejectedValue(new Error("ERR unknown command 'FT._LIST'")),
+    };
+    mockCreateRedisClient.mockReturnValue(fakeClient);
+    mockConnectRedis.mockResolvedValue(undefined);
+    mockCreateRedisStores.mockReturnValue(makeStores());
+
+    await adapter.initialize();
+
+    expect(mockCreateRedisStores).toHaveBeenCalledWith(
+      expect.objectContaining({ vectorMode: "bruteForce" }),
+    );
+    expect(fakeClient.set).toHaveBeenCalledWith(
+      expect.stringContaining(":meta:vector-mode"),
+      "bruteForce",
+    );
+
+    (env as any).CLAIMKIT_REDIS_URL = "";
+  });
+
+  it("respects an explicit CLAIMKIT_VECTOR_MODE without probing", async () => {
+    (env as any).CLAIMKIT_REDIS_URL = "redis://localhost:6379";
+    (env as any).CLAIMKIT_VECTOR_MODE = "redisSearch";
+
+    const fakeClient = {
+      ping: vi.fn().mockResolvedValue("PONG"),
+      get: vi.fn().mockResolvedValue(null),
+      set: vi.fn().mockResolvedValue("OK"),
+      sendCommand: vi.fn().mockResolvedValue([]),
+    };
+    mockCreateRedisClient.mockReturnValue(fakeClient);
+    mockConnectRedis.mockResolvedValue(undefined);
+    mockCreateRedisStores.mockReturnValue(makeStores());
+
+    await adapter.initialize();
+
+    expect(fakeClient.sendCommand).not.toHaveBeenCalled();
+    expect(mockCreateRedisStores).toHaveBeenCalledWith(
+      expect.objectContaining({ vectorMode: "redisSearch" }),
+    );
+
+    (env as any).CLAIMKIT_REDIS_URL = "";
+    (env as any).CLAIMKIT_VECTOR_MODE = "auto";
+  });
+
+  it("flushes stale Redis keys when the stored vector mode differs", async () => {
+    (env as any).CLAIMKIT_REDIS_URL = "redis://localhost:6379";
+    (env as any).CLAIMKIT_VECTOR_MODE = "auto";
+    (env as any).CLAIMKIT_REPAIR_ON_DIMENSION_MISMATCH = true;
+
+    const staleKeys = ["aiworkassistant:text-embedding-3-small:vec:1"];
+    const fakeClient = {
+      ping: vi.fn().mockResolvedValue("PONG"),
+      // Dimension matches (1536) but stored mode is redisSearch while the
+      // probe fails → resolved mode bruteForce → mode mismatch.
+      get: vi.fn(async (k: string) =>
+        k.includes("vector-dim") ? "1536" : "redisSearch",
+      ),
+      set: vi.fn().mockResolvedValue("OK"),
+      scan: vi.fn().mockResolvedValue({ cursor: 0, keys: staleKeys }),
+      unlink: vi.fn().mockResolvedValue(staleKeys.length),
+      sendCommand: vi.fn().mockRejectedValue(new Error("no RediSearch")),
+    };
+    mockCreateRedisClient.mockReturnValue(fakeClient);
+    mockConnectRedis.mockResolvedValue(undefined);
+    mockCreateRedisStores.mockReturnValue(makeStores());
+
+    await adapter.initialize();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(fakeClient.scan).toHaveBeenCalledWith(0, { MATCH: expect.stringContaining(":*"), COUNT: 100 });
+    expect(fakeClient.unlink).toHaveBeenCalledWith(staleKeys);
+    expect(fakeClient.set).toHaveBeenCalledWith(expect.stringContaining(":meta:vector-dim"), "1536");
+    expect(fakeClient.set).toHaveBeenCalledWith(expect.stringContaining(":meta:vector-mode"), "bruteForce");
 
     (env as any).CLAIMKIT_REDIS_URL = "";
     (env as any).CLAIMKIT_REPAIR_ON_DIMENSION_MISMATCH = undefined;
