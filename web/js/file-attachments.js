@@ -22,10 +22,17 @@ const DOWNLOADABLE_EXTS = [
   "pdf", "md", "txt", "csv", "json", "html", "htm",
   "png", "jpg", "jpeg", "gif", "svg",
 ];
+// String.raw only tags the literal immediately following it — chaining more
+// backtick strings on with `+` makes those *un*tagged (cooked) templates,
+// where `\s`/`\w`/`\.` silently lose their backslash (e.g. "\s" === "s").
+// That downgraded class exclusions and dropped the escaped dot, which
+// swallowed leading path segments like "reports/" off real download links.
+// Interpolating via `${...}` inside a single tagged template avoids it.
+const EXTS_ALT = DOWNLOADABLE_EXTS.join("|");
 const PATH_RE = new RegExp(
   // matches: Windows-absolute, POSIX-absolute, or relative paths whose
   // segments can include letters/digits/-_./\, ending in a known ext
-  String.raw`([A-Za-z]:\\[^\s"'<>]+\.(?:` + DOWNLOADABLE_EXTS.join("|") + `)|(?:[\\/][^\s"'<>]+|[\w.-]+(?:[\\/][^\s"'<>]+)+)\.(?:` + DOWNLOADABLE_EXTS.join("|") + `))`,
+  String.raw`([A-Za-z]:\\[^\s"'<>]+\.(?:${EXTS_ALT})|(?:[\\/][^\s"'<>]+|[\w.-]+(?:[\\/][^\s"'<>]+)+)\.(?:${EXTS_ALT}))`,
   "gi",
 );
 
