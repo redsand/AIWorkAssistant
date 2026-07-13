@@ -135,13 +135,19 @@ describe("CronEngine delivery", () => {
         sessionId: "session-abc",
       });
 
-      for (let i = 0; i < MAX_UNDELIVERED_RESULTS + 5; i++) {
+      const tickCount = MAX_UNDELIVERED_RESULTS + 5;
+      for (let i = 0; i < tickCount; i++) {
         setNow(new Date(Date.UTC(2026, 5, 3, 9, i)));
         await engine.tick();
       }
 
       const jobs = engine.listJobs();
-      expect(jobs[0].undeliveredResults).toHaveLength(MAX_UNDELIVERED_RESULTS);
+      const results = jobs[0].undeliveredResults ?? [];
+      expect(results).toHaveLength(MAX_UNDELIVERED_RESULTS);
+      // The first 5 ticks (minutes 0-4) should have been dropped as oldest;
+      // the queue should retain the most recent MAX_UNDELIVERED_RESULTS ticks.
+      expect(results[0].timestamp).toBe(new Date(Date.UTC(2026, 5, 3, 9, tickCount - MAX_UNDELIVERED_RESULTS)).toISOString());
+      expect(results[results.length - 1].timestamp).toBe(new Date(Date.UTC(2026, 5, 3, 9, tickCount - 1)).toISOString());
     });
   });
 
