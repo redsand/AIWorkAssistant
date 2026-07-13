@@ -2,6 +2,7 @@ import { API_BASE, currentSessionId, setCurrentSessionId } from "./state.js";
 import { authHeaders } from "./auth.js";
 import {
   addMessage,
+  addCronResultMessage,
   createToolProgress,
   reuseOrCreateToolProgress,
   finalizeToolProgress,
@@ -124,11 +125,21 @@ export function subscribeLive(sessionId) {
               const data = JSON.parse(dataStr);
 
               if (eventType === "state" && data.processing === false) {
-                shouldReconnect = false;
+                // Previously this stopped the pump loop (shouldReconnect =
+                // false; stop: true), which abandoned the persistent
+                // reconnect stream the instant the client learned no job
+                // was active — even though the server keeps this
+                // connection open specifically to deliver async events
+                // (heartbeats, and now cron_result) while idle. Keep
+                // reading; only update the UI to reflect idle state.
                 const procEl = document.getElementById("processingIndicator");
                 procEl.classList.remove("active");
                 showTyping(false);
-                return { stop: true };
+              }
+
+              if (eventType === "cron_result") {
+                addCronResultMessage(data.jobName, data.timestamp, data.output, data.success);
+                return { stop: false };
               }
 
               if (eventType === "state" && data.processing === true) {

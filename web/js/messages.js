@@ -409,6 +409,55 @@ export function addMessage(content, type, thinking, { scroll = true, messageId =
   return id;
 }
 
+// Renders an async cron job result. Deliberately NOT rendered via
+// addMessage("...", "assistant", ...) — these are async notifications that
+// can arrive at any time, unrelated to the current conversation turn, so
+// they get their own badge and styling rather than looking like something
+// the assistant just said in response to the user.
+export function addCronResultMessage(jobName, timestamp, output, success) {
+  const messagesDiv = document.getElementById("chatMessages");
+
+  const id = "cron-" + (++msgCounter) + "-" + Math.random().toString(36).slice(2, 6);
+  const wrapper = document.createElement("div");
+  wrapper.id = id;
+  // Includes "assistant" so the bubble inherits existing markdown styling
+  // (code blocks, tables, mermaid) — "cron-result-message" layers the
+  // distinct badge/border on top so it still reads as a separate,
+  // async notification rather than a conversational reply.
+  wrapper.className = "message assistant cron-result-message";
+
+  const row = document.createElement("div");
+  row.className = "message-row";
+
+  const bubble = document.createElement("div");
+  bubble.className = "message-bubble cron-result-bubble";
+
+  const statusClass = success === false ? "failed" : "success";
+  const timeStr = timestamp ? new Date(timestamp).toLocaleString() : "";
+  const badge = document.createElement("div");
+  badge.className = "cron-result-badge";
+  badge.innerHTML =
+    `<span class="cron-result-icon ${statusClass}"></span>` +
+    `<span class="cron-result-label">Cron Update</span>` +
+    (jobName ? `<span class="cron-result-name">${escapeHtml(jobName)}</span>` : "") +
+    (timeStr ? `<span class="cron-result-time">${escapeHtml(timeStr)}</span>` : "");
+  bubble.appendChild(badge);
+
+  const contentEl = document.createElement("div");
+  contentEl.className = "message-content";
+  contentEl.innerHTML = renderMarkdown(output || "");
+  bubble.appendChild(contentEl);
+
+  row.appendChild(bubble);
+  wrapper.appendChild(row);
+  messagesDiv.appendChild(wrapper);
+
+  if (autoScrollEnabled) scrollChatToBottom();
+  renderMermaidIn(contentEl);
+
+  return id;
+}
+
 // On SSE reconnect, reuse an existing non-completed progress element rather
 // than appending a duplicate. Falls back to createToolProgress() if none exists.
 export function reuseOrCreateToolProgress() {

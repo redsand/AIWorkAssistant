@@ -188,6 +188,47 @@
   word-break: break-word;
 }
 
+.cron-result-message .message-bubble {
+  border-left: 3px solid #f59e0b;
+  background: #fffbeb;
+}
+
+.cron-result-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #92400e;
+  margin-bottom: 8px;
+}
+
+.cron-result-icon {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.cron-result-icon.success {
+  background: #22c55e;
+}
+
+.cron-result-icon.failed {
+  background: #ef4444;
+}
+
+.cron-result-name {
+  font-weight: 500;
+  color: #78350f;
+}
+
+.cron-result-time {
+  margin-left: auto;
+  font-weight: 400;
+  color: #a16207;
+}
+
 .message.assistant .message-bubble {
   background: white;
   border: 1px solid #e5e7eb;

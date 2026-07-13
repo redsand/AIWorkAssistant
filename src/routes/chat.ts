@@ -40,6 +40,7 @@ import { comparisonRunDatabase } from "../comparison-runs/database";
 import type { GroundingHandle } from "../context-engine/types";
 import { entityMemory } from "../memory/entity-memory";
 import { extractEntityIds } from "../context-engine/entity-claims-injector";
+import { cronEngine } from "../scheduler/cron-engine";
 
 const MAX_SYSTEM_PROMPT_LENGTH = 4000;
 
@@ -220,6 +221,44 @@ interface ProcessingJob {
 }
 
 const processingJobs = new Map<string, ProcessingJob>();
+
+// Per-session SSE listeners for the persistent reconnect channel
+// (GET /chat/sessions/:sessionId/stream). Independent of `processingJobs`,
+// which only exists while an AI turn is actively running — this registry
+// stays populated for the lifetime of an open connection so async events
+// (e.g. cron job results) can reach a connected client even when no chat
+// turn is in flight.
+const chatSessionListeners = new Map<string, Set<(event: string, data: unknown) => void>>();
+
+function registerChatListener(sessionId: string, listener: (event: string, data: unknown) => void): void {
+  let listeners = chatSessionListeners.get(sessionId);
+  if (!listeners) {
+    listeners = new Set();
+    chatSessionListeners.set(sessionId, listeners);
+  }
+  listeners.add(listener);
+}
+
+function unregisterChatListener(sessionId: string, listener: (event: string, data: unknown) => void): void {
+  const listeners = chatSessionListeners.get(sessionId);
+  if (!listeners) return;
+  listeners.delete(listener);
+  if (listeners.size === 0) chatSessionListeners.delete(sessionId);
+}
+
+// Pushes an async event to a connected chat session's SSE stream. Returns
+// false when the session has no live connection, signaling the caller
+// (cron-engine) to queue the result for delivery on next reconnect.
+export function deliverToChatSession(sessionId: string, event: string, data: unknown): boolean {
+  const listeners = chatSessionListeners.get(sessionId);
+  if (!listeners || listeners.size === 0) return false;
+  for (const listener of listeners) {
+    try {
+      listener(event, data);
+    } catch {}
+  }
+  return true;
+}
 
 // Register a hook so the agent-run reaper can also abort the in-memory job
 // when it marks a run stale. Without this, the DB row flips to 'failed' but
@@ -2952,8 +2991,16 @@ export async function chatRoutes(fastify: FastifyInstance) {
       }
     }, 15000);
 
+    // Register this connection to receive async events (cron_result, etc.)
+    // independent of whether an AI turn is currently processing, and flush
+    // any results that queued up while this session was disconnected.
+    const chatListener = (event: string, data: unknown) => sendEvent(event, data);
+    registerChatListener(sessionId, chatListener);
+    cronEngine.flushUndelivered(sessionId, chatListener);
+
     const cleanupConnection = () => {
       clearInterval(heartbeat);
+      unregisterChatListener(sessionId, chatListener);
       try {
         reply.raw.end();
       } catch {}

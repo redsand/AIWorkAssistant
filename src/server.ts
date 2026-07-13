@@ -7,7 +7,7 @@ import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import { env } from "./config/env";
 import { healthRoutes } from "./routes/health";
-import { chatRoutes } from "./routes/chat";
+import { chatRoutes, deliverToChatSession } from "./routes/chat";
 import { approvalRoutes } from "./routes/approvals";
 import { gitlabWebhookRoutes } from "./routes/webhooks-gitlab";
 import { roadmapRoutes } from "./roadmap/api";
@@ -748,6 +748,7 @@ async function start() {
       console.error("[RunnerManager] bootEnabled failed:", err);
     }
     if (env.CRON_ENABLED) {
+      cronEngine.setDeliverToChat(deliverToChatSession);
       cronEngine.start();
       console.log("[CronEngine] started");
     } else {

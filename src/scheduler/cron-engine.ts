@@ -3,8 +3,22 @@ import path from "path";
 import crypto from "crypto";
 import { env } from "../config/env";
 import { parseSchedule, shouldFireCron, nextFireTime, type ParsedSchedule } from "./cron-parser";
-import { runJob, type JobRunnerDependencies } from "./job-runner";
+import { runJob, type JobResult, type JobRunnerDependencies } from "./job-runner";
 import { reapStuckRuns } from "../agent-runs/reaper";
+import { gatewayEngine } from "../integrations/gateway/gateway-engine";
+
+// Undelivered cron results are queued per-job when the originating chat
+// session isn't connected. Capped so a long-idle session doesn't grow the
+// jobs.json file unbounded — oldest entries are dropped first.
+export const MAX_UNDELIVERED_RESULTS = 20;
+
+const GATEWAY_PLATFORMS = new Set(["discord", "telegram", "slack", "whatsapp"]);
+
+export interface UndeliveredResult {
+  output: string;
+  timestamp: string;
+  success: boolean;
+}
 
 export interface CronJob {
   id: string;
@@ -19,6 +33,10 @@ export interface CronJob {
   lastResult?: string;
   runCount: number;
   lastOutput?: string;
+  sessionId?: string;
+  userId?: string;
+  undeliveredResults?: UndeliveredResult[];
+  lastDelivered?: boolean;
 }
 
 interface PersistedData {
@@ -28,6 +46,7 @@ interface PersistedData {
 export interface CronEngineDeps {
   runJobFn?: JobRunnerDependencies["runJobFn"];
   now?: () => Date;
+  deliverToChat?: (sessionId: string, event: string, data: unknown) => boolean;
 }
 
 export class CronEngine {
@@ -47,7 +66,15 @@ export class CronEngine {
     this.deps = {
       runJobFn: deps?.runJobFn ?? runJob,
       now: deps?.now ?? (() => new Date()),
+      deliverToChat: deps?.deliverToChat ?? (() => false),
     };
+  }
+
+  // Injected post-construction by server.ts once the chat route module has
+  // registered its session listeners — avoids cron-engine.ts importing
+  // chat.ts directly, which would create a circular import.
+  setDeliverToChat(fn: (sessionId: string, event: string, data: unknown) => boolean): void {
+    this.deps.deliverToChat = fn;
   }
 
   start(): void {
@@ -193,11 +220,80 @@ export class CronEngine {
           jobs[idx].enabled = false;
         }
 
+        await this.deliverResult(jobs[idx], result, firedAt);
+
         this.writeJobs(jobs);
       }
     } finally {
       this.runningJobs.delete(job.id);
     }
+  }
+
+  // Dispatches a completed job's result to its configured delivery target.
+  // Mutates `job` in place (lastDelivered / undeliveredResults) — caller is
+  // responsible for persisting via writeJobs.
+  private async deliverResult(job: CronJob, result: JobResult, firedAt: Date): Promise<void> {
+    job.lastDelivered = false;
+
+    // [SILENT] output is never delivered anywhere, chat or external.
+    if (result.silent) return;
+    if (!job.deliver) return;
+
+    if (job.deliver === "chat") {
+      if (!job.sessionId) return;
+      const delivered = this.deps.deliverToChat(job.sessionId, "cron_result", {
+        jobId: job.id,
+        jobName: job.name,
+        output: result.output,
+        success: result.success,
+        timestamp: firedAt.toISOString(),
+      });
+      if (delivered) {
+        job.lastDelivered = true;
+        return;
+      }
+      const queue = job.undeliveredResults ?? [];
+      queue.push({ output: result.output, timestamp: firedAt.toISOString(), success: result.success });
+      while (queue.length > MAX_UNDELIVERED_RESULTS) {
+        queue.shift();
+      }
+      job.undeliveredResults = queue;
+      return;
+    }
+
+    if (GATEWAY_PLATFORMS.has(job.deliver)) {
+      if (!job.userId) return;
+      try {
+        const deliveryResult = await gatewayEngine.send(job.deliver, job.userId, result.output);
+        job.lastDelivered = deliveryResult.success && !deliveryResult.suppressed;
+      } catch (err) {
+        console.error(`[CronEngine] Delivery to ${job.deliver} failed for job ${job.id}:`, err);
+      }
+    }
+  }
+
+  // Flushes any results a job accumulated while its chat session was
+  // disconnected. Called on session SSE reconnect.
+  flushUndelivered(sessionId: string, send: (event: string, data: unknown) => void): void {
+    const jobs = this.readJobs();
+    let changed = false;
+    for (const job of jobs) {
+      if (job.sessionId !== sessionId) continue;
+      if (!job.undeliveredResults || job.undeliveredResults.length === 0) continue;
+      for (const queued of job.undeliveredResults) {
+        send("cron_result", {
+          jobId: job.id,
+          jobName: job.name,
+          output: queued.output,
+          success: queued.success,
+          timestamp: queued.timestamp,
+        });
+      }
+      job.undeliveredResults = [];
+      job.lastDelivered = true;
+      changed = true;
+    }
+    if (changed) this.writeJobs(jobs);
   }
 
   private getChainedContext(jobId: string): string | undefined {
@@ -209,7 +305,7 @@ export class CronEngine {
   createJob(
     scheduleInput: string,
     prompt: string,
-    options?: { name?: string; deliver?: string; context_from?: string },
+    options?: { name?: string; deliver?: string; context_from?: string; sessionId?: string; userId?: string },
   ): CronJob {
     const schedule = parseSchedule(scheduleInput);
     const job: CronJob = {
@@ -222,6 +318,8 @@ export class CronEngine {
       enabled: true,
       createdAt: this.deps.now().toISOString(),
       runCount: 0,
+      sessionId: options?.sessionId,
+      userId: options?.userId,
     };
 
     const jobs = this.readJobs();

@@ -7734,7 +7734,7 @@ const CRON_TOOLS: Tool[] = [
       deliver: {
         type: "string",
         description:
-          'Delivery target for results: "discord", "telegram", etc. (optional)',
+          'Delivery target for results: "chat" (deliver back to the originating chat session), "discord", "telegram", "slack", or "whatsapp" (optional). When called from a chat session, "chat" delivery is only honored if a session is available — it is never assumed by default.',
         required: false,
       },
       job_id: {

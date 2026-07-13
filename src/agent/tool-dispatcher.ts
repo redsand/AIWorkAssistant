@@ -2442,11 +2442,18 @@ const handleSoulManage = createSoulManageHandler(soulManager);
 
 async function handleCronManage(
   params: Record<string, unknown>,
+  userId?: string,
 ): Promise<ToolCallResult> {
   const action = params.action as string;
   if (!action || typeof action !== "string") {
     return { success: false, error: "action is required (create, list, edit, delete, status)" };
   }
+
+  // `_chatSessionId` is injected by the chat route so jobs created from a
+  // chat session can be delivered back to that session. Explicit `sessionId`
+  // from the model still wins.
+  const sessionIdRaw = params.sessionId ?? params.session_id ?? params._chatSessionId;
+  const sessionId = sessionIdRaw ? String(sessionIdRaw) : undefined;
 
   switch (action) {
     case "create": {
@@ -2455,10 +2462,18 @@ async function handleCronManage(
       if (!schedule) return { success: false, error: "schedule is required for create" };
       if (!prompt) return { success: false, error: "prompt is required for create" };
 
+      // Only default delivery to "chat" when a session is actually
+      // available to deliver to — never assume chat delivery for
+      // sessionless callers (scripts, subagents) since there'd be nowhere
+      // to send the result.
+      const deliver = (params.deliver as string | undefined) ?? (sessionId ? "chat" : undefined);
+
       try {
         const job = cronEngine.createJob(schedule, prompt, {
           name: params.name as string | undefined,
-          deliver: params.deliver as string | undefined,
+          deliver,
+          sessionId,
+          userId,
         });
         return {
           success: true,
@@ -2468,8 +2483,9 @@ async function handleCronManage(
             schedule: job.schedule,
             enabled: job.enabled,
             createdAt: job.createdAt,
+            deliver: job.deliver,
           },
-          message: `Created cron job "${job.name}" (${job.id}) with schedule: ${schedule}`,
+          message: `Created cron job "${job.name}" (${job.id}) with schedule: ${schedule}${deliver ? `, delivering to: ${deliver}` : ""}`,
         };
       } catch (err) {
         return {
@@ -2491,6 +2507,9 @@ async function handleCronManage(
           lastRunAt: j.lastRunAt,
           lastResult: j.lastResult,
           runCount: j.runCount,
+          deliver: j.deliver,
+          lastDelivered: j.lastDelivered,
+          undeliveredCount: j.undeliveredResults?.length ?? 0,
         })),
       };
     }
