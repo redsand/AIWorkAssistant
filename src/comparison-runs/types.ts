@@ -53,6 +53,22 @@ export interface ComparisonCaseRow {
   confidence_trace: string | null;
   /** ClaimKit-first routing strategy decided for this query (issue #229). */
   routing_strategy: string | null;
+  ck_first_probe_latency_ms: number | null;
+  ck_first_rag_skipped: boolean | null;
+  ck_first_latency_delta_ms: number | null;
+  cascade_level: string | null;
+  cascade_outcome: string | null;
+  cascade_tokens_used: number | null;
+  cascade_confidence: number | null;
+  query_rewrite_enabled: boolean | null;
+  query_rewrite_latency_ms: number | null;
+  query_rewrite_variant_count: number | null;
+  query_rewrite_entity_ref_count: number | null;
+  query_rewrite_abbreviation_count: number | null;
+  citation_boost_applied: number | null;
+  gap_fill_docs_added: number | null;
+  entity_claims_injected: number | null;
+  contradictions_flagged: number | null;
   created_at: string;
 }
 
@@ -170,6 +186,16 @@ export interface ComparisonDashboardStats {
     avgSavingsPerQuery: number;
     measuredCases: number;
   };
+  agenticRag: {
+    ragSkipped: number;
+    avgProbeLatencyMs: number;
+    avgLatencyDeltaMs: number;
+    cascadeResolved: number;
+    cascadeFallbacks: number;
+    cascadeTokensUsed: number;
+    queryRewriteFired: number;
+    avgQueryRewriteLatencyMs: number;
+  };
   /**
    * Why ClaimKit reported low confidence. Classifies each ck_confidence ≤ 0.1
    * case by the most likely root cause, derived from existing columns. Lets
@@ -260,6 +286,18 @@ export interface SaveCaseInput {
    * skipped and the latency impact of each path.
    */
   routingStrategy?: string | null;
+  ckFirstProbeLatencyMs?: number | null;
+  ckFirstRagSkipped?: boolean | null;
+  ckFirstLatencyDeltaMs?: number | null;
+  cascadeLevel?: string | null;
+  cascadeOutcome?: string | null;
+  cascadeTokensUsed?: number | null;
+  cascadeConfidence?: number | null;
+  queryRewriteEnabled?: boolean | null;
+  queryRewriteLatencyMs?: number | null;
+  queryRewriteVariantCount?: number | null;
+  queryRewriteEntityRefCount?: number | null;
+  queryRewriteAbbreviationCount?: number | null;
   rag: {
     contextTokens: number;
     sections: number;

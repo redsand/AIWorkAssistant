@@ -333,9 +333,17 @@ const envSchema = z.object({
     .default("comparison"),
   CLAIMKIT_REDIS_URL: z.string().default(""),
   CLAIMKIT_REDIS_PREFIX: z.string().default("aiworkassistant"),
-  // If true, a dimension mismatch triggers a background flush of stale Redis
-  // keys under the model-specific prefix. Uses SCAN + UNLINK in batches to
-  // avoid blocking the server.
+  // Vector search backend. "auto" probes the server for the RediSearch
+  // module (Redis Stack) at init: when present, vectors go through an
+  // in-engine HNSW index (~O(log n) approximate KNN); when absent, falls
+  // back to bruteForce (all vectors fetched and scored in Node — O(n)).
+  // The two modes use different on-disk formats (JSON strings vs hashes),
+  // so a mode change is treated like a dimension change: stale keys are
+  // flushed and the corpus re-ingests.
+  CLAIMKIT_VECTOR_MODE: z.enum(["auto", "bruteForce", "redisSearch"]).default("auto"),
+  // If true, a stored dimension or vector-mode mismatch triggers a
+  // background flush of stale Redis keys under the model-specific prefix.
+  // Uses SCAN + UNLINK in batches to avoid blocking the server.
   CLAIMKIT_REPAIR_ON_DIMENSION_MISMATCH: z
     .string()
     .transform((s) => s === "true")
@@ -343,7 +351,11 @@ const envSchema = z.object({
   CLAIMKIT_TOP_K: z.coerce.number().default(10),
   CLAIMKIT_MIN_SCORE: z.coerce.number().default(0.0),
   CLAIMKIT_MAX_EVIDENCE_ITEMS: z.coerce.number().default(20),
-  CLAIMKIT_QUERY_SEED_LIMIT: z.coerce.number().default(5),
+  // Max documents seeded (claim-extracted) inline per query when the query
+  // touches not-yet-ingested content. Extraction is the most expensive LLM
+  // step in the pipeline, so keep this small — steady-state ingestion should
+  // come from the background ingestion paths, not the query path.
+  CLAIMKIT_QUERY_SEED_LIMIT: z.coerce.number().default(3),
   CLAIMKIT_QUERY_TIMEOUT_MS: z.coerce.number().default(120000),
   CLAIMKIT_AWAIT_SEED: z.string().transform((s) => s === "true").default("false"),
   // Hard cap on the time the query path will wait for seed ingestion when
@@ -357,13 +369,13 @@ const envSchema = z.object({
   CLAIMKIT_DISABLE_VERIFIER_LLM: z.string().transform((s) => s === "true").default("false"),
   CLAIMKIT_DISABLE_CONTRADICTION_LLM: z.string().transform((s) => s === "true").default("false"),
   // Hard cap on how many claim pairs the contradiction detector
-  // classifies per query. SDK default is 200 — at that ceiling a
-  // single chat turn can fire dozens of pair-LLM calls in parallel,
-  // saturating the claimkit concurrency bucket and blocking the
-  // planner. 50 is enough to catch the most obviously-suspect pairs
-  // (the SDK's isCandidatePair filter prioritizes high jaccard /
-  // shared-entity pairs first) without per-turn cost explosion.
-  CLAIMKIT_MAX_CONTRADICTION_PAIRS: z.coerce.number().default(50),
+  // classifies per query. The SDK blocks candidates by shared
+  // subject/entity/token signals, orders them by conflict likelihood,
+  // resolves many deterministically (no LLM), and batch-classifies
+  // survivors ~20 per LLM call with parallel batches — so 200 pairs
+  // costs at most ~2-10 batched calls, typically far fewer since real
+  // turns rarely produce that many candidates. Matches the SDK default.
+  CLAIMKIT_MAX_CONTRADICTION_PAIRS: z.coerce.number().default(200),
   CLAIMKIT_INIT_TIMEOUT_MS: z.coerce.number().default(5000),
   CLAIMKIT_LLM_MODEL: z.string().default(""),
   // Per-attempt timeout for each ClaimKit LLM call.

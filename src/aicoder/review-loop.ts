@@ -565,16 +565,22 @@ export async function runReviewLoop(
       }
       lastReworkPrompt = reworkPrompt;
 
-      const persistedGateFindings = loadReviewGateState(item.id).lastFindings;
       const regexFindings = extractFindingsFromPrompt(reworkPrompt);
+      const persistedGateFindings = loadReviewGateState(item.id).lastFindings;
+      // Prefer findings freshly extracted from *this* round's rework prompt —
+      // falling back to the last-persisted snapshot only when the current
+      // prompt has nothing file-specific to extract (e.g. a generic
+      // "looks good, minor nits" prompt). Preferring stale data here caused
+      // convergence tracking to see the same round-1 findings forever,
+      // false-triggering "identical findings" (see claimkit #47).
       const roundFindings =
-        persistedGateFindings.length > 0
-          ? persistedGateFindings.map((f) => ({
+        regexFindings.length > 0
+          ? regexFindings
+          : persistedGateFindings.map((f) => ({
               file: f.file,
               severity: f.severity,
               category: f.category,
-            }))
-          : regexFindings;
+            }));
       if (roundFindings.length === 0) {
         previousFailures.push("NON_ACTIONABLE_REVIEW_FEEDBACK");
         convergenceState = recordRoundFindings(convergenceState, [], true, {
@@ -618,7 +624,7 @@ export async function runReviewLoop(
       saveReviewGateState(
         {
           ...currentGateState,
-          lastFindings: [...currentGateState.lastFindings, ...gateFindings],
+          lastFindings: gateFindings,
         },
         item.id,
       );

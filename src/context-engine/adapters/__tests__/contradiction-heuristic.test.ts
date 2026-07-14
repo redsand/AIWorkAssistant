@@ -13,13 +13,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 // and proves the classifier's nearest-prototype logic without
 // depending on model quality.
 
-// Six dimensions: [fact_lookup, comparison, verification, temporal_audit, general1, general2]
+// Seven dimensions: [fact_lookup, procedural, comparison, verification, temporal_audit, general1, general2]
 const AXIS = {
-  fact_lookup: [1, 0, 0, 0, 0, 0],
-  comparison: [0, 1, 0, 0, 0, 0],
-  verification: [0, 0, 1, 0, 0, 0],
-  temporal_audit: [0, 0, 0, 1, 0, 0],
-  unrelated: [0, 0, 0, 0, 1, 1], // low cosine vs every axis
+  fact_lookup: [1, 0, 0, 0, 0, 0, 0],
+  procedural: [0, 1, 0, 0, 0, 0, 0],
+  comparison: [0, 0, 1, 0, 0, 0, 0],
+  verification: [0, 0, 0, 1, 0, 0, 0],
+  temporal_audit: [0, 0, 0, 0, 1, 0, 0],
+  unrelated: [0, 0, 0, 0, 0, 1, 1], // low cosine vs every axis
 };
 
 // Map prototype text → expected axis. Mirror PROTOTYPES from
@@ -27,12 +28,15 @@ const AXIS = {
 const PROTOTYPE_VECTORS: Record<string, number[]> = {
   "what is the status of the case": AXIS.fact_lookup,
   "who is the owner of this issue": AXIS.fact_lookup,
-  "show me the failed runs": AXIS.fact_lookup,
-  "list the active runners": AXIS.fact_lookup,
   "describe the auth flow": AXIS.fact_lookup,
   "get the session count": AXIS.fact_lookup,
   "tell me how many cases are open": AXIS.fact_lookup,
-  "display the dashboard": AXIS.fact_lookup,
+
+  "show me the failed runs": AXIS.procedural,
+  "list the active runners": AXIS.procedural,
+  "display the dashboard": AXIS.procedural,
+  "open the settings page": AXIS.procedural,
+  "pull up the latest report": AXIS.procedural,
 
   "compare last week and this week": AXIS.comparison,
   "what is the difference between A and B": AXIS.comparison,
@@ -124,6 +128,13 @@ describe("classifyIntent — embedding-based intent classification", () => {
     expect(result.confidence).toBeGreaterThan(0.9);
   });
 
+  it("classifies procedural queries as procedural", async () => {
+    const { classifyIntent, queueVector } = await loadModule();
+    queueVector(AXIS.procedural);
+    const result = await classifyIntent("show me the dashboard");
+    expect(result.intent).toBe("procedural");
+  });
+
   it("classifies comparison queries as comparison", async () => {
     const { classifyIntent, queueVector } = await loadModule();
     queueVector(AXIS.comparison);
@@ -158,10 +169,16 @@ describe("shouldRunContradictionCheck — gate the SDK's pairwise LLM detector",
     vi.resetModules();
   });
 
-  it("skips contradictions for fact_lookup intent", async () => {
+  it("skips contradictions only for procedural intent", async () => {
+    const { shouldRunContradictionCheck, queueVector } = await loadModule();
+    queueVector(AXIS.procedural);
+    expect(await shouldRunContradictionCheck("anything")).toBe(false);
+  });
+
+  it("runs contradictions for fact_lookup intent — conflicting single values are the core hazard", async () => {
     const { shouldRunContradictionCheck, queueVector } = await loadModule();
     queueVector(AXIS.fact_lookup);
-    expect(await shouldRunContradictionCheck("anything")).toBe(false);
+    expect(await shouldRunContradictionCheck("anything")).toBe(true);
   });
 
   it("runs contradictions for comparison intent", async () => {

@@ -32,16 +32,20 @@ import {
 
 /**
  * Coarse intent categories used by the contradiction-gate. Bias is
- * deliberately conservative: only `fact_lookup` clearly skips the
+ * deliberately conservative: only `procedural` clearly skips the
  * contradiction stage. Everything else (including `general` and any
- * low-confidence classification) runs it. The cost of a false
- * negative (skip contradiction when we shouldn't have) is missing a
- * useful cross-source warning; the cost of a false positive (run
- * contradiction when we didn't need to) is ~200ms of LLM time. We
- * lean toward the cheaper failure mode.
+ * low-confidence classification) runs it. In particular `fact_lookup`
+ * RUNS contradiction detection: a single-valued fact ("who is the
+ * owner") is exactly where two sources asserting different values is
+ * the core hazard — the canonical contradiction eval case is a fact
+ * lookup. The cost of a false negative (skip contradiction when we
+ * shouldn't have) is a silently wrong answer presented as verified;
+ * the cost of a false positive (run when we didn't need to) is one
+ * batched LLM call (~200ms). We lean toward the cheaper failure mode.
  */
 export type QueryIntent =
-  | "fact_lookup"      // "what is X", "show me Y", "list cases" — single value, no contradiction possible
+  | "fact_lookup"      // "what is X", "who owns Y" — single value; conflicting values ARE contradictions
+  | "procedural"       // "show me Y", "display Z", "open the page" — UI/navigation, no factual assertion to conflict
   | "comparison"       // "compare X and Y", "diff between A and B" — needs contradiction
   | "verification"     // "verify X", "is this right" — needs contradiction
   | "temporal_audit"   // "did X change", "history of Y" — needs contradiction
@@ -65,15 +69,21 @@ interface Prototype {
  * the classifier against any one bad prototype skewing the result.
  */
 const PROTOTYPES: Prototype[] = [
-  // fact_lookup — declarative information requests
+  // fact_lookup — single-valued factual requests where conflicting
+  // source values are the primary contradiction hazard
   { intent: "fact_lookup", text: "what is the status of the case" },
   { intent: "fact_lookup", text: "who is the owner of this issue" },
-  { intent: "fact_lookup", text: "show me the failed runs" },
-  { intent: "fact_lookup", text: "list the active runners" },
   { intent: "fact_lookup", text: "describe the auth flow" },
   { intent: "fact_lookup", text: "get the session count" },
   { intent: "fact_lookup", text: "tell me how many cases are open" },
-  { intent: "fact_lookup", text: "display the dashboard" },
+
+  // procedural — UI/navigation/enumeration requests with no single
+  // factual assertion for sources to disagree on
+  { intent: "procedural", text: "show me the failed runs" },
+  { intent: "procedural", text: "list the active runners" },
+  { intent: "procedural", text: "display the dashboard" },
+  { intent: "procedural", text: "open the settings page" },
+  { intent: "procedural", text: "pull up the latest report" },
 
   // comparison — explicit or implicit contrast
   { intent: "comparison", text: "compare last week and this week" },
@@ -177,6 +187,7 @@ export async function classifyIntent(
   // for the user's exact phrasing.
   const sumByIntent: Record<QueryIntent, number> = {
     fact_lookup: 0,
+    procedural: 0,
     comparison: 0,
     verification: 0,
     temporal_audit: 0,
@@ -184,6 +195,7 @@ export async function classifyIntent(
   };
   const countByIntent: Record<QueryIntent, number> = {
     fact_lookup: 0,
+    procedural: 0,
     comparison: 0,
     verification: 0,
     temporal_audit: 0,
@@ -198,6 +210,7 @@ export async function classifyIntent(
 
   const scores: Record<QueryIntent, number> = {
     fact_lookup: 0,
+    procedural: 0,
     comparison: 0,
     verification: 0,
     temporal_audit: 0,
@@ -236,6 +249,7 @@ function emptyResult(): ClassificationResult {
     confidence: 0,
     scores: {
       fact_lookup: 0,
+      procedural: 0,
       comparison: 0,
       verification: 0,
       temporal_audit: 0,

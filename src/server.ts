@@ -7,7 +7,7 @@ import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import { env } from "./config/env";
 import { healthRoutes } from "./routes/health";
-import { chatRoutes } from "./routes/chat";
+import { chatRoutes, deliverToChatSession } from "./routes/chat";
 import { approvalRoutes } from "./routes/approvals";
 import { gitlabWebhookRoutes } from "./routes/webhooks-gitlab";
 import { roadmapRoutes } from "./roadmap/api";
@@ -74,6 +74,11 @@ import { initializeMCP } from "./integrations/mcp";
 import { codebaseIndexer } from "./agent/codebase-indexer";
 import { providerSettings } from "./agent/provider-settings";
 import { toolCallCache } from "./memory/tool-cache";
+import {
+  formatRuntimePackageMetadata,
+  getAppRuntimeMetadata,
+  getInstalledPackageRuntimeMetadata,
+} from "./util/runtime-metadata";
 import { gatewayEngine } from "./integrations/gateway/gateway-engine";
 import { TelegramAdapter } from "./integrations/gateway/telegram-adapter";
 import { SlackAdapter } from "./integrations/gateway/slack-adapter";
@@ -419,6 +424,13 @@ async function start() {
     // ─── ClaimKit init: block server.listen() until init resolves ───
     // CLAIMKIT_REQUIRE_INIT=true (default) → process.exit(1) on failure
     // CLAIMKIT_REQUIRE_INIT=false → log warning, continue with CK disabled (60s retry backoff)
+    console.log(formatRuntimePackageMetadata("App", getAppRuntimeMetadata()));
+    console.log(
+      formatRuntimePackageMetadata(
+        "ClaimKit",
+        getInstalledPackageRuntimeMetadata("@redsand/claimkit"),
+      ),
+    );
     logStartupPhase("ClaimKit init", `enabled=${env.CLAIMKIT_ENABLED}, provider=${env.CLAIMKIT_LLM_PROVIDER}, blockOnIngestion=${env.CLAIMKIT_BLOCK_ON_INGESTION}`);
     let ckInitialized = false;
     if (env.CLAIMKIT_ENABLED) {
@@ -736,6 +748,7 @@ async function start() {
       console.error("[RunnerManager] bootEnabled failed:", err);
     }
     if (env.CRON_ENABLED) {
+      cronEngine.setDeliverToChat(deliverToChatSession);
       cronEngine.start();
       console.log("[CronEngine] started");
     } else {

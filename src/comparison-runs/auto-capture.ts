@@ -108,6 +108,18 @@ export function saveLiveComparison(params: {
   confidenceTrace?: unknown;
   /** ClaimKit-first routing strategy chosen for this query (issue #229). */
   routingStrategy?: string | null;
+  ckFirstProbeLatencyMs?: number | null;
+  ckFirstRagSkipped?: boolean | null;
+  ckFirstLatencyDeltaMs?: number | null;
+  cascadeLevel?: string | null;
+  cascadeOutcome?: string | null;
+  cascadeTokensUsed?: number | null;
+  cascadeConfidence?: number | null;
+  queryRewriteEnabled?: boolean | null;
+  queryRewriteLatencyMs?: number | null;
+  queryRewriteVariantCount?: number | null;
+  queryRewriteEntityRefCount?: number | null;
+  queryRewriteAbbreviationCount?: number | null;
   db?: ComparisonRunDatabase;
 }): { caseId: string } | null {
   try {
@@ -133,6 +145,18 @@ export function saveLiveComparison(params: {
           ckSectionTokens: params.ckSectionTokens,
           confidenceTrace: params.confidenceTrace,
           routingStrategy: params.routingStrategy,
+          ckFirstProbeLatencyMs: params.ckFirstProbeLatencyMs,
+          ckFirstRagSkipped: params.ckFirstRagSkipped,
+          ckFirstLatencyDeltaMs: params.ckFirstLatencyDeltaMs,
+          cascadeLevel: params.cascadeLevel,
+          cascadeOutcome: params.cascadeOutcome,
+          cascadeTokensUsed: params.cascadeTokensUsed,
+          cascadeConfidence: params.cascadeConfidence,
+          queryRewriteEnabled: params.queryRewriteEnabled,
+          queryRewriteLatencyMs: params.queryRewriteLatencyMs,
+          queryRewriteVariantCount: params.queryRewriteVariantCount,
+          queryRewriteEntityRefCount: params.queryRewriteEntityRefCount,
+          queryRewriteAbbreviationCount: params.queryRewriteAbbreviationCount,
           rag: {
             contextTokens: params.ragTokens,
             sections: params.ragSections,

@@ -33,6 +33,7 @@ const mockSearchSessions = vi.fn();
 const mockBuildEntityClaimsSection = vi.fn();
 const mockSaveLiveComparison = vi.fn();
 const mockCascadeRun = vi.fn();
+const mockIngestScoredDocumentsForQuery = vi.fn();
 
 const mockEnv = {
   AI_PROVIDER: "test",
@@ -78,14 +79,7 @@ function installMocks() {
     claimKitAdapter: mockClaimKitAdapter,
   }));
   vi.doMock("../../../src/context-engine/claimkit-ingestion", () => ({
-    ingestScoredDocumentsForQuery: vi.fn().mockResolvedValue({
-      total: 0,
-      ingested: 0,
-      skipped: 0,
-      errors: 0,
-      sourceIds: [],
-      durationMs: 0,
-    }),
+    ingestScoredDocumentsForQuery: mockIngestScoredDocumentsForQuery,
   }));
   vi.doMock("../../../src/agent/knowledge-store", () => ({
     knowledgeStore: { search: mockKnowledgeSearch },
@@ -202,6 +196,14 @@ describe("assembleContextPacket retrieval and context sections", () => {
     mockEnv.CASCADE_BUDGET_TOKENS = 5000;
     mockEnv.CASCADE_STOP_CONFIDENCE = 0.8;
     mockCascadeRun.mockReset();
+    mockIngestScoredDocumentsForQuery.mockResolvedValue({
+      total: 0,
+      ingested: 0,
+      skipped: 0,
+      errors: 0,
+      sourceIds: [],
+      durationMs: 0,
+    });
     mockEnv.QUERY_REWRITER_ENABLED = true;
     mockEnv.QUERY_REWRITE_VARIANT_COUNT = 3;
     mockClaimKitAdapter.isAvailable.mockReturnValue(false);
@@ -459,6 +461,30 @@ describe("assembleContextPacket retrieval and context sections", () => {
     expect(mockClaimKitAdapter.query).toHaveBeenCalledTimes(1);
   });
 
+  it("does not abort background query seeding when CLAIMKIT_AWAIT_SEED is disabled", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CLAIMKIT_AWAIT_SEED = false;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    mockClaimKitAdapter.query.mockResolvedValue(ckResult(0.3, "answerable"));
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    expect(mockIngestScoredDocumentsForQuery).toHaveBeenCalledTimes(1);
+    expect(mockIngestScoredDocumentsForQuery.mock.calls[0][3]).toBeUndefined();
+  });
+
   it("re-queries ClaimKit after seeding when CLAIMKIT_AWAIT_SEED is enabled", async () => {
     mockEnv.CLAIMKIT_ENABLED = true;
     mockEnv.CLAIMKIT_FIRST_ROUTING = true;
@@ -483,6 +509,8 @@ describe("assembleContextPacket retrieval and context sections", () => {
     // Awaited seeding can change the claim store between probe and query, so a
     // fresh full query runs on top of the probe (probe + full = 2 calls).
     expect(mockClaimKitAdapter.query).toHaveBeenCalledTimes(2);
+    expect(mockIngestScoredDocumentsForQuery).toHaveBeenCalledTimes(1);
+    expect(mockIngestScoredDocumentsForQuery.mock.calls[0][3]).toBeInstanceOf(AbortSignal);
 
     mockEnv.CLAIMKIT_AWAIT_SEED = false;
   });
@@ -510,6 +538,48 @@ describe("assembleContextPacket retrieval and context sections", () => {
     expect(packet.diagnostics.claimkitFirstMetrics.ragSkipped).toBe(false);
     expect(packet.diagnostics.documentsRetrieved).toBeGreaterThan(0);
     expect(mockKnowledgeSearch).toHaveBeenCalled();
+  });
+
+  it("single-flights a probe that misses its routing window instead of re-querying at the second pass", async () => {
+    mockEnv.CLAIMKIT_ENABLED = true;
+    mockEnv.CLAIMKIT_FIRST_ROUTING = true;
+    mockEnv.CLAIMKIT_AWAIT_SEED = false;
+    mockEnv.CLAIMKIT_FIRST_PROBE_TIMEOUT_MS = 40;
+    mockClaimKitAdapter.isAvailable.mockReturnValue(true);
+    mockClaimKitAdapter.initialize.mockResolvedValue(true);
+    let observedSignal: AbortSignal | undefined;
+    // Slower than the 40ms routing window, well inside the query budget.
+    mockClaimKitAdapter.query.mockImplementation(
+      (_q: unknown, opts?: { signal?: AbortSignal }) => {
+        observedSignal = opts?.signal;
+        return new Promise((resolve) =>
+          setTimeout(() => resolve(ckResult(0.6, "answerable")), 150),
+        );
+      },
+    );
+    mockKnowledgeSearch.mockReturnValue([
+      knowledgeHit("k1", "manual", "Runbook", "Auth runbook content"),
+    ]);
+
+    const { assembleContextPacket } = await loadContextPacket();
+    const packet = await assembleContextPacket({
+      mode: "engineering",
+      query: "auth runbook",
+      sessionMessages: [],
+      providerMaxTokens: 8192,
+      toolTokens: 1024,
+    });
+
+    // The probe missed its routing window, so routing degraded to rag_first…
+    expect(packet.diagnostics.claimkitFirstMetrics.strategy).toBe("rag_first");
+    // …but the in-flight probe was retained and awaited at the second pass:
+    // exactly ONE queryLite for the whole request, not probe + duplicate.
+    expect(mockClaimKitAdapter.query).toHaveBeenCalledTimes(1);
+    // The routing timeout must not abort the retained probe.
+    expect(observedSignal).toBeInstanceOf(AbortSignal);
+    expect(observedSignal?.aborted).toBe(false);
+
+    mockEnv.CLAIMKIT_FIRST_PROBE_TIMEOUT_MS = 500;
   });
 
   // ── query rewriting reaches retrieval adapters (issue #230) ──────────────

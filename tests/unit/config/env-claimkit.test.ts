@@ -88,9 +88,9 @@ describe("ClaimKit environment variables", () => {
       expect(env.CLAIMKIT_MAX_EVIDENCE_ITEMS).toBe(20);
     });
 
-    it("should default CLAIMKIT_QUERY_SEED_LIMIT to 5", () => {
+    it("should default CLAIMKIT_QUERY_SEED_LIMIT to 3", () => {
       const env = loadEnv();
-      expect(env.CLAIMKIT_QUERY_SEED_LIMIT).toBe(5);
+      expect(env.CLAIMKIT_QUERY_SEED_LIMIT).toBe(3);
     });
 
     it("should default CLAIMKIT_QUERY_TIMEOUT_MS to 120000", () => {

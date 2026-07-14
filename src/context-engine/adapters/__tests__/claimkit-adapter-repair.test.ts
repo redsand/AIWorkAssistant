@@ -20,16 +20,24 @@ function makeRedisClient(keys: string[]) {
 }
 
 describe("ClaimKitAdapter.repairStaleKeys", () => {
-  it("uses SCAN + UNLINK and updates the dimension meta key", async () => {
+  it("uses SCAN + UNLINK and updates the dimension and mode meta keys", async () => {
     const keys = ["prefix:a", "prefix:b", "prefix:c"];
     const rc = makeRedisClient(keys);
     const adapter = new ClaimKitAdapter();
 
-    await (adapter as any).repairStaleKeys(rc, "prefix:meta:dim", "prefix", 1536);
+    await (adapter as any).repairStaleKeys(
+      rc,
+      "prefix:meta:dim",
+      "prefix:meta:mode",
+      "prefix",
+      1536,
+      "bruteForce",
+    );
 
     expect(rc.scan).toHaveBeenCalledWith(0, { MATCH: "prefix:*", COUNT: 100 });
     expect(rc.unlink).toHaveBeenCalledWith(keys);
     expect(rc.set).toHaveBeenCalledWith("prefix:meta:dim", "1536");
+    expect(rc.set).toHaveBeenCalledWith("prefix:meta:mode", "bruteForce");
   });
 
   it("iterates through multiple SCAN pages", async () => {
@@ -48,11 +56,19 @@ describe("ClaimKitAdapter.repairStaleKeys", () => {
     };
     const adapter = new ClaimKitAdapter();
 
-    await (adapter as any).repairStaleKeys(rc, "prefix:meta:dim", "prefix", 768);
+    await (adapter as any).repairStaleKeys(
+      rc,
+      "prefix:meta:dim",
+      "prefix:meta:mode",
+      "prefix",
+      768,
+      "redisSearch",
+    );
 
     expect(rc.scan).toHaveBeenCalledTimes(2);
     expect(rc.unlink).toHaveBeenNthCalledWith(1, ["prefix:a", "prefix:b"]);
     expect(rc.unlink).toHaveBeenNthCalledWith(2, ["prefix:c", "prefix:d"]);
     expect(rc.set).toHaveBeenCalledWith("prefix:meta:dim", "768");
+    expect(rc.set).toHaveBeenCalledWith("prefix:meta:mode", "redisSearch");
   });
 });
