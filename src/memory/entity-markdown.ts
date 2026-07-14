@@ -3,7 +3,7 @@ import path from "path";
 import os from "os";
 
 /**
- * ENTITY.md per-person relationship files (Hermes-style relationship memory).
+ * ENTITY.md per-person relationship files.
  *
  * `EntityMemory` (entity-memory.ts) is the structured SQLite source of truth.
  * This module is a human-readable, human-editable markdown *projection* of a

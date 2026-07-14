@@ -7,12 +7,12 @@ import { ProfileManager } from "../../../src/config/profile-manager";
 let rootDir: string;
 
 function makeManager(): ProfileManager {
-  // rootDir plays the role of HERMES_HOME; profiles live under rootDir/profiles
+  // rootDir plays the role of AIASSIST_HOME; profiles live under rootDir/profiles
   return new ProfileManager(path.join(rootDir, "profiles"));
 }
 
 beforeEach(() => {
-  rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-profiles-"));
+  rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "aiassist-profiles-"));
 });
 
 afterEach(() => {
@@ -61,7 +61,7 @@ describe("config/ProfileManager", () => {
     });
 
     it("migrates legacy data/memories and data/skills into the default profile on first run", () => {
-      // Simulate a pre-isolation install: state directly under HERMES_HOME.
+      // Simulate a pre-isolation install: state directly under AIASSIST_HOME.
       const legacyMem = path.join(rootDir, "memories");
       const legacySkills = path.join(rootDir, "skills", "general", "greet");
       fs.mkdirSync(legacyMem, { recursive: true });

@@ -34,11 +34,11 @@ describe("profile switch routes managers to the active profile", () => {
     path.join(tmpHome, "profiles", name);
 
   beforeEach(() => {
-    for (const key of ["HERMES_HOME", ...ENV_OVERRIDES]) {
+    for (const key of ["AIASSIST_HOME", ...ENV_OVERRIDES]) {
       saved[key] = process.env[key];
     }
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "profile-switch-"));
-    process.env.HERMES_HOME = tmpHome;
+    process.env.AIASSIST_HOME = tmpHome;
     for (const key of ENV_OVERRIDES) {
       delete process.env[key];
     }
@@ -46,7 +46,7 @@ describe("profile switch routes managers to the active profile", () => {
   });
 
   afterEach(() => {
-    for (const key of ["HERMES_HOME", ...ENV_OVERRIDES]) {
+    for (const key of ["AIASSIST_HOME", ...ENV_OVERRIDES]) {
       if (saved[key] === undefined) delete process.env[key];
       else process.env[key] = saved[key];
     }

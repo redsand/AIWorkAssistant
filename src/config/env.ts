@@ -156,8 +156,8 @@ const envSchema = z.object({
   PROFILES_PATH: z.string().default("data/profiles"),
 
   // Profile isolation — root for all profile-scoped state and the active profile.
-  // resolvePath() composes these into HERMES_HOME/profiles/{ACTIVE_PROFILE}/<relative>.
-  HERMES_HOME: z.string().default("data"),
+  // resolvePath() composes these into AIASSIST_HOME/profiles/{ACTIVE_PROFILE}/<relative>.
+  AIASSIST_HOME: z.string().default("data"),
   ACTIVE_PROFILE: z.string().default("default"),
 
   // Audit
@@ -287,7 +287,7 @@ const envSchema = z.object({
   //     content never reaches ClaimKit's claim store
   //   - ingestKnowledgeStore() at startup filters out file_read entries
   // Use case: running this assistant in its own source folder, where the
-  // user does NOT want their own code or local docs (hermes references,
+  // user does NOT want their own code or local docs (project references,
   // architecture notes, etc.) to be part of RAG/CK context. Only data
   // received through chat tool calls (Jira issues, calendar events, web
   // searches, etc.) becomes retrieval material. Default false for that
@@ -731,7 +731,7 @@ export const env = loadEnv();
  * should route file paths through this function instead of hardcoding `data/`,
  * so that switching the active profile transparently isolates all state.
  *
- * Returns `HERMES_HOME/profiles/{ACTIVE_PROFILE}/{relativePath}`.
+ * Returns `AIASSIST_HOME/profiles/{ACTIVE_PROFILE}/{relativePath}`.
  *
  * Active profile resolution order:
  *   1. process.env.ACTIVE_PROFILE — runtime override set by the long-running
@@ -743,7 +743,7 @@ export const env = loadEnv();
  *   3. env.ACTIVE_PROFILE (env schema default) → 'default'.
  */
 export function resolvePath(relativePath: string): string {
-  const home = process.env.HERMES_HOME || env.HERMES_HOME || "data";
+  const home = process.env.AIASSIST_HOME || env.AIASSIST_HOME || "data";
   const requested =
     process.env.ACTIVE_PROFILE ||
     readActiveProfileName(home) ||
@@ -763,7 +763,7 @@ const PROFILE_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
  * — or is "." / ".." — falls back to "default" so a tampered value can't escape
  * the profile root and read or clobber another profile's state (which would
  * silently defeat isolation). "." is the critical case: path.join(home,
- * "profiles", ".", "memories") collapses to HERMES_HOME/profiles/memories,
+ * "profiles", ".", "memories") collapses to AIASSIST_HOME/profiles/memories,
  * escaping the per-profile boundary.
  */
 export function safeProfileName(requested: string): string {
@@ -785,7 +785,7 @@ let activeMarkerCache:
   | { file: string; mtimeMs: number; name: string | undefined }
   | null = null;
 
-/** Read the active profile name from `HERMES_HOME/profiles/active`, if present. */
+/** Read the active profile name from `AIASSIST_HOME/profiles/active`, if present. */
 function readActiveProfileName(home: string): string | undefined {
   const activeFile = path.join(home, "profiles", "active");
   let mtimeMs: number;

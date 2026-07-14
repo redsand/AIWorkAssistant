@@ -2,7 +2,7 @@
 //
 // Integration coverage for the `profile` CLI subcommands (create / list /
 // switch / delete). Exercises registerProfileCommands() against a fresh
-// commander program and a temp HERMES_HOME, asserting on filesystem effects
+// commander program and a temp AIASSIST_HOME, asserting on filesystem effects
 // and captured console output. The CLI entrypoint (cli.ts) parses argv on
 // import, so the command wiring lives in a separate module to keep it testable.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -31,11 +31,11 @@ function run(...args: string[]): Promise<void> {
 }
 
 beforeEach(() => {
-  savedHome = process.env.HERMES_HOME;
+  savedHome = process.env.AIASSIST_HOME;
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "cli-profile-"));
-  process.env.HERMES_HOME = tmpHome;
+  process.env.AIASSIST_HOME = tmpHome;
   // The config ProfileManager is a singleton that captures its root at
-  // construction — reset it so it re-reads the temp HERMES_HOME.
+  // construction — reset it so it re-reads the temp AIASSIST_HOME.
   resetConfigProfileManager();
 
   logs = [];
@@ -52,8 +52,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   resetConfigProfileManager();
-  if (savedHome === undefined) delete process.env.HERMES_HOME;
-  else process.env.HERMES_HOME = savedHome;
+  if (savedHome === undefined) delete process.env.AIASSIST_HOME;
+  else process.env.AIASSIST_HOME = savedHome;
   try {
     fs.rmSync(tmpHome, { recursive: true, force: true });
   } catch {

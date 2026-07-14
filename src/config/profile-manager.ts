@@ -2,7 +2,7 @@
  * Profile isolation — multiple agent instances with separate SOUL.md,
  * MEMORY.md, skills, and sessions.
  *
- * Each profile is a self-contained directory under `${HERMES_HOME}/profiles/`:
+ * Each profile is a self-contained directory under `${AIASSIST_HOME}/profiles/`:
  *
  *   data/profiles/
  *     active                 ← file containing the active profile name
@@ -59,7 +59,7 @@ export class ProfileManager {
     // then the zod-validated env default, then the literal "data". Diverging
     // here would let ProfileManager scaffold profiles under a different root
     // than the one resolvePath() reads from, silently splitting state.
-    const home = process.env.HERMES_HOME || env.HERMES_HOME || "data";
+    const home = process.env.AIASSIST_HOME || env.AIASSIST_HOME || "data";
     return path.join(home, "profiles");
   }
 
@@ -101,7 +101,7 @@ export class ProfileManager {
   /**
    * One-time migration of pre-profile-isolation data into the default profile.
    *
-   * Before profiles existed, state lived directly under HERMES_HOME:
+   * Before profiles existed, state lived directly under AIASSIST_HOME:
    * `data/memories/` (MEMORY.md, USER.md, SOUL.md) and `data/skills/`. With
    * isolation those paths became `data/profiles/default/...`, which would
    * orphan an existing install's data on upgrade.
@@ -120,7 +120,7 @@ export class ProfileManager {
     const marker = path.join(defaultDir, ".migrated_from_legacy_v1");
     if (fs.existsSync(marker)) return;
 
-    const legacyRoot = path.dirname(this.profilesRoot); // HERMES_HOME
+    const legacyRoot = path.dirname(this.profilesRoot); // AIASSIST_HOME
     let copiedAny = false;
     for (const sub of ["memories", "skills"]) {
       const src = path.join(legacyRoot, sub);

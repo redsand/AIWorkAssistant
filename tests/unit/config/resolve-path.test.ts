@@ -18,13 +18,13 @@ describe("resolvePath profile routing", () => {
   const activeFile = () => path.join(profilesDir(), "active");
 
   beforeEach(async () => {
-    savedHome = process.env.HERMES_HOME;
+    savedHome = process.env.AIASSIST_HOME;
     savedProfile = process.env.ACTIVE_PROFILE;
 
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "resolve-path-"));
     fs.mkdirSync(profilesDir(), { recursive: true });
 
-    process.env.HERMES_HOME = tmpHome;
+    process.env.AIASSIST_HOME = tmpHome;
     delete process.env.ACTIVE_PROFILE;
 
     vi.resetModules();
@@ -32,8 +32,8 @@ describe("resolvePath profile routing", () => {
   });
 
   afterEach(() => {
-    if (savedHome === undefined) delete process.env.HERMES_HOME;
-    else process.env.HERMES_HOME = savedHome;
+    if (savedHome === undefined) delete process.env.AIASSIST_HOME;
+    else process.env.AIASSIST_HOME = savedHome;
     if (savedProfile === undefined) delete process.env.ACTIVE_PROFILE;
     else process.env.ACTIVE_PROFILE = savedProfile;
 
@@ -88,7 +88,7 @@ describe("resolvePath profile routing", () => {
 
   it("rejects '.' so it cannot collapse out of the profile boundary", () => {
     // path.join(home, "profiles", ".", "memories") would otherwise resolve to
-    // HERMES_HOME/profiles/memories, escaping the per-profile directory.
+    // AIASSIST_HOME/profiles/memories, escaping the per-profile directory.
     process.env.ACTIVE_PROFILE = ".";
     const resolved = resolvePath("memories");
     expect(resolved).toBe(
