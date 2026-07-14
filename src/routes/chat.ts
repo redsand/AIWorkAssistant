@@ -2772,9 +2772,12 @@ export async function chatRoutes(fastify: FastifyInstance) {
    * attachments via local.read_file.
    *
    * Body: { files: [{ name, mime?, contentBase64 }] }
-   * 10MB per-file cap, 50 files per request.
+   * 25MB per-file cap, 50 files per request.
    */
-  fastify.post("/chat/sessions/:sessionId/files", async (request, reply) => {
+  fastify.post(
+    "/chat/sessions/:sessionId/files",
+    { bodyLimit: 40 * 1024 * 1024 },
+    async (request, reply) => {
     const fs = await import("fs");
     const path = await import("path");
     const { sessionId } = request.params as { sessionId: string };
@@ -2812,9 +2815,9 @@ export async function chatRoutes(fastify: FastifyInstance) {
       const safeName = path.basename(rawName).replace(/[^A-Za-z0-9._-]+/g, "_");
       if (!safeName || safeName === "." || safeName === "..") continue;
       const buf = Buffer.from(content, "base64");
-      if (buf.length > 10 * 1024 * 1024) {
+      if (buf.length > 25 * 1024 * 1024) {
         reply.code(413);
-        return { error: `File ${safeName} exceeds 10MB cap` };
+        return { error: `File ${safeName} exceeds 25MB cap` };
       }
       const target = path.join(baseDir, safeName);
       // Defense in depth — make sure the join stayed inside baseDir.
@@ -2826,7 +2829,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
       stored.push({ name: safeName, path: target, size: buf.length, mime });
     }
     return { success: true, sessionId, files: stored };
-  });
+    },
+  );
 
   /**
    * Download a file the model produced (or the user uploaded). Sandbox:

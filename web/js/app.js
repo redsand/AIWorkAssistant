@@ -11,6 +11,7 @@ import {
   setMessageHistory,
 } from "./state.js";
 import { authHeaders, checkAuth, login, logout } from "./auth.js";
+import { installFileAttachmentUI } from "./file-attachments.js";
 import {
   sendMessage,
   resendMessage,
@@ -160,6 +161,7 @@ document.addEventListener("click", function (e) {
 
 document.addEventListener("DOMContentLoaded", async () => {
   loadBuildVersion();
+  installFileAttachmentUI();
 
   // Prime currentSessionId from the URL hash BEFORE checkAuth so that
   // initializeChat (called inside checkAuth) loads the right session and we

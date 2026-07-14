@@ -49,6 +49,8 @@ import {
   installFileAttachmentUI,
   installDownloadInterceptor,
   applyAttachmentsToMessage,
+  hasPendingAttachmentUploads,
+  hasFailedAttachments,
 } from "./file-attachments.js";
 import { installSteerButton, sendSteer } from "./chat-steer.js";
 
@@ -930,6 +932,14 @@ export async function sendMessage() {
 
   // Prepend any queued file attachments as a structured preamble so the
   // model sees the paths and can open them via local.read_file.
+  if (hasPendingAttachmentUploads()) {
+    alert("File upload is still in progress. Wait for the attachment chip to finish uploading, then send.");
+    return;
+  }
+  if (hasFailedAttachments()) {
+    alert("One or more file uploads failed. Remove the failed attachment chip before sending.");
+    return;
+  }
   message = applyAttachmentsToMessage(message);
 
   const hist = [...messageHistory];

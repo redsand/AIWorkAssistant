@@ -14,7 +14,13 @@
  *     an authenticated blob fetch (anchor clicks drop the bearer token).
  */
 
-import { API_BASE, currentSessionId } from "./state.js";
+import {
+  API_BASE,
+  currentMode,
+  currentSessionId,
+  setCurrentSessionId,
+  updateSessionHash,
+} from "./state.js";
 import { authHeaders } from "./auth.js";
 
 const DOWNLOADABLE_EXTS = [
@@ -37,6 +43,8 @@ const PATH_RE = new RegExp(
 );
 
 const pendingAttachments = [];
+let nextAttachmentId = 1;
+let attachmentUiInstalled = false;
 
 // ── Upload ────────────────────────────────────────────────────────────────
 
@@ -66,9 +74,9 @@ function renderAttachmentBar() {
   bar.innerHTML = pendingAttachments
     .map(
       (att, i) => `
-        <span class="attachment-chip" title="${escapeAttr(att.path)}">
+        <span class="attachment-chip" title="${escapeAttr(att.path || "")}">
           <span class="attachment-name">${escapeHtml(att.name)}</span>
-          <span class="attachment-size">${formatBytes(att.size)}</span>
+          <span class="attachment-size">${att.error ? "failed" : att.uploading ? "uploading..." : formatBytes(att.size)}</span>
           <button class="attachment-remove" data-idx="${i}" aria-label="Remove">×</button>
         </span>`,
     )
@@ -85,39 +93,79 @@ function renderAttachmentBar() {
 }
 
 async function handleFilesPicked(files) {
-  if (!currentSessionId) {
-    alert("Send at least one message first so a session exists, then attach.");
-    return;
-  }
   if (!files || files.length === 0) return;
-  const payload = { files: [] };
+  const selected = [];
   for (const f of Array.from(files)) {
-    if (f.size > 10 * 1024 * 1024) {
-      alert(`${f.name} is over the 10 MB per-file cap and will be skipped.`);
+    if (f.size > 25 * 1024 * 1024) {
+      alert(`${f.name} is over the 25 MB per-file cap and will be skipped.`);
       continue;
     }
-    payload.files.push({
+    const attachment = {
+      id: `pending-${nextAttachmentId++}`,
       name: f.name,
+      path: "",
+      size: f.size,
       mime: f.type || "application/octet-stream",
-      contentBase64: await readFileAsBase64(f),
-    });
+      uploading: true,
+    };
+    pendingAttachments.push(attachment);
+    selected.push({ file: f, attachment });
   }
-  if (payload.files.length === 0) return;
+  if (selected.length === 0) return;
+  renderAttachmentBar();
+
+  const removeSelectedPlaceholders = () => {
+    for (const item of selected) {
+      const idx = pendingAttachments.indexOf(item.attachment);
+      if (idx >= 0) pendingAttachments.splice(idx, 1);
+    }
+  };
+  const markSelectedFailed = (message) => {
+    for (const item of selected) {
+      item.attachment.uploading = false;
+      item.attachment.error = true;
+      item.attachment.path = message;
+    }
+  };
+
+  const sessionId = await ensureAttachmentSession();
+  if (!sessionId) {
+    markSelectedFailed("Upload failed before a chat session could be created.");
+    renderAttachmentBar();
+    return;
+  }
   try {
-    const res = await fetch(`${API_BASE}/chat/sessions/${encodeURIComponent(currentSessionId)}/files`, {
+    const payload = { files: [] };
+    for (const item of selected) {
+      payload.files.push({
+        name: item.file.name,
+        mime: item.file.type || "application/octet-stream",
+        contentBase64: await readFileAsBase64(item.file),
+      });
+    }
+    if (payload.files.length === 0) {
+      removeSelectedPlaceholders();
+      renderAttachmentBar();
+      return;
+    }
+    const res = await fetch(`${API_BASE}/chat/sessions/${encodeURIComponent(sessionId)}/files`, {
       method: "POST",
       headers: authHeaders(),
       body: JSON.stringify(payload),
     });
     if (!res.ok) {
       const detail = await safeJson(res);
+      markSelectedFailed(detail?.error || detail?.message || "Upload failed.");
+      renderAttachmentBar();
       alert(`Upload failed (${res.status}): ${detail?.error || detail?.message || "see console"}`);
       console.warn("[attach] upload failed", res.status, detail);
       return;
     }
     const body = await res.json();
+    removeSelectedPlaceholders();
     for (const f of body.files || []) {
       pendingAttachments.push({
+        id: `file-${nextAttachmentId++}`,
         name: f.name,
         path: f.path,
         size: f.size,
@@ -126,7 +174,46 @@ async function handleFilesPicked(files) {
     }
     renderAttachmentBar();
   } catch (err) {
+    markSelectedFailed(err instanceof Error ? err.message : String(err));
+    renderAttachmentBar();
     alert(`Upload error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function ensureAttachmentSession() {
+  if (currentSessionId) return currentSessionId;
+  try {
+    const res = await fetch(`${API_BASE}/chat/sessions`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        userId: "web-user",
+        mode: currentMode,
+        title: `Chat on ${new Date().toLocaleDateString()}`,
+      }),
+    });
+    if (!res.ok) {
+      const detail = await safeJson(res);
+      alert(`Could not start chat for upload (${res.status}): ${detail?.error || detail?.message || "see console"}`);
+      console.warn("[attach] session create failed", res.status, detail);
+      return null;
+    }
+    const body = await res.json();
+    if (!body.sessionId) {
+      alert("Could not start chat for upload: server did not return a session id.");
+      console.warn("[attach] session create missing sessionId", body);
+      return null;
+    }
+    setCurrentSessionId(body.sessionId);
+    localStorage.setItem("currentSessionId", body.sessionId);
+    updateSessionHash(body.sessionId);
+    import("./conversations.js")
+      .then((mod) => mod.loadConversations?.())
+      .catch((err) => console.warn("[attach] conversation refresh failed", err));
+    return body.sessionId;
+  } catch (err) {
+    alert(`Could not start chat for upload: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
   }
 }
 
@@ -149,10 +236,20 @@ export function applyAttachmentsToMessage(text) {
   return `${preamble}\n\n${text}`;
 }
 
+export function hasPendingAttachmentUploads() {
+  return pendingAttachments.some((a) => a.uploading);
+}
+
+export function hasFailedAttachments() {
+  return pendingAttachments.some((a) => a.error);
+}
+
 export function installFileAttachmentUI() {
+  if (attachmentUiInstalled) return;
   const btn = document.getElementById("attachBtn");
   const input = document.getElementById("attachInput");
   if (!btn || !input) return;
+  attachmentUiInstalled = true;
   btn.addEventListener("click", (e) => {
     e.preventDefault();
     input.click();
