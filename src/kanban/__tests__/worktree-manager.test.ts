@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   createWorktree,
+  ensurePersistentWorktree,
   listWorktrees,
   removeWorktree,
   isClean,
@@ -260,5 +261,38 @@ describe("worktree-manager", () => {
       fs.writeFileSync(path.join(wtPath, "dirty.txt"), "dirty");
       expect(await isClean(wtPath)).toBe(false);
     });
+  });
+
+  describe("ensurePersistentWorktree", () => {
+    it("reprovisions a persistent workspace whose .git marker points at missing metadata", async () => {
+      const repo = makeTempRepo();
+      registerCleanup(repo);
+      const bareRemote = fs.mkdtempSync(path.join(os.tmpdir(), "wtm-remote-"));
+      registerCleanup(bareRemote);
+      execSync("git init --bare", { cwd: bareRemote, stdio: "pipe" });
+      const repoUrl = bareRemote.replace(/\\/g, "/");
+      execSync(`git remote add origin "${repoUrl}"`, { cwd: repo, stdio: "pipe" });
+      execSync("git push -u origin main", { cwd: repo, stdio: "pipe" });
+
+      const worktreeRoot = path.join(repo, "..", ".kanban-worktrees");
+      const staleDir = path.join(worktreeRoot, "runner-broken");
+      fs.mkdirSync(staleDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(staleDir, ".git"),
+        "gitdir: C:/missing/repo/.git/worktrees/runner-broken\n",
+      );
+
+      const wtPath = await ensurePersistentWorktree({
+        runnerId: "broken",
+        repoUrl,
+        baseBranch: "main",
+        worktreeRoot,
+      });
+
+      expect(fs.existsSync(wtPath)).toBe(true);
+      expect(fs.existsSync(staleDir)).toBe(true);
+      expect(() => execSync("git rev-parse --show-toplevel", { cwd: wtPath, stdio: "pipe" })).not.toThrow();
+      expect(fs.existsSync(path.join(wtPath, "README.md"))).toBe(true);
+    }, 40_000);
   });
 });

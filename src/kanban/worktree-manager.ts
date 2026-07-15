@@ -350,6 +350,10 @@ export async function ensurePersistentWorktree(opts: {
   let dir = canonicalDir;
 
   fs.mkdirSync(path.dirname(canonicalDir), { recursive: true });
+  const searchRootForPrune = path.dirname(root);
+  const anchorForPrune = opts.repoUrl
+    ? findLocalCloneForRemote(opts.repoUrl, searchRootForPrune)
+    : null;
 
   if (!fs.existsSync(path.join(canonicalDir, ".git"))) {
     const prefix = `runner-${opts.runnerId}-reprovision-`;
@@ -365,7 +369,19 @@ export async function ensurePersistentWorktree(opts: {
     }
   }
 
-  const isRepo = fs.existsSync(path.join(dir, ".git"));
+  let isRepo = fs.existsSync(path.join(dir, ".git"));
+  if (isRepo) {
+    try {
+      await spawnGit(["rev-parse", "--show-toplevel"], dir);
+    } catch (err) {
+      if (!opts.repoUrl) {
+        throw err;
+      }
+      await removeStaleWorkspaceDir(dir, anchorForPrune);
+      isRepo = false;
+      dir = canonicalDir;
+    }
+  }
   if (!isRepo) {
     if (!opts.repoUrl) {
       throw new Error(
@@ -380,10 +396,6 @@ export async function ensurePersistentWorktree(opts: {
     // here makes provisioning self-heal across runner deletes,
     // file-system cleanups, and disk migrations without forcing the
     // operator to `git worktree prune` by hand.
-    const searchRootForPrune = path.dirname(root);
-    const anchorForPrune = opts.repoUrl
-      ? findLocalCloneForRemote(opts.repoUrl, searchRootForPrune)
-      : null;
     if (anchorForPrune) {
       try {
         await spawnGit(["worktree", "prune"], anchorForPrune);
