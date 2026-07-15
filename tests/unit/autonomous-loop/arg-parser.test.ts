@@ -23,6 +23,14 @@ describe("aicoder arg parser provider aliases", () => {
     expect(parser.MODEL).toBe("kimi-k2.6:cloud");
   });
 
+  it("infers Ollama routing from GLM cloud model names", async () => {
+    const parser = await loadArgParser(["--model", "glm-5.2:cloud"]);
+
+    expect(parser.USE_OLLAMA).toBe(true);
+    expect(parser.API_PROVIDER).toBeNull();
+    expect(parser.MODEL).toBe("glm-5.2:cloud");
+  });
+
   it("treats --provider zai as --api zai", async () => {
     const parser = await loadArgParser(["--provider", "zai", "--model", "glm-5.1"]);
 

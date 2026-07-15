@@ -157,10 +157,26 @@ if (ARGV.provider && CLI_PROVIDER !== CLI_PROVIDER_RAW) {
 if (CLI_PROVIDER && CLI_PROVIDER !== "opencode" && CLI_PROVIDER !== "zai" && CLI_PROVIDER !== "ollama") {
   console.warn(`[aicoder] Unknown provider "${CLI_PROVIDER}" — expected opencode, zai, or ollama`);
 }
-export const USE_OLLAMA = "ollama" in ARGV || CLI_PROVIDER === "ollama";
 export const API_PROVIDER = (
   ARGV.api || (CLI_PROVIDER === "opencode" || CLI_PROVIDER === "zai" ? CLI_PROVIDER : null)
 ) as "opencode" | "zai" | null;
+
+export function isOllamaModelName(model: string | undefined): boolean {
+  const normalized = (model || "").trim().toLowerCase();
+  return (
+    normalized.endsWith(":cloud") ||
+    normalized.startsWith("glm-") ||
+    normalized.startsWith("qwen") ||
+    normalized.startsWith("llama") ||
+    normalized.startsWith("mistral")
+  );
+}
+
+const REQUESTED_MODEL = ARGV.model || process.env.AICODER_MODEL || "";
+export const USE_OLLAMA =
+  "ollama" in ARGV ||
+  CLI_PROVIDER === "ollama" ||
+  (!API_PROVIDER && isOllamaModelName(REQUESTED_MODEL));
 export const DEBUG = "debug" in ARGV || process.env.AICODER_DEBUG === "true";
 export const ENABLE_BASELINE = "enable-baseline" in ARGV || process.env.AICODER_ENABLE_BASELINE === "true";
 export const SKIP_AGENT = "skip-agent" in ARGV || process.env.AICODER_SKIP_AGENT === "true";

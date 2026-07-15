@@ -1,5 +1,7 @@
+// @vitest-environment jsdom
+
 import { describe, it, expect } from "vitest";
-import { renderMarkdown, sanitizeUrl } from "../../../web/js/markdown.js";
+import { renderMarkdown, sanitizeRenderedHtml, sanitizeUrl } from "../../../web/js/markdown.js";
 
 describe("renderMarkdown — XSS sanitization", () => {
   it("escapes raw SVG injection attempts instead of emitting a real <svg> element", () => {
@@ -119,6 +121,36 @@ describe("renderMarkdown — XSS sanitization", () => {
     expect(html).toContain("<code>code</code>");
     expect(html).toContain("<li>one</li>");
     expect(html).toContain("<li>two</li>");
+  });
+
+  it("preserves mermaid diagram containers through DOMPurify", () => {
+    const html = renderMarkdown("```mermaid\ngraph TD\nA-->B\n```");
+    expect(html).toContain('class="mermaid-diagram"');
+    expect(html).toContain('class="mermaid"');
+    expect(html).toContain("<div");
+    // Inner diagram text survives as inert text content of the mermaid div.
+    expect(html).toContain("graph TD");
+    expect(html).toContain("A--&gt;B");
+  });
+
+  it("DOMPurify drops any real <img>/<svg> element that slips past the escape pass", () => {
+    // Escape pass converts these to inert text, so no real tag exists in the
+    // pre-DOMPurify HTML. The assertion guards a future regression where a
+    // transform accidentally reintroduces a raw tag: DOMPurify must still
+    // strip it because img/svg are not on the allowlist.
+    const html = renderMarkdown("<img src=x onerror=alert(1)>");
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<svg");
+  });
+
+  it("DOMPurify strips on* attributes from any surviving tag", () => {
+    const html = sanitizeRenderedHtml('<p onclick="alert(1)" data-x="bad">ok</p>');
+    expect(html).toBe("<p>ok</p>");
+  });
+
+  it("DOMPurify drops disallowed elements from synthesized renderer HTML", () => {
+    const html = sanitizeRenderedHtml('<p>ok</p><svg onload="alert(1)"></svg><img src=x>');
+    expect(html).toBe("<p>ok</p>");
   });
 });
 

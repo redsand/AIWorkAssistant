@@ -1,7 +1,35 @@
 import { escapeAttr } from "./utils.js";
+import DOMPurify from "./vendor/purify.js";
 
 const ALLOWED_URL_SCHEME = /^(https?:|mailto:|tel:)/i;
 const SCHEME_PATTERN = /^[a-z][a-zA-Z0-9+.-]*:/i;
+
+// Tags that renderMarkdown legitimately produces. DOMPurify is the
+// authoritative gate — anything not in this set is stripped from the
+// post-render HTML, which closes the entire class of mutation-XSS /
+// entity-encoding-bypass / SVG-injection vectors that regex sanitization
+// can't reliably prevent.
+const ALLOWED_TAGS = [
+  "h1", "h2", "h3", "p", "a", "strong", "em", "code", "pre",
+  "ul", "ol", "li", "blockquote", "hr",
+  "table", "thead", "tbody", "tr", "th", "td",
+  "div", "span",
+];
+const ALLOWED_ATTR = ["href", "target", "rel", "class"];
+// Primary URI filter. sanitizeUrl still runs first as a secondary check,
+// but DOMPurify's regex is authoritative. Allows http(s)/mailto/tel
+// schemes plus relative URLs (#anchor, /root, ./, ../). Blocks
+// javascript:, data:, vbscript:, etc.
+const ALLOWED_URI_REGEXP = /^(?:(?:https?|mailto|tel):|#|\.?\.?\/)/i;
+
+export function sanitizeRenderedHtml(html) {
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS,
+    ALLOWED_ATTR,
+    ALLOWED_URI_REGEXP,
+    ALLOW_DATA_ATTR: false,
+  });
+}
 
 // Decodes one layer of HTML entities (named + numeric decimal + numeric
 // hex). Used in a loop by sanitizeUrl so multiply-encoded scheme bypasses
@@ -182,5 +210,11 @@ export function renderMarkdown(text) {
   html = html.replace(/<p>(<blockquote>)/g, "$1");
   html = html.replace(/(<\/blockquote>)<\/p>/g, "$1");
 
-  return html;
+  // Defense in depth: parse the rendered HTML through DOMPurify before
+  // returning. The up-front escapeAttr pass + sanitizeUrl already block
+  // the known XSS vectors, but DOMPurify walks a real DOM tree and strips
+  // anything outside the allowlist, so any future regex transform that
+  // accidentally introduces an unexpected tag or attribute is neutralized
+  // here rather than reaching innerHTML.
+  return sanitizeRenderedHtml(html);
 }

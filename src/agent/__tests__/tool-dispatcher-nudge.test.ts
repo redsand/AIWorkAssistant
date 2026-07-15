@@ -709,6 +709,22 @@ describe("Tool Dispatcher - Counter & Nudge", () => {
       expect(result.error).toContain("cannot be used to call external APIs");
       expect(result.error).toContain("tenable.*");
     });
+
+    it("nudges away from Unix head/tail commands on Windows", async () => {
+      const result = await dispatchToolCall(
+        "system.exec",
+        { command: "npx tsc --noEmit 2>&1 | head -30" },
+        TEST_USER,
+        true,
+      );
+
+      if (process.platform === "win32") {
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("Get-Content");
+      } else {
+        expect(result.success).toBeDefined();
+      }
+    });
   });
 
   // ── Repeated-failure guardrail ─────────────────────────────────────────

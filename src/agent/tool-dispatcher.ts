@@ -3383,6 +3383,14 @@ async function handleSystemExec(
     }
   }
 
+  if (process.platform === "win32" && /(?:^|[|&]\s*)(head|tail)(?:\s|$)/.test(command)) {
+    return {
+      success: false,
+      error:
+        "This server runs on Windows, where head/tail are not available. Use PowerShell equivalents such as `Get-Content <path> -TotalCount 30` or `Get-Content <path> -Tail 30`.",
+    };
+  }
+
   // Block attempts to use system.exec as a bypass for APIs that already have
   // dedicated tools. The dedicated tools use the server's configured credentials
   // and handle pagination; shell calls will typically fail on missing creds.

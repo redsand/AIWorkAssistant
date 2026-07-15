@@ -99,6 +99,7 @@ import {
   fetchWork as _fetchWork,
   generatePrompt as _generatePrompt,
 } from "./aicoder/work-source";
+import { normalizeGithubRepoConfig } from "./aicoder/repo-config";
 import {
   fixBaselineTests as _fixBaselineTests,
   fixCoverageGap as _fixCoverageGap,
@@ -288,11 +289,17 @@ function loadServerConfig(): ServerConfig {
     process.exit(1);
   }
 
+  const normalizedRepo = normalizeGithubRepoConfig({
+    source: SOURCE,
+    owner: ARGV.owner || process.env.AICODER_OWNER || "",
+    repo: ARGV.repo || process.env.AICODER_REPO || "",
+  });
+
   return {
     apiUrl,
     apiKey,
-    owner: ARGV.owner || process.env.AICODER_OWNER || "",
-    repo: ARGV.repo || process.env.AICODER_REPO || "",
+    owner: normalizedRepo.owner,
+    repo: normalizedRepo.repo,
     source: SOURCE,
   };
 }
