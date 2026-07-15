@@ -152,6 +152,69 @@ describe("renderMarkdown — XSS sanitization", () => {
     const html = sanitizeRenderedHtml('<p>ok</p><svg onload="alert(1)"></svg><img src=x>');
     expect(html).toBe("<p>ok</p>");
   });
+
+  it("neutralizes nested <template> mutation-XSS payloads", () => {
+    // Nested <template> content lives in an inert document fragment; a
+    // naive single-pass sanitizer can miss an <img>/onerror smuggled inside
+    // the inner template. DOMPurify's clobber-aware walk must still remove it.
+    const html = sanitizeRenderedHtml(
+      "<template><template><img src=x onerror=alert(1)></template></template>",
+    );
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<template");
+    expect(html).not.toContain("onerror");
+  });
+
+  it("neutralizes SVG/style namespace-confusion mutation-XSS payload", () => {
+    // Classic mXSS regression: browsers parse <style> content specially
+    // inside foreign (SVG) content, which can cause a serialize/reparse
+    // cycle to "mutate" inert text into a live <img onerror> element.
+    const html = sanitizeRenderedHtml(
+      '<svg><p><style><g title="</style><img src=x onerror=alert(1)>"></p></svg>',
+    );
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<style");
+    expect(html).not.toContain("onerror");
+  });
+
+  it("neutralizes MathML namespace-confusion payloads that try to smuggle a real <script>", () => {
+    // <mtext>/<math> foreign-content boundaries have historically let
+    // attackers bounce back into the HTML namespace and resurrect a real
+    // <script> element after serialization. Nothing script-like may survive.
+    const html = sanitizeRenderedHtml(
+      "<math><mtext></mtext><script>alert(1)</script></math>",
+    );
+    expect(html).not.toContain("<script");
+    expect(html).not.toContain("alert(1)");
+  });
+
+  it("neutralizes <select><style> mutation-XSS payloads", () => {
+    const html = sanitizeRenderedHtml(
+      "<select><style></select><img src=x onerror=alert(1)></style>",
+    );
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("onerror");
+  });
+
+  it("blocks data: URIs in href via DOMPurify's ALLOWED_URI_REGEXP even without sanitizeUrl", () => {
+    // sanitizeUrl() is only invoked for links renderMarkdown itself
+    // generates. sanitizeRenderedHtml() is called on the fully assembled
+    // HTML (including any raw <a href> that slipped through upstream), so
+    // the DOMPurify ALLOWED_URI_REGEXP must independently reject data: URIs.
+    const html = sanitizeRenderedHtml(
+      '<a href="data:text/html,<script>alert(1)</script>">click</a>',
+    );
+    expect(html).not.toContain("href=");
+    expect(html).not.toContain("data:");
+    expect(html).not.toContain("<script");
+    expect(html).toContain("click");
+  });
+
+  it("blocks data: URIs in href produced through renderMarkdown's own link syntax", () => {
+    const html = renderMarkdown("[click me](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)");
+    expect(html).not.toContain("href=\"data:");
+    expect(html).toContain('href="#"');
+  });
 });
 
 describe("sanitizeUrl", () => {
