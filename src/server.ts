@@ -111,6 +111,8 @@ export async function buildServer() {
       try {
         done(null, JSON.parse(body as string));
       } catch (err) {
+        // Malformed JSON is a client error, not a server fault
+        (err as Error & { statusCode: number }).statusCode = 400;
         done(err as Error, undefined);
       }
     },
