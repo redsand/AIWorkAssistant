@@ -57,7 +57,52 @@
   padding: 3px 9px;
   border-radius: 10px;
   white-space: nowrap;
-  cursor: default;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ingestion-popover {
+  position: fixed;
+  z-index: 1000;
+  min-width: 260px;
+  max-width: 340px;
+  background: #fff;
+  color: #333;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.ingestion-popover-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.ingestion-popover-status {
+  margin-bottom: 8px;
+  color: #555;
+}
+
+.ingestion-popover-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+.ingestion-popover-errors {
+  color: #991b1b;
+  font-weight: 600;
+}
+
+.ingestion-popover-meta {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid #eee;
+  color: #999;
+  font-size: 12px;
 }
 
 .ingestion-badge-warming {

@@ -250,12 +250,6 @@ export async function deleteConversation(sessionId) {
 }
 
 async function performDeleteConversation(sessionId) {
-  // Abort any active stream if deleting the current session
-  if (activeStreamController) {
-    activeStreamController.abort();
-    setActiveStreamController(null);
-  }
-
   try {
     await fetch(`${API_BASE}/chat/sessions/${sessionId}`, {
       method: "DELETE",
@@ -264,6 +258,13 @@ async function performDeleteConversation(sessionId) {
   } catch {}
 
   if (currentSessionId === sessionId) {
+    // Abort the active stream only when deleting the session it belongs to —
+    // deleting another conversation must not disturb the running chat.
+    if (activeStreamController) {
+      activeStreamController.abort();
+      setActiveStreamController(null);
+    }
+
     setCurrentSessionId(null);
     localStorage.removeItem("currentSessionId");
 
