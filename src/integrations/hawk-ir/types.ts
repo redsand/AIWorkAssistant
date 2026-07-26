@@ -1,8 +1,17 @@
 // === Case Types ===
 
-export type CaseRiskLevel = "low" | "medium" | "moderate" | "high" | "critical" | "informational";
-export type CaseProgressStatus = "new" | "open" | "in_progress" | "closed" | "resolved";
+export type CaseRiskLevel = "low" | "medium" | "moderate" | "high" | "critical" | "informational" | "unknown";
+export type CaseProgressStatus = "new" | "pending" | "open" | "in_progress" | "closed" | "resolved";
 
+/**
+ * Canonical (normalized) case shape used throughout the app.
+ *
+ * The HAWK IR API returns snake_case records (`@rid`, `risk_level`,
+ * `progress_status`, `first_seen`, …) wrapped in `{ data, pagination }`.
+ * The client normalizes each record into this camelCase shape via
+ * `normalizeHawkCase`; the raw snake_case fields are preserved on the
+ * object through the index signature so nothing is lost.
+ */
 export interface HawkCase {
   rid: string;
   name: string;
@@ -19,18 +28,34 @@ export interface HawkCase {
   escalationTimestamp: string | null;
   firstSeen: string;
   lastSeen: string;
+  dateCreated: string | null;
   ipSrcs: string[];
   ipDsts: string[];
   alertNames: string[];
   analytics: any[];
+  assets: string[];
+  users: string[];
+  mitre: string[];
+  tags: string[];
+  avgScore: number | null;
+  blockedCount: number | null;
   summary: string | null;
   rootCause: string | null;
   feedback: string | null;
   feedbackDetails: string | null;
   actions: any[];
-  notes: any[];
+  notes: HawkCaseNote[];
+  /** Empty in list responses (the API returns events: null there); populated on case detail. */
   events: HawkCaseEvent[];
   linkedCount: number;
+  [key: string]: unknown;
+}
+
+export interface HawkCaseNote {
+  note: string;
+  owner: string | null;
+  owner_name?: string;
+  timestamp?: string;
   [key: string]: unknown;
 }
 
@@ -44,6 +69,14 @@ export interface HawkCaseEvent {
   blocked: boolean;
   eventId: string;
   [key: string]: unknown;
+}
+
+/** Pagination envelope returned by list endpoints: `{ data, pagination }`. */
+export interface HawkCasesPagination {
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
 }
 
 export interface HawkCaseSummary {

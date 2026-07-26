@@ -487,7 +487,7 @@ class CtoDailyCommandCenter {
   }
 
   private irCaseLabel(c: any): string {
-    const rid = c["@rid"] || c.rid || "?";
+    const rid = String(c.rid || c["@rid"] || "?").replace(/^#/, "");
     const name = c.name || "(unnamed)";
     const risk = c.riskLevel || c["risk_level"] || "unknown";
     const status = c.progressStatus || c["progress_status"] || "unknown";

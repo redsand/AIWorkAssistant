@@ -5,10 +5,10 @@ vi.mock("../../../src/integrations/hawk-ir/hawk-ir-service", () => ({
     isConfigured: vi.fn().mockReturnValue(true),
     getRiskyOpenCases: vi.fn().mockResolvedValue([
       {
-        id: "CASE-999",
+        rid: "999:1",
         name: "Unauthorized access detected",
         riskLevel: "critical",
-        progressStatus: "open",
+        progressStatus: "pending",
         escalated: false,
       },
     ]),

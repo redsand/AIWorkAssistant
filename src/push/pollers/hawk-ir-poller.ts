@@ -23,16 +23,17 @@ export class HawkIRPoller {
       return 0;
     }
 
+    // "pending" is the API's initial status for fresh cases (formerly "New").
     const cases = await hawkIrService.getRiskyOpenCases({
       minRiskLevel: this.config.minRiskLevel as any,
-      statuses: ["New"],
+      statuses: ["New", "Pending"],
     });
-    console.log(`[HAWK IR Poller] Found ${cases.length} case(s) in New status (escalation-eligible)`);
+    console.log(`[HAWK IR Poller] Found ${cases.length} case(s) in New/Pending status (escalation-eligible)`);
 
     let newNotifications = 0;
 
     for (const c of cases) {
-      const caseId = String((c as any)["id"] || (c as any).id || (c as any)["case_id"] || "");
+      const caseId = String(c.rid || (c as any)["@rid"] || (c as any)["case_id"] || "").replace(/^#/, "");
       if (!caseId) continue;
 
       const alreadyNotified = await notificationStore.hasBeenNotified("hawk-ir", caseId);

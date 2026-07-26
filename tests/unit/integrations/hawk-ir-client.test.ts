@@ -195,16 +195,26 @@ describe("HawkIrClient", () => {
       });
 
       const mockCases = [
-        { rid: "1", name: "Incident A", riskLevel: "high" },
-        { rid: "2", name: "Incident B", riskLevel: "low" },
+        { "@rid": "#1:1", name: "Incident A", risk_level: "High" },
+        { "@rid": "#1:2", name: "Incident B", risk_level: "Low" },
       ];
       mockGet.mockResolvedValueOnce({ data: mockCases });
 
       const cases = await client.getCases();
-      expect(cases).toEqual(mockCases);
+      expect(cases).toHaveLength(2);
+      // Records are normalized: snake_case wire fields → canonical camelCase
+      expect(cases[0]).toMatchObject({ rid: "1:1", name: "Incident A", riskLevel: "high" });
+      expect(cases[1]).toMatchObject({ rid: "1:2", name: "Incident B", riskLevel: "low" });
+      // Ranges are always fetched with explicit windowed date params + limit
       expect(mockGet).toHaveBeenCalledWith(
         "/api/cases",
-        expect.objectContaining({ params: {} }),
+        expect.objectContaining({
+          params: expect.objectContaining({
+            start_date: expect.any(String),
+            stop_date: expect.any(String),
+            limit: expect.any(Number),
+          }),
+        }),
       );
     });
 
@@ -216,11 +226,12 @@ describe("HawkIrClient", () => {
         headers: { "set-cookie": ["hawk_session=s2; Path=/"] },
       });
 
-      const mockCases = [{ rid: "3", name: "Incident C" }];
+      const mockCases = [{ "@rid": "#3:1", name: "Incident C" }];
       mockGet.mockResolvedValueOnce({ data: { data: mockCases } });
 
       const cases = await client.getCases();
-      expect(cases).toEqual(mockCases);
+      expect(cases).toHaveLength(1);
+      expect(cases[0]).toMatchObject({ rid: "3:1", name: "Incident C" });
     });
 
     it("getCase strips leading # from caseId", async () => {

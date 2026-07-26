@@ -3,6 +3,7 @@ import WebSocket from "ws";
 import { env } from "../../config/env";
 import type {
   HawkCase,
+  HawkCaseEvent,
   HawkCaseSummary,
   HawkCasesParams,
   HawkExploreSearchParams,
@@ -49,6 +50,93 @@ export interface HawkHybridResult {
 }
 
 const WS_TIMEOUT_MS = 30_000;
+
+/**
+ * /api/cases latency grows steeply with the queried range (~3s for 1 day,
+ * ~2min for 10 days), so ranges are fetched in windows of at most this many
+ * milliseconds, newest first, stopping once the requested limit is filled.
+ */
+const CASES_WINDOW_MS = 24 * 60 * 60 * 1000;
+const CASES_DEFAULT_LIMIT = 100;
+
+function coerceBoolean(raw: unknown): boolean {
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "string") return raw.toLowerCase() === "true" || raw === "1";
+  if (typeof raw === "number") return raw !== 0;
+  return false;
+}
+
+function normalizeHawkCaseEvent(raw: any): HawkCaseEvent {
+  if (!raw || typeof raw !== "object") return raw;
+  return {
+    ...raw,
+    dateAdded: raw.date_added ?? raw.dateAdded ?? "",
+    priority: Number(raw.priority ?? 0),
+    weight: Number(raw.weight ?? 0),
+    alertName: raw.alert_name ?? raw.alertName ?? "",
+    alertsTypeName: raw.alerts_type_name ?? raw.alertsTypeName ?? "",
+    count: Number(raw.count ?? 0),
+    blocked: coerceBoolean(raw.blocked),
+    eventId: raw.event_id ?? raw.eventId ?? "",
+  };
+}
+
+/**
+ * Maps a raw HAWK IR case record (snake_case, OrientDB-style `@rid`) to the
+ * canonical camelCase {@link HawkCase}. Raw fields are preserved via spread.
+ * Accepts legacy camelCase records too, so it is safe on either wire shape.
+ */
+export function normalizeHawkCase(raw: any): HawkCase {
+  if (!raw || typeof raw !== "object") return raw;
+  const rid = String(raw["@rid"] ?? raw.rid ?? "").replace(/^#/, "");
+  const riskLevel = String(raw.risk_level ?? raw.riskLevel ?? "low").toLowerCase() as HawkCase["riskLevel"];
+  const progressStatus = String(raw.progress_status ?? raw.progressStatus ?? "new")
+    .toLowerCase()
+    .replace(/\s+/g, "_") as HawkCase["progressStatus"];
+  return {
+    ...raw,
+    rid,
+    name: raw.name ?? "",
+    groupId: raw.group_id ?? raw.groupId ?? "",
+    riskLevel,
+    progressStatus,
+    category: raw.category ?? null,
+    owner: raw.owner ?? null,
+    ownerName: raw.owner_name ?? raw.ownerName ?? (typeof raw.owner === "string" ? raw.owner : null),
+    escalated: coerceBoolean(raw.escalated),
+    escalationTicket: raw.escalation_ticket ?? raw.escalationTicket ?? null,
+    escalationModule: raw.escalation_module ?? raw.escalationModule ?? null,
+    escalationId: raw.escalation_id ?? raw.escalationId ?? null,
+    escalationTimestamp: raw.escalation_timestamp ?? raw.escalationTimestamp ?? null,
+    firstSeen: raw.first_seen ?? raw.firstSeen ?? "",
+    lastSeen: raw.last_seen ?? raw.lastSeen ?? "",
+    dateCreated: raw.date_created ?? raw.dateCreated ?? null,
+    ipSrcs: raw.ip_srcs ?? raw.ipSrcs ?? [],
+    ipDsts: raw.ip_dsts ?? raw.ipDsts ?? [],
+    alertNames: raw.alert_names ?? raw.alertNames ?? [],
+    analytics: raw.analytics ?? [],
+    assets: raw.assets ?? [],
+    users: raw.users ?? [],
+    mitre: raw.mitre ?? [],
+    tags: raw.tags ?? [],
+    avgScore: raw.avg_score ?? raw.avgScore ?? null,
+    blockedCount: raw.blocked_count ?? raw.blockedCount ?? null,
+    summary: raw.summary ?? null,
+    rootCause: raw.root_cause ?? raw.rootCause ?? null,
+    feedback: raw.feedback ?? null,
+    feedbackDetails: raw.feedback_details ?? raw.feedbackDetails ?? null,
+    actions: raw.actions ?? [],
+    notes: raw.notes ?? [],
+    events: Array.isArray(raw.events) ? raw.events.map(normalizeHawkCaseEvent) : [],
+    linkedCount: Number(raw.linked_count ?? raw.linkedCount ?? 0),
+  };
+}
+
+function unwrapData<T>(result: any): T {
+  return result && typeof result === "object" && !Array.isArray(result) && "data" in result
+    ? result.data
+    : result;
+}
 
 export class HawkIrClient {
   private http: AxiosInstance;
@@ -263,27 +351,59 @@ export class HawkIrClient {
 
   // === Cases (REST) ===
 
+  /**
+   * Fetches cases for a date range by querying the API in windows of at most
+   * one day, newest first, until the requested limit (+ offset) is filled.
+   * Wide single requests are not viable: /api/cases latency scales with the
+   * range (~2min for 10 days) and exceeds the HTTP timeout.
+   */
   async getCases(params: HawkCasesParams = {}): Promise<HawkCase[]> {
-    const q: Record<string, unknown> = {};
-    if (params.startDate) q.start_date = params.startDate;
-    if (params.stopDate) q.stop_date = params.stopDate;
-    if (params.groupId) q.group_id = params.groupId;
-    if (params.limit !== undefined) q.limit = params.limit;
-    if (params.offset !== undefined) q.offset = params.offset;
-    const result = await this.httpGet<HawkCase[] | { data: HawkCase[] }>("/api/cases", q);
-    return Array.isArray(result) ? result : (result as any).data ?? [];
+    const limit = params.limit ?? CASES_DEFAULT_LIMIT;
+    const offset = params.offset ?? 0;
+    const wanted = offset + limit;
+    const stop = params.stopDate ? new Date(params.stopDate) : new Date();
+    const start = params.startDate ? new Date(params.startDate) : new Date(stop.getTime() - CASES_WINDOW_MS);
+
+    const collected: HawkCase[] = [];
+    const seen = new Set<string>();
+    let windowEnd = stop;
+
+    while (windowEnd > start && collected.length < wanted) {
+      const windowStart = new Date(Math.max(start.getTime(), windowEnd.getTime() - CASES_WINDOW_MS));
+      const q: Record<string, unknown> = {
+        start_date: windowStart.toISOString(),
+        stop_date: windowEnd.toISOString(),
+        limit: wanted - collected.length,
+      };
+      if (params.groupId) q.group_id = params.groupId;
+
+      const result = await this.httpGet<{ data: any[] } | any[]>("/api/cases", q);
+      const rows = unwrapData<any[]>(result);
+      for (const row of Array.isArray(rows) ? rows : []) {
+        const normalized = normalizeHawkCase(row);
+        if (normalized.rid && seen.has(normalized.rid)) continue;
+        if (normalized.rid) seen.add(normalized.rid);
+        collected.push(normalized);
+      }
+      windowEnd = windowStart;
+    }
+
+    return collected.slice(offset, offset + limit);
   }
 
   async getCase(caseId: string): Promise<HawkCase | null> {
     const id = caseId.replace(/^#/, "");
-    const result = await this.httpGet<HawkCase | HawkCase[]>(`/api/case/${id}`);
-    return Array.isArray(result) ? (result[0] ?? null) : (result ?? null);
+    const result = await this.httpGet<any>(`/api/case/${id}`);
+    const data = unwrapData<any>(result);
+    const row = Array.isArray(data) ? (data[0] ?? null) : (data ?? null);
+    return row ? normalizeHawkCase(row) : null;
   }
 
   async getCaseSummary(caseId: string): Promise<HawkCaseSummary | null> {
     const id = caseId.replace(/^#/, "");
-    const result = await this.httpGet<HawkCaseSummary | HawkCaseSummary[]>(`/api/case/${id}/summary`);
-    return Array.isArray(result) ? (result[0] ?? null) : (result ?? null);
+    const result = await this.httpGet<any>(`/api/case/${id}/summary`);
+    const data = unwrapData<any>(result);
+    return Array.isArray(data) ? (data[0] ?? null) : (data ?? null);
   }
 
   async getCaseCount(): Promise<number> {

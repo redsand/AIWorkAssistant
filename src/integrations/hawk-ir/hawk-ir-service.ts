@@ -25,7 +25,7 @@ import type {
   CreateCaseResponse,
 } from "./types";
 
-const riskPriority: Record<string, number> = { low: 1, medium: 2, moderate: 2, high: 3, critical: 4, informational: 0 };
+const riskPriority: Record<string, number> = { low: 1, medium: 2, moderate: 2, high: 3, critical: 4, informational: 0, unknown: 0 };
 
 function isEscalated(c: HawkCase | any): boolean {
   const raw = c.escalated ?? c["escalated"];
@@ -236,9 +236,10 @@ export class HawkIrService {
   }
 
   async updateCaseStatus(caseId: string, status: string): Promise<any> {
-    const validStatuses = ["New", "Open", "In Progress", "Closed", "Resolved"];
+    const validStatuses = ["New", "Pending", "Open", "In Progress", "Closed", "Resolved"];
     const statusMap: Record<string, string> = {
       new: "New",
+      pending: "Pending",
       open: "Open",
       in_progress: "In Progress",
       inprogress: "In Progress",
@@ -677,7 +678,7 @@ export class HawkIrService {
   // === Formatting ===
 
   formatCaseLabel(c: HawkCase | any): string {
-    const rid = c["@rid"] || c.rid || "?";
+    const rid = String(c.rid || c["@rid"] || "?").replace(/^#/, "");
     const name = c.name || "(unnamed)";
     const risk = c.riskLevel || c["risk_level"] || "unknown";
     const status = c.progressStatus || c["progress_status"] || "unknown";
