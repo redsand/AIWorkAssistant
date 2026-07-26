@@ -3,7 +3,7 @@ import fs from "fs";
 import { createRequire } from "module";
 import path from "path";
 
-const require = createRequire(__filename);
+const nodeRequire = createRequire(__filename);
 
 export interface GitRuntimeMetadata {
   repoRoot: string | null;
@@ -101,7 +101,7 @@ export function getInstalledPackageRuntimeMetadata(
   packageName: string,
 ): RuntimePackageMetadata {
   try {
-    const entryPath = require.resolve(packageName);
+    const entryPath = nodeRequire.resolve(packageName);
     const packageRoot = findPackageRoot(fs.realpathSync(entryPath));
     const packageJson = packageRoot
       ? readPackageJson(path.join(packageRoot, "package.json"))
