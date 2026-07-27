@@ -138,13 +138,13 @@ class EmbeddingService {
 
     // Local Ollama is the last-resort fallback — it's always reachable and any
     // loaded model can generate embeddings via /api/embed.
-    this.ollamaFallbackModel = env.EMBEDDING_OLLAMA_FALLBACK_MODEL || "nomic-embed-text";
+    this.ollamaFallbackModel = env.EMBEDDING_OLLAMA_FALLBACK_MODEL || "bge-m3";
 
     switch (this.provider) {
       case "ollama":
         this.baseUrl = env.OLLAMA_API_URL;
         this.apiKey = env.OLLAMA_API_KEY;
-        if (!this.model) this.model = "nomic-embed-text";
+        if (!this.model) this.model = "bge-m3";
         break;
       case "zai":
         this.baseUrl = env.ZAI_API_URL;
