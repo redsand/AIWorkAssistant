@@ -65,15 +65,21 @@ function renderPopover() {
   }
 
   const s = lastSnapshot;
-  const status = s.failed
-    ? "⚠️ Ingestion failed — see server log"
-    : s.isReady
-      ? "✅ Ready"
-      : "🔄 Warming up (cold-start ingestion)";
+  const status = s.disabled
+    ? "⏸️ Disabled"
+    : s.failed
+      ? "⚠️ Ingestion failed — see server log"
+      : s.isReady
+        ? "✅ Ready"
+        : "🔄 Warming up (cold-start ingestion)";
+  const reason = s.reason
+    ? `<div class="ingestion-popover-status">${s.reason}</div>`
+    : "";
   const phases = (s.phases || []).map(phaseRow).join("");
   const duration = fmtDuration(s.durationMs);
   pop.innerHTML = `<div class="ingestion-popover-title">Knowledge graph status</div>
     <div class="ingestion-popover-status">${status}</div>
+    ${reason}
     ${phases || '<div class="ingestion-popover-row">No phases reported yet.</div>'}
     <div class="ingestion-popover-meta">Started ${fmtTime(s.startedAt)}${duration ? ` · took ${duration}` : ""}</div>`;
 }

@@ -11,6 +11,8 @@ import { jitbitClient } from "../integrations/jitbit/jitbit-client";
 import { aiRequestLimiter } from "../agent/providers/ai-request-limiter";
 import { providerCircuitBreaker } from "../agent/providers/circuit-breaker";
 import { ingestionStatusTracker } from "../context-engine/claimkit-ingestion";
+import { claimKitAdapter } from "../context-engine/adapters/claimkit-adapter";
+import { env } from "../config/env";
 
 function getGitMetadata(): { commit: string | null; dirty: boolean } {
   try {
@@ -83,7 +85,30 @@ export async function healthRoutes(fastify: FastifyInstance) {
    * and start/end timestamps.
    */
   fastify.get("/health/ingestion", async () => {
-    return ingestionStatusTracker.snapshot();
+    const snap = ingestionStatusTracker.snapshot();
+
+    // Ingestion only runs when ClaimKit is enabled and initialized. Without
+    // these guards the snapshot stays { startedAt: null, isReady: false }
+    // forever and the UI badge spins in "warming up" indefinitely.
+    if (!env.CLAIMKIT_ENABLED) {
+      return {
+        ...snap,
+        isReady: true,
+        disabled: true,
+        reason: "Knowledge graph is disabled (CLAIMKIT_ENABLED=false).",
+      };
+    }
+    if (snap.startedAt === null) {
+      const initError = claimKitAdapter.getInitError();
+      if (initError) {
+        return {
+          ...snap,
+          failed: true,
+          reason: `ClaimKit failed to initialize: ${initError}`,
+        };
+      }
+    }
+    return snap;
   });
 
   /**
