@@ -131,10 +131,16 @@ class ApprovalQueue {
     });
 
     try {
+      // skipPolicyCheck=true: this action was already approved above. Without
+      // this, dispatchToolCall re-runs the policy engine, which re-flags the
+      // same medium/high-risk action as approval_required and enqueues a NEW
+      // approval instead of executing — an infinite approval loop (observed
+      // 2026-08-11: hawk_ir.create_case approved 5x in a row, never executed).
       const result = await dispatchToolCall(
         approval.action.type,
         approval.action.params,
         approval.action.userId,
+        true,
       );
       approval.status = "executed";
       approval.executionResult = {

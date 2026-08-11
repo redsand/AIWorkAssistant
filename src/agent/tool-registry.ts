@@ -5528,7 +5528,14 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
   {
     name: "hawk_ir.search_logs",
     description:
-      "Search HAWK IR logs/explore data with query and optional filters (index, date range, pagination).",
+      "Search HAWK IR logs/explore data with query and optional filters (index, date range, pagination). " +
+      "IMPORTANT: omitting `index` frequently returns a 500 error rather than a useful result — call " +
+      "hawk_ir.get_available_indexes first and always pass an explicit index. When investigating a specific " +
+      "identity (email, UPN, object/GUID, hostname), do NOT rely only on typed/alert-name searches (e.g. a " +
+      "specific alert like 'TeamsImpersonationDetected') — those only catch events that happened to trigger " +
+      "that alert. Instead search the raw identity string (and any associated object ID/GUID) directly against " +
+      "the payload of each index to find every related event regardless of alert type; only then can you claim " +
+      "the result set is comprehensive.",
     params: {
       query: {
         type: "string",
@@ -5537,7 +5544,7 @@ const PRODUCTIVITY_TOOLS: Tool[] = [
       },
       index: {
         type: "string",
-        description: "Log index to search",
+        description: "Log index to search — in practice required; call hawk_ir.get_available_indexes first and pass it explicitly to avoid 500 errors.",
         required: false,
       },
       from: {
