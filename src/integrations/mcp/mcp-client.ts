@@ -301,14 +301,25 @@ export class MCPClient extends EventEmitter {
    * Resolve a tool by its prefixed name (`{server}.{tool}`) first, then fall
    * back to a bare tool name for backward compatibility with callers that
    * don't know the prefix.
+   *
+   * The bare-name fallback is only honored when it is UNAMBIGUOUS. If two
+   * servers expose the same bare tool name, a bare lookup can't tell them
+   * apart, so we refuse to guess and return undefined — callers must use the
+   * prefixed name to disambiguate. Returning an arbitrary (Map insertion
+   * order) match would route calls nondeterministically to the wrong server.
    */
   private resolveTool(toolName: string): ToolEntry | undefined {
     const direct = this.tools.get(toolName);
     if (direct) return direct;
+
+    let match: ToolEntry | undefined;
     for (const entry of this.tools.values()) {
-      if (entry.originalName === toolName) return entry;
+      if (entry.originalName === toolName) {
+        if (match) return undefined; // ambiguous bare name across servers
+        match = entry;
+      }
     }
-    return undefined;
+    return match;
   }
 
   /** Connect a registered server and register its (prefixed) tools. */

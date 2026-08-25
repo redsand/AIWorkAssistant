@@ -99,6 +99,15 @@ export class McpServerManager {
   private watcher: fs.FSWatcher | undefined;
   private reloadTimer: ReturnType<typeof setTimeout> | undefined;
 
+  /**
+   * Serializes reloads. A reload awaits network I/O (connectServer) that can
+   * far exceed the watch debounce, so a file event can fire a second reload
+   * while the first is still connecting. Chaining every reload onto this
+   * promise guarantees they run one-at-a-time and never mutate `this.current`
+   * from interleaved, stale snapshots.
+   */
+  private reloadChain: Promise<unknown> = Promise.resolve();
+
   constructor(options: McpServerManagerOptions = {}) {
     this.client = options.client ?? mcpClient;
     this.configPath =
@@ -201,6 +210,28 @@ export class McpServerManager {
    * Each operation is isolated so one failure doesn't abort the rest.
    */
   async reloadServers(): Promise<{
+    added: string[];
+    removed: string[];
+    unchanged: string[];
+  }> {
+    // Queue this reload behind any in-flight one. We swallow the predecessor's
+    // result/error (via the `.then(noop, noop)` chain below) purely for
+    // sequencing — the caller still gets this reload's own outcome/rejection.
+    const result = this.reloadChain
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .then(() => this.performReload());
+    this.reloadChain = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  /** The actual diff-and-apply, always invoked serially via reloadServers(). */
+  private async performReload(): Promise<{
     added: string[];
     removed: string[];
     unchanged: string[];

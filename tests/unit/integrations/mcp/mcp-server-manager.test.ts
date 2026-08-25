@@ -301,6 +301,118 @@ describe("reloadServers", () => {
   });
 });
 
+/**
+ * Client whose addServer awaits a real timer before completing, and that
+ * tracks how many addServer calls are in flight at once. This lets a test
+ * launch overlapping reloads and observe whether they were serialized.
+ */
+class SlowClient implements McpConnectionClient {
+  added: MCPServerConfig[] = [];
+  removed: string[] = [];
+  servers: Map<string, MCPServerConfig> = new Map();
+  concurrent = 0;
+  maxConcurrent = 0;
+
+  constructor(private readonly delayMs = 20) {}
+
+  async addServer(config: MCPServerConfig) {
+    this.concurrent++;
+    this.maxConcurrent = Math.max(this.maxConcurrent, this.concurrent);
+    this.added.push(config);
+    // Simulate the network I/O (connect) that can outlast the watch debounce.
+    await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+    this.servers.set(config.name, config);
+    this.concurrent--;
+    return { connected: config.enabled !== false, toolCount: 1 };
+  }
+
+  removeServer(name: string): void {
+    this.removed.push(name);
+    this.servers.delete(name);
+  }
+
+  getServerForTool(): string | undefined {
+    return undefined;
+  }
+
+  getServerStatus(): Record<string, MCPServerStatus> {
+    return {};
+  }
+}
+
+describe("reloadServers concurrency", () => {
+  it("serializes overlapping reloads instead of interleaving them", async () => {
+    writeConfig([{ name: "a", url: "https://a.example/mcp" }]);
+    const client = new SlowClient(20);
+    const { manager } = newManager({ client });
+
+    // Launch two reloads without awaiting the first — mimicking a file event
+    // that fires while an earlier reload is still awaiting connectServer.
+    const [d1, d2] = await Promise.all([
+      manager.reloadServers(),
+      manager.reloadServers(),
+    ]);
+
+    // The guard must prevent both reloads from touching the client at once.
+    expect(client.maxConcurrent).toBe(1);
+    // The second reload sees "a" already applied by the first, so it does not
+    // re-add it: exactly one addServer call, no duplicate registration.
+    expect(client.added.filter((c) => c.name === "a")).toHaveLength(1);
+    expect(manager.listServers()).toEqual(["a"]);
+
+    // Both callers still receive a coherent diff.
+    expect(d1.added).toEqual(["a"]);
+    expect(d2.added).toEqual([]);
+    expect(d2.unchanged).toEqual(["a"]);
+  });
+
+  it("applies a config change made between overlapping reloads exactly once", async () => {
+    writeConfig([{ name: "a", url: "https://a.example/mcp" }]);
+    const client = new SlowClient(60);
+    const { manager } = newManager({ client });
+
+    const first = manager.reloadServers();
+    // Let the first reload get past reading the config and into the (slow)
+    // connect for "a" before we change the file — otherwise it would just read
+    // the already-updated config and there would be nothing to interleave.
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    // Change the config while the first reload is still connecting, then queue
+    // a second reload behind it.
+    writeConfig([{ name: "b", url: "https://b.example/mcp" }]);
+    const second = manager.reloadServers();
+    await Promise.all([first, second]);
+
+    // Never more than one in-flight connection, and the end state reflects the
+    // final config with no stale "a" left behind and no double-add of "b".
+    expect(client.maxConcurrent).toBe(1);
+    expect(client.removed).toContain("a");
+    expect(client.added.filter((c) => c.name === "b")).toHaveLength(1);
+    expect(manager.listServers()).toEqual(["b"]);
+  });
+
+  it("keeps serializing after a reload rejects", async () => {
+    writeConfig([{ name: "a", url: "https://a.example/mcp" }]);
+    const { manager } = newManager();
+    // Force the first reload to reject before it can mutate state.
+    const loadSpy = vi
+      .spyOn(manager, "loadServerConfig")
+      .mockImplementationOnce(() => {
+        throw new Error("read failed");
+      });
+
+    const first = manager.reloadServers();
+    const second = manager.reloadServers();
+
+    // A rejected predecessor must not wedge the chain: the second reload still
+    // runs against the real config and resolves.
+    await expect(first).rejects.toThrow("read failed");
+    const diff = await second;
+    expect(diff.added).toEqual(["a"]);
+    expect(manager.listServers()).toEqual(["a"]);
+    loadSpy.mockRestore();
+  });
+});
+
 describe("getServerForTool / getServerStatus", () => {
   it("delegates tool ownership lookups to the client", () => {
     const client = new FakeClient();
