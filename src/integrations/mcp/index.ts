@@ -1,7 +1,10 @@
-import { mcpClient } from "../mcp/mcp-client";
+import { mcpClient } from "./mcp-client";
+import { mcpServerManager } from "./mcp-server-manager";
 import { env } from "../../config/env";
 
 export function initializeMCP(): void {
+  // Legacy env-var servers — registered directly for backward compatibility.
+
   // Tavily (web search) MCP server
   if (env.TAVILY_API_KEY) {
     mcpClient.registerServer({
@@ -43,6 +46,15 @@ export function initializeMCP(): void {
         err instanceof Error ? err.message : "Unknown error",
       );
     });
+
+  // Dynamic file/env-configured servers — loaded from config/mcp-servers.json
+  // (falling back to MCP_SERVERS) and watched for runtime changes.
+  mcpServerManager.initialize().catch((err) => {
+    console.error(
+      "[MCP] Dynamic server manager failed to initialize:",
+      err instanceof Error ? err.message : "Unknown error",
+    );
+  });
 }
 
-export { mcpClient };
+export { mcpClient, mcpServerManager };

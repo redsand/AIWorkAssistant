@@ -220,6 +220,17 @@ const envSchema = z.object({
     .default("http://localhost:3050/auth/google/callback"),
   GOOGLE_CALENDAR_CALENDAR_ID: z.string().default("primary"),
 
+  // MCP (Model Context Protocol) federation
+  // Path to the JSON file describing external MCP servers. Loaded at startup
+  // and watched for changes at runtime by McpServerManager. When the file does
+  // not exist, MCP_SERVERS (a JSON array string) is used as a fallback so the
+  // feature stays backward compatible with env-only deployments.
+  MCP_SERVERS_CONFIG_PATH: z.string().default("config/mcp-servers.json"),
+  // Fallback inline server config: a JSON array (or { "servers": [...] }) of
+  // { name, url, authToken, enabled } objects. Only consulted when the config
+  // file at MCP_SERVERS_CONFIG_PATH is absent.
+  MCP_SERVERS: z.string().default(""),
+
   // Web Search (Tavily - primary, Google Custom Search - fallback)
   TAVILY_API_KEY: z.string().default(""),
   GOOGLE_SEARCH_API_KEY: z.string().default(""),

@@ -12,6 +12,7 @@ import { aiRequestLimiter } from "../agent/providers/ai-request-limiter";
 import { providerCircuitBreaker } from "../agent/providers/circuit-breaker";
 import { ingestionStatusTracker } from "../context-engine/claimkit-ingestion";
 import { claimKitAdapter } from "../context-engine/adapters/claimkit-adapter";
+import { mcpClient } from "../integrations/mcp/mcp-client";
 import { env } from "../config/env";
 
 function getGitMetadata(): { commit: string | null; dirty: boolean } {
@@ -148,6 +149,23 @@ export async function healthRoutes(fastify: FastifyInstance) {
           ? Math.ceil((b.degradedUntil - now) / 1000)
           : 0,
       })),
+    };
+  });
+
+  /**
+   * Per-MCP-server connection status. Shows, for every configured external MCP
+   * server, whether it connected, how many tools it exposes, and any last
+   * connection error. Cheap, in-memory — safe to poll from a status badge.
+   */
+  fastify.get("/health/mcp", async () => {
+    const servers = mcpClient.getServerStatus();
+    const values = Object.values(servers);
+    return {
+      timestamp: new Date().toISOString(),
+      totalServers: values.length,
+      connectedServers: values.filter((s) => s.connected).length,
+      totalTools: values.reduce((sum, s) => sum + s.toolCount, 0),
+      servers,
     };
   });
 }

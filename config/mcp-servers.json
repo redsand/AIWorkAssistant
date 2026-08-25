@@ -1,0 +1,10 @@
+{
+  "servers": [
+    {
+      "name": "hawk-ir",
+      "url": "https://ir.hawk.io/api/mcp",
+      "authToken": "",
+      "enabled": false
+    }
+  ]
+}
