@@ -472,16 +472,20 @@ class TicketToTaskGenerator {
     const roadmap = input.roadmapMatch;
     const objective = this.objective(input.issue);
     const agentInstructions = this.agentInstructions(input.agent);
-    const acceptance = input.acceptanceCriteria.length > 0
+    const acceptance = (input.acceptanceCriteria || []).length > 0
       ? input.acceptanceCriteria.map((c) => `- [ ] ${c}`).join("\n")
       : "- No checkbox acceptance criteria were found in the issue body. Derive tests and completion checks from the full issue spec.";
-    const files = input.relevantFiles.length > 0
+    // Defensive: not every work source populates all of these arrays (GitLab
+    // issues, for example, arrive without comments/dependsOn/relevantFiles),
+    // so guard every .length read to avoid "Cannot read properties of
+    // undefined (reading 'length')" mid-prompt-build.
+    const files = (input.relevantFiles || []).length > 0
       ? input.relevantFiles.map((f) => `| \`${f.file}\` | ${f.reason} |`).join("\n")
       : "| No strong matches found | Start with repository search and the issue spec |";
-    const related = input.relatedIssues.length > 0
+    const related = (input.relatedIssues || []).length > 0
       ? input.relatedIssues.map((n) => `- #${n}`).join("\n")
       : "- None detected";
-    const comments = input.comments.length > 0
+    const comments = (input.comments || []).length > 0
       ? input.comments
           .map((c) => `### ${c.user?.login || "unknown"} at ${c.created_at}\n${c.body || ""}`)
           .join("\n\n")
@@ -491,18 +495,18 @@ class TicketToTaskGenerator {
       ? `\n## ⚡ Coding Prompt (Authoritative — Follow Exactly)\n\n${input.codingPrompt}\n`
       : `\n## ⚠️ Coding Prompt Missing\n\nNo \`## Coding Prompt\` section was found in this issue. The agent should derive implementation intent from the full spec above, but precision may be reduced.\n`;
 
-    const crossPlatformRefs = input.dependencyRefs.filter(r => r.platform !== "github" || r.owner);
+    const crossPlatformRefs = (input.dependencyRefs || []).filter(r => r.platform !== "github" || r.owner);
     const crossPlatformSection = crossPlatformRefs.length > 0
       ? crossPlatformRefs.map(r => `- ${r.raw}`).join("\n")
       : "- None detected";
 
-    const dependsOnList = input.dependsOn.length > 0
+    const dependsOnList = (input.dependsOn || []).length > 0
       ? input.dependsOn.map(d => `- ${d.startsWith("#") ? d : `#${d}`}`).join("\n")
       : "Nothing — this is a foundational task";
-    const blocksList = input.blocks.length > 0
+    const blocksList = (input.blocks || []).length > 0
       ? input.blocks.map(b => `- ${b.startsWith("#") ? b : `#${b}`}`).join("\n")
       : "Nothing — no other tasks depend on this";
-    const executionNote = input.dependsOn.length > 0
+    const executionNote = (input.dependsOn || []).length > 0
       ? "DO NOT start this task until the above dependencies are merged."
       : "This task can be started immediately.";
 

@@ -424,7 +424,7 @@ async function fetchGitLabWork(
     }
     // Description didn't match — check issue notes for coding prompt content
     try {
-      const notes = await gitlabClient.listIssueNotes(env.GITLAB_DEFAULT_PROJECT, issue.iid);
+      const notes = await gitlabClient.listIssueNotes(project, issue.iid);
       const hasPromptInNotes = notes.some((n: any) =>
         ticketToTaskGenerator.hasCodingPromptContent(n.body || ""),
       );
