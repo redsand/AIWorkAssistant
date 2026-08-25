@@ -529,9 +529,50 @@ export async function ensurePersistentWorktree(opts: {
     // Non-fatal: leave whatever state exists, aicoder will recover.
   }
 
+  // Dependency linking — a git worktree does NOT get its own node_modules
+  // (it's gitignored), so `npm test` inside the worktree fails with
+  // "'vitest' is not recognized" and the aicoder skips the push. When the
+  // worktree was cut from a local anchor clone that already has deps
+  // installed, junction the anchor's node_modules into the worktree. Same
+  // package.json + same base commit => sharing is safe and standard worktree
+  // practice. Freshly-cloned repos (no local anchor) have no deps to link;
+  // those would need their own `npm install`, which is out of scope here.
+  try {
+    const anchor = opts.repoUrl
+      ? findLocalCloneForRemote(opts.repoUrl, path.dirname(root))
+      : null;
+    linkNodeModulesFromAnchor(dir, anchor);
+  } catch (err) {
+    // Non-fatal: worse case the test gate fails the same way it did before.
+    console.warn(
+      `[worktree] node_modules link skipped: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   const { stdout: topLevel } = await spawnGit(
     ["rev-parse", "--show-toplevel"],
     dir,
   );
   return path.resolve(topLevel.trim());
+}
+
+/**
+ * Junction (Windows) or symlink (POSIX) the anchor clone's node_modules into
+ * a worktree that lacks its own. No-op if the worktree already has
+ * node_modules, if there's no anchor, or if the anchor has no node_modules.
+ */
+export function linkNodeModulesFromAnchor(
+  worktreeDir: string,
+  anchorDir: string | null | undefined,
+): void {
+  if (!anchorDir) return;
+  const anchorNM = path.join(anchorDir, "node_modules");
+  const worktreeNM = path.join(worktreeDir, "node_modules");
+  if (!fs.existsSync(anchorNM)) return;
+  // path.resolve so we don't link a directory to itself (anchor === worktree
+  // can happen if the worktree IS the anchor clone).
+  if (path.resolve(anchorNM) === path.resolve(worktreeNM)) return;
+  if (fs.existsSync(worktreeNM)) return;
+  fs.symlinkSync(anchorNM, worktreeNM, process.platform === "win32" ? "junction" : "dir");
+  console.log(`[worktree] Linked node_modules: ${worktreeNM} -> ${anchorNM}`);
 }
