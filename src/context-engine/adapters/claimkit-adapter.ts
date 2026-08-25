@@ -2,6 +2,7 @@ import {
   ClaimKit,
   createMemoryStores,
   MemoryLLMAdapter,
+  MemoryEmbeddingAdapter,
 } from "@redsand/claimkit";
 import type {
   LLMAdapter,
@@ -200,20 +201,30 @@ export class ClaimKitAdapter {
     try {
       // Settle the embedding provider BEFORE creating stores so the
       // vector dimension matches what will actually be used at query time.
-      console.log(`[ClaimKit] Probing embedding provider (${env.EMBEDDING_PROVIDER || "auto"} / ${env.EMBEDDING_MODEL || "default"})…`);
-      const embeddingReady = await embeddingService.isAvailable();
-      if (!embeddingReady) {
-        this.initError = "Embedding service unavailable — no providers responded";
-        return false;
+      let actualDimensions: number;
+      let settledProvider: { provider: string; model: string };
+      if (env.CLAIMKIT_EMBEDDING_PROVIDER === "hash") {
+        // No network call, no provider to probe — same deterministic
+        // fallback octorepl's claimkit_ground.mjs uses by default.
+        actualDimensions = 512;
+        settledProvider = { provider: "claimkit", model: "hash-fnv1a" };
+        console.log(`[ClaimKit] Embedding provider: hash (deterministic, ${actualDimensions}d) — no external calls`);
+      } else {
+        console.log(`[ClaimKit] Probing embedding provider (${env.EMBEDDING_PROVIDER || "auto"} / ${env.EMBEDDING_MODEL || "default"})…`);
+        const embeddingReady = await embeddingService.isAvailable();
+        if (!embeddingReady) {
+          this.initError = "Embedding service unavailable — no providers responded";
+          return false;
+        }
+        const probeResult = await embeddingService.embed("probe");
+        if (!probeResult) {
+          this.initError = "Embedding probe failed after provider settled";
+          return false;
+        }
+        actualDimensions = probeResult.embedding.length;
+        settledProvider = embeddingService.getProviderInfo();
+        console.log(`[ClaimKit] Embedding provider ready: ${settledProvider.provider}/${settledProvider.model} (${actualDimensions}d)`);
       }
-      const probeResult = await embeddingService.embed("probe");
-      if (!probeResult) {
-        this.initError = "Embedding probe failed after provider settled";
-        return false;
-      }
-      const actualDimensions = probeResult.embedding.length;
-      const settledProvider = embeddingService.getProviderInfo();
-      console.log(`[ClaimKit] Embedding provider ready: ${settledProvider.provider}/${settledProvider.model} (${actualDimensions}d)`);
 
       console.log(`[ClaimKit] Creating LLM adapter: ${env.CLAIMKIT_LLM_PROVIDER}`);
       let llm: LLMAdapter;
@@ -245,7 +256,10 @@ export class ClaimKitAdapter {
           env.CLAIMKIT_LLM_MODEL || undefined,
         );
       }
-      const embeddings = new ClaimKitEmbeddingAdapter(actualDimensions);
+      const embeddings =
+        env.CLAIMKIT_EMBEDDING_PROVIDER === "hash"
+          ? new MemoryEmbeddingAdapter()
+          : new ClaimKitEmbeddingAdapter(actualDimensions);
 
       let stores: Stores;
       console.log(`[ClaimKit] Connecting stores (redis=${Boolean(env.CLAIMKIT_REDIS_URL)})…`);

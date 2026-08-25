@@ -21,6 +21,9 @@ function spawnGit(
   cwd: string,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
+    // Inherit process.env as-is: if the operator explicitly sets
+    // GIT_SSL_NO_VERIFY (e.g. behind a TLS-intercepting proxy) it flows
+    // through, but we never disable certificate verification by default.
     const proc = child_process.spawn("git", args, {
       cwd,
       shell: false,

@@ -33,11 +33,18 @@ function resolveTsxCli(): string {
 }
 
 function aicoderScriptPath(): string {
-  return path.resolve(__dirname, "..", "aicoder.ts");
+  // When running from compiled dist/, __dirname is dist/runners/ and the
+  // compiled file is dist/aicoder.js. When running from src/ via tsx,
+  // __dirname is src/runners/ and the source is src/aicoder.ts.
+  const tsPath = path.resolve(__dirname, "..", "aicoder.ts");
+  const jsPath = path.resolve(__dirname, "..", "aicoder.js");
+  return fs.existsSync(jsPath) ? jsPath : tsPath;
 }
 
 function reviewerScriptPath(): string {
-  return path.resolve(__dirname, "..", "reviewer.ts");
+  const tsPath = path.resolve(__dirname, "..", "reviewer.ts");
+  const jsPath = path.resolve(__dirname, "..", "reviewer.js");
+  return fs.existsSync(jsPath) ? jsPath : tsPath;
 }
 
 function ensureLogDir(): void {

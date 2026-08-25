@@ -10,7 +10,7 @@
   },
   "scripts": {
     "dev:kill": "node scripts/kill-dev.js",
-    "dev": "npm run dev:kill && node scripts/dev-with-logging.mjs",
+    "dev": "npm run dev:kill \u0026\u0026 node scripts/dev-with-logging.mjs",
     "build": "tsc",
     "start": "node dist/server.js",
     "test": "vitest run",
@@ -43,7 +43,10 @@
     "bot:discord": "tsx src/integrations/discord/bot-server.ts",
     "bot:signal": "tsx src/integrations/signal/bot-server.ts",
     "lint": "eslint src --ext .ts",
-    "format": "prettier --write \"src/**/*.ts\""
+    "format": "prettier --write \"src/**/*.ts\"",
+    "musicgen:install": "powershell -ExecutionPolicy Bypass -File musicgen-service/install.ps1",
+    "musicgen:start": "powershell -ExecutionPolicy Bypass -File musicgen-service/start.ps1",
+    "musicgen:models": "powershell -Command \"Set-Location musicgen-service; .\\venv\\Scripts\\python.exe -c \\\"from audiocraft.models import MusicGen; MusicGen.get_pretrained(\u0027\u0027facebook/musicgen-melody\u0027\u0027); MusicGen.get_pretrained(\u0027\u0027facebook/musicgen-large\u0027\u0027); print(\u0027\u0027Models cached.\u0027\u0027)\\\"\""
   },
   "keywords": [
     "agent",

@@ -77,3 +77,30 @@ musicgen-service/venv/
 
 
 *.rdb
+
+# Local HAWK IR / escalation investigation scratch (ad-hoc, may contain PII/secrets)
+/cookies.txt
+/auth_resp.json
+/AICODER_NOTES.md
+/ad_authentication_report*
+/teresita_akers_*
+/analyze_hawk_ir_events.js
+/export_hawk_ir_logs.*
+/extract_mfa_events.js
+/search_unknown_email.js
+/day_cases.json
+/gap_issue_*.json
+/issue[0-9]*.json
+scripts/hawk_*
+scripts/*escalated*
+scripts/create_github_issues.js
+scripts/create_mcp_issue.js
+scripts/create_runners.js
+scripts/close_issue_*.js
+scripts/list_issues.js
+scripts/post_dependency_comments.js
+scripts/test_hawk_mcp.js
+scripts/test_mcp_escalated.js
+scripts/cookies.txt
+scripts/cases/
+scripts/cases_daily/

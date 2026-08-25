@@ -328,6 +328,13 @@ const envSchema = z.object({
     .string()
     .transform((s) => s === "true")
     .default("false"),
+  // "live" probes embeddingService (Ollama/zai/openai) and requires it to
+  // respond before ClaimKit can initialize. "hash" uses ClaimKit's own
+  // MemoryEmbeddingAdapter (deterministic FNV-1a token hashing, 512d, zero
+  // network calls) — same approach octorepl's claimkit_ground.mjs sidecar
+  // uses by default. Trades real semantic retrieval for zero dependency on
+  // any embedding provider being up.
+  CLAIMKIT_EMBEDDING_PROVIDER: z.enum(["live", "hash"]).default("live"),
   CLAIMKIT_LLM_PROVIDER: z
     .enum(["memory", "comparison", "ollama"])
     .default("comparison"),
@@ -611,14 +618,16 @@ const envSchema = z.object({
   PUSH_ESCALATION_L3_MINUTES: z.coerce.number().default(15),
 
   // Tool loop limit (max iterations before forcing a final response)
-  MAX_TOOL_LOOPS: z.coerce.number().default(75),
+  // Raised from 75 to 200 — toolchain execution reliability has improved
+  // significantly, allowing more complex multi-step tasks to complete.
+  MAX_TOOL_LOOPS: z.coerce.number().default(200),
   // Hard ceiling on TOTAL iterations (cached + uncached) per agent
   // job. The MAX_TOOL_LOOPS limit only counts iterations that did
   // real tool work (at least one non-cached tool call) — cache hits
   // shouldn't burn the "useful work" budget. But we still want a
   // safety net so a model stuck in a pure-cache loop can't run
-  // forever. Defaults to ~2.5× MAX_TOOL_LOOPS.
-  MAX_TOOL_LOOPS_HARD: z.coerce.number().default(200),
+  // forever. Defaults to ~2.5x MAX_TOOL_LOOPS.
+  MAX_TOOL_LOOPS_HARD: z.coerce.number().default(500),
 
   // Job timeout (ms) — wall-clock limit for a single agent job before it is forcibly failed.
   // Set to 0 to disable the ceiling and allow multi-hour runs.

@@ -503,7 +503,9 @@ export class HawkIrService {
     const dashboardId = dashboards[0].id;
     return this.client.runDashboardWidget(dashboardId, {
       widget: {
-        id: `ad-hoc-${Date.now()}`,
+        // No `id`: the run endpoint treats a widget id as a stored-widget
+        // lookup on the dashboard; an unknown id historically fell back to a
+        // match-all default widget and silently ignored this query.
         title: "Ad-hoc Query",
         type: params.type ?? "table",
         query: params.query ?? "*",
@@ -593,7 +595,8 @@ export class HawkIrService {
       try {
         const result = await this.client.runDashboardWidget(dashboardId, {
           widget: {
-            id: `monthly-w${i}-${Date.now()}`,
+            // No `id` — see runDashboardQuery: an id triggers stored-widget
+            // lookup on the server and this inline definition would be ignored.
             title: label,
             type: "table",
             query: params.query ?? "*",
