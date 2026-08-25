@@ -374,6 +374,72 @@ describe("HawkIrClient", () => {
     });
   });
 
+  describe("getCases limit/offset coercion", () => {
+    const RANGE = { startDate: "2026-08-25T00:00:00.000Z", stopDate: "2026-08-25T06:00:00.000Z" };
+
+    function makeCases(n: number): any[] {
+      return Array.from({ length: n }, (_, i) => ({ "@rid": `#1:${i + 1}`, name: `Case ${i + 1}` }));
+    }
+
+    // Mirrors the real API: return a bounded slice honoring the numeric `limit` param.
+    function respondFrom(mockGet: ReturnType<typeof vi.fn>, dataset: any[]) {
+      mockGet.mockImplementation((_path: string, config: any) => {
+        const lim = config?.params?.limit ?? dataset.length;
+        return Promise.resolve({ data: dataset.slice(0, lim) });
+      });
+    }
+
+    it("treats a string limit the same as the equivalent number", async () => {
+      const { client, mockGet } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      respondFrom(mockGet, makeCases(5));
+
+      const asNumber = await client.getCases({ ...RANGE, limit: 3 });
+      mockGet.mockClear();
+      respondFrom(mockGet, makeCases(5));
+      const asString = await client.getCases({ ...RANGE, limit: "3" as any });
+
+      expect(asString.map((c) => c.rid)).toEqual(asNumber.map((c) => c.rid));
+      expect(asString).toHaveLength(3);
+    });
+
+    it("sends a numeric (not stringified) limit to /api/cases when given a string", async () => {
+      const { client, mockGet } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      respondFrom(mockGet, makeCases(2));
+
+      await client.getCases({ ...RANGE, limit: "2" as any });
+
+      const sentLimit = mockGet.mock.calls[0][1]?.params?.limit;
+      expect(typeof sentLimit).toBe("number");
+      expect(sentLimit).toBe(2);
+    });
+
+    it("treats a string offset the same as the equivalent number", async () => {
+      const { client, mockGet } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      respondFrom(mockGet, makeCases(5));
+
+      const asNumber = await client.getCases({ ...RANGE, limit: 2, offset: 1 });
+      mockGet.mockClear();
+      respondFrom(mockGet, makeCases(5));
+      const asString = await client.getCases({ ...RANGE, limit: "2" as any, offset: "1" as any });
+
+      expect(asString.map((c) => c.rid)).toEqual(asNumber.map((c) => c.rid));
+    });
+
+    it("falls back to the default limit when the value is not a finite number", async () => {
+      const { client, mockGet } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      respondFrom(mockGet, makeCases(600));
+
+      const cases = await client.getCases({ ...RANGE, limit: "abc" as any });
+
+      // NaN → CASES_DEFAULT_LIMIT (500), so a 600-row dataset is capped at 500.
+      expect(cases).toHaveLength(500);
+    });
+  });
+
   describe("getCases auto-pagination", () => {
     // A tight (<1 day) range keeps each page to a single API window, so one
     // fetchCasesPage maps to exactly one mockGet call — making page counts

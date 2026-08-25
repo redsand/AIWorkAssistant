@@ -57,7 +57,7 @@ const WS_TIMEOUT_MS = 30_000;
  * milliseconds, newest first, stopping once the requested limit is filled.
  */
 const CASES_WINDOW_MS = 24 * 60 * 60 * 1000;
-const CASES_DEFAULT_LIMIT = 100;
+const CASES_DEFAULT_LIMIT = 500;
 /** Safety cap on auto-pagination: 20 pages ≈ 10,000 cases at the default limit. */
 const CASES_MAX_PAGES = 20;
 
@@ -389,8 +389,13 @@ export class HawkIrClient {
    * (~2min for 10 days) and would otherwise exceed the HTTP timeout.
    */
   async getCases(params: HawkCasesParams = {}): Promise<HawkCase[]> {
-    const limit = params.limit ?? CASES_DEFAULT_LIMIT;
-    const baseOffset = params.offset ?? 0;
+    // Belt-and-suspenders coercion: even if a caller (or the AI model, via the
+    // tool dispatcher) slips a string through, OrientDB needs real numbers or
+    // it silently returns 0 rows. Fall back to the defaults on NaN/Infinity.
+    const rawLimit = Number(params.limit ?? CASES_DEFAULT_LIMIT);
+    const limit = Number.isFinite(rawLimit) ? rawLimit : CASES_DEFAULT_LIMIT;
+    const rawOffset = Number(params.offset ?? 0);
+    const baseOffset = Number.isFinite(rawOffset) ? rawOffset : 0;
 
     if (!params.autoPaginate) {
       return this.fetchCasesPage(params, limit, baseOffset);
