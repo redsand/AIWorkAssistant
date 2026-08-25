@@ -72,7 +72,7 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
           items = await fetchGitHubWork(label, limit, query, skipPromptCheck, query.sprint);
           break;
         case "gitlab":
-          items = await fetchGitLabWork(label, limit, skipPromptCheck);
+          items = await fetchGitLabWork(label, limit, skipPromptCheck, query.repo);
           break;
         case "jira":
           items = await fetchJiraWork(label, limit, query.repo, skipPromptCheck, query.sprint);
@@ -384,9 +384,17 @@ async function fetchGitLabWork(
   label: string,
   limit: number,
   skipPromptCheck: boolean = false,
+  projectPath?: string,
 ): Promise<NormalizedWorkItem[]> {
-  if (!env.GITLAB_DEFAULT_PROJECT) {
-    throw new Error("GITLAB_DEFAULT_PROJECT is required for GitLab source");
+  // Each runner passes its own project (e.g. "siem/hawk-kstreams") as `repo`.
+  // Fall back to GITLAB_DEFAULT_PROJECT only when a runner didn't specify one.
+  // Without this every GitLab runner queried the default group ("siem"), which
+  // is not a project id → "Project siem not found".
+  const project = projectPath || env.GITLAB_DEFAULT_PROJECT;
+  if (!project) {
+    throw new Error(
+      "No GitLab project specified (pass repo=<group/project> or set GITLAB_DEFAULT_PROJECT)",
+    );
   }
 
   // GitLab's labels query param uses comma-joined AND semantics, same
@@ -394,7 +402,7 @@ async function fetchGitLabWork(
   // match.
   const canonicalLabels = splitLabelString(label).join(",");
   const issues = await gitlabClient.listIssues(
-    env.GITLAB_DEFAULT_PROJECT,
+    project,
     "opened",
     canonicalLabels,
   );
