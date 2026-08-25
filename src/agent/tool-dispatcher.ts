@@ -6753,6 +6753,26 @@ async function handleJitbitDisableAutomationRule(
 
 // ── HAWK IR Handlers ──────────────────────────────────────────────────
 
+/**
+ * Coerces a limit/offset param to a finite number. The AI model frequently
+ * passes these as strings (e.g. `"500"`), and an `as number` assertion only
+ * lies to the compiler — at runtime the string flows through to the
+ * OrientDB-backed /api/cases endpoint, which rejects it and silently returns 0
+ * rows. Returning `undefined` on a missing/unparseable value lets the client
+ * apply its own default.
+ */
+function coerceCaseBound(value: unknown, name: string): number | undefined {
+  if (value == null) return undefined;
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    console.warn(
+      `[HawkIR] get_cases ignoring non-numeric ${name}=${JSON.stringify(value)}; falling back to default.`,
+    );
+    return undefined;
+  }
+  return n;
+}
+
 async function handleHawkIrGetCases(
   params: Record<string, unknown>,
 ): Promise<ToolCallResult> {
@@ -6763,8 +6783,8 @@ async function handleHawkIrGetCases(
     startDate: params.startDate as string | undefined,
     stopDate: params.stopDate as string | undefined,
     groupId: params.groupId as string | undefined,
-    limit: params.limit as number | undefined,
-    offset: params.offset as number | undefined,
+    limit: coerceCaseBound(params.limit, "limit"),
+    offset: coerceCaseBound(params.offset, "offset"),
     autoPaginate: params.autoPaginate as boolean | undefined,
   });
 
