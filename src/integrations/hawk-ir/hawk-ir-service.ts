@@ -83,6 +83,10 @@ export class HawkIrService {
     } else if (params.stopDate) {
       enforceMaxRange(params.startDate, params.stopDate);
     }
+    // The get_cases tool must return the complete result set for a period
+    // (reporting, escalation scans, compliance). Auto-paginate unless a caller
+    // has explicitly opted out.
+    if (params.autoPaginate === undefined) params.autoPaginate = true;
     return this.client.getCases(params);
   }
 

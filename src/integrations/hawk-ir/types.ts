@@ -96,6 +96,18 @@ export interface HawkCasesParams {
   groupId?: string;
   limit?: number;
   offset?: number;
+  /**
+   * When true, keep fetching successive pages (offset += limit) until a page
+   * returns fewer than `limit` rows or the safety cap is reached, then return
+   * the combined result. When false/omitted, a single page is returned.
+   */
+  autoPaginate?: boolean;
+  /**
+   * Safety cap on the number of pages fetched when {@link autoPaginate} is on.
+   * Defaults to 20 (≈10,000 cases at the default limit). Mainly a test/override
+   * hook; callers rarely need to set it.
+   */
+  maxPages?: number;
 }
 
 // === Explore Types ===

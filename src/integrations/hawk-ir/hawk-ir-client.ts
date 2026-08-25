@@ -58,6 +58,29 @@ const WS_TIMEOUT_MS = 30_000;
  */
 const CASES_WINDOW_MS = 24 * 60 * 60 * 1000;
 const CASES_DEFAULT_LIMIT = 100;
+/** Safety cap on auto-pagination: 20 pages ≈ 10,000 cases at the default limit. */
+const CASES_MAX_PAGES = 20;
+
+/** Pagination bookkeeping attached to an auto-paginated getCases() result. */
+export interface HawkCasesPagination {
+  /** Number of pages actually fetched (1 when no extra pages were needed). */
+  pagesFetched: number;
+  /** Total cases in the returned array. */
+  totalCases: number;
+  /** True when the maxPages safety cap was hit while pages were still full. */
+  truncated: boolean;
+}
+
+const CASES_PAGINATION = Symbol("hawkCasesPagination");
+
+/**
+ * Reads the pagination metadata that {@link HawkIrClient.getCases} attaches to
+ * an auto-paginated result. Returns undefined for single-page (non-paginated)
+ * results so callers can cheaply tell the two apart.
+ */
+export function getCasesPagination(cases: HawkCase[]): HawkCasesPagination | undefined {
+  return (cases as any)?.[CASES_PAGINATION];
+}
 
 function coerceBoolean(raw: unknown): boolean {
   if (typeof raw === "boolean") return raw;
@@ -352,14 +375,85 @@ export class HawkIrClient {
   // === Cases (REST) ===
 
   /**
-   * Fetches cases for a date range by querying the API in windows of at most
-   * one day, newest first, until the requested limit (+ offset) is filled.
-   * Wide single requests are not viable: /api/cases latency scales with the
-   * range (~2min for 10 days) and exceeds the HTTP timeout.
+   * Fetches cases for a date range.
+   *
+   * By default a single page of at most `limit` rows (starting at `offset`) is
+   * returned. When {@link HawkCasesParams.autoPaginate} is set, successive pages
+   * are fetched (offset += limit) until a page comes back with fewer than
+   * `limit` rows or the {@link CASES_MAX_PAGES} safety cap is reached, and the
+   * combined array is returned. Auto-paginated results carry pagination
+   * bookkeeping readable via {@link getCasesPagination}.
+   *
+   * A single page is itself fetched in windows of at most one day, newest first
+   * (see {@link fetchCasesPage}): /api/cases latency scales with the range
+   * (~2min for 10 days) and would otherwise exceed the HTTP timeout.
    */
   async getCases(params: HawkCasesParams = {}): Promise<HawkCase[]> {
     const limit = params.limit ?? CASES_DEFAULT_LIMIT;
-    const offset = params.offset ?? 0;
+    const baseOffset = params.offset ?? 0;
+
+    if (!params.autoPaginate) {
+      return this.fetchCasesPage(params, limit, baseOffset);
+    }
+
+    const maxPages = params.maxPages ?? CASES_MAX_PAGES;
+    const all: HawkCase[] = [];
+    const seen = new Set<string>();
+    let offset = baseOffset;
+    let pagesFetched = 0;
+    let truncated = false;
+
+    while (true) {
+      if (pagesFetched >= maxPages) {
+        truncated = true;
+        break;
+      }
+
+      let page: HawkCase[];
+      try {
+        page = await this.fetchCasesPage(params, limit, offset);
+      } catch (err) {
+        // Never lose what we already have: return the partial set with a warning.
+        console.warn(
+          `[HawkIR] getCases auto-pagination failed on page ${pagesFetched + 1} ` +
+          `(offset ${offset}); returning ${all.length} case(s) collected so far.`,
+          err,
+        );
+        break;
+      }
+
+      pagesFetched += 1;
+      for (const c of page) {
+        if (c.rid && seen.has(c.rid)) continue;
+        if (c.rid) seen.add(c.rid);
+        all.push(c);
+      }
+
+      // A short page means we've reached the end of the result set.
+      if (page.length < limit) break;
+      offset += limit;
+    }
+
+    if (pagesFetched > 1) {
+      console.info(
+        `[HawkIR] getCases auto-paginated: fetched ${pagesFetched} page(s), ` +
+        `${all.length} total case(s)${truncated ? " (hit page cap; more may exist)" : ""}.`,
+      );
+    }
+
+    Object.defineProperty(all, CASES_PAGINATION, {
+      value: { pagesFetched, totalCases: all.length, truncated } as HawkCasesPagination,
+      enumerable: false,
+    });
+    return all;
+  }
+
+  /**
+   * Fetches a single page of up to `limit` cases starting at `offset` by
+   * querying /api/cases in windows of at most one day, newest first, until the
+   * requested slice (offset + limit) is filled or the date range is exhausted.
+   */
+  private async fetchCasesPage(params: HawkCasesParams, limit: number, offset: number): Promise<HawkCase[]> {
     const wanted = offset + limit;
     const stop = params.stopDate ? new Date(params.stopDate) : new Date();
     const start = params.startDate ? new Date(params.startDate) : new Date(stop.getTime() - CASES_WINDOW_MS);

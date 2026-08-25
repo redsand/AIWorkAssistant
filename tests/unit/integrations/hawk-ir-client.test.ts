@@ -64,7 +64,7 @@ vi.mock("../../../src/config/env", () => ({
 }));
 
 import axios from "axios";
-import { HawkIrClient } from "../../../src/integrations/hawk-ir/hawk-ir-client";
+import { HawkIrClient, getCasesPagination } from "../../../src/integrations/hawk-ir/hawk-ir-client";
 
 function createMockedClient(): {
   client: HawkIrClient;
@@ -371,6 +371,112 @@ describe("HawkIrClient", () => {
         client.createCase({ name: "Case", events: [{ alert_name: "" } as any] }),
       ).rejects.toThrow("Each event must have an alert_name");
       expect(mockPost).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("getCases auto-pagination", () => {
+    // A tight (<1 day) range keeps each page to a single API window, so one
+    // fetchCasesPage maps to exactly one mockGet call — making page counts
+    // straightforward to assert.
+    const RANGE = { startDate: "2026-08-25T00:00:00.000Z", stopDate: "2026-08-25T06:00:00.000Z" };
+
+    function makeCases(n: number): any[] {
+      return Array.from({ length: n }, (_, i) => ({ "@rid": `#1:${i + 1}`, name: `Case ${i + 1}` }));
+    }
+
+    // Mock /api/cases to honor the requested `limit` param against a fixed
+    // dataset — exactly how the real API returns a bounded slice of a larger set.
+    function respondFrom(mockGet: ReturnType<typeof vi.fn>, dataset: any[]) {
+      mockGet.mockImplementation((_path: string, config: any) => {
+        const lim = config?.params?.limit ?? dataset.length;
+        return Promise.resolve({ data: dataset.slice(0, lim) });
+      });
+    }
+
+    beforeEach(() => {
+      vi.spyOn(console, "info").mockImplementation(() => {});
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+    });
+
+    it("fetches successive pages and aggregates until a short page is returned", async () => {
+      const { client, mockGet } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      respondFrom(mockGet, makeCases(5));
+
+      const cases = await client.getCases({ ...RANGE, limit: 2, autoPaginate: true });
+
+      expect(cases).toHaveLength(5);
+      expect(cases.map((c) => c.rid)).toEqual(["1:1", "1:2", "1:3", "1:4", "1:5"]);
+      // Pages: [1,2] full, [3,4] full, [5] short → stop after 3 fetches.
+      expect(mockGet).toHaveBeenCalledTimes(3);
+      expect(getCasesPagination(cases)).toEqual({ pagesFetched: 3, totalCases: 5, truncated: false });
+    });
+
+    it("stops paginating as soon as a page returns fewer than `limit` rows", async () => {
+      const { client, mockGet } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      respondFrom(mockGet, makeCases(3));
+
+      const cases = await client.getCases({ ...RANGE, limit: 2, autoPaginate: true });
+
+      expect(cases).toHaveLength(3);
+      // Page 1 = [1,2] (full) → continue; Page 2 = [3] (short) → stop.
+      expect(mockGet).toHaveBeenCalledTimes(2);
+      expect(getCasesPagination(cases)).toEqual({ pagesFetched: 2, totalCases: 3, truncated: false });
+    });
+
+    it("stops at the maxPages safety limit and flags the result as truncated", async () => {
+      const { client, mockGet } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      respondFrom(mockGet, makeCases(50));
+
+      const cases = await client.getCases({ ...RANGE, limit: 2, autoPaginate: true, maxPages: 3 });
+
+      // Every page is full, so pagination halts only when the cap is reached.
+      expect(cases).toHaveLength(6);
+      expect(mockGet).toHaveBeenCalledTimes(3);
+      expect(getCasesPagination(cases)).toEqual({ pagesFetched: 3, totalCases: 6, truncated: true });
+    });
+
+    it("returns a single page unchanged (no metadata) when autoPaginate is off", async () => {
+      const { client, mockGet } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      respondFrom(mockGet, makeCases(5));
+
+      const cases = await client.getCases({ ...RANGE, limit: 2 });
+
+      expect(cases).toHaveLength(2);
+      expect(mockGet).toHaveBeenCalledTimes(1);
+      expect(getCasesPagination(cases)).toBeUndefined();
+    });
+
+    it("returns a single page unchanged when results are shorter than the limit", async () => {
+      const { client, mockGet } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      respondFrom(mockGet, makeCases(1));
+
+      const cases = await client.getCases({ ...RANGE, limit: 2, autoPaginate: true });
+
+      expect(cases).toHaveLength(1);
+      // A single (short) page — no second fetch, pagesFetched stays 1.
+      expect(mockGet).toHaveBeenCalledTimes(1);
+      expect(getCasesPagination(cases)).toEqual({ pagesFetched: 1, totalCases: 1, truncated: false });
+    });
+
+    it("preserves partial results when a page fetch fails mid-pagination", async () => {
+      const { client, mockGet } = createMockedClient();
+      (client as any).sessionCookie = "hawk_session=test";
+      // Page 1 succeeds with a full page; page 2's fetch rejects.
+      mockGet
+        .mockResolvedValueOnce({ data: makeCases(2) })
+        .mockRejectedValueOnce(new Error("boom"));
+
+      const cases = await client.getCases({ ...RANGE, limit: 2, autoPaginate: true });
+
+      expect(cases.map((c) => c.rid)).toEqual(["1:1", "1:2"]);
+      expect(mockGet).toHaveBeenCalledTimes(2);
+      expect(getCasesPagination(cases)).toEqual({ pagesFetched: 1, totalCases: 2, truncated: false });
+      expect(console.warn).toHaveBeenCalled();
     });
   });
 
