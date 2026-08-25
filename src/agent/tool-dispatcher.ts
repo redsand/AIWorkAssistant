@@ -13,6 +13,7 @@ import { ctoDailyCommandCenter } from "../cto/daily-command-center";
 import { personalOsBriefGenerator } from "../personal-os/brief-generator";
 import { productChiefOfStaff } from "../product/product-chief-of-staff";
 import { hawkIrService } from "../integrations/hawk-ir/hawk-ir-service";
+import { getCasesPagination } from "../integrations/hawk-ir/hawk-ir-client";
 import { tenableCloudService } from "../integrations/tenable-cloud/tenable-cloud-service";
 import type { TenableAgent, TenableAsset, TenableExportStatus } from "../integrations/tenable-cloud/types";
 import { ivantiService } from "../integrations/ivanti/ivanti-service";
@@ -6764,7 +6765,17 @@ async function handleHawkIrGetCases(
     groupId: params.groupId as string | undefined,
     limit: params.limit as number | undefined,
     offset: params.offset as number | undefined,
+    autoPaginate: params.autoPaginate as boolean | undefined,
   });
+
+  const pagination = getCasesPagination(data);
+  if (pagination && pagination.pagesFetched > 1) {
+    const message =
+      `Fetched ${pagination.pagesFetched} pages, ${pagination.totalCases.toLocaleString()} total cases` +
+      (pagination.truncated ? " (stopped at page limit; more cases may exist)" : "");
+    console.info(`[HawkIR] get_cases ${message}`);
+    return { success: true, data, message };
+  }
   return { success: true, data };
 }
 

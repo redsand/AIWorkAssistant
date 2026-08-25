@@ -294,6 +294,28 @@ describe("HawkIrService getRiskyOpenCases and getEscalatedCases", () => {
     service = new HawkIrService(mockClient);
   });
 
+  describe("getCases", () => {
+    it("auto-paginates by default for the get_cases tool path", async () => {
+      (mockClient.getCases as any).mockResolvedValue([]);
+      await service.getCases({ startDate: "2026-08-20T00:00:00Z", stopDate: "2026-08-21T00:00:00Z" });
+      expect(mockClient.getCases).toHaveBeenCalledWith(
+        expect.objectContaining({ autoPaginate: true }),
+      );
+    });
+
+    it("respects an explicit autoPaginate: false opt-out", async () => {
+      (mockClient.getCases as any).mockResolvedValue([]);
+      await service.getCases({
+        startDate: "2026-08-20T00:00:00Z",
+        stopDate: "2026-08-21T00:00:00Z",
+        autoPaginate: false,
+      });
+      expect(mockClient.getCases).toHaveBeenCalledWith(
+        expect.objectContaining({ autoPaginate: false }),
+      );
+    });
+  });
+
   describe("getRiskyOpenCases", () => {
     it("excludes escalated cases", async () => {
       (mockClient.getCases as any).mockResolvedValue([
