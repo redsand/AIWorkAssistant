@@ -640,6 +640,13 @@ const envSchema = z.object({
   AIWORKASSISTANT_URL: z.string().url().default("http://localhost:3050"),
   AIWORKASSISTANT_API_KEY: z.string().default(""),
 
+  // Git commit identity for aicoder/worktree operations. Needed because the
+  // production service runs as SYSTEM, whose git has no user.name/user.email,
+  // which otherwise makes every commit fail with "unable to auto-detect email
+  // address". Consumed by gitIdentityEnv() in util/git-auth.ts.
+  AICODER_GIT_NAME: z.string().default("AI Work Assistant"),
+  AICODER_GIT_EMAIL: z.string().default("ai-assistant@users.noreply.github.com"),
+
   // Autonomous loop — aicoder agent
   AICODER_AGENT: z.enum(["codex", "opencode", "claude"]).default("claude"),
   AICODER_OWNER: z.string().default(""),

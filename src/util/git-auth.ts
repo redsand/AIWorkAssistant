@@ -89,6 +89,36 @@ export function injectGitCredentials(url: string): string {
 }
 
 /**
+ * Git commit identity for headless / service runs.
+ *
+ * When AIWorkAssistant runs as a Windows service the process user is SYSTEM,
+ * whose git has no user.name/user.email configured. Every `git commit` the
+ * aicoder attempts then fails with:
+ *   fatal: unable to auto-detect email address (got 'SYSTEM@HOST.(none)')
+ * and the agent loops retrying the same failing commit. We inject the four
+ * GIT_AUTHOR / GIT_COMMITTER name+email env vars git reads natively so commits
+ * always have an identity, independent of machine-level git config. Values already
+ * present in the environment win; otherwise fall back to AICODER_GIT_NAME /
+ * AICODER_GIT_EMAIL, then a sensible bot default.
+ */
+export function gitIdentityEnv(): Record<string, string> {
+  const name =
+    process.env.GIT_AUTHOR_NAME ||
+    process.env.AICODER_GIT_NAME ||
+    "AI Work Assistant";
+  const email =
+    process.env.GIT_AUTHOR_EMAIL ||
+    process.env.AICODER_GIT_EMAIL ||
+    "ai-assistant@users.noreply.github.com";
+  return {
+    GIT_AUTHOR_NAME: name,
+    GIT_AUTHOR_EMAIL: email,
+    GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || name,
+    GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || email,
+  };
+}
+
+/**
  * Strip credentials from a URL for safe logging. Never log the output of
  * injectGitCredentials directly — pipe it through this first.
  */

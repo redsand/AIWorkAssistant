@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   findLocalCloneForRemote,
+  gitIdentityEnv,
   injectGitCredentials,
   redactCredentials,
 } from "../util/git-auth";
@@ -21,12 +22,14 @@ function spawnGit(
   cwd: string,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    // Inherit process.env as-is: if the operator explicitly sets
-    // GIT_SSL_NO_VERIFY (e.g. behind a TLS-intercepting proxy) it flows
-    // through, but we never disable certificate verification by default.
+    // Inherit process.env as-is (so an explicitly-set GIT_SSL_NO_VERIFY still
+    // flows through for TLS-intercepting proxies) and add a commit identity so
+    // git operations work under the SYSTEM service account, which has no
+    // machine-level user.name/user.email configured.
     const proc = child_process.spawn("git", args, {
       cwd,
       shell: false,
+      env: { ...process.env, ...gitIdentityEnv() },
     });
     const chunks: Buffer[] = [];
     const errChunks: Buffer[] = [];
@@ -310,7 +313,11 @@ function spawnAny(
   cwd: string,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const proc = child_process.spawn(cmd, args, { cwd, shell: false });
+    const proc = child_process.spawn(cmd, args, {
+      cwd,
+      shell: false,
+      env: { ...process.env, ...gitIdentityEnv() },
+    });
     const chunks: Buffer[] = [];
     const errChunks: Buffer[] = [];
     proc.stdout.on("data", (c: Buffer) => chunks.push(c));

@@ -17,6 +17,7 @@ import * as path from "node:path";
 import { agentRunDatabase } from "../agent-runs/database";
 import type { Runner } from "../agent-runs/types";
 import { ensurePersistentWorktree } from "../kanban/worktree-manager";
+import { gitIdentityEnv } from "../util/git-auth";
 import { runnerEvents } from "./runner-events";
 
 const LOG_DIR = path.join(process.cwd(), "data", "runner-logs");
@@ -373,6 +374,10 @@ export class RunnerLoop {
   ): { argv: string[]; env: NodeJS.ProcessEnv } {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      // Guarantee a git commit identity — the service runs as SYSTEM with no
+      // machine-level git config, so without this every aicoder commit fails
+      // with "unable to auto-detect email address".
+      ...gitIdentityEnv(),
       AICODER_WORKSPACE: workspacePath,
       AICODER_AGENT: runner.agent,
       AICODER_SOURCE: runner.source,
