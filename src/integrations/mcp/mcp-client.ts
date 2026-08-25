@@ -18,6 +18,14 @@ export interface MCPServerConfig {
   enabled?: boolean;
 }
 
+export interface MCPServerStatus {
+  connected: boolean;
+  toolCount: number;
+  url: string;
+  enabled: boolean;
+  error?: string;
+}
+
 interface MCPRequest {
   jsonrpc: "2.0";
   id: number;
@@ -36,11 +44,36 @@ interface MCPResponse {
   };
 }
 
-class MCPClient extends EventEmitter {
+/**
+ * Registry entry for a single tool exposed by a connected MCP server.
+ *
+ * Tools are keyed in the `tools` map by their PREFIXED name
+ * (`{serverName}.{toolName}`) so that two servers can expose a tool of the
+ * same bare name without colliding. `originalName` is the bare name the owning
+ * server actually expects in a `tools/call` request, and `tool.name` is the
+ * prefixed name surfaced to callers/LLMs.
+ */
+interface ToolEntry {
+  server: string;
+  originalName: string;
+  tool: MCPTool;
+}
+
+/**
+ * Low-level MCP JSON-RPC client and tool registry.
+ *
+ * Handles the connection primitives (initialize / tools/list / tools/call) and
+ * an aggregated, prefixed tool registry across all registered servers. Dynamic
+ * lifecycle (loading config from disk, hot-reload, diffing) lives in
+ * {@link McpServerManager}, which drives this client via
+ * {@link addServer}/{@link removeServer}.
+ */
+export class MCPClient extends EventEmitter {
   private servers: Map<string, MCPServerConfig> = new Map();
-  private tools: Map<string, { server: string; tool: MCPTool }> = new Map();
+  private tools: Map<string, ToolEntry> = new Map();
   private requestId = 0;
   private initialized: Set<string> = new Set();
+  private serverErrors: Map<string, string> = new Map();
 
   registerServer(config: MCPServerConfig) {
     this.servers.set(config.name, {
@@ -64,23 +97,25 @@ class MCPClient extends EventEmitter {
 
     for (const [name, config] of this.servers) {
       if (!config.enabled) {
+        this.serverErrors.set(name, "disabled");
         results[name] = { connected: false, toolCount: 0, error: "disabled" };
         continue;
       }
 
+      // Already connected via addServer() — don't reconnect.
+      if (this.initialized.has(name)) {
+        const toolCount = this.countServerTools(name);
+        results[name] = { connected: true, toolCount };
+        continue;
+      }
+
       try {
-        await this.initializeServer(name);
-        const serverTools = await this.listTools(name);
-        results[name] = { connected: true, toolCount: serverTools.length };
-
-        for (const tool of serverTools) {
-          this.tools.set(tool.name, { server: name, tool });
-        }
-
-        this.initialized.add(name);
-        this.emit("server_connected", { name, toolCount: serverTools.length });
+        const toolCount = await this.connectServer(name);
+        results[name] = { connected: true, toolCount };
+        this.emit("server_connected", { name, toolCount });
       } catch (error) {
         const msg = error instanceof Error ? error.message : "Unknown error";
+        this.serverErrors.set(name, msg);
         results[name] = { connected: false, toolCount: 0, error: msg };
         this.emit("server_error", { name, error: msg });
       }
@@ -93,11 +128,58 @@ class MCPClient extends EventEmitter {
     };
   }
 
+  /**
+   * Dynamically add (or replace) a server at runtime: register the config,
+   * connect, and register its tools. Any previously-registered server of the
+   * same name is removed first so this is safe to call for reconfiguration.
+   */
+  async addServer(
+    config: MCPServerConfig,
+  ): Promise<{ connected: boolean; toolCount: number; error?: string }> {
+    // Replace any existing server/tools of the same name for a clean re-add.
+    this.removeServer(config.name);
+    this.registerServer(config);
+
+    const server = this.servers.get(config.name);
+    if (!server || !server.enabled) {
+      this.serverErrors.set(config.name, "disabled");
+      return { connected: false, toolCount: 0, error: "disabled" };
+    }
+
+    try {
+      const toolCount = await this.connectServer(config.name);
+      this.emit("server_connected", { name: config.name, toolCount });
+      return { connected: true, toolCount };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "Unknown error";
+      this.serverErrors.set(config.name, msg);
+      this.emit("server_error", { name: config.name, error: msg });
+      return { connected: false, toolCount: 0, error: msg };
+    }
+  }
+
+  /**
+   * Disconnect a server and deregister all of its tools. Idempotent — removing
+   * an unknown server is a no-op.
+   */
+  removeServer(name: string): void {
+    let removed = false;
+    for (const [key, entry] of this.tools) {
+      if (entry.server === name) {
+        this.tools.delete(key);
+      }
+    }
+    if (this.servers.delete(name)) removed = true;
+    this.initialized.delete(name);
+    this.serverErrors.delete(name);
+    if (removed) this.emit("server_removed", { name });
+  }
+
   async callTool(
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<{ success: boolean; data?: unknown; error?: string }> {
-    const entry = this.tools.get(toolName);
+    const entry = this.resolveTool(toolName);
     if (!entry) {
       return { success: false, error: `MCP tool '${toolName}' not found` };
     }
@@ -115,7 +197,8 @@ class MCPClient extends EventEmitter {
         jsonrpc: "2.0",
         id: ++this.requestId,
         method: "tools/call",
-        params: { name: toolName, arguments: args },
+        // Servers expect their own bare tool name, not the prefixed one.
+        params: { name: entry.originalName, arguments: args },
       });
 
       if (response.error) {
@@ -134,8 +217,19 @@ class MCPClient extends EventEmitter {
     }
   }
 
-  getAvailableTools(): MCPTool[] {
+  /** Aggregated, prefixed tool list across all connected servers. */
+  listTools(): MCPTool[] {
     return Array.from(this.tools.values()).map((e) => e.tool);
+  }
+
+  /** Alias kept for backward compatibility with existing callers. */
+  getAvailableTools(): MCPTool[] {
+    return this.listTools();
+  }
+
+  /** Name of the server that owns a tool, or undefined if unknown. */
+  getServerForTool(toolName: string): string | undefined {
+    return this.resolveTool(toolName)?.server;
   }
 
   getToolsForProvider(): Array<{
@@ -170,32 +264,81 @@ class MCPClient extends EventEmitter {
         name,
         description: `[MCP/${entry.server}] ${entry.tool.description}`,
         params: properties,
-        actionType: `mcp.${entry.server}.${name}`,
+        actionType: `mcp.${entry.server}.${entry.originalName}`,
         riskLevel: "low" as const,
       };
     });
   }
 
-  getServerStatus(): Record<
-    string,
-    { connected: boolean; toolCount: number; url: string }
-  > {
-    const status: Record<
-      string,
-      { connected: boolean; toolCount: number; url: string }
-    > = {};
+  getServerStatus(): Record<string, MCPServerStatus> {
+    const status: Record<string, MCPServerStatus> = {};
     for (const [name, config] of this.servers) {
       const connected = this.initialized.has(name);
-      const toolCount = Array.from(this.tools.values()).filter(
-        (e) => e.server === name,
-      ).length;
-      status[name] = { connected, toolCount, url: config.url };
+      status[name] = {
+        connected,
+        toolCount: this.countServerTools(name),
+        url: config.url,
+        enabled: config.enabled !== false,
+        error: this.serverErrors.get(name),
+      };
     }
     return status;
   }
 
   isToolAvailable(toolName: string): boolean {
-    return this.tools.has(toolName);
+    return this.resolveTool(toolName) !== undefined;
+  }
+
+  private countServerTools(name: string): number {
+    let count = 0;
+    for (const entry of this.tools.values()) {
+      if (entry.server === name) count++;
+    }
+    return count;
+  }
+
+  /**
+   * Resolve a tool by its prefixed name (`{server}.{tool}`) first, then fall
+   * back to a bare tool name for backward compatibility with callers that
+   * don't know the prefix.
+   *
+   * The bare-name fallback is only honored when it is UNAMBIGUOUS. If two
+   * servers expose the same bare tool name, a bare lookup can't tell them
+   * apart, so we refuse to guess and return undefined — callers must use the
+   * prefixed name to disambiguate. Returning an arbitrary (Map insertion
+   * order) match would route calls nondeterministically to the wrong server.
+   */
+  private resolveTool(toolName: string): ToolEntry | undefined {
+    const direct = this.tools.get(toolName);
+    if (direct) return direct;
+
+    let match: ToolEntry | undefined;
+    for (const entry of this.tools.values()) {
+      if (entry.originalName === toolName) {
+        if (match) return undefined; // ambiguous bare name across servers
+        match = entry;
+      }
+    }
+    return match;
+  }
+
+  /** Connect a registered server and register its (prefixed) tools. */
+  private async connectServer(name: string): Promise<number> {
+    await this.initializeServer(name);
+    const serverTools = await this.fetchServerTools(name);
+
+    for (const tool of serverTools) {
+      const prefixed = `${name}.${tool.name}`;
+      this.tools.set(prefixed, {
+        server: name,
+        originalName: tool.name,
+        tool: { ...tool, name: prefixed },
+      });
+    }
+
+    this.initialized.add(name);
+    this.serverErrors.delete(name);
+    return serverTools.length;
   }
 
   private async initializeServer(name: string): Promise<void> {
@@ -217,7 +360,7 @@ class MCPClient extends EventEmitter {
     });
   }
 
-  private async listTools(serverName: string): Promise<MCPTool[]> {
+  private async fetchServerTools(serverName: string): Promise<MCPTool[]> {
     const server = this.servers.get(serverName);
     if (!server) return [];
 

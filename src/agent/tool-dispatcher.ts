@@ -5391,6 +5391,7 @@ async function handleMcpCallTool(
 
   if (!toolName) return { success: false, error: "toolName is required" };
 
+  // callTool routes to the owning server by (prefixed) tool name.
   return mcpClient.callTool(toolName, args);
 }
 
@@ -5405,6 +5406,9 @@ async function handleMcpListTools(): Promise<ToolCallResult> {
       totalTools: tools.length,
       tools: tools.map((t) => ({
         name: t.name,
+        // Tool names are prefixed {serverName}.{toolName}; surface the owning
+        // server so callers know which external endpoint a tool routes to.
+        server: mcpClient.getServerForTool(t.name),
         description: t.description,
         requiredParams: t.inputSchema.required || [],
       })),
