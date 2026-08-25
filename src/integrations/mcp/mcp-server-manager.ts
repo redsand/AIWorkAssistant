@@ -112,8 +112,11 @@ export class McpServerManager {
     this.client = options.client ?? mcpClient;
     this.configPath =
       options.configPath ??
-      path.resolve(process.cwd(), env.MCP_SERVERS_CONFIG_PATH);
-    this.envFallback = options.envFallback ?? env.MCP_SERVERS;
+      path.resolve(
+        process.cwd(),
+        env.MCP_SERVERS_CONFIG_PATH ?? "config/mcp-servers.json",
+      );
+    this.envFallback = options.envFallback ?? env.MCP_SERVERS ?? "";
     this.debounceMs = options.debounceMs ?? 250;
   }
 
