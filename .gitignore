@@ -104,3 +104,6 @@ scripts/test_mcp_escalated.js
 scripts/cookies.txt
 scripts/cases/
 scripts/cases_daily/
+
+# Runtime MCP server config may hold auth tokens — keep it local; commit the .example instead
+config/mcp-servers.json
