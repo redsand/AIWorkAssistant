@@ -71,9 +71,16 @@ export async function autonomousLoopRoutes(fastify: FastifyInstance) {
         case "github":
           items = await fetchGitHubWork(label, limit, query, skipPromptCheck, query.sprint);
           break;
-        case "gitlab":
-          items = await fetchGitLabWork(label, limit, skipPromptCheck, query.repo);
+        case "gitlab": {
+          // The aicoder splits "group/project" into owner+repo (GitHub-style),
+          // so recombine them into the full GitLab path-with-namespace here.
+          const glProject =
+            query.repo && query.owner && !query.repo.includes("/")
+              ? `${query.owner}/${query.repo}`
+              : query.repo;
+          items = await fetchGitLabWork(label, limit, skipPromptCheck, glProject);
           break;
+        }
         case "jira":
           items = await fetchJiraWork(label, limit, query.repo, skipPromptCheck, query.sprint);
           break;
