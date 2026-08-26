@@ -323,6 +323,13 @@ interface VcsClient {
   merge(project: string, mrNumber: number, title: string, message: string): Promise<void>;
   addLabelToIssue(project: string, issueNumber: number, label: string): Promise<void>;
   addCommentToIssue(project: string, issueNumber: number, body: string): Promise<void>;
+  /**
+   * Reopen a closed issue so the aicoder can pick up a rework request. A PR
+   * that closed its issue on a prior merge (or a manually-closed issue) would
+   * otherwise strand the rework — the aicoder only polls OPEN issues, so the
+   * feedback loop dies. Idempotent for already-open issues.
+   */
+  reopenIssue(project: string, issueNumber: number): Promise<void>;
   extractLinkedIssueKey(mrBody: string | null): string | null;
   extractIssueKeyFromBranch(branchName: string | undefined): string | null;
   getLatestCommitSha(project: string, mrNumber: number): Promise<string | undefined>;
@@ -368,6 +375,10 @@ class GithubVcsClient implements VcsClient {
 
   async addCommentToIssue(repo: string, issueNumber: number, body: string): Promise<void> {
     return this.gh.addIssueComment(issueNumber, body, undefined, repo);
+  }
+
+  async reopenIssue(repo: string, issueNumber: number): Promise<void> {
+    await this.gh.updateIssue(issueNumber, { state: "open" }, undefined, repo);
   }
 
   extractLinkedIssueKey(mrBody: string | null): string | null {
@@ -462,6 +473,10 @@ class GitlabJiraVcsClient implements VcsClient {
 
   async addCommentToIssue(_project: string, _issueNumber: number, _body: string): Promise<void> {
     // GitLab issues not used; Jira is the issue tracker
+  }
+
+  async reopenIssue(_project: string, _issueNumber: number): Promise<void> {
+    // GitLab issues not used in reviewer context; Jira is the tracker.
   }
 
   extractLinkedIssueKey(mrBody: string | null): string | null {
@@ -1791,6 +1806,11 @@ async function postReworkPrompt(
     await vcs.addCommentToIssue(project, issueNumber, buildReworkPrompt(result));
     // Also post the review findings to the source issue for continuity
     await postReviewToSourceIssue(vcs, project, mr, formatReviewFindings(result));
+    // Reopen the issue if it was closed — otherwise the aicoder (which only
+    // polls OPEN issues) can never pick up this rework and the loop stalls.
+    await vcs.reopenIssue(project, issueNumber).catch(() => {
+      log.warn(`Could not reopen issue #${issueNumber} for rework`);
+    });
     await vcs.addLabelToIssue(project, issueNumber, "ready-for-agent").catch(() => {
       log.warn(`Could not add ready-for-agent label to issue #${issueNumber}`);
     });
