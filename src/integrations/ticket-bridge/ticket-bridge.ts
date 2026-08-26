@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { jiraClient } from "../jira/jira-client";
+import { gitlabClient } from "../gitlab/gitlab-client";
 import { roadmapDatabase } from "../../roadmap/database";
 import type { Roadmap, Milestone, RoadmapItem } from "../../roadmap/database";
 import { codebaseIndexer } from "../../agent/codebase-indexer";
@@ -63,7 +64,7 @@ class TicketBridge {
       case "roadmap":
         return this.generateFromRoadmap(source, ctx);
       case "gitlab":
-        return this.generateFromGitHub(source, ctx); // GitLab uses same prompt format
+        return this.generateFromGitLab(source, ctx);
       case "jitbit":
         return this.generateFromJira(source, ctx); // Jitbit uses similar format to Jira
     }
@@ -286,6 +287,125 @@ class TicketBridge {
     return {
       prompt,
       title: (issue.fields?.summary as string) || source.id,
+      source,
+      filesReferenced,
+      tokensEstimate: Math.ceil(prompt.length / 4),
+      hasCodingPrompt: codingPrompt !== null,
+      codingPrompt,
+      skipped: false,
+      skipReason: null,
+    };
+  }
+
+  /**
+   * Parse a GitLab source id of the form "group/project#iid" (the project path
+   * may itself contain slashes for nested groups, e.g. "group/sub/project#7").
+   */
+  parseGitLabSourceId(id: string): { projectPath: string; iid: number } {
+    const m = id.match(/^(.+)#(\d+)$/);
+    if (!m) {
+      throw new Error(
+        `Invalid GitLab source "${id}". Use "group/project#25".`,
+      );
+    }
+    return { projectPath: m[1], iid: Number(m[2]) };
+  }
+
+  private async generateFromGitLab(
+    source: TicketSource,
+    ctx: PromptContext,
+  ): Promise<GeneratedPrompt> {
+    const { projectPath, iid } = this.parseGitLabSourceId(source.id);
+    const issue = await gitlabClient.getIssue(projectPath, iid);
+    const labels: string[] = issue.labels || [];
+
+    const body = issue.description || "";
+    let codingPrompt = this.extractCodingPromptSection(body);
+
+    // Reviewer rework prompts land as issue notes (comments) — check them,
+    // newest first, when the description has no coding-prompt section.
+    let notes: any[] = [];
+    try {
+      notes = await gitlabClient.listIssueNotes(projectPath, iid);
+    } catch {
+      notes = [];
+    }
+    if (!codingPrompt && notes.length > 0) {
+      for (let i = notes.length - 1; i >= 0; i--) {
+        const fromNote = this.extractCodingPromptSection(notes[i]?.body || "");
+        if (fromNote) {
+          codingPrompt = fromNote;
+          break;
+        }
+      }
+    }
+
+    if (ctx.skipMissingCodingPrompt && labels.includes("missing-coding-prompt") && !codingPrompt) {
+      return {
+        prompt: "",
+        title: issue.title || source.id,
+        source,
+        filesReferenced: [],
+        tokensEstimate: 0,
+        hasCodingPrompt: false,
+        codingPrompt: null,
+        skipped: true,
+        skipReason: "missing-coding-prompt",
+      };
+    }
+
+    const acceptanceCriteria = ctx.includeAcceptanceCriteria
+      ? this.extractAcceptanceCriteria(body)
+      : [];
+    let filesReferenced: string[] = [];
+    if (ctx.includeCodebaseIndex) {
+      filesReferenced = await this.findRelevantFiles(
+        `${issue.title} ${body}`,
+        ctx.maxFiles,
+      );
+    }
+
+    const codingPromptSection = codingPrompt
+      ? `\n## ⚡ Coding Prompt (Authoritative — Follow Exactly)\n\n${codingPrompt}\n`
+      : `\n## ⚠️ Coding Prompt Missing\n\nNo \`## Coding Prompt\` section found. Derive implementation intent from the full spec.\n`;
+    const acceptance = acceptanceCriteria.length > 0
+      ? acceptanceCriteria.map((c) => `- [ ] ${c}`).join("\n")
+      : "- No checkbox acceptance criteria found. Derive tests from the full spec below.";
+    const files = filesReferenced.length > 0
+      ? filesReferenced.map((f) => `- \`${f}\``).join("\n")
+      : "- No strong matches found. Start with repository search and the issue spec.";
+    const noteText = notes.length > 0
+      ? notes
+          .filter((n: any) => !n.system)
+          .map((n: any) => `### ${n.author?.username || "unknown"} at ${n.created_at}\n${n.body || ""}`)
+          .join("\n\n")
+      : "No comments.";
+
+    const prompt = `# Implementation Task: ${issue.title}
+
+## Source
+- **GitLab Issue**: ${projectPath}#${iid}
+- **URL**: ${issue.web_url}
+- **State**: ${issue.state || "opened"}
+- **Labels**: ${labels.length > 0 ? labels.join(", ") : "None"}
+- **Assignee**: ${issue.assignee?.username || issue.assignees?.[0]?.username || "Unassigned"}
+${codingPromptSection}
+## Full Specification
+${body || "_No description provided._"}
+
+## Acceptance Criteria
+${acceptance}
+
+## Potentially Relevant Files
+${files}
+
+## Discussion / Notes
+${noteText}
+`;
+
+    return {
+      prompt,
+      title: issue.title || source.id,
       source,
       filesReferenced,
       tokensEstimate: Math.ceil(prompt.length / 4),

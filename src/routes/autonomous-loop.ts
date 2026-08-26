@@ -439,6 +439,15 @@ async function fetchGitLabWork(
     }
   }
 
+  // Split the resolved project path (e.g. "siem/hawk-data") into owner + repo
+  // so the aicoder rebuilds the correct "group/project#iid" source id when it
+  // asks the ticket-bridge for a prompt. Using project_id / the default group
+  // here produced a malformed id that routed GitLab issues into the GitHub
+  // code path.
+  const lastSlash = project.lastIndexOf("/");
+  const projOwner = lastSlash > 0 ? project.slice(0, lastSlash) : project;
+  const projRepo = lastSlash > 0 ? project.slice(lastSlash + 1) : project;
+
   return filtered
     .slice(0, limit)
     .map((issue: any) => ({
@@ -447,8 +456,8 @@ async function fetchGitLabWork(
       title: issue.title,
       number: issue.iid,
       url: issue.web_url,
-      owner: String(issue.project_id),
-      repo: env.GITLAB_DEFAULT_PROJECT!,
+      owner: projOwner,
+      repo: projRepo,
       labels: issue.labels || [],
       suggestedBranch: makeBranchName(issue.iid, issue.title),
       body: issue.description || "",

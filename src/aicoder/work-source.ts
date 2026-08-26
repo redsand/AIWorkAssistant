@@ -76,7 +76,7 @@ export async function generatePrompt(
   }
 
   const isJira = /^[A-Z]+-\d+$/.test(item.id);
-  const sourceType = isJira ? "jira" : "github";
+  const sourceType = cfg.source === "gitlab" ? "gitlab" : isJira ? "jira" : "github";
   const sourceId = isJira
     ? item.id
     : `${item.owner || cfg.owner}/${item.repo || cfg.repo}#${item.number}`;
