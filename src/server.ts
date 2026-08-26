@@ -15,6 +15,7 @@ import { initializeTemplates } from "./roadmap/templates";
 import { guardrailsRoutes } from "./guardrails/api";
 import { authRoutes } from "./routes/auth";
 import { googleOAuthRoutes } from "./routes/google-oauth";
+import { canvaOAuthRoutes } from "./routes/canva-oauth";
 import { fileCalendarRoutes } from "./routes/file-calendar";
 import { productivityRoutes } from "./routes/productivity";
 import { engineeringRoutes } from "./routes/engineering";
@@ -172,6 +173,7 @@ export async function buildServer() {
   await server.register(providerHostRoutes, { prefix: "/api" });
   await server.register(authRoutes);
   await server.register(googleOAuthRoutes);
+  await server.register(canvaOAuthRoutes);
 
   // Cache-busting rewriter for HTML ONLY. Stamps every <script src> +
   // <link href> in the served HTML with the current BUILD_ID so entry

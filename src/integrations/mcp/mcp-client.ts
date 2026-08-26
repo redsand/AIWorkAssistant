@@ -16,6 +16,14 @@ export interface MCPServerConfig {
   url: string;
   headers?: Record<string, string>;
   enabled?: boolean;
+  /**
+   * Optional async provider for a dynamic Authorization header, resolved
+   * fresh before every request. Used for OAuth-backed servers (e.g. Canva)
+   * whose bearer token expires and must be refreshed transparently. Takes
+   * precedence over any static Authorization in `headers`. Return null to
+   * send no Authorization header (e.g. not yet authorized).
+   */
+  getAuthHeader?: () => Promise<string | null>;
 }
 
 export interface MCPServerStatus {
@@ -384,8 +392,18 @@ export class MCPClient extends EventEmitter {
   ): Promise<MCPResponse> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
+      // Streamable-HTTP MCP servers (e.g. Canva) require the client to accept
+      // both JSON and SSE even when they answer with a single JSON body.
+      Accept: "application/json, text/event-stream",
       ...server.headers,
     };
+
+    // Dynamic OAuth bearer (refreshed per-request) wins over any static one.
+    if (server.getAuthHeader) {
+      const auth = await server.getAuthHeader();
+      if (auth) headers.Authorization = auth;
+      else delete headers.Authorization;
+    }
 
     const response = await axios.post(server.url, request, {
       headers,

@@ -28,6 +28,28 @@ export function initializeMCP(): void {
     });
   }
 
+  // Canva MCP server (design/flyer editing). OAuth-backed: only register when
+  // enabled AND already authorized (tokens on disk from a prior /auth/canva).
+  // A fresh authorization connects it live via the callback route.
+  if (env.CANVA_MCP_ENABLED) {
+    // Lazy import avoids a cycle (canva-oauth doesn't import mcp at module load).
+    import("../canva/canva-oauth.js")
+      .then(async ({ canvaOAuth }) => {
+        if (canvaOAuth.isAuthorized()) {
+          await mcpClient.addServer({
+            name: "canva",
+            url: canvaOAuth.resource(),
+            enabled: true,
+            getAuthHeader: () => canvaOAuth.getAuthHeader(),
+          });
+          console.log("[MCP] Canva server connected (authorized)");
+        } else {
+          console.log("[MCP] Canva enabled but not authorized — visit /auth/canva");
+        }
+      })
+      .catch((err) => console.error("[MCP] Canva registration failed:", err));
+  }
+
   mcpClient
     .initializeAll()
     .then((result) => {

@@ -651,6 +651,18 @@ const envSchema = z.object({
   AIWORKASSISTANT_URL: z.string().url().default("http://localhost:3050"),
   AIWORKASSISTANT_API_KEY: z.string().default(""),
 
+  // Canva MCP (design/flyer editing via https://mcp.canva.com/mcp). OAuth is
+  // fully self-contained (dynamic client registration + PKCE, no secret), so
+  // only the HTTPS redirect URI is configurable. Set CANVA_MCP_ENABLED=true to
+  // register the server; the user authorizes once at /auth/canva.
+  CANVA_MCP_ENABLED: z
+    .string()
+    .transform((s) => s === "true")
+    .default("false"),
+  CANVA_REDIRECT_URI: z
+    .string()
+    .default("https://assistant.tshelton.info/auth/canva/callback"),
+
   // Git commit identity for aicoder/worktree operations. Needed because the
   // production service runs as SYSTEM, whose git has no user.name/user.email,
   // which otherwise makes every commit fail with "unable to auto-detect email
