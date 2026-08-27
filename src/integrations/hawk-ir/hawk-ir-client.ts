@@ -58,6 +58,8 @@ const WS_TIMEOUT_MS = 30_000;
  */
 const CASES_WINDOW_MS = 24 * 60 * 60 * 1000;
 const CASES_DEFAULT_LIMIT = 500;
+/** /api/cases rejects limit > 1000 ("limit must be between 1 and 1000"). */
+const CASES_API_MAX_LIMIT = 1000;
 /** Safety cap on auto-pagination: 20 pages ≈ 10,000 cases at the default limit. */
 const CASES_MAX_PAGES = 20;
 
@@ -469,21 +471,36 @@ export class HawkIrClient {
 
     while (windowEnd > start && collected.length < wanted) {
       const windowStart = new Date(Math.max(start.getTime(), windowEnd.getTime() - CASES_WINDOW_MS));
-      const q: Record<string, unknown> = {
-        start_date: windowStart.toISOString(),
-        stop_date: windowEnd.toISOString(),
-        limit: wanted - collected.length,
-      };
-      if (params.groupId) q.group_id = params.groupId;
 
-      const result = await this.httpGet<{ data: any[] } | any[]>("/api/cases", q);
-      const rows = unwrapData<any[]>(result);
-      for (const row of Array.isArray(rows) ? rows : []) {
-        const normalized = normalizeHawkCase(row);
-        if (normalized.rid && seen.has(normalized.rid)) continue;
-        if (normalized.rid) seen.add(normalized.rid);
-        collected.push(normalized);
+      // Paginate WITHIN this time window by offset. A single day can hold
+      // 2000+ cases, and /api/cases caps `limit` at 1000 — without offset
+      // paging we'd silently drop everything past the first 1000 in a busy
+      // day. Walk offset 0,1000,2000… until a short page ends the window.
+      let winOffset = 0;
+      while (collected.length < wanted) {
+        const pageSize = Math.min(CASES_API_MAX_LIMIT, wanted - collected.length);
+        const q: Record<string, unknown> = {
+          start_date: windowStart.toISOString(),
+          stop_date: windowEnd.toISOString(),
+          limit: pageSize,
+          offset: winOffset,
+        };
+        if (params.groupId) q.group_id = params.groupId;
+
+        const result = await this.httpGet<{ data: any[] } | any[]>("/api/cases", q);
+        const rows = unwrapData<any[]>(result);
+        const batch = Array.isArray(rows) ? rows : [];
+        for (const row of batch) {
+          const normalized = normalizeHawkCase(row);
+          if (normalized.rid && seen.has(normalized.rid)) continue;
+          if (normalized.rid) seen.add(normalized.rid);
+          collected.push(normalized);
+        }
+        // A short page (fewer than requested) means the window is exhausted.
+        if (batch.length < pageSize) break;
+        winOffset += pageSize;
       }
+
       windowEnd = windowStart;
     }
 
