@@ -300,6 +300,17 @@ function makeGithubClient(token: string, owner: string) {
       const res = await client.get(`/repos/${owner}/${repo}/pulls/${prNumber}`);
       return res.data?.head?.sha;
     },
+    async getPRMergeableState(repo: string, prNumber: number): Promise<string | undefined> {
+      // mergeable/mergeable_state are computed async by GitHub — poll briefly
+      // until it settles out of "unknown".
+      for (let i = 0; i < 3; i++) {
+        const res = await client.get(`/repos/${owner}/${repo}/pulls/${prNumber}`);
+        const state = res.data?.mergeable_state as string | undefined;
+        if (state && state !== "unknown") return state;
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+      return "unknown";
+    },
   };
 }
 
@@ -330,6 +341,13 @@ interface VcsClient {
    * feedback loop dies. Idempotent for already-open issues.
    */
   reopenIssue(project: string, issueNumber: number): Promise<void>;
+  /**
+   * Coarse mergeability signal for the PR/MR. Normalizes to one of
+   * "clean" | "dirty" | "behind" | "blocked" | "unknown". "dirty" means merge
+   * conflicts that a rebase must resolve; the reviewer bounces these back to
+   * the aicoder instead of attempting a doomed merge.
+   */
+  getMergeableState(project: string, mrNumber: number): Promise<string | undefined>;
   extractLinkedIssueKey(mrBody: string | null): string | null;
   extractIssueKeyFromBranch(branchName: string | undefined): string | null;
   getLatestCommitSha(project: string, mrNumber: number): Promise<string | undefined>;
@@ -379,6 +397,11 @@ class GithubVcsClient implements VcsClient {
 
   async reopenIssue(repo: string, issueNumber: number): Promise<void> {
     await this.gh.updateIssue(issueNumber, { state: "open" }, undefined, repo);
+  }
+
+  async getMergeableState(repo: string, prNumber: number): Promise<string | undefined> {
+    // GitHub's mergeable_state maps directly: dirty|clean|behind|blocked|unknown.
+    return this.gh.getPRMergeableState(repo, prNumber);
   }
 
   extractLinkedIssueKey(mrBody: string | null): string | null {
@@ -477,6 +500,18 @@ class GitlabJiraVcsClient implements VcsClient {
 
   async reopenIssue(_project: string, _issueNumber: number): Promise<void> {
     // GitLab issues not used in reviewer context; Jira is the tracker.
+  }
+
+  async getMergeableState(_project: string, mrNumber: number): Promise<string | undefined> {
+    try {
+      const status = await gitlabClient.getMergeRequestStatus(this.projectId, mrNumber);
+      const ms = (status as any)?.merge_status || (status as any)?.detailed_merge_status;
+      if (ms === "cannot_be_merged" || ms === "conflict") return "dirty";
+      if (ms === "can_be_merged" || ms === "mergeable") return "clean";
+      return "unknown";
+    } catch {
+      return "unknown";
+    }
   }
 
   extractLinkedIssueKey(mrBody: string | null): string | null {
@@ -1587,6 +1622,40 @@ async function mergeWithSummary(
   result: ReviewResult,
 ): Promise<"merged" | "conflict" | "failed"> {
   const agentLine = formatAgentStatus(result.agentStatus);
+
+  // Fix 4: detect a conflicted ("dirty") PR before attempting a doomed merge.
+  // Rather than let it sit, bounce it back to the aicoder to rebase — reopen
+  // the linked issue and post a rebase rework prompt so the loop keeps moving.
+  try {
+    const mergeState = await vcs.getMergeableState(project, mr.number);
+    if (mergeState === "dirty") {
+      log.warn(`MR !${mr.number} is conflicted (mergeable_state=dirty) — bouncing to aicoder for rebase`);
+      await vcs.addComment(
+        project,
+        mr.number,
+        `## ⚠️ Review Passed — Merge Blocked by Conflicts\n\n${result.summary}\n\n${agentLine}\n\nThis branch has merge conflicts with the base. It has been sent back to the agent to rebase onto the latest base branch.`,
+      ).catch(() => undefined);
+      const issueKey = vcs.extractLinkedIssueKey(mr.body ?? null) ?? vcs.extractIssueKeyFromBranch(mr.sourceBranch);
+      if (issueKey && /^\d+$/.test(issueKey)) {
+        const issueNumber = parseInt(issueKey, 10);
+        await vcs.reopenIssue(project, issueNumber).catch(() => undefined);
+        await vcs
+          .addCommentToIssue(
+            project,
+            issueNumber,
+            `## 🔧 Rebase Required\n\nPR !${mr.number} passed review but has merge conflicts with the base branch. Please \`git rebase\` onto the latest base, resolve conflicts, and force-push. No code changes are needed beyond conflict resolution.`,
+          )
+          .catch(() => undefined);
+        await vcs.addLabelToIssue(project, issueNumber, "ready-for-agent").catch(() => undefined);
+      }
+      return "conflict";
+    }
+  } catch (err) {
+    // Non-fatal — if we can't determine mergeability, fall through and let the
+    // merge attempt (and its 422 retry/backoff) handle it as before.
+    log.warn(`Could not determine mergeable state for MR !${mr.number}: ${err instanceof Error ? err.message : err}`);
+  }
+
   try {
     await vcs.addComment(
       project,

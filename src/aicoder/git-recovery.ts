@@ -113,6 +113,25 @@ export function forceCheckout(
     return false;
   }
 
+  // Branch simply doesn't exist locally (not detached, no overwrite conflict).
+  // This is common on GitLab runners: a prior crashed cycle never pushed the
+  // branch, and the per-cycle `reset --hard origin/<base>` drops the local ref,
+  // so a resume/checkout of the expected branch fails with a pathspec error.
+  // Recreate it — from origin if it was ever pushed, otherwise fresh from HEAD.
+  if (/did not match any|pathspec .* did not match|invalid reference|unknown revision/i.test(stderr)) {
+    gitRun(["fetch", "origin", branch], cwd);
+    if (gitRun(["checkout", "-b", branch, `origin/${branch}`], cwd)) {
+      deps.logger.logGit("Created local branch from origin", branch);
+      return true;
+    }
+    if (gitRun(["checkout", "-B", branch], cwd)) {
+      deps.logger.logGit("Created fresh local branch", branch);
+      return true;
+    }
+    deps.logger.logError(`Could not create branch ${branch}`);
+    return false;
+  }
+
   const overwriteMatch = stderr.match(OVERWRITE_RE);
   if (!overwriteMatch) {
     deps.logger.logError(
