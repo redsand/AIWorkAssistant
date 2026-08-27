@@ -45,6 +45,9 @@ interface AuthServerMeta {
 
 interface CanvaOAuthState {
   clientId?: string;
+  /** The redirect_uri the stored client_id was registered with. If the
+   * configured redirect changes, the old client is invalid and we re-register. */
+  registeredRedirect?: string;
   accessToken?: string;
   refreshToken?: string;
   /** epoch ms when accessToken expires */
@@ -117,9 +120,19 @@ class CanvaOAuthManager {
     return this.meta;
   }
 
-  /** Register a public client via DCR once; reuse the stored client_id after. */
+  /** Register a public client via DCR once; reuse the stored client_id after.
+   * Re-registers if the configured redirect_uri changed (the old client is
+   * bound to the old redirect and Canva's /authorize would reject it). */
   private async ensureClient(): Promise<string> {
-    if (this.state.clientId) return this.state.clientId;
+    if (this.state.clientId && this.state.registeredRedirect === this.redirectUri()) {
+      return this.state.clientId;
+    }
+    if (this.state.clientId) {
+      console.log("[CanvaOAuth] Redirect URI changed — re-registering client");
+      this.state.clientId = undefined;
+      this.state.accessToken = undefined;
+      this.state.refreshToken = undefined;
+    }
     const meta = await this.discover();
     if (!meta.registration_endpoint) {
       throw new Error("Canva auth server does not advertise a registration endpoint");
@@ -137,8 +150,9 @@ class CanvaOAuthManager {
       { timeout: 15000, headers: { "Content-Type": "application/json" } },
     );
     this.state.clientId = resp.data.client_id;
+    this.state.registeredRedirect = this.redirectUri();
     this.save();
-    console.log(`[CanvaOAuth] Registered client ${this.state.clientId}`);
+    console.log(`[CanvaOAuth] Registered client ${this.state.clientId} (redirect ${this.state.registeredRedirect})`);
     return this.state.clientId!;
   }
 
