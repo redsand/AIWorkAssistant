@@ -25,6 +25,7 @@ import {
   showError,
   showTyping,
   finalizeToolProgress,
+  sealCurrentToolProgress,
   scrollChatToBottom,
   ensureScrollListener,
   enableAutoScroll,
@@ -178,6 +179,13 @@ async function handleStreamResponse(response, progressElRef, onError) {
               setCurrentStreamingMessageId(null);
               streamingMessageId = null;
             }
+            // Seal the tool panel from the segment that just finished and drop
+            // our reference to it, so the NEXT batch of tools starts a fresh
+            // panel appended below this segment's upcoming text. This keeps the
+            // flow strictly downward: text → its tools → next text → its tools,
+            // instead of piling every turn's tools into one panel up top.
+            sealCurrentToolProgress();
+            progressElRef.progressEl = null;
             accumulatedContent = "";
           }
           if (eventType === "tool_start") {
@@ -812,11 +820,11 @@ async function executeSend(message, { resend = false } = {}) {
     addMessage(message, "user");
   }
 
-  // Now that the user message is in the DOM, append the tool-progress
-  // panel beneath it.
-  const immediateProgress = createToolProgress();
-  progressElRef.progressEl = immediateProgress.progressEl;
-  document.getElementById("chatMessages").appendChild(immediateProgress.progressEl);
+  // Don't pre-create the tool-progress panel. It's created lazily on the first
+  // tool call (see ensureProgressEl) and appended at the CURRENT bottom of the
+  // chat — so it always renders below any assistant text that came before it,
+  // keeping the flow downward: text → its tools → next text → its tools. A
+  // pre-placed empty panel would otherwise sit above the first text segment.
   document.getElementById("processingIndicator").classList.add("active");
   const statusEl = document.getElementById("processingStatusText");
   if (statusEl) statusEl.textContent = "Processing your request...";

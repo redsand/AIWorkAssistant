@@ -608,38 +608,53 @@ export function completeToolCall(id, result) {
   }
 }
 
+// Finalize a single tool-progress panel: drop it if empty, otherwise mark it
+// "Completed" and collapse it.
+function finalizeOnePanel(el) {
+  const toolCallItems = el.querySelectorAll(".tool-call-item");
+  // If no tool calls were made (pre-created progress was never used), remove it entirely
+  if (toolCallItems.length === 0) {
+    el.remove();
+    return;
+  }
+
+  const headerText = el.querySelector(".tool-progress-header-left");
+  const headerStatus = el.querySelector(
+    ".tool-progress-header-left .tool-call-status",
+  );
+  if (headerStatus) {
+    headerStatus.classList.remove("running");
+    headerStatus.classList.add("done");
+  }
+  if (headerText) {
+    headerText.innerHTML = `
+      <span class="tool-call-status done"></span>
+      Completed
+    `;
+  }
+  const body = el.querySelector(".tool-progress-body");
+  if (body) {
+    body.classList.remove("expanded");
+  }
+  const toggle = el.querySelector(".tool-progress-toggle");
+  if (toggle) {
+    toggle.classList.remove("expanded");
+  }
+}
+
+// Seal ONLY the current (in-flight) tool-progress panel and detach the module
+// reference, so the next tool_start creates a fresh panel appended at the
+// current bottom of the chat. This is what keeps each response segment's tools
+// grouped directly below the text that triggered them, so the conversation
+// reads top-to-bottom: text → its tools → next text → its tools.
+export function sealCurrentToolProgress() {
+  if (!currentProgressEl) return;
+  finalizeOnePanel(currentProgressEl);
+  currentProgressEl = null;
+}
+
 export function finalizeToolProgress() {
   currentProgressEl = null;
   const progressEls = document.querySelectorAll(".tool-progress");
-  progressEls.forEach((el) => {
-    const toolCallItems = el.querySelectorAll(".tool-call-item");
-    // If no tool calls were made (pre-created progress was never used), remove it entirely
-    if (toolCallItems.length === 0) {
-      el.remove();
-      return;
-    }
-
-    const headerText = el.querySelector(".tool-progress-header-left");
-    const headerStatus = el.querySelector(
-      ".tool-progress-header-left .tool-call-status",
-    );
-    if (headerStatus) {
-      headerStatus.classList.remove("running");
-      headerStatus.classList.add("done");
-    }
-    if (headerText) {
-      headerText.innerHTML = `
-        <span class="tool-call-status done"></span>
-        Completed
-      `;
-    }
-    const body = el.querySelector(".tool-progress-body");
-    if (body) {
-      body.classList.remove("expanded");
-    }
-    const toggle = el.querySelector(".tool-progress-toggle");
-    if (toggle) {
-      toggle.classList.remove("expanded");
-    }
-  });
+  progressEls.forEach((el) => finalizeOnePanel(el));
 }
