@@ -7,7 +7,7 @@ import {
 import { branchRunner } from "../integrations/ticket-bridge/branch-runner";
 import type { AgentType } from "../integrations/ticket-bridge/branch-runner";
 
-const VALID_TYPES = ["github", "jira", "roadmap"] as const;
+const VALID_TYPES = ["github", "jira", "roadmap", "gitlab", "jitbit"] as const;
 const VALID_AGENTS = ["codex", "opencode", "claude"] as const;
 
 export async function ticketBridgeRoutes(fastify: FastifyInstance) {
