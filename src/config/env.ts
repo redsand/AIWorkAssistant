@@ -659,9 +659,9 @@ const envSchema = z.object({
     .string()
     .transform((s) => s === "true")
     .default("false"),
-  CANVA_REDIRECT_URI: z
-    .string()
-    .default("https://assistant.tshelton.info/auth/canva/callback"),
+  // Must be a loopback URI — Canva's /authorize rejects non-loopback redirects
+  // for public clients. Empty default lets canva-oauth derive it from PORT.
+  CANVA_REDIRECT_URI: z.string().default(""),
 
   // Git commit identity for aicoder/worktree operations. Needed because the
   // production service runs as SYSTEM, whose git has no user.name/user.email,

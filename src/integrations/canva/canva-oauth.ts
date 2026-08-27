@@ -89,12 +89,16 @@ class CanvaOAuthManager {
     }
   }
 
-  /** Redirect URI must be HTTPS and match what we register. */
+  /**
+   * Redirect URI. Canva's authorize endpoint (per RFC 8252 / the MCP OAuth
+   * spec for public clients) only accepts LOOPBACK redirects — a public HTTPS
+   * domain is accepted at Dynamic Client Registration but rejected at
+   * /authorize with "Invalid redirect URI". So default to loopback on the
+   * local service port; the user authorizes from a browser on this machine and
+   * Canva redirects back to the running app.
+   */
   private redirectUri(): string {
-    return (
-      env.CANVA_REDIRECT_URI ||
-      "https://assistant.tshelton.info/auth/canva/callback"
-    );
+    return env.CANVA_REDIRECT_URI || `http://localhost:${env.PORT}/auth/canva/callback`;
   }
 
   /** Discover (and cache) the authorization-server endpoints. */
